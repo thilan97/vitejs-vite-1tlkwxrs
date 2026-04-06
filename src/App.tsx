@@ -1877,12 +1877,11 @@ export default function App() {
       db.from('checklist_templates').select('*').eq('active', true),
       db.from('checklist').select('*'),
       db.from('tasks').select('*'),
-      db.from('logs').select('*').order('time'),
-      db.from('history').select('*').order('date'),
+       db.from('history').select('*').order('date'),
       db.from('settings').select('*').eq('id','main').single(),
       db.from('attendance').select('*').gte('date', new Date(Date.now()-30*86400000).toISOString().split('T')[0]),
       db.from('leave_requests').select('*').order('created_at', { ascending:false }),
-    ]).then(async ([depts, users, tmpl, cl, tk, lg, hist, st, att, lr]) => {
+    ]).then(async ([depts, users, tmpl, cl, tk, hist, st, att, lr]) => {
       const deptsData = depts.data || []
       const usersData = (users.data || []).map((u: any) => ({
         ...u, dept_name:deptsData.find((d: any) => d.id === u.dept_id)?.name || ''
@@ -1892,7 +1891,7 @@ export default function App() {
       const stData   = st.data
 
       setDepts(deptsData); setAllUsers(usersData); setTemplates(tmplData)
-      setTasks(tk.data||[]); setLogs(lg.data||[]); setHistory(hist.data||[])
+      setTasks(tk.data||[]); setHistory(hist.data||[])
       setSettings(stData); setAttendance(att.data||[]); setLeaveRequests(lr.data||[])
 
       const wasReset = await performReset(clData, tmplData, stData)
