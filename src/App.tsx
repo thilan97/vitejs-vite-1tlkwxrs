@@ -1784,7 +1784,6 @@ export default function App() {
   const [departments, setDepts]     = useState<any[]>([])
   const [checklist, setChecklist]   = useState<any[]>([])
   const [tasks, setTasks]           = useState<any[]>([])
-  const [logs, setLogs]             = useState<any[]>([])
   const [history, setHistory]       = useState<any[]>([])
   const [settings, setSettings]     = useState<any>(null)
   const [templates, setTemplates]   = useState<any[]>([])
@@ -1797,7 +1796,7 @@ export default function App() {
 
   // Notifications
   useEffect(() => {
-    if (!user || Notification.permission !== 'granted') return
+    if (!user || typeof Notification === 'undefined' || Notification.permission !== 'granted') return
     if (!notifSent.current) {
       notifSent.current = true
       const myItems = checklist.filter(c => c.assignee_id === user.id && c.status !== 'done')
