@@ -1910,6 +1910,8 @@ export default function App() {
         }
       }
       setLoading(false)
+    }).catch(() => {
+      setLoading(false)
     })
   }, [user])
 
