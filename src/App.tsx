@@ -1999,7 +1999,7 @@ export default function App() {
 
   return (
     <ErrorBoundary>
-    <div style={{ display:'flex', minHeight:'100vh', fontFamily:"'Segoe UI',system-ui,sans-serif", background:T.bg }}>
+    <div style={{ display:'flex', minHeight:'100vh', fontFamily:"'Segoe UI',system-ui,sans-serif", background:'red' }}>
       {!mobile && (
         <Sidebar user={user} page={validPage} setPage={setPage} pendingLeave={pendingLeave}
           onLogout={() => { setUser(null); setAllUsers([]); setChecklist([]) }}/>
