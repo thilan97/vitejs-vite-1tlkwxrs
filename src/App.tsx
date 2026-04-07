@@ -1024,11 +1024,15 @@ function Templates({ templates, setTemplates, allUsers, mobile }: any) {
 }
 
 // ── ATTENDANCE ────────────────────────────────────
+// ── ATTENDANCE ────────────────────────────────────
+// ĐOẠN A — Paste vào trước
+
 function Attendance({ user, allUsers, leaveRequests, mobile }: any) {
-  const [date, setDate]       = useState(todayISO())
-  const [records, setRecords] = useState<any[]>([])
-  const [loading, setLoading] = useState(false)
-  const [editRow, setEditRow] = useState<any>(null)
+  const [tab, setTab]           = useState<'today'|'week'|'month'>('today')
+  const [date, setDate]         = useState(todayISO())
+  const [records, setRecords]   = useState<any[]>([])
+  const [loading, setLoading]   = useState(false)
+  const [editRow, setEditRow]   = useState<any>(null)
   const [editForm, setEditForm] = useState({ status:'present', late_mins:0, reason:'', notes:'' })
   const p = mobile ? '16px' : '24px'
   const canAll  = user.role === 'admin'
@@ -1042,156 +1046,370 @@ function Attendance({ user, allUsers, leaveRequests, mobile }: any) {
     ? ['kho','sale','vp'].map(d => ({ dept:d, name:DEPT_NAME[d], users:staffList.filter((u: any) => u.dept_id === d) }))
     : [{ dept:user.dept_id, name:user.dept_name, users:staffList }]
 
-  const hasLeave = (uid: string) =>
-    leaveRequests.some((r: any) => r.user_id === uid && r.status === 'approved' && r.start_date <= date && r.end_date >= date)
+  const hasLeave = (uid: string, d: string) =>
+    leaveRequests.some((r: any) => r.user_id === uid && r.status === 'approved' && r.start_date <= d && r.end_date >= d)
 
-  useEffect(() => { loadRecords() }, [date])
+  const getWeekDates = () => {
+    const today = new Date()
+    const day = today.getDay()
+    const monday = new Date(today)
+    monday.setDate(today.getDate() - (day === 0 ? 6 : day - 1))
+    return Array.from({ length: 7 }, (_, i) => {
+      const d = new Date(monday); d.setDate(monday.getDate() + i)
+      return d.toISOString().split('T')[0]
+    })
+  }
+
+  const getMonthRange = () => {
+    const now = new Date()
+    return {
+      start: new Date(now.getFullYear(), now.getMonth(), 1).toISOString().split('T')[0],
+      end:   new Date(now.getFullYear(), now.getMonth()+1, 0).toISOString().split('T')[0],
+    }
+  }
+
+  const getMonthDates = () => {
+    const { start, end } = getMonthRange()
+    const dates = []
+    const cur = new Date(start)
+    const endD = new Date(end)
+    while (cur <= endD) { dates.push(cur.toISOString().split('T')[0]); cur.setDate(cur.getDate()+1) }
+    return dates
+  }
+
+  useEffect(() => { loadRecords() }, [date, tab])
 
   const loadRecords = async () => {
     setLoading(true)
-    const { data } = await db.from('attendance').select('*').eq('date', date)
-    setRecords(data || [])
+    try {
+      if (tab === 'today') {
+        const { data } = await db.from('attendance').select('*').eq('date', date)
+        setRecords(data || [])
+      } else if (tab === 'week') {
+        const dates = getWeekDates()
+        const { data } = await db.from('attendance').select('*').gte('date', dates[0]).lte('date', dates[6])
+        setRecords(data || [])
+      } else {
+        const { start, end } = getMonthRange()
+        const { data } = await db.from('attendance').select('*').gte('date', start).lte('date', end)
+        setRecords(data || [])
+      }
+    } catch {}
     setLoading(false)
   }
 
-  const getRec = (uid: string) => records.find(r => r.user_id === uid)
-
-  const getStatus = (uid: string) => {
-    const rec = getRec(uid)
+  const getRec    = (uid: string, d: string) => records.find(r => r.user_id === uid && r.date === d)
+  const getStatus = (uid: string, d: string) => {
+    const rec = getRec(uid, d)
     if (rec) return rec.status
-    if (hasLeave(uid)) return 'leave'
+    if (hasLeave(uid, d)) return 'leave'
     return 'present'
   }
 
-  const quickMark = async (u: any, status: string) => {
-    const ex = getRec(u.id)
-    const rec = { id:ex?.id||`att_${u.id}_${date.replace(/-/g,'')}`, date, user_id:u.id, dept_id:u.dept_id,
-      status, late_mins:0, reason:'', notes:'', marked_by:user.id, created_at:fmtNow() }
-    setRecords(prev => ex ? prev.map(r => r.user_id === u.id ? rec : r) : [...prev, rec])
+  const isToday   = (iso: string) => iso === todayISO()
+  const isWeekend = (iso: string) => { const d = new Date(iso).getDay(); return d === 0 || d === 6 }
+
+  const dayLabel = (iso: string) => {
+    const d = new Date(iso)
+    return `${ ['CN','T2','T3','T4','T5','T6','T7'][d.getDay()] } ${d.getDate()}/${d.getMonth()+1}`
+  }
+
+  const quickMark = async (u: any, status: string, d: string) => {
+    const ex = getRec(u.id, d)
+    const rec = { id:ex?.id||`att_${u.id}_${d.replace(/-/g,'')}`, date:d, user_id:u.id, dept_id:u.dept_id, status, late_mins:0, reason:'', notes:'', marked_by:user.id, created_at:fmtNow() }
+    setRecords(prev => ex ? prev.map(r => r.user_id===u.id&&r.date===d ? rec : r) : [...prev, rec])
     await db.from('attendance').upsert(rec)
   }
 
-  const openEdit = (u: any) => {
-    const rec = getRec(u.id)
-    setEditRow(u)
-    setEditForm({ status:rec?.status||(hasLeave(u.id)?'leave':'present'), late_mins:rec?.late_mins||0, reason:rec?.reason||'', notes:rec?.notes||'' })
+  const openEdit = (u: any, d: string) => {
+    const rec = getRec(u.id, d)
+    setEditRow({ ...u, editDate:d })
+    setEditForm({ status:rec?.status||(hasLeave(u.id,d)?'leave':'present'), late_mins:rec?.late_mins||0, reason:rec?.reason||'', notes:rec?.notes||'' })
   }
 
   const saveEdit = async () => {
     if (!editRow) return
-    const ex = getRec(editRow.id)
-    const rec = { id:ex?.id||`att_${editRow.id}_${date.replace(/-/g,'')}`, date, user_id:editRow.id,
-      dept_id:editRow.dept_id, ...editForm, late_mins:Number(editForm.late_mins), marked_by:user.id, created_at:fmtNow() }
-    setRecords(prev => ex ? prev.map(r => r.user_id === editRow.id ? rec : r) : [...prev, rec])
+    const d = editRow.editDate
+    const ex = getRec(editRow.id, d)
+    const rec = { id:ex?.id||`att_${editRow.id}_${d.replace(/-/g,'')}`, date:d, user_id:editRow.id, dept_id:editRow.dept_id, ...editForm, late_mins:Number(editForm.late_mins), marked_by:user.id, created_at:fmtNow() }
+    setRecords(prev => ex ? prev.map(r => r.user_id===editRow.id&&r.date===d ? rec : r) : [...prev, rec])
     await db.from('attendance').upsert(rec)
     setEditRow(null)
   }
 
-  const scheduleLabel = (deptId: string) => {
-    const s = SCHEDULE[deptId] || SCHEDULE['sale']
-    return `Vào: ${s.in} | Nghỉ trưa: ${s.breakStart}–${s.breakEnd} | Tan: ${s.out}`
+  const scheduleLabel = (deptId: string) => { const s=SCHEDULE[deptId]||SCHEDULE['sale']; return `Vào: ${s.in} | Nghỉ trưa: ${s.breakStart}–${s.breakEnd} | Tan: ${s.out}` }
+
+  // ── TAB HÔM NAY ───────────────────────────────
+  const renderToday = () => deptGroups.map(group => {
+    const sum: any = { present:0, late:0, absent:0, sick:0, leave:0, half:0 }
+    group.users.forEach((u: any) => { const s=getStatus(u.id,date); if(s in sum) sum[s]++ })
+    return (
+      <div key={group.dept} style={{ marginBottom:20 }}>
+        <div style={{ background:DEPT_COLOR[group.dept], borderRadius:'10px 10px 0 0', padding:'12px 16px' }}>
+          <div style={{ display:'flex', alignItems:'center', justifyContent:'space-between', flexWrap:'wrap', gap:8 }}>
+            <div>
+              <span style={{ color:'#fff', fontWeight:700, fontSize:14 }}>🏢 {group.name}</span>
+              {!mobile && <span style={{ color:'rgba(255,255,255,0.6)', fontSize:11, marginLeft:10 }}>{scheduleLabel(group.dept)}</span>}
+            </div>
+            <div style={{ display:'flex', gap:6 }}>
+              {Object.entries(sum).map(([st, cnt]: any) => cnt > 0 && (
+                <span key={st} style={{ fontSize:11, fontWeight:600, padding:'3px 8px', borderRadius:20, color:ATT_STATUS[st]?.color, background:'rgba(255,255,255,0.9)' }}>
+                  {ATT_STATUS[st]?.label.split(' ')[0]} {cnt}
+                </span>
+              ))}
+            </div>
+          </div>
+        </div>
+        <div style={{ background:T.card, border:`1px solid ${T.border}`, borderRadius:'0 0 10px 10px', overflow:'hidden' }}>
+          {group.users.map((u: any, i: number) => {
+            const status = getStatus(u.id, date)
+            const rec = getRec(u.id, date)
+            const sc = ATT_STATUS[status] || ATT_STATUS.present
+            return (
+              <div key={u.id} style={{ display:'flex', alignItems:'center', gap:12, padding:'11px 16px',
+                borderBottom:i<group.users.length-1?`1px solid ${T.border}`:'none',
+                background:['absent','sick'].includes(status)?'#FFF5F5':status==='late'?'#FFFBEB':'#fff' }}>
+                <Av u={u} size={36}/>
+                <div style={{ flex:1 }}>
+                  <div style={{ fontSize:13, fontWeight:600, color:T.dark }}>{u.name}</div>
+                  {rec?.late_mins > 0 && <div style={{ fontSize:11, color:T.amber }}>Muộn {rec.late_mins} phút</div>}
+                  {rec?.reason && <div style={{ fontSize:11, color:T.light }}>Lý do: {rec.reason}</div>}
+                  {hasLeave(u.id,date) && <div style={{ fontSize:10, color:T.blue }}>📅 Có nghỉ phép đã duyệt</div>}
+                </div>
+                {canMark && !mobile && (
+                  <div style={{ display:'flex', gap:5 }}>
+                    {Object.entries(ATT_STATUS).map(([st, cfg]: any) => (
+                      <button key={st} onClick={() => quickMark(u, st, date)}
+                        style={{ padding:'5px 9px', borderRadius:7, cursor:'pointer', fontFamily:'inherit', fontSize:11, fontWeight:600,
+                          border:`1.5px solid ${status===st?cfg.color:T.border}`,
+                          background:status===st?cfg.bg:'transparent', color:status===st?cfg.color:T.light }}>
+                        {cfg.label.split(' ')[0]}
+                      </button>
+                    ))}
+                  </div>
+                )}
+                <div style={{ display:'flex', gap:8, alignItems:'center' }}>
+                  <span style={{ fontSize:11, fontWeight:700, padding:'4px 10px', borderRadius:20, color:sc.color, background:sc.bg, whiteSpace:'nowrap' }}>{sc.label}</span>
+                  {canMark && (
+                    <button onClick={() => openEdit(u, date)}
+                      style={{ padding:'5px 11px', borderRadius:7, border:`1px solid ${T.border}`, background:'transparent', cursor:'pointer', fontSize:11, fontFamily:'inherit', color:T.med }}>
+                      {mobile ? '✏️' : 'Chi tiết'}
+                    </button>
+                  )}
+                </div>
+              </div>
+            )
+          })}
+        </div>
+      </div>
+    )
+  })
+
+  // ── TAB TUẦN NÀY ──────────────────────────────
+  const renderWeek = () => {
+    const weekDates = getWeekDates()
+    return deptGroups.map(group => (
+      <div key={group.dept} style={{ marginBottom:20 }}>
+        <div style={{ background:DEPT_COLOR[group.dept], borderRadius:'10px 10px 0 0', padding:'11px 16px' }}>
+          <span style={{ color:'#fff', fontWeight:700, fontSize:14 }}>🏢 {group.name}</span>
+        </div>
+        <div style={{ background:T.card, border:`1px solid ${T.border}`, borderRadius:'0 0 10px 10px', overflowX:'auto' }}>
+          <table style={{ width:'100%', borderCollapse:'collapse', minWidth:520 }}>
+            <thead>
+              <tr style={{ background:T.bg }}>
+                <th style={{ padding:'10px 14px', textAlign:'left', fontSize:12, fontWeight:600, color:T.dark, borderBottom:`1px solid ${T.border}`, minWidth:120 }}>Nhân viên</th>
+                {weekDates.map(d => (
+                  <th key={d} style={{ padding:'8px 4px', textAlign:'center', fontSize:10, fontWeight:600, borderBottom:`1px solid ${T.border}`, minWidth:64,
+                    background:isToday(d)?T.goldBg:isWeekend(d)?'#F0EDE8':T.bg,
+                    color:isToday(d)?T.goldText:isWeekend(d)?T.light:T.dark }}>
+                    {dayLabel(d)}
+                    {isToday(d) && <div style={{ fontSize:8, color:T.gold, marginTop:2 }}>Hôm nay</div>}
+                  </th>
+                ))}
+                <th style={{ padding:'8px 10px', textAlign:'center', fontSize:10, fontWeight:600, color:T.light, borderBottom:`1px solid ${T.border}` }}>Đi/Tổng</th>
+              </tr>
+            </thead>
+            <tbody>
+              {group.users.map((u: any, ri: number) => {
+                const workDays    = weekDates.filter(d => !isWeekend(d)).length
+                const presentDays = weekDates.filter(d => !isWeekend(d) && ['present','late'].includes(getStatus(u.id,d))).length
+                return (
+                  <tr key={u.id} style={{ background:ri%2===0?'#fff':T.bg, borderBottom:`1px solid ${T.border}` }}>
+                    <td style={{ padding:'10px 14px' }}><Av u={u} size={26} showDept/></td>
+                    {weekDates.map(d => {
+                      const status  = getStatus(u.id, d)
+                      const sc      = ATT_STATUS[status] || ATT_STATUS.present
+                      const rec     = getRec(u.id, d)
+                      const weekend = isWeekend(d)
+                      return (
+                        <td key={d} style={{ padding:'6px 4px', textAlign:'center',
+                          background:isToday(d)?'#FFFDF5':weekend?'#F5F2ED':'transparent' }}>
+                          {weekend ? (
+                            <span style={{ fontSize:11, color:T.light }}>—</span>
+                          ) : (
+                            <div style={{ display:'flex', flexDirection:'column', alignItems:'center', gap:2 }}>
+                              <span style={{ fontSize:16 }}>{sc.label.split(' ')[0]}</span>
+                              {rec?.late_mins > 0 && <span style={{ fontSize:9, color:T.amber }}>+{rec.late_mins}'</span>}
+                              {canMark && (
+                                <button onClick={() => openEdit(u, d)}
+                                  style={{ fontSize:9, padding:'1px 5px', borderRadius:4, border:`1px solid ${T.border}`, background:'transparent', cursor:'pointer', fontFamily:'inherit', color:T.light }}>
+                                  sửa
+                                </button>
+                              )}
+                            </div>
+                          )}
+                        </td>
+                      )
+                    })}
+                    <td style={{ padding:'8px 10px', textAlign:'center' }}>
+                      <span style={{ fontSize:12, fontWeight:700, color:presentDays===workDays?T.green:presentDays>=workDays*0.8?T.amber:T.red }}>
+                        {presentDays}/{workDays}
+                      </span>
+                    </td>
+                  </tr>
+                )
+              })}
+            </tbody>
+          </table>
+        </div>
+      </div>
+    ))
   }
 
-  const summary = (users: any[]) => {
-    const c: any = { present:0, late:0, absent:0, sick:0, leave:0, half:0 }
-    users.forEach(u => { const s = getStatus(u.id); if (s in c) c[s]++ })
-    return c
+// ══ KẾT THÚC ĐOẠN A — Paste ĐOẠN B ngay bên dưới ══
+// ══ ĐOẠN B — Paste ngay bên dưới ĐOẠN A ══
+
+  // ── TAB THÁNG NÀY ─────────────────────────────
+  const renderMonth = () => {
+    const monthDates = getMonthDates()
+    const workDates  = monthDates.filter(d => !isWeekend(d))
+    const now = new Date()
+    const monthLabel = `Tháng ${now.getMonth()+1}/${now.getFullYear()}`
+
+    return deptGroups.map(group => (
+      <div key={group.dept} style={{ marginBottom:20 }}>
+        <div style={{ background:DEPT_COLOR[group.dept], borderRadius:'10px 10px 0 0', padding:'11px 16px' }}>
+          <span style={{ color:'#fff', fontWeight:700, fontSize:14 }}>🏢 {group.name} — {monthLabel}</span>
+        </div>
+        <Card style={{ padding:0, overflow:'hidden', borderRadius:'0 0 10px 10px', borderTop:'none' }}>
+          <table style={{ width:'100%', borderCollapse:'collapse' }}>
+            <thead>
+              <tr style={{ background:T.bg }}>
+                <th style={{ padding:'10px 14px', textAlign:'left', fontSize:11, fontWeight:600, color:T.dark, borderBottom:`1px solid ${T.border}` }}>Nhân viên</th>
+                <th style={{ padding:'10px 8px', textAlign:'center', fontSize:11, fontWeight:600, color:T.green,  borderBottom:`1px solid ${T.border}` }}>✅ Có mặt</th>
+                <th style={{ padding:'10px 8px', textAlign:'center', fontSize:11, fontWeight:600, color:T.amber,  borderBottom:`1px solid ${T.border}` }}>⏰ Muộn</th>
+                <th style={{ padding:'10px 8px', textAlign:'center', fontSize:11, fontWeight:600, color:T.red,    borderBottom:`1px solid ${T.border}` }}>❌ Vắng</th>
+                <th style={{ padding:'10px 8px', textAlign:'center', fontSize:11, fontWeight:600, color:T.purple, borderBottom:`1px solid ${T.border}` }}>🏥 Bệnh</th>
+                <th style={{ padding:'10px 8px', textAlign:'center', fontSize:11, fontWeight:600, color:T.blue,   borderBottom:`1px solid ${T.border}` }}>🏖️ Phép</th>
+                <th style={{ padding:'10px 8px', textAlign:'center', fontSize:11, fontWeight:600, color:T.teal,   borderBottom:`1px solid ${T.border}` }}>🌓 Nửa ngày</th>
+                <th style={{ padding:'10px 8px', textAlign:'center', fontSize:11, fontWeight:600, color:T.amber,  borderBottom:`1px solid ${T.border}` }}>Tổng muộn</th>
+                <th style={{ padding:'10px 8px', textAlign:'center', fontSize:11, fontWeight:600, color:T.dark,   borderBottom:`1px solid ${T.border}` }}>Tỷ lệ</th>
+              </tr>
+            </thead>
+            <tbody>
+              {group.users.map((u: any, i: number) => {
+                const stats = { present:0, late:0, absent:0, sick:0, leave:0, half:0, totalLateMins:0 }
+                workDates.forEach(d => {
+                  const status = getStatus(u.id, d)
+                  if      (status === 'late')    { stats.late++;    stats.totalLateMins += getRec(u.id,d)?.late_mins||0 }
+                  else if (status === 'absent')  stats.absent++
+                  else if (status === 'sick')    stats.sick++
+                  else if (status === 'leave')   stats.leave++
+                  else if (status === 'half')    stats.half++
+                  else                           stats.present++
+                })
+                const worked = stats.present + stats.late
+                const total  = workDates.length
+                const pct    = total > 0 ? Math.round(worked/total*100) : 0
+                return (
+                  <tr key={u.id} style={{ background:i%2===0?'#fff':T.bg, borderBottom:`1px solid ${T.border}` }}>
+                    <td style={{ padding:'10px 14px' }}><Av u={u} size={26} showDept/></td>
+                    <td style={{ padding:'10px 8px', textAlign:'center', fontSize:13, fontWeight:600, color:T.green }}>{stats.present}</td>
+                    <td style={{ padding:'10px 8px', textAlign:'center', fontSize:13, fontWeight:600, color:T.amber }}>{stats.late}</td>
+                    <td style={{ padding:'10px 8px', textAlign:'center', fontSize:13, fontWeight:600, color:stats.absent>0?T.red:T.light }}>{stats.absent}</td>
+                    <td style={{ padding:'10px 8px', textAlign:'center', fontSize:13, fontWeight:600, color:stats.sick>0?T.purple:T.light }}>{stats.sick}</td>
+                    <td style={{ padding:'10px 8px', textAlign:'center', fontSize:13, fontWeight:600, color:stats.leave>0?T.blue:T.light }}>{stats.leave}</td>
+                    <td style={{ padding:'10px 8px', textAlign:'center', fontSize:13, fontWeight:600, color:stats.half>0?T.teal:T.light }}>{stats.half}</td>
+                    <td style={{ padding:'10px 8px', textAlign:'center', fontSize:12, color:stats.totalLateMins>0?T.amber:T.light }}>
+                      {stats.totalLateMins > 0 ? `${stats.totalLateMins}'` : '—'}
+                    </td>
+                    <td style={{ padding:'10px 8px', textAlign:'center' }}>
+                      <div style={{ display:'flex', flexDirection:'column', alignItems:'center', gap:3 }}>
+                        <span style={{ fontSize:13, fontWeight:700, color:pct>=90?T.green:pct>=75?T.amber:T.red }}>{pct}%</span>
+                        <div style={{ width:48, height:4, background:T.border, borderRadius:2 }}>
+                          <div style={{ height:'100%', width:`${pct}%`, background:pct>=90?T.green:pct>=75?T.amber:T.red, borderRadius:2 }}/>
+                        </div>
+                      </div>
+                    </td>
+                  </tr>
+                )
+              })}
+            </tbody>
+          </table>
+        </Card>
+      </div>
+    ))
   }
 
+  // ── RENDER CHÍNH ──────────────────────────────
   return (
     <div style={{ padding:`0 ${p} ${mobile?'80px':p}` }}>
       <Topbar mobile={mobile} title="Chấm công" subtitle="Quản lý điểm danh nhân viên"
-        action={
+        action={tab === 'today' && (
           <input type="date" value={date} onChange={e => setDate(e.target.value)}
             style={{ padding:'7px 11px', border:`1px solid ${T.border}`, borderRadius:8,
               fontSize:13, fontFamily:'inherit', color:T.dark, background:T.bg, cursor:'pointer' }}/>
-        }/>
+        )}/>
+
+      <div style={{ display:'flex', gap:6, marginBottom:14, flexWrap:'wrap' }}>
+        {([['today','📅','Hôm nay'],['week','📊','Tuần này'],['month','📈','Tháng này']] as [string,string,string][]).map(([id,icon,label]) => (
+          <button key={id} onClick={() => setTab(id as any)}
+            style={{ padding:'8px 16px', borderRadius:8, cursor:'pointer', fontFamily:'inherit', fontSize:13,
+              border:`1.5px solid ${tab===id?T.gold:T.border}`,
+              background:tab===id?T.goldBg:'transparent',
+              color:tab===id?T.goldText:T.med, fontWeight:tab===id?600:400 }}>
+            {icon} {label}
+          </button>
+        ))}
+      </div>
+
+      <div style={{ display:'flex', gap:6, flexWrap:'wrap', marginBottom:14 }}>
+        {Object.entries(ATT_STATUS).map(([st, cfg]: any) => (
+          <span key={st} style={{ fontSize:10, fontWeight:600, padding:'3px 9px', borderRadius:20, color:cfg.color, background:cfg.bg }}>
+            {cfg.label}
+          </span>
+        ))}
+      </div>
 
       {loading ? (
         <div style={{ textAlign:'center', padding:40, color:T.light }}>Đang tải...</div>
-      ) : deptGroups.map(group => {
-        const sum = summary(group.users)
-        return (
-          <div key={group.dept} style={{ marginBottom:20 }}>
-            <div style={{ background:DEPT_COLOR[group.dept], borderRadius:'10px 10px 0 0', padding:'12px 16px' }}>
-              <div style={{ display:'flex', alignItems:'center', justifyContent:'space-between', flexWrap:'wrap', gap:8 }}>
-                <div>
-                  <span style={{ color:'#fff', fontWeight:700, fontSize:14 }}>🏢 {group.name}</span>
-                  <span style={{ color:'rgba(255,255,255,0.6)', fontSize:11, marginLeft:10 }}>{scheduleLabel(group.dept)}</span>
-                </div>
-                <div style={{ display:'flex', gap:6 }}>
-                  {Object.entries(sum).map(([st, cnt]: any) => cnt > 0 && (
-                    <span key={st} style={{ fontSize:11, fontWeight:600, padding:'3px 8px', borderRadius:20,
-                      color:ATT_STATUS[st]?.color || T.gray, background:'rgba(255,255,255,0.9)' }}>
-                      {ATT_STATUS[st]?.label.split(' ')[0]} {cnt}
-                    </span>
-                  ))}
-                </div>
-              </div>
-            </div>
+      ) : (
+        <>
+          {tab === 'today' && renderToday()}
+          {tab === 'week'  && renderWeek()}
+          {tab === 'month' && renderMonth()}
+        </>
+      )}
 
-            <div style={{ background:T.card, border:`1px solid ${T.border}`, borderRadius:'0 0 10px 10px', overflow:'hidden' }}>
-              {group.users.map((u: any, i: number) => {
-                const status = getStatus(u.id)
-                const rec = getRec(u.id)
-                const sc = ATT_STATUS[status] || ATT_STATUS.present
-                return (
-                  <div key={u.id} style={{ display:'flex', alignItems:'center', gap:12, padding:'11px 16px',
-                    borderBottom:i < group.users.length-1 ? `1px solid ${T.border}` : 'none',
-                    background:['absent','sick'].includes(status)?'#FFF5F5':status==='late'?'#FFFBEB':'#fff' }}>
-                    <Av u={u} size={36}/>
-                    <div style={{ flex:1 }}>
-                      <div style={{ fontSize:13, fontWeight:600, color:T.dark }}>{u.name}</div>
-                      {rec?.late_mins > 0 && <div style={{ fontSize:11, color:T.amber }}>Muộn {rec.late_mins} phút</div>}
-                      {rec?.reason && <div style={{ fontSize:11, color:T.light }}>Lý do: {rec.reason}</div>}
-                      {rec?.notes && <div style={{ fontSize:11, color:T.blue }}>📝 {rec.notes}</div>}
-                      {hasLeave(u.id) && status !== 'absent' && <div style={{ fontSize:10, color:T.blue }}>📅 Có nghỉ phép đã duyệt</div>}
-                    </div>
-                    {canMark && !mobile && (
-                      <div style={{ display:'flex', gap:5 }}>
-                        {Object.entries(ATT_STATUS).map(([st, cfg]: any) => (
-                          <button key={st} onClick={() => quickMark(u, st)}
-                            style={{ padding:'5px 9px', borderRadius:7, cursor:'pointer', fontFamily:'inherit', fontSize:11, fontWeight:600,
-                              border:`1.5px solid ${status === st ? cfg.color : T.border}`,
-                              background:status === st ? cfg.bg : 'transparent',
-                              color:status === st ? cfg.color : T.light }}>
-                            {cfg.label.split(' ')[0]}
-                          </button>
-                        ))}
-                      </div>
-                    )}
-                    <div style={{ display:'flex', gap:8, alignItems:'center' }}>
-                      <span style={{ fontSize:11, fontWeight:700, padding:'4px 10px', borderRadius:20,
-                        color:sc.color, background:sc.bg, whiteSpace:'nowrap' }}>{sc.label}</span>
-                      {canMark && (
-                        <button onClick={() => openEdit(u)}
-                          style={{ padding:'5px 11px', borderRadius:7, border:`1px solid ${T.border}`,
-                            background:'transparent', cursor:'pointer', fontSize:11, fontFamily:'inherit', color:T.med }}>
-                          {mobile ? '✏️' : 'Chi tiết'}
-                        </button>
-                      )}
-                    </div>
-                  </div>
-                )
-              })}
-            </div>
-          </div>
-        )
-      })}
-
-      <Modal open={!!editRow} onClose={() => setEditRow(null)} title={`Chấm công: ${editRow?.name}`}>
+      <Modal open={!!editRow} onClose={() => setEditRow(null)}
+        title={`Chấm công: ${editRow?.name} — ${editRow?.editDate ? fmtDate(editRow.editDate) : ''}`}>
         <div style={{ padding:'10px 12px', background:T.bg, borderRadius:8, marginBottom:14 }}>
-          <div style={{ fontSize:12, color:T.med }}>{scheduleLabel(editRow?.dept_id)}</div>
+          <div style={{ fontSize:12, color:T.med }}>
+            {editRow?.dept_id ? (() => { const s=SCHEDULE[editRow.dept_id]||SCHEDULE['sale']; return `Vào: ${s.in} | Nghỉ trưa: ${s.breakStart}–${s.breakEnd} | Tan: ${s.out}` })() : ''}
+          </div>
         </div>
         <Sel label="Trạng thái" value={editForm.status} onChange={(v: string) => setEditForm(f => ({...f, status:v}))}
           options={Object.entries(ATT_STATUS).map(([v, s]: any) => ({ value:v, label:s.label }))}/>
         {editForm.status === 'late' && (
-          <Inp label="Số phút đi muộn" type="number" value={String(editForm.late_mins)} onChange={(v: string) => setEditForm(f => ({...f, late_mins:Number(v)}))} placeholder="VD: 15"/>
+          <Inp label="Số phút đi muộn" type="number" value={String(editForm.late_mins)}
+            onChange={(v: string) => setEditForm(f => ({...f, late_mins:Number(v)}))} placeholder="VD: 15"/>
         )}
         {['absent','sick','half'].includes(editForm.status) && (
-          <Inp label="Lý do" value={editForm.reason} onChange={(v: string) => setEditForm(f => ({...f, reason:v}))} placeholder="Nhập lý do..."/>
+          <Inp label="Lý do" value={editForm.reason}
+            onChange={(v: string) => setEditForm(f => ({...f, reason:v}))} placeholder="Nhập lý do..."/>
         )}
-        <Inp label="Ghi chú thêm" value={editForm.notes} onChange={(v: string) => setEditForm(f => ({...f, notes:v}))} placeholder="Ghi chú..."/>
+        <Inp label="Ghi chú thêm" value={editForm.notes}
+          onChange={(v: string) => setEditForm(f => ({...f, notes:v}))} placeholder="Ghi chú..."/>
         <div style={{ display:'flex', justifyContent:'flex-end', gap:10 }}>
           <GoldBtn outline small onClick={() => setEditRow(null)}>Hủy</GoldBtn>
           <GoldBtn small onClick={saveEdit}>Lưu</GoldBtn>
@@ -1201,314 +1419,8 @@ function Attendance({ user, allUsers, leaveRequests, mobile }: any) {
   )
 }
 
-// ── ANNOUNCEMENTS ─────────────────────────────────
-function Announcements({ user, allUsers, mobile }: any) {
-  const [items, setItems]     = useState<any[]>([])
-  const [reads, setReads]     = useState<any[]>([])
-  const [show, setShow]       = useState(false)
-  const [form, setForm]       = useState({ title:'', content:'', target_dept:'all', priority:'normal' })
-  const [expanded, setExpanded] = useState<string[]>([])
-  const p = mobile ? '16px' : '24px'
-  const canCreate = user.role === 'admin' || user.role === 'mgr'
+// ══ KẾT THÚC ATTENDANCE — tiếp theo là // ── ANNOUNCEMENTS ══
 
-  useEffect(() => {
-    Promise.all([
-      db.from('announcements').select('*').order('created_at', { ascending:false }),
-      db.from('announcement_reads').select('*').eq('user_id', user.id),
-    ]).then(([ann, rd]) => { setItems(ann.data || []); setReads(rd.data || []) })
-  }, [user.id])
-
-  const myItems = items
-    .filter(a => a.target_dept === 'all' || a.target_dept === user.dept_id)
-    .sort((a, b) => {
-      if (a.priority === 'urgent' && b.priority !== 'urgent') return -1
-      if (b.priority === 'urgent' && a.priority !== 'urgent') return 1
-      return b.created_at.localeCompare(a.created_at)
-    })
-
-  const isRead = (id: string) => reads.some(r => r.announcement_id === id)
-  const unread = myItems.filter(a => !isRead(a.id)).length
-
-  const markRead = async (id: string) => {
-    if (isRead(id)) return
-    const rec = { id:`rd_${id}_${user.id}`, announcement_id:id, user_id:user.id, read_at:fmtNow() }
-    setReads(prev => [...prev, rec])
-    await db.from('announcement_reads').upsert(rec)
-  }
-
-  const toggle = (id: string) => {
-    setExpanded(prev => prev.includes(id) ? prev.filter(x => x !== id) : [...prev, id])
-    markRead(id)
-  }
-
-  const create = async () => {
-    if (!form.title || !form.content) return
-    const newAnn = { id:'ann'+Date.now(), ...form, author_id:user.id, created_at:fmtNow() }
-    setItems(prev => [newAnn, ...prev])
-    await db.from('announcements').insert(newAnn)
-    setShow(false)
-    setForm({ title:'', content:'', target_dept:'all', priority:'normal' })
-  }
-
-  const remove = async (id: string) => {
-    if (!confirm('Xóa thông báo này?')) return
-    setItems(prev => prev.filter(a => a.id !== id))
-    await db.from('announcements').delete().eq('id', id)
-  }
-
-  return (
-    <div style={{ padding:`0 ${p} ${mobile?'80px':p}` }}>
-      <Topbar mobile={mobile} title="Thông báo nội bộ"
-        subtitle={unread > 0 ? `${unread} thông báo chưa đọc` : 'Đã đọc hết'}
-        action={canCreate && <GoldBtn small onClick={() => setShow(true)}>+ Tạo thông báo</GoldBtn>}/>
-
-      {myItems.length === 0 ? (
-        <Card style={{ textAlign:'center', padding:'48px', color:T.light }}>
-          <div style={{ fontSize:36, marginBottom:10 }}>📣</div>
-          <div style={{ fontSize:14, fontWeight:500 }}>Chưa có thông báo nào</div>
-        </Card>
-      ) : (
-        <div style={{ display:'flex', flexDirection:'column', gap:10 }}>
-          {myItems.map(a => {
-            const read = isRead(a.id)
-            const exp  = expanded.includes(a.id)
-            const urgent = a.priority === 'urgent'
-            const auth = allUsers.find((u: any) => u.id === a.author_id)
-            const targetLabel = a.target_dept === 'all' ? 'Toàn công ty' : DEPT_NAME[a.target_dept] || a.target_dept
-            return (
-              <div key={a.id} style={{ background:T.card,
-                border:`2px solid ${urgent ? T.red : read ? T.border : T.gold}`,
-                borderRadius:12, overflow:'hidden' }}>
-                {urgent && <div style={{ background:T.red, padding:'5px 14px', fontSize:11, fontWeight:700, color:'#fff' }}>🔴 THÔNG BÁO KHẨN</div>}
-                <div style={{ padding:'14px 16px', cursor:'pointer' }} onClick={() => toggle(a.id)}>
-                  <div style={{ display:'flex', alignItems:'flex-start', justifyContent:'space-between', gap:10 }}>
-                    <div style={{ flex:1 }}>
-                      <div style={{ display:'flex', alignItems:'center', gap:8, marginBottom:6 }}>
-                        {!read && <div style={{ width:8, height:8, borderRadius:'50%', background:T.gold, flexShrink:0 }}/>}
-                        <div style={{ fontSize:14, fontWeight:read ? 500 : 700, color:T.dark }}>{a.title}</div>
-                      </div>
-                      <div style={{ display:'flex', gap:8, alignItems:'center', flexWrap:'wrap' }}>
-                        <span style={{ fontSize:10, padding:'2px 7px', borderRadius:20, fontWeight:600, background:T.grayBg, color:T.gray }}>📢 {targetLabel}</span>
-                        {auth && <span style={{ fontSize:11, color:T.light }}>bởi {auth.name}</span>}
-                        <span style={{ fontSize:11, color:T.light }}>{a.created_at}</span>
-                      </div>
-                    </div>
-                    <div style={{ display:'flex', gap:6, alignItems:'center' }}>
-                      {(user.role === 'admin' || a.author_id === user.id) && (
-                        <button onClick={e => { e.stopPropagation(); remove(a.id) }}
-                          style={{ padding:'4px 8px', borderRadius:6, border:`1px solid ${T.redBg}`, background:T.redBg, cursor:'pointer', fontSize:11, fontFamily:'inherit', color:T.red }}>🗑️</button>
-                      )}
-                      <span style={{ color:T.light, fontSize:14 }}>{exp ? '▲' : '▼'}</span>
-                    </div>
-                  </div>
-                </div>
-                {exp && (
-                  <div style={{ padding:'0 16px 16px', borderTop:`1px solid ${T.border}` }}>
-                    <div style={{ fontSize:13, color:T.dark, lineHeight:1.7, marginTop:12, whiteSpace:'pre-wrap' }}>{a.content}</div>
-                  </div>
-                )}
-              </div>
-            )
-          })}
-        </div>
-      )}
-
-      <Modal open={show} onClose={() => setShow(false)} title="Tạo thông báo mới" wide>
-        <Inp label="Tiêu đề *" value={form.title} onChange={(v: string) => setForm(f => ({...f, title:v}))} placeholder="Tiêu đề thông báo..."/>
-        <div style={{ marginBottom:13 }}>
-          <div style={{ fontSize:12, fontWeight:500, color:T.med, marginBottom:5 }}>Nội dung *</div>
-          <textarea value={form.content} onChange={e => setForm(f => ({...f, content:e.target.value}))}
-            placeholder="Nhập nội dung thông báo..."
-            style={{ width:'100%', padding:'8px 11px', border:`1px solid ${T.border}`, borderRadius:8,
-              fontSize:13, fontFamily:'inherit', color:T.dark, background:T.bg,
-              boxSizing:'border-box', outline:'none', minHeight:120, resize:'vertical' }}/>
-        </div>
-        <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:12 }}>
-          <Sel label="Gửi tới" value={form.target_dept} onChange={(v: string) => setForm(f => ({...f, target_dept:v}))}
-            options={[{value:'all',label:'📢 Toàn công ty'},{value:'kho',label:'🏭 Phòng Kho'},{value:'sale',label:'💼 Phòng Sale'},{value:'vp',label:'🏢 Văn phòng'}]}/>
-          <Sel label="Mức độ" value={form.priority} onChange={(v: string) => setForm(f => ({...f, priority:v}))}
-            options={[{value:'normal',label:'📋 Bình thường'},{value:'urgent',label:'🔴 Khẩn cấp'}]}/>
-        </div>
-        <div style={{ display:'flex', justifyContent:'flex-end', gap:10 }}>
-          <GoldBtn outline small onClick={() => setShow(false)}>Hủy</GoldBtn>
-          <GoldBtn small onClick={create} disabled={!form.title||!form.content}>Đăng thông báo</GoldBtn>
-        </div>
-      </Modal>
-    </div>
-  )
-}
-
-// ══ KẾT THÚC PHẦN 3 — Paste tiếp Phần 4 bên dưới ══
-// ═══════════════════════════════════════════════
-// PHẦN 4/4 — Paste nối tiếp bên dưới Phần 3
-// ═══════════════════════════════════════════════
-
-// ── LEAVE ─────────────────────────────────────────
-function Leave({ user, allUsers, leaveRequests, setLeaveRequests, mobile }: any) {
-  const [show, setShow]           = useState(false)
-  const [reviewItem, setReviewItem] = useState<any>(null)
-  const [reviewNotes, setReviewNotes] = useState('')
-  const [form, setForm]           = useState({ start_date:'', end_date:'', type:'annual', reason:'' })
-  const [tab, setTab]             = useState('mine')
-  const p = mobile ? '16px' : '24px'
-  const canApprove = user.role === 'admin' || user.role === 'mgr'
-  const dids = allUsers.filter((u: any) => u.dept_id === user.dept_id).map((u: any) => u.id)
-
-  const myReqs   = leaveRequests.filter((r: any) => r.user_id === user.id)
-  const pending  = leaveRequests.filter((r: any) => r.status === 'pending' && (user.role === 'admin' || dids.includes(r.user_id)))
-  const allV     = user.role === 'admin' ? leaveRequests : leaveRequests.filter((r: any) => dids.includes(r.user_id) || r.user_id === user.id)
-
-  // Danh sách hiển thị — KHÔNG dùng as casting trong JSX để tránh parse error
-  const tabList: Array<[string, string]> = [['mine', `📋 Đơn của tôi (${myReqs.length})`]]
-  if (canApprove) {
-    tabList.push(['pending', `⏳ Chờ duyệt (${pending.length})`])
-    tabList.push(['all', `📊 Tất cả (${allV.length})`])
-  }
-  const displayList = tab === 'mine' ? myReqs : tab === 'pending' ? pending : allV
-
-  const submit = async () => {
-    if (!form.start_date || !form.end_date || !form.reason) return
-    const days = daysBetween(form.start_date, form.end_date)
-    const req = { id:'lr'+Date.now(), ...form, user_id:user.id, dept_id:user.dept_id,
-      status:'pending', reviewed_by:'', reviewed_at:'', review_notes:'', created_at:fmtNow(), days }
-    setLeaveRequests((prev: any) => [req, ...prev])
-    await db.from('leave_requests').insert(req)
-    setShow(false)
-    setForm({ start_date:'', end_date:'', type:'annual', reason:'' })
-  }
-
-  const review = async (id: string, status: string) => {
-    const req = leaveRequests.find((r: any) => r.id === id); if (!req) return
-    const updated = { ...req, status, reviewed_by:user.id, reviewed_at:fmtNow(), review_notes:reviewNotes }
-    setLeaveRequests((prev: any) => prev.map((r: any) => r.id === id ? updated : r))
-    await db.from('leave_requests').upsert(updated)
-    setReviewItem(null); setReviewNotes('')
-  }
-
-  const LS: any = {
-    pending:  { label:'⏳ Chờ duyệt', color:T.amber, bg:T.amberBg },
-    approved: { label:'✅ Đã duyệt',  color:T.green, bg:T.greenBg },
-    rejected: { label:'❌ Từ chối',   color:T.red,   bg:T.redBg   },
-  }
-
-  return (
-    <div style={{ padding:`0 ${p} ${mobile?'80px':p}` }}>
-      <Topbar mobile={mobile} title="Nghỉ phép"
-        subtitle={canApprove && pending.length > 0 ? `${pending.length} đơn chờ duyệt` : 'Quản lý nghỉ phép'}
-        action={<GoldBtn small onClick={() => setShow(true)}>+ Xin nghỉ phép</GoldBtn>}/>
-
-      <div style={{ display:'flex', gap:6, marginBottom:14, flexWrap:'wrap' }}>
-        {tabList.map(([id, label]) => (
-          <button key={id} onClick={() => setTab(id)}
-            style={{ padding:'6px 13px', borderRadius:8, cursor:'pointer', fontFamily:'inherit', fontSize:12,
-              border:`1.5px solid ${tab === id ? T.gold : T.border}`,
-              background:tab === id ? T.goldBg : 'transparent',
-              color:tab === id ? T.goldText : T.med,
-              fontWeight:tab === id ? 600 : 400 }}>
-            {label}
-          </button>
-        ))}
-      </div>
-
-      {displayList.length === 0 ? (
-        <Card style={{ textAlign:'center', padding:'40px', color:T.light }}>
-          <div style={{ fontSize:32, marginBottom:8 }}>🏖️</div>
-          <div style={{ fontSize:14, fontWeight:500 }}>
-            {tab === 'pending' ? 'Không có đơn chờ duyệt' : 'Chưa có đơn nghỉ phép nào'}
-          </div>
-        </Card>
-      ) : (
-        <div style={{ display:'flex', flexDirection:'column', gap:10 }}>
-          {displayList.map((r: any) => {
-            const req = allUsers.find((u: any) => u.id === r.user_id)
-            const rev = allUsers.find((u: any) => u.id === r.reviewed_by)
-            const sc = LS[r.status] || {}
-            const days = r.days || daysBetween(r.start_date, r.end_date)
-            const canReview = canApprove && r.status === 'pending' && (user.role === 'admin' || dids.includes(r.user_id))
-            return (
-              <div key={r.id} style={{ background:T.card,
-                border:`1px solid ${r.status === 'pending' ? T.amber : T.border}`,
-                borderRadius:12, padding:'16px 18px' }}>
-                <div style={{ display:'flex', justifyContent:'space-between', alignItems:'flex-start', flexWrap:'wrap', gap:10, marginBottom:10 }}>
-                  <div style={{ flex:1 }}>
-                    <div style={{ display:'flex', gap:10, alignItems:'center', marginBottom:6, flexWrap:'wrap' }}>
-                      {req && <Av u={req} size={28} showDept/>}
-                      <span style={{ fontSize:13, fontWeight:700, padding:'2px 9px', borderRadius:20, color:T.goldText, background:T.goldBg }}>
-                        {LEAVE_TYPE[r.type] || r.type}
-                      </span>
-                      <span style={{ fontSize:11, color:T.light }}>{days} ngày</span>
-                    </div>
-                    <div style={{ fontSize:12, color:T.dark, marginBottom:3 }}>
-                      📅 {fmtDate(r.start_date)} → {fmtDate(r.end_date)}
-                    </div>
-                    <div style={{ fontSize:12, color:T.med }}>Lý do: {r.reason}</div>
-                    {r.review_notes && <div style={{ fontSize:11, color:T.blue, marginTop:4 }}>💬 Phản hồi: {r.review_notes}</div>}
-                    {rev && r.reviewed_at && <div style={{ fontSize:11, color:T.light, marginTop:3 }}>Xử lý bởi {rev.name} • {r.reviewed_at}</div>}
-                    <div style={{ fontSize:11, color:T.light, marginTop:3 }}>Gửi lúc: {r.created_at}</div>
-                  </div>
-                  <div style={{ display:'flex', flexDirection:'column', gap:6, alignItems:'flex-end' }}>
-                    <span style={{ fontSize:11, fontWeight:700, padding:'4px 10px', borderRadius:20, color:sc.color, background:sc.bg }}>{sc.label}</span>
-                    {canReview && (
-                      <button onClick={() => { setReviewItem(r); setReviewNotes('') }}
-                        style={{ padding:'6px 13px', borderRadius:7, border:`1.5px solid ${T.gold}`,
-                          background:T.goldBg, cursor:'pointer', fontSize:12, fontFamily:'inherit',
-                          color:T.goldText, fontWeight:600 }}>
-                        Xem xét
-                      </button>
-                    )}
-                  </div>
-                </div>
-              </div>
-            )
-          })}
-        </div>
-      )}
-
-      {/* Modal xin nghỉ */}
-      <Modal open={show} onClose={() => setShow(false)} title="Xin nghỉ phép">
-        <Sel label="Loại nghỉ phép" value={form.type} onChange={(v: string) => setForm(f => ({...f, type:v}))}
-          options={Object.entries(LEAVE_TYPE).map(([v, l]) => ({ value:v, label:l }))}/>
-        <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:12 }}>
-          <Inp label="Từ ngày *" type="date" value={form.start_date} onChange={(v: string) => setForm(f => ({...f, start_date:v}))}/>
-          <Inp label="Đến ngày *" type="date" value={form.end_date} onChange={(v: string) => setForm(f => ({...f, end_date:v, start_date:f.start_date||v}))}/>
-        </div>
-        {form.start_date && form.end_date && (
-          <div style={{ padding:'8px 12px', background:T.goldBg, borderRadius:8, fontSize:12, color:T.goldText, marginBottom:13, fontWeight:600 }}>
-            📅 Tổng {daysBetween(form.start_date, form.end_date)} ngày nghỉ
-          </div>
-        )}
-        <Inp label="Lý do *" value={form.reason} onChange={(v: string) => setForm(f => ({...f, reason:v}))} placeholder="Nhập lý do xin nghỉ..."/>
-        <div style={{ fontSize:11, color:T.light, marginBottom:14 }}>Đơn sẽ được gửi tới quản lý để phê duyệt.</div>
-        <div style={{ display:'flex', justifyContent:'flex-end', gap:10 }}>
-          <GoldBtn outline small onClick={() => setShow(false)}>Hủy</GoldBtn>
-          <GoldBtn small onClick={submit} disabled={!form.start_date||!form.end_date||!form.reason}>Gửi đơn</GoldBtn>
-        </div>
-      </Modal>
-
-      {/* Modal duyệt */}
-      <Modal open={!!reviewItem} onClose={() => setReviewItem(null)} title="Xét duyệt đơn nghỉ phép">
-        {reviewItem && (
-          <>
-            <div style={{ padding:'12px 14px', background:T.bg, borderRadius:8, marginBottom:14 }}>
-              <div style={{ fontSize:13, fontWeight:600, color:T.dark, marginBottom:6 }}>
-                {allUsers.find((u: any) => u.id === reviewItem.user_id)?.name}
-              </div>
-              <div style={{ fontSize:12, color:T.med }}>{LEAVE_TYPE[reviewItem.type]} — {daysBetween(reviewItem.start_date, reviewItem.end_date)} ngày</div>
-              <div style={{ fontSize:12, color:T.med }}>📅 {fmtDate(reviewItem.start_date)} → {fmtDate(reviewItem.end_date)}</div>
-              <div style={{ fontSize:12, color:T.dark, marginTop:6 }}>Lý do: {reviewItem.reason}</div>
-            </div>
-            <Inp label="Ghi chú phản hồi" value={reviewNotes} onChange={setReviewNotes} placeholder="Nhập ghi chú (tùy chọn)..."/>
-            <div style={{ display:'flex', gap:10, justifyContent:'flex-end', marginTop:8 }}>
-              <GoldBtn outline small onClick={() => setReviewItem(null)}>Hủy</GoldBtn>
-              <GoldBtn danger small onClick={() => review(reviewItem.id, 'rejected')}>❌ Từ chối</GoldBtn>
-              <GoldBtn small onClick={() => review(reviewItem.id, 'approved')}>✅ Duyệt</GoldBtn>
-            </div>
-          </>
-        )}
-      </Modal>
-    </div>
-  )
-}
 
 // ── USER MANAGEMENT ───────────────────────────────
 function UserManagement({ allUsers, setAllUsers, departments, mobile }: any) {
