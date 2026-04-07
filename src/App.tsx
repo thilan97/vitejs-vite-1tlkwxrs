@@ -1842,7 +1842,7 @@ export default function App() {
     const r_weekly  = manual || wDiff >= (s.weekly_reset_interval || 7)
     const dom = new Date().getDate()
     const thisMonth = `${new Date().getMonth()}-${new Date().getFullYear()}`
-    const lastMM = s.last_monthly_reset ? (d => `${Number(d[1])-1}-${d[2]}`)(s.last_monthly_reset.split('/')) : ''
+    const lastMM = s.last_monthly_reset ? (() => { try { const d=s.last_monthly_reset.split('/'); return `${Number(d[1])-1}-${d[2]}` } catch { return '' } })() : ''
     const r_monthly = manual || (dom === (s.monthly_reset_day || 1) && lastMM !== thisMonth)
     if (!r_daily && !r_weekly && !r_monthly) return false
 
