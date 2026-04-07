@@ -544,15 +544,16 @@ function Dashboard({ user, checklist, tasks, allUsers, attendance, mobile }: any
       <div style={{ display:'grid', gridTemplateColumns:mobile?'1fr':'1fr 1fr', gap:14 }}>
         <Card>
           <div style={{ fontSize:13, fontWeight:600, color:T.dark, marginBottom:12 }}>Tiến độ trong tuần</div>
-          <ResponsiveContainer width="100%" height={150}>
-            <BarChart data={weekData} barSize={14}>
-              <CartesianGrid strokeDasharray="3 3" stroke={T.border} vertical={false}/>
-              <XAxis dataKey="day" tick={{ fontSize:10, fill:T.light }} axisLine={false} tickLine={false}/>
-              <YAxis tick={{ fontSize:10, fill:T.light }} axisLine={false} tickLine={false}/>
-              <Tooltip contentStyle={{ borderRadius:8, fontSize:12 }}/>
-              <Bar dataKey="done" name="Hoàn thành" fill={T.gold} radius={[3,3,0,0]}/>
-            </BarChart>
-          </ResponsiveContainer>
+         <div style={{display:'flex',alignItems:'flex-end',gap:4,height:150,padding:'0 4px'}}>
+          {weekData.map((d:any,i:number)=>(
+            <div key={i} style={{flex:1,display:'flex',flexDirection:'column',alignItems:'center',gap:4}}>
+              <div style={{fontSize:9,color:T.light}}>{d.done}</div>
+              <div style={{width:'100%',background:T.gold,borderRadius:'3px 3px 0 0',
+                height:`${Math.max(d.done/10*100,8)}%`}}/>
+              <div style={{fontSize:9,color:T.light}}>{d.day}</div>
+            </div>
+          ))}
+        </div>
         </Card>
 
         {canAll ? (
