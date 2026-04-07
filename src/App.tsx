@@ -2696,7 +2696,7 @@ export default function App() {
     setLoading(true)
     Promise.all([
       db.from('departments').select('*'),
-      db.from('users').select('*, positions(*)').eq('active', true),
+    db.from('users').select('*').eq('active', true),
       db.from('checklist_templates').select('*').eq('active', true),
       db.from('checklist').select('*'),
       db.from('tasks').select('*'),
@@ -2708,14 +2708,17 @@ export default function App() {
     ]).then(async ([depts, users, tmpl, cl, tk, hist, st, att, lr, pos]) => {
       const deptsData = depts.data || []
       const posData   = pos.data   || []
-      const usersData = (users.data || []).map((u: any) => ({
-        ...u,
-        dept_name: deptsData.find((d: any) => d.id===u.dept_id)?.name || '',
-        position: u.positions || null,
-        position_name: u.positions?.name || '',
-        position_id: u.position_id || '',
-        reports_to: u.positions?.reports_to || '',
-      }))
+      const usersData = (users.data || []).map((u: any) => {
+  const pos = posData.find((p: any) => p.id === u.position_id)
+  return {
+    ...u,
+    dept_name: deptsData.find((d: any) => d.id===u.dept_id)?.name || '',
+    position: pos || null,
+    position_name: pos?.name || '',
+    position_id: u.position_id || '',
+    reports_to: pos?.reports_to || '',
+  }
+})
       const tmplData = tmpl.data || []
       const clData   = cl.data   || []
       const stData   = st.data
