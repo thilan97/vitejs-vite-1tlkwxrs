@@ -1421,7 +1421,139 @@ function Attendance({ user, allUsers, leaveRequests, mobile }: any) {
 
 // ══ KẾT THÚC ATTENDANCE — tiếp theo là // ── ANNOUNCEMENTS ══
 
+function Announcements({ user, allUsers, mobile }: any) {
+  const [items, setItems]     = useState<any[]>([])
+  const [reads, setReads]     = useState<any[]>([])
+  const [show, setShow]       = useState(false)
+  const [form, setForm]       = useState({ title:'', content:'', target_dept:'all', priority:'normal' })
+  const [expanded, setExpanded] = useState<string[]>([])
+  const p = mobile ? '16px' : '24px'
+  const canCreate = user.role === 'admin' || user.role === 'mgr'
 
+  useEffect(() => {
+    Promise.all([
+      db.from('announcements').select('*').order('created_at', { ascending:false }),
+      db.from('announcement_reads').select('*').eq('user_id', user.id),
+    ]).then(([ann, rd]) => { setItems(ann.data || []); setReads(rd.data || []) })
+  }, [user.id])
+
+  const myItems = items
+    .filter(a => a.target_dept === 'all' || a.target_dept === user.dept_id)
+    .sort((a, b) => {
+      if (a.priority === 'urgent' && b.priority !== 'urgent') return -1
+      if (b.priority === 'urgent' && a.priority !== 'urgent') return 1
+      return b.created_at.localeCompare(a.created_at)
+    })
+
+  const isRead = (id: string) => reads.some(r => r.announcement_id === id)
+  const unread = myItems.filter(a => !isRead(a.id)).length
+
+  const markRead = async (id: string) => {
+    if (isRead(id)) return
+    const rec = { id:`rd_${id}_${user.id}`, announcement_id:id, user_id:user.id, read_at:fmtNow() }
+    setReads(prev => [...prev, rec])
+    await db.from('announcement_reads').upsert(rec)
+  }
+
+  const toggle = (id: string) => {
+    setExpanded(prev => prev.includes(id) ? prev.filter(x => x !== id) : [...prev, id])
+    markRead(id)
+  }
+
+  const create = async () => {
+    if (!form.title || !form.content) return
+    const newAnn = { id:'ann'+Date.now(), ...form, author_id:user.id, created_at:fmtNow() }
+    setItems(prev => [newAnn, ...prev])
+    await db.from('announcements').insert(newAnn)
+    setShow(false)
+    setForm({ title:'', content:'', target_dept:'all', priority:'normal' })
+  }
+
+  const remove = async (id: string) => {
+    if (!confirm('Xóa thông báo này?')) return
+    setItems(prev => prev.filter(a => a.id !== id))
+    await db.from('announcements').delete().eq('id', id)
+  }
+
+  return (
+    <div style={{ padding:`0 ${p} ${mobile?'80px':p}` }}>
+      <Topbar mobile={mobile} title="Thông báo nội bộ"
+        subtitle={unread > 0 ? `${unread} thông báo chưa đọc` : 'Đã đọc hết'}
+        action={canCreate && <GoldBtn small onClick={() => setShow(true)}>+ Tạo thông báo</GoldBtn>}/>
+      {myItems.length === 0 ? (
+        <Card style={{ textAlign:'center', padding:'48px', color:T.light }}>
+          <div style={{ fontSize:36, marginBottom:10 }}>📣</div>
+          <div style={{ fontSize:14, fontWeight:500 }}>Chưa có thông báo nào</div>
+        </Card>
+      ) : (
+        <div style={{ display:'flex', flexDirection:'column', gap:10 }}>
+          {myItems.map(a => {
+            const read = isRead(a.id)
+            const exp  = expanded.includes(a.id)
+            const urgent = a.priority === 'urgent'
+            const auth = allUsers.find((u: any) => u.id === a.author_id)
+            const targetLabel = a.target_dept === 'all' ? 'Toàn công ty' : DEPT_NAME[a.target_dept] || a.target_dept
+            return (
+              <div key={a.id} style={{ background:T.card,
+                border:`2px solid ${urgent ? T.red : read ? T.border : T.gold}`,
+                borderRadius:12, overflow:'hidden' }}>
+                {urgent && <div style={{ background:T.red, padding:'5px 14px', fontSize:11, fontWeight:700, color:'#fff' }}>🔴 THÔNG BÁO KHẨN</div>}
+                <div style={{ padding:'14px 16px', cursor:'pointer' }} onClick={() => toggle(a.id)}>
+                  <div style={{ display:'flex', alignItems:'flex-start', justifyContent:'space-between', gap:10 }}>
+                    <div style={{ flex:1 }}>
+                      <div style={{ display:'flex', alignItems:'center', gap:8, marginBottom:6 }}>
+                        {!read && <div style={{ width:8, height:8, borderRadius:'50%', background:T.gold, flexShrink:0 }}/>}
+                        <div style={{ fontSize:14, fontWeight:read?500:700, color:T.dark }}>{a.title}</div>
+                      </div>
+                      <div style={{ display:'flex', gap:8, alignItems:'center', flexWrap:'wrap' }}>
+                        <span style={{ fontSize:10, padding:'2px 7px', borderRadius:20, fontWeight:600, background:T.grayBg, color:T.gray }}>📢 {targetLabel}</span>
+                        {auth && <span style={{ fontSize:11, color:T.light }}>bởi {auth.name}</span>}
+                        <span style={{ fontSize:11, color:T.light }}>{a.created_at}</span>
+                      </div>
+                    </div>
+                    <div style={{ display:'flex', gap:6, alignItems:'center' }}>
+                      {(user.role === 'admin' || a.author_id === user.id) && (
+                        <button onClick={e => { e.stopPropagation(); remove(a.id) }}
+                          style={{ padding:'4px 8px', borderRadius:6, border:`1px solid ${T.redBg}`, background:T.redBg, cursor:'pointer', fontSize:11, fontFamily:'inherit', color:T.red }}>🗑️</button>
+                      )}
+                      <span style={{ color:T.light, fontSize:14 }}>{exp ? '▲' : '▼'}</span>
+                    </div>
+                  </div>
+                </div>
+                {exp && (
+                  <div style={{ padding:'0 16px 16px', borderTop:`1px solid ${T.border}` }}>
+                    <div style={{ fontSize:13, color:T.dark, lineHeight:1.7, marginTop:12, whiteSpace:'pre-wrap' }}>{a.content}</div>
+                  </div>
+                )}
+              </div>
+            )
+          })}
+        </div>
+      )}
+      <Modal open={show} onClose={() => setShow(false)} title="Tạo thông báo mới" wide>
+        <Inp label="Tiêu đề *" value={form.title} onChange={(v: string) => setForm(f => ({...f, title:v}))} placeholder="Tiêu đề thông báo..."/>
+        <div style={{ marginBottom:13 }}>
+          <div style={{ fontSize:12, fontWeight:500, color:T.med, marginBottom:5 }}>Nội dung *</div>
+          <textarea value={form.content} onChange={e => setForm(f => ({...f, content:e.target.value}))}
+            placeholder="Nhập nội dung thông báo..."
+            style={{ width:'100%', padding:'8px 11px', border:`1px solid ${T.border}`, borderRadius:8,
+              fontSize:13, fontFamily:'inherit', color:T.dark, background:T.bg,
+              boxSizing:'border-box', outline:'none', minHeight:120, resize:'vertical' }}/>
+        </div>
+        <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:12 }}>
+          <Sel label="Gửi tới" value={form.target_dept} onChange={(v: string) => setForm(f => ({...f, target_dept:v}))}
+            options={[{value:'all',label:'📢 Toàn công ty'},{value:'kho',label:'🏭 Phòng Kho'},{value:'sale',label:'💼 Phòng Sale'},{value:'vp',label:'🏢 Văn phòng'}]}/>
+          <Sel label="Mức độ" value={form.priority} onChange={(v: string) => setForm(f => ({...f, priority:v}))}
+            options={[{value:'normal',label:'📋 Bình thường'},{value:'urgent',label:'🔴 Khẩn cấp'}]}/>
+        </div>
+        <div style={{ display:'flex', justifyContent:'flex-end', gap:10 }}>
+          <GoldBtn outline small onClick={() => setShow(false)}>Hủy</GoldBtn>
+          <GoldBtn small onClick={create} disabled={!form.title||!form.content}>Đăng thông báo</GoldBtn>
+        </div>
+      </Modal>
+    </div>
+  )
+}
 // ── USER MANAGEMENT ───────────────────────────────
 function UserManagement({ allUsers, setAllUsers, departments, mobile }: any) {
   const [show, setShow]     = useState(false)
