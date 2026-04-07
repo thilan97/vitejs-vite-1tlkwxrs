@@ -2734,8 +2734,7 @@ export default function App() {
   const pendingOT = 0 // will be updated from Overtime component
 
   return (
-    <ErrorBoundary>
-      <div style={{ display:'flex', minHeight:'100vh', fontFamily:"'Segoe UI',system-ui,sans-serif", background:T.bg }}>
+       <div style={{ display:'flex', minHeight:'100vh', fontFamily:"'Segoe UI',system-ui,sans-serif", background:T.bg }}>
         {!mobile && (
           <Sidebar user={user} page={validPage} setPage={setPage}
             pendingLeave={pendingLeave} pendingOT={pendingOT}
@@ -2758,8 +2757,7 @@ export default function App() {
         </main>
         {mobile && <BottomNav user={user} page={validPage} setPage={setPage} pendingLeave={pendingLeave} pendingOT={pendingOT}/>}
       </div>
-    </ErrorBoundary>
-  )
+     )
 }
 
 // ══ KẾT THÚC PHẦN 6 — HOÀN THÀNH! ══
