@@ -1936,14 +1936,7 @@ export default function App() {
         {validPage === 'history'    && <History {...pp} history={history}/>}
         {validPage === 'users'      && <UserManagement {...pp} setAllUsers={setAllUsers} departments={departments}/>}
         {validPage === 'settings'   && <Settings {...pp} settings={settings} setSettings={setSettings} onManualReset={manualReset}/>}
-        {validPage === 'tasks'      && <Tasks {...pp} tasks={tasks} setTasks={setTasks} addLog={addLog}/>}
-        {validPage === 'templates'  && <Templates {...pp} templates={templates} setTemplates={setTemplates}/>}
-        {validPage === 'attendance' && <Attendance {...pp} leaveRequests={leaveRequests} attendance={attendance} setAttendance={setAttendance}/>}
-        {validPage === 'announce'   && <Announcements {...pp}/>}
-        {validPage === 'leave'      && <Leave {...pp} leaveRequests={leaveRequests} setLeaveRequests={setLeaveRequests}/>}
-        {validPage === 'history'    && <History {...pp} history={history}/>}
-        {validPage === 'users'      && <UserManagement {...pp} setAllUsers={setAllUsers} departments={departments}/>}
-        {validPage === 'settings'   && <Settings {...pp} settings={settings} setSettings={setSettings} onManualReset={manualReset}/>}
+        
       </main>
       {mobile && <BottomNav user={user} page={validPage} setPage={setPage} pendingLeave={pendingLeave}/>}
     </div>
