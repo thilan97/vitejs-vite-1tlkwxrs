@@ -2014,9 +2014,16 @@ export default function App() {
           onLogout={() => { setUser(null); setAllUsers([]); setChecklist([]) }}/>
       )}
       <main style={{ flex:1, overflowY:'auto', paddingTop:4 }}>
-        <div style={{padding:20, color:'green', fontSize:16}}>
-        ✅ Render OK — trang: {validPage} — user: {user?.name} — mobile: {String(mobile)}
-      </div>
+        {validPage === 'dashboard'  && <Dashboard {...pp} checklist={checklist} tasks={tasks} attendance={attendance}/>}
+        {validPage === 'checklist'  && <Checklist {...pp} checklist={checklist} setChecklist={setChecklist} addLog={addLog}/>}
+        {validPage === 'tasks'      && <Tasks {...pp} tasks={tasks} setTasks={setTasks} addLog={addLog}/>}
+        {validPage === 'templates'  && <Templates {...pp} templates={templates} setTemplates={setTemplates}/>}
+        {validPage === 'attendance' && <Attendance {...pp} leaveRequests={leaveRequests} attendance={attendance} setAttendance={setAttendance}/>}
+        {validPage === 'announce'   && <Announcements {...pp}/>}
+        {validPage === 'leave'      && <Leave {...pp} leaveRequests={leaveRequests} setLeaveRequests={setLeaveRequests}/>}
+        {validPage === 'history'    && <History {...pp} history={history}/>}
+        {validPage === 'users'      && <UserManagement {...pp} setAllUsers={setAllUsers} departments={departments}/>}
+        {validPage === 'settings'   && <Settings {...pp} settings={settings} setSettings={setSettings} onManualReset={manualReset}/>}
         {validPage === 'tasks'      && <Tasks {...pp} tasks={tasks} setTasks={setTasks} addLog={addLog}/>}
         {validPage === 'templates'  && <Templates {...pp} templates={templates} setTemplates={setTemplates}/>}
         {validPage === 'attendance' && <Attendance {...pp} leaveRequests={leaveRequests} attendance={attendance} setAttendance={setAttendance}/>}
