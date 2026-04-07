@@ -2788,7 +2788,7 @@ export default function App() {
             onLogout={() => { setUser(null); setAllUsers([]); setChecklist([]) }}/>
         )}
         <main style={{ flex:1, overflowY:'auto', paddingTop:4 }}>
-          <Dashboard {...pp} checklist={checklist} tasks={tasks} attendance={attendance} leaveRequests={leaveRequests} otRequests={[]}/>
+          {validPage==='dashboard' && <Dashboard {...pp} checklist={checklist} tasks={tasks} attendance={attendance} leaveRequests={leaveRequests} otRequests={[]}/>}
           {validPage==='checklist'  && <Checklist {...pp} checklist={checklist} setChecklist={setChecklist} addLog={addLog}/>}
           {validPage==='tasks'      && <Tasks {...pp} tasks={tasks} setTasks={setTasks} addLog={addLog}/>}
           {validPage==='templates'  && <Templates {...pp} templates={templates} setTemplates={setTemplates}/>}
