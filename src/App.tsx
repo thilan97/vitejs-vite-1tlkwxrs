@@ -5,7 +5,7 @@ import React, { useState, useMemo, useEffect, useCallback, useRef } from "react"
 import { createClient } from '@supabase/supabase-js'
 
 const SUPABASE_URL = 'https://uzloxzrqtzuucxlokqfm.supabase.co'
-const SUPABASE_KEY = 'PASTE_ANON_KEY_HERE'
+const SUPABASE_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InV6bG94enJxdHp1dWN4bG9rcWZtIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzU0ODAwOTYsImV4cCI6MjA5MTA1NjA5Nn0.INA68j0bmDb7kFtn4H3TiQmPzEqs67sKMsBhc--mvvo'
 const db = createClient(SUPABASE_URL, SUPABASE_KEY)
 
 // ── THEME ────────────────────────────────────────
