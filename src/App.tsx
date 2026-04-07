@@ -350,7 +350,11 @@ const handleLogin = async () => {
   setLoading(false)
 }
     
-
+ if (mustChange && pendingUser) return (
+    <ChangePasswordScreen user={pendingUser} onDone={(newPin: string) => {
+      onLogin({...pendingUser, pin: newPin, must_change_password: false})
+    }}/>
+  )
   return (
     <div style={{ minHeight:'100vh', background:'#16120E', display:'flex',
       flexDirection:'column', alignItems:'center', justifyContent:'center', padding:24 }}>
