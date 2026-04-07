@@ -330,13 +330,7 @@ const handleLogin = async () => {
   }
   setLoading(false)
 }
-      onLogin(userObj)
-      onLogin(userObj)
-    } catch (e) {
-      setError('Có lỗi xảy ra, thử lại!')
-    }
-    setLoading(false)
-  }
+    
 
   return (
     <div style={{ minHeight:'100vh', background:'#16120E', display:'flex',
