@@ -91,7 +91,22 @@ const canMarkFor = (actor: any, target: any, allUsers: any[]) => {
   }
   return false
 }
-
+const ALL_PERMS = [
+  { key:'perm_view_dept_checklist',  label:'Xem checklist phòng mình',       group:'Công việc' },
+  { key:'perm_view_all_checklist',   label:'Xem checklist toàn công ty',      group:'Công việc' },
+  { key:'perm_create_task',          label:'Tạo & giao task',                 group:'Công việc' },
+  { key:'perm_manage_template',      label:'Quản lý template checklist',      group:'Công việc' },
+  { key:'perm_mark_attendance',      label:'Chấm công phòng mình',            group:'Nhân sự'   },
+  { key:'perm_mark_peer_attendance', label:'Chấm công đồng cấp',             group:'Nhân sự'   },
+  { key:'perm_approve_leave',        label:'Duyệt nghỉ phép',                group:'Nhân sự'   },
+  { key:'perm_approve_ot',           label:'Duyệt OT',                       group:'Nhân sự'   },
+  { key:'perm_view_all_attendance',  label:'Xem chấm công toàn công ty',     group:'Nhân sự'   },
+  { key:'perm_manage_users',         label:'Quản lý nhân viên',              group:'Quản trị'  },
+  { key:'perm_manage_positions',     label:'Quản lý vị trí & quyền',         group:'Quản trị'  },
+  { key:'perm_announce_all',         label:'Đăng thông báo toàn công ty',    group:'Quản trị'  },
+  { key:'perm_view_all_dashboard',   label:'Xem dashboard toàn công ty',     group:'Quản trị'  },
+  { key:'perm_reset_checklist',      label:'Reset checklist',                 group:'Quản trị'  },
+]
 // ── UTILITIES ────────────────────────────────────
 const fmtNow   = () => new Date().toLocaleString('vi-VN',{hour:'2-digit',minute:'2-digit',day:'2-digit',month:'2-digit',year:'numeric'})
 const todayStr = () => new Date().toLocaleDateString('vi-VN')
@@ -2160,10 +2175,10 @@ function History({ user, history, allUsers, mobile }: any) {
   const [mode, setMode]           = useState<'date'|'person'>('date')
   const [dateFilter, setDateFilter] = useState('')
   const p = mobile ? '16px' : '24px'
-  const canAll = getPerm(user, 'perm_view_all_dashboard')
+  const perm = getPerm(user)
   const dids = allUsers.filter((u: any) => u.dept_id === user.dept_id).map((u: any) => u.id)
-  const myH = canAll ? history
-    : getPerm(user,'perm_view_dept_checklist') ? history.filter((h: any) => dids.includes(h.assignee_id))
+  const myH = perm.viewAllDashboard ? history
+    : perm.viewDeptChecklist ? history.filter((h: any) => dids.includes(h.assignee_id))
     : history.filter((h: any) => h.assignee_id === user.id)
   const dates = [...new Set(myH.map((h: any) => h.date))].sort().reverse() as string[]
   const filtered = dateFilter ? myH.filter((h: any) => h.date === dateFilter) : myH
