@@ -1938,7 +1938,8 @@ export default function App() {
   // Login screen
   if (!user) {
     if (allUsers.length === 0) {
-      db.from('users').select('*').eq('active', true).then(({ data }) => {
+      db.from('users').select('*').eq('active', true).then(({ data, error }) => {
+  if (error) { document.body.innerHTML = `<div style="padding:20px;color:red;background:#fff">${JSON.stringify(error)}</div>`; return }
         if (data) db.from('departments').select('*').then(({ data:depts }) => {
           setAllUsers(data.map((u: any) => ({...u, dept_name:depts?.find((d: any) => d.id === u.dept_id)?.name||''})))
         })
