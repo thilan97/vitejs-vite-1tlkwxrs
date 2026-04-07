@@ -2,9 +2,26 @@
 // PHẦN 1/4 — Paste đầu tiên vào App.tsx (xóa hết file cũ trước)
 // ═══════════════════════════════════════════════
 
-import { useState, useMemo, useEffect, useCallback, useRef } from "react"
+import React, { useState, useMemo, useEffect, useCallback, useRef } from "react"
 import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid } from "recharts"
 import { createClient } from '@supabase/supabase-js'
+class ErrorBoundary extends React.Component<any, {err: string}> {
+  constructor(props: any) {
+    super(props)
+    this.state = { err: '' }
+  }
+  componentDidCatch(error: any) {
+    this.setState({ err: error?.message + '\n' + error?.stack })
+  }
+  render() {
+    if (this.state.err) return (
+      <div style={{padding:20,color:'red',background:'#fff',fontSize:12,wordBreak:'break-all',whiteSpace:'pre-wrap'}}>
+        <b>RENDER LỖI:</b>{'\n\n'}{this.state.err}
+      </div>
+    )
+    return this.props.children
+  }
+}
 window.onerror = (msg, src, line, col, err) => {
   document.body.innerHTML = `<div style="padding:20px;color:red;background:#fff;font-size:12px;word-break:break-all">
     <b>LỖI:</b><br/>${msg}<br/><br/>
@@ -1981,6 +1998,7 @@ export default function App() {
     r.status === 'pending' && (user.role === 'admin' || dids.includes(r.user_id))).length
 
   return (
+    <ErrorBoundary>
     <div style={{ display:'flex', minHeight:'100vh', fontFamily:"'Segoe UI',system-ui,sans-serif", background:T.bg }}>
       {!mobile && (
         <Sidebar user={user} page={validPage} setPage={setPage} pendingLeave={pendingLeave}
@@ -2000,6 +2018,7 @@ export default function App() {
       </main>
       {mobile && <BottomNav user={user} page={validPage} setPage={setPage} pendingLeave={pendingLeave}/>}
     </div>
+      </ErrorBoundary>
   )
 }
 
