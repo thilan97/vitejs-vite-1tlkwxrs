@@ -527,7 +527,7 @@ function Sidebar({ user, page, setPage, onLogout, pendingCount }: any) {
 }
 
 function BottomNav({ page, setPage, user, pendingLeave, pendingOT }: any) {
-  const allNav = getNav(getPerm(user))  // ✅
+  const allNav = getNav(getPerm(user))
   const mainNav = allNav.slice(0, 4)
   const [showMore, setShowMore] = useState(false)
 
@@ -2753,7 +2753,7 @@ export default function App() {
     </div>
   )
 
-  const nav = getNav(getPerm(user))  // ✅
+  const nav = getNav(getPerm(user))
   const validPage = nav.find(n => n.id===page) ? page : nav[0].id
   const pp = { user, allUsers, mobile }
 
@@ -2773,7 +2773,7 @@ export default function App() {
             onLogout={() => { setUser(null); setAllUsers([]); setChecklist([]) }}/>
         )}
         <main style={{ flex:1, overflowY:'auto', paddingTop:4 }}>
-          {validPage==='dashboard'  && <Dashboard {...pp} checklist={checklist} tasks={tasks} attendance={attendance}/>}
+          <Dashboard {...pp} checklist={checklist} tasks={tasks} attendance={attendance} leaveRequests={leaveRequests} otRequests={[]}/>
           {validPage==='checklist'  && <Checklist {...pp} checklist={checklist} setChecklist={setChecklist} addLog={addLog}/>}
           {validPage==='tasks'      && <Tasks {...pp} tasks={tasks} setTasks={setTasks} addLog={addLog}/>}
           {validPage==='templates'  && <Templates {...pp} templates={templates} setTemplates={setTemplates}/>}
