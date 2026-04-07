@@ -527,7 +527,7 @@ function Sidebar({ user, page, setPage, onLogout, pendingCount }: any) {
 }
 
 function BottomNav({ page, setPage, user, pendingLeave, pendingOT }: any) {
-  const allNav = getNav(user)
+  const allNav = getNav(getPerm(user))  // ✅
   const mainNav = allNav.slice(0, 4)
   const [showMore, setShowMore] = useState(false)
 
@@ -2743,7 +2743,7 @@ export default function App() {
   // Login
   if (!user) return <LoginScreen onLogin={(u: any) => {
     setUser(u)
-    setPage(getPerm(u,'perm_view_all_dashboard')||getPerm(u,'perm_view_dept_checklist') ? 'dashboard' : 'checklist')
+    setPage(getPerm(u).viewAllDashboard || getPerm(u).viewDeptChecklist ? 'dashboard' : 'checklist')
   }}/>
 
   if (loading) return (
@@ -2753,7 +2753,7 @@ export default function App() {
     </div>
   )
 
-  const nav = getNav(user)
+  const nav = getNav(getPerm(user))  // ✅
   const validPage = nav.find(n => n.id===page) ? page : nav[0].id
   const pp = { user, allUsers, mobile }
 
@@ -2761,7 +2761,7 @@ export default function App() {
   const pendingLeave = leaveRequests.filter((r: any) => {
     if (r.status !== 'pending') return false
     const approver = r.approver_level || 'mgr'
-    return approver==='admin' ? getPerm(user,'perm_view_all_dashboard') : (getPerm(user,'perm_approve_leave') && dids.includes(r.user_id))
+    return approver==='admin' ? setPage(getPerm(u).viewAllDashboard || getPerm(u).viewDeptChecklist ? 'dashboard' : 'checklist') && dids.includes(r.user_id))
   }).length
   const pendingOT = 0 // will be updated from Overtime component
 
