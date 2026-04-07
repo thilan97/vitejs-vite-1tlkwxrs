@@ -1915,11 +1915,7 @@ export default function App() {
     })
   }, [user])
 
-  const addLog = useCallback(async ({ sheet, task, person, from, to }: any) => {
-    const entry = { id:'l'+Date.now(), time:fmtNow(), sheet, task, person, from_status:from, to_status:to }
-    setLogs(prev => [...prev, entry])
-    await db.from('logs').insert(entry)
-  }, [])
+  const addLog = useCallback(async (_: any) => {}, [])
 
   const manualReset = useCallback(async () => {
     const { data:cl } = await db.from('checklist').select('*')
