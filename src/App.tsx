@@ -2761,7 +2761,7 @@ export default function App() {
   const pendingLeave = leaveRequests.filter((r: any) => {
     if (r.status !== 'pending') return false
     const approver = r.approver_level || 'mgr'
-    return approver==='admin' ? setPage(getPerm(u).viewAllDashboard || getPerm(u).viewDeptChecklist ? 'dashboard' : 'checklist') && dids.includes(r.user_id))
+    return approver==='admin' ? getPerm(user).viewAllDashboard : (getPerm(user).approveLeave && dids.includes(r.user_id))
   }).length
   const pendingOT = 0 // will be updated from Overtime component
 
