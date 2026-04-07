@@ -1554,6 +1554,156 @@ function Announcements({ user, allUsers, mobile }: any) {
     </div>
   )
 }
+function Leave({ user, allUsers, leaveRequests, setLeaveRequests, mobile }: any) {
+  const [show, setShow]           = useState(false)
+  const [reviewItem, setReviewItem] = useState<any>(null)
+  const [reviewNotes, setReviewNotes] = useState('')
+  const [form, setForm]           = useState({ start_date:'', end_date:'', type:'annual', reason:'' })
+  const [tab, setTab]             = useState('mine')
+  const p = mobile ? '16px' : '24px'
+  const canApprove = user.role === 'admin' || user.role === 'mgr'
+  const dids = allUsers.filter((u: any) => u.dept_id === user.dept_id).map((u: any) => u.id)
+
+  const myReqs   = leaveRequests.filter((r: any) => r.user_id === user.id)
+  const pending  = leaveRequests.filter((r: any) => r.status === 'pending' && (user.role === 'admin' || dids.includes(r.user_id)))
+  const allV     = user.role === 'admin' ? leaveRequests : leaveRequests.filter((r: any) => dids.includes(r.user_id) || r.user_id === user.id)
+
+  const tabList: Array<[string, string]> = [['mine', `📋 Đơn của tôi (${myReqs.length})`]]
+  if (canApprove) {
+    tabList.push(['pending', `⏳ Chờ duyệt (${pending.length})`])
+    tabList.push(['all', `📊 Tất cả (${allV.length})`])
+  }
+  const displayList = tab === 'mine' ? myReqs : tab === 'pending' ? pending : allV
+
+  const submit = async () => {
+    if (!form.start_date || !form.end_date || !form.reason) return
+    const days = daysBetween(form.start_date, form.end_date)
+    const req = { id:'lr'+Date.now(), ...form, user_id:user.id, dept_id:user.dept_id,
+      status:'pending', reviewed_by:'', reviewed_at:'', review_notes:'', created_at:fmtNow(), days }
+    setLeaveRequests((prev: any) => [req, ...prev])
+    await db.from('leave_requests').insert(req)
+    setShow(false)
+    setForm({ start_date:'', end_date:'', type:'annual', reason:'' })
+  }
+
+  const review = async (id: string, status: string) => {
+    const req = leaveRequests.find((r: any) => r.id === id); if (!req) return
+    const updated = { ...req, status, reviewed_by:user.id, reviewed_at:fmtNow(), review_notes:reviewNotes }
+    setLeaveRequests((prev: any) => prev.map((r: any) => r.id === id ? updated : r))
+    await db.from('leave_requests').upsert(updated)
+    setReviewItem(null); setReviewNotes('')
+  }
+
+  const LS: any = {
+    pending:  { label:'⏳ Chờ duyệt', color:T.amber, bg:T.amberBg },
+    approved: { label:'✅ Đã duyệt',  color:T.green, bg:T.greenBg },
+    rejected: { label:'❌ Từ chối',   color:T.red,   bg:T.redBg   },
+  }
+
+  return (
+    <div style={{ padding:`0 ${p} ${mobile?'80px':p}` }}>
+      <Topbar mobile={mobile} title="Nghỉ phép"
+        subtitle={canApprove && pending.length > 0 ? `${pending.length} đơn chờ duyệt` : 'Quản lý nghỉ phép'}
+        action={<GoldBtn small onClick={() => setShow(true)}>+ Xin nghỉ phép</GoldBtn>}/>
+      <div style={{ display:'flex', gap:6, marginBottom:14, flexWrap:'wrap' }}>
+        {tabList.map(([id, label]) => (
+          <button key={id} onClick={() => setTab(id)}
+            style={{ padding:'6px 13px', borderRadius:8, cursor:'pointer', fontFamily:'inherit', fontSize:12,
+              border:`1.5px solid ${tab === id ? T.gold : T.border}`,
+              background:tab === id ? T.goldBg : 'transparent',
+              color:tab === id ? T.goldText : T.med,
+              fontWeight:tab === id ? 600 : 400 }}>
+            {label}
+          </button>
+        ))}
+      </div>
+      {displayList.length === 0 ? (
+        <Card style={{ textAlign:'center', padding:'40px', color:T.light }}>
+          <div style={{ fontSize:32, marginBottom:8 }}>🏖️</div>
+          <div style={{ fontSize:14, fontWeight:500 }}>
+            {tab === 'pending' ? 'Không có đơn chờ duyệt' : 'Chưa có đơn nghỉ phép nào'}
+          </div>
+        </Card>
+      ) : (
+        <div style={{ display:'flex', flexDirection:'column', gap:10 }}>
+          {displayList.map((r: any) => {
+            const req = allUsers.find((u: any) => u.id === r.user_id)
+            const rev = allUsers.find((u: any) => u.id === r.reviewed_by)
+            const sc = LS[r.status] || {}
+            const days = r.days || daysBetween(r.start_date, r.end_date)
+            const canReview = canApprove && r.status === 'pending' && (user.role === 'admin' || dids.includes(r.user_id))
+            return (
+              <div key={r.id} style={{ background:T.card,
+                border:`1px solid ${r.status === 'pending' ? T.amber : T.border}`,
+                borderRadius:12, padding:'16px 18px' }}>
+                <div style={{ display:'flex', justifyContent:'space-between', alignItems:'flex-start', flexWrap:'wrap', gap:10, marginBottom:10 }}>
+                  <div style={{ flex:1 }}>
+                    <div style={{ display:'flex', gap:10, alignItems:'center', marginBottom:6, flexWrap:'wrap' }}>
+                      {req && <Av u={req} size={28} showDept/>}
+                      <span style={{ fontSize:13, fontWeight:700, padding:'2px 9px', borderRadius:20, color:T.goldText, background:T.goldBg }}>
+                        {LEAVE_TYPE[r.type] || r.type}
+                      </span>
+                      <span style={{ fontSize:11, color:T.light }}>{days} ngày</span>
+                    </div>
+                    <div style={{ fontSize:12, color:T.dark, marginBottom:3 }}>📅 {fmtDate(r.start_date)} → {fmtDate(r.end_date)}</div>
+                    <div style={{ fontSize:12, color:T.med }}>Lý do: {r.reason}</div>
+                    {r.review_notes && <div style={{ fontSize:11, color:T.blue, marginTop:4 }}>💬 {r.review_notes}</div>}
+                    {rev && r.reviewed_at && <div style={{ fontSize:11, color:T.light, marginTop:3 }}>Xử lý bởi {rev.name} • {r.reviewed_at}</div>}
+                    <div style={{ fontSize:11, color:T.light, marginTop:3 }}>Gửi lúc: {r.created_at}</div>
+                  </div>
+                  <div style={{ display:'flex', flexDirection:'column', gap:6, alignItems:'flex-end' }}>
+                    <span style={{ fontSize:11, fontWeight:700, padding:'4px 10px', borderRadius:20, color:sc.color, background:sc.bg }}>{sc.label}</span>
+                    {canReview && (
+                      <button onClick={() => { setReviewItem(r); setReviewNotes('') }}
+                        style={{ padding:'6px 13px', borderRadius:7, border:`1.5px solid ${T.gold}`,
+                          background:T.goldBg, cursor:'pointer', fontSize:12, fontFamily:'inherit', color:T.goldText, fontWeight:600 }}>
+                        Xem xét
+                      </button>
+                    )}
+                  </div>
+                </div>
+              </div>
+            )
+          })}
+        </div>
+      )}
+      <Modal open={show} onClose={() => setShow(false)} title="Xin nghỉ phép">
+        <Sel label="Loại nghỉ phép" value={form.type} onChange={(v: string) => setForm(f => ({...f, type:v}))}
+          options={Object.entries(LEAVE_TYPE).map(([v, l]) => ({ value:v, label:l }))}/>
+        <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:12 }}>
+          <Inp label="Từ ngày *" type="date" value={form.start_date} onChange={(v: string) => setForm(f => ({...f, start_date:v}))}/>
+          <Inp label="Đến ngày *" type="date" value={form.end_date} onChange={(v: string) => setForm(f => ({...f, end_date:v, start_date:f.start_date||v}))}/>
+        </div>
+        {form.start_date && form.end_date && (
+          <div style={{ padding:'8px 12px', background:T.goldBg, borderRadius:8, fontSize:12, color:T.goldText, marginBottom:13, fontWeight:600 }}>
+            📅 Tổng {daysBetween(form.start_date, form.end_date)} ngày nghỉ
+          </div>
+        )}
+        <Inp label="Lý do *" value={form.reason} onChange={(v: string) => setForm(f => ({...f, reason:v}))} placeholder="Nhập lý do xin nghỉ..."/>
+        <div style={{ display:'flex', justifyContent:'flex-end', gap:10 }}>
+          <GoldBtn outline small onClick={() => setShow(false)}>Hủy</GoldBtn>
+          <GoldBtn small onClick={submit} disabled={!form.start_date||!form.end_date||!form.reason}>Gửi đơn</GoldBtn>
+        </div>
+      </Modal>
+      <Modal open={!!reviewItem} onClose={() => setReviewItem(null)} title="Xét duyệt đơn nghỉ phép">
+        {reviewItem && (<>
+          <div style={{ padding:'12px 14px', background:T.bg, borderRadius:8, marginBottom:14 }}>
+            <div style={{ fontSize:13, fontWeight:600, color:T.dark, marginBottom:6 }}>{allUsers.find((u: any) => u.id === reviewItem.user_id)?.name}</div>
+            <div style={{ fontSize:12, color:T.med }}>{LEAVE_TYPE[reviewItem.type]} — {daysBetween(reviewItem.start_date, reviewItem.end_date)} ngày</div>
+            <div style={{ fontSize:12, color:T.med }}>📅 {fmtDate(reviewItem.start_date)} → {fmtDate(reviewItem.end_date)}</div>
+            <div style={{ fontSize:12, color:T.dark, marginTop:6 }}>Lý do: {reviewItem.reason}</div>
+          </div>
+          <Inp label="Ghi chú phản hồi" value={reviewNotes} onChange={setReviewNotes} placeholder="Nhập ghi chú (tùy chọn)..."/>
+          <div style={{ display:'flex', gap:10, justifyContent:'flex-end', marginTop:8 }}>
+            <GoldBtn outline small onClick={() => setReviewItem(null)}>Hủy</GoldBtn>
+            <GoldBtn danger small onClick={() => review(reviewItem.id, 'rejected')}>❌ Từ chối</GoldBtn>
+            <GoldBtn small onClick={() => review(reviewItem.id, 'approved')}>✅ Duyệt</GoldBtn>
+          </div>
+        </>)}
+      </Modal>
+    </div>
+  )
+}
 // ── USER MANAGEMENT ───────────────────────────────
 function UserManagement({ allUsers, setAllUsers, departments, mobile }: any) {
   const [show, setShow]     = useState(false)
