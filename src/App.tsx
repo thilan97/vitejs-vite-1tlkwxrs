@@ -1821,8 +1821,13 @@ export default function App() {
   const [leaveRequests, setLeaveRequests] = useState<any[]>([])
   const [loading, setLoading]       = useState(false)
   const notifSent                   = useRef(false)
-  const width                       = useWindowWidth()
-  const mobile                      = width < 768
+  const [width, setWidth] = useState(window.innerWidth)
+  useEffect(() => {
+    const h = () => setWidth(window.innerWidth)
+    window.addEventListener('resize', h)
+    return () => window.removeEventListener('resize', h)
+  }, [])
+  const mobile = width < 768
 
   // Notifications
   useEffect(() => {
