@@ -291,6 +291,10 @@ function LoginScreen({ onLogin }: any) {
   const [password, setPassword] = useState('')
   const [error, setError]       = useState('')
   const [loading, setLoading]   = useState(false)
+  const [mustChange, setMustChange]   = useState(false)
+const [pendingUser, setPendingUser] = useState<any>(null)
+const [newPass, setNewPass]         = useState('')
+const [confirmPass, setConfirmPass] = useState('')
 const handleLogin = async () => {
   if (!username.trim() || !password.trim()) { setError('Vui lòng nhập đầy đủ thông tin'); return }
   setLoading(true); setError('')
