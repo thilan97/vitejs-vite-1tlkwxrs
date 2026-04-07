@@ -291,35 +291,45 @@ function LoginScreen({ onLogin }: any) {
   const [password, setPassword] = useState('')
   const [error, setError]       = useState('')
   const [loading, setLoading]   = useState(false)
+const handleLogin = async () => {
+  if (!username.trim() || !password.trim()) { setError('Vui lòng nhập đầy đủ thông tin'); return }
+  setLoading(true); setError('')
+  try {
+    const { data, error: qErr } = await db.from('users').select('*')
 
-  const handleLogin = async () => {
-    if (!username.trim() || !password.trim()) { setError('Vui lòng nhập đầy đủ thông tin'); return }
-    setLoading(true); setError('')
-    try {
-      const { data: users } = await db.from('users')
-        .select('*')
-        .eq('ini', username.trim().toUpperCase())
-        .single()
+    if (qErr) { setError('Lỗi kết nối: ' + qErr.message); setLoading(false); return }
+    if (!data || data.length === 0) { setError('Không có dữ liệu users'); setLoading(false); return }
 
-      if (!users) { setError('Tên đăng nhập không tồn tại'); setLoading(false); return }
-      if (users.pin !== password) { setError('Mật khẩu không đúng'); setLoading(false); return }
+    const found = data.find((u: any) => u.ini?.toUpperCase() === username.trim().toUpperCase())
+    if (!found) { setError(`Không tìm thấy ini="${username.trim().toUpperCase()}" trong ${data.length} users`); setLoading(false); return }
+    if (found.pin !== password) { setError('Mật khẩu không đúng'); setLoading(false); return }
 
-      let posData = null
-      if (users.position_id) {
-        const { data: pos } = await db.from('positions').select('*').eq('id', users.position_id).single()
-        posData = pos
-      }
+    let posData = null
+    if (found.position_id) {
+      const { data: pos } = await db.from('positions').select('*').eq('id', found.position_id).single()
+      posData = pos
+    }
 
-      const { data: depts } = await db.from('departments').select('*')
-      const dept = depts?.find((d: any) => d.id === users.dept_id)
+    const { data: depts } = await db.from('departments').select('*')
+    const dept = depts?.find((d: any) => d.id === found.dept_id)
 
-      const userObj = {
-        ...users,
-        dept_name: dept?.name || '',
-        position: posData,
-        position_name: posData?.name || '',
-        must_change_password: users.must_change_password ?? false,
-      }
+    const userObj = {
+      ...found,
+      dept_name: dept?.name || '',
+      position: posData,
+      position_name: posData?.name || '',
+      must_change_password: found.must_change_password ?? false,
+    }
+
+    if (found.pin === '1234' || found.must_change_password) {
+      setPendingUser(userObj); setMustChange(true); setLoading(false); return
+    }
+    onLogin(userObj)
+  } catch(e: any) {
+    setError('Lỗi: ' + (e?.message || JSON.stringify(e)))
+  }
+  setLoading(false)
+}
       onLogin(userObj)
       onLogin(userObj)
     } catch (e) {
