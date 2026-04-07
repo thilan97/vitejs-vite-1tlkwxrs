@@ -5,7 +5,14 @@
 import { useState, useMemo, useEffect, useCallback, useRef } from "react"
 import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid } from "recharts"
 import { createClient } from '@supabase/supabase-js'
-
+window.onerror = (msg, src, line, col, err) => {
+  document.body.innerHTML = `<div style="padding:20px;color:red;background:#fff;font-size:12px;word-break:break-all">
+    <b>LỖI:</b><br/>${msg}<br/><br/>
+    File: ${src}<br/>
+    Dòng: ${line}:${col}<br/><br/>
+    ${err?.stack||''}
+  </div>`
+}
 const SUPABASE_URL = 'https://uzloxzrqtzuucxlokqfm.supabase.co'
 const SUPABASE_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InV6bG94enJxdHp1dWN4bG9rcWZtIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzU0ODAwOTYsImV4cCI6MjA5MTA1NjA5Nn0.INA68j0bmDb7kFtn4H3TiQmPzEqs67sKMsBhc--mvvo'
 const db = createClient(SUPABASE_URL, SUPABASE_KEY)
