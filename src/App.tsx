@@ -1838,7 +1838,7 @@ export default function App() {
   const performReset = useCallback(async (curCl: any[], tmpl: any[], st: any, manual = false) => {
     const today = todayStr(); const s = st || {}
     const r_daily   = manual || s.last_daily_reset !== today
-    const wDiff = s.last_weekly_reset ? Math.floor((Date.now() - new Date(s.last_weekly_reset.split('/').reverse().join('-')).getTime()) / 86400000) : 999
+    const wDiff = s.last_weekly_reset ? (() => { try { const p=s.last_weekly_reset.split('/'); return Math.floor((Date.now()-new Date(`${p[2]}-${p[1]}-${p[0]}`).getTime())/86400000) } catch { return 999 } })() : 999
     const r_weekly  = manual || wDiff >= (s.weekly_reset_interval || 7)
     const dom = new Date().getDate()
     const thisMonth = `${new Date().getMonth()}-${new Date().getFullYear()}`
