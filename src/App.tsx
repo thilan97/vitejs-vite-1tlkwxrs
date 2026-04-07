@@ -526,29 +526,61 @@ function Sidebar({ user, page, setPage, onLogout, pendingCount }: any) {
   )
 }
 
-function BottomNav({ page, setPage, user, pendingCount }: any) {
-  const perm = getPerm(user)
-  const nav  = getNav(perm).slice(0, 5)
+function BottomNav({ page, setPage, user, pendingLeave, pendingOT }: any) {
+  const allNav = getNav(user)
+  const mainNav = allNav.slice(0, 4)
+  const [showMore, setShowMore] = useState(false)
+
   return (
-    <div style={{ position:'fixed', bottom:0, left:0, right:0, background:T.sidebar,
-      display:'flex', borderTop:'1px solid rgba(255,255,255,0.1)', zIndex:100,
-      paddingBottom:'env(safe-area-inset-bottom,8px)' }}>
-      {nav.map(item => {
-        const active = page === item.id
-        const badge = ['leave','overtime'].includes(item.id) && pendingCount > 0 ? pendingCount : 0
-        return (
-          <button key={item.id} onClick={() => setPage(item.id)}
-            style={{ flex:1, display:'flex', flexDirection:'column', alignItems:'center',
-              justifyContent:'center', padding:'10px 4px', border:'none', background:'transparent',
-              cursor:'pointer', color:active?T.gold:'rgba(255,255,255,0.45)', position:'relative' }}>
-            <span style={{ fontSize:17, marginBottom:2 }}>{item.icon}</span>
-            <span style={{ fontSize:8, fontWeight:active?600:400, fontFamily:'inherit' }}>{item.label}</span>
-            {badge > 0 && <span style={{ position:'absolute', top:5, right:'calc(50% - 14px)',
-              background:T.red, color:'#fff', borderRadius:10, fontSize:8, fontWeight:700, padding:'1px 4px' }}>{badge}</span>}
-          </button>
-        )
-      })}
-    </div>
+    <>
+      {showMore && (
+        <div style={{ position:'fixed', bottom:60, left:0, right:0, background:T.sidebar,
+          borderTop:'1px solid rgba(255,255,255,0.15)', zIndex:99, padding:'8px' }}>
+          {allNav.slice(4).map(item => {
+            const active = page === item.id
+            return (
+              <button key={item.id} onClick={() => { setPage(item.id); setShowMore(false) }}
+                style={{ width:'100%', display:'flex', alignItems:'center', gap:10,
+                  padding:'10px 14px', borderRadius:8, marginBottom:2, border:'none',
+                  background:active?'rgba(196,151,58,0.18)':'transparent',
+                  color:active?T.gold:'rgba(255,255,255,0.7)',
+                  cursor:'pointer', fontFamily:'inherit', fontSize:13, textAlign:'left' }}>
+                <span style={{ fontSize:16 }}>{item.icon}</span>
+                <span>{item.label}</span>
+              </button>
+            )
+          })}
+        </div>
+      )}
+      <div style={{ position:'fixed', bottom:0, left:0, right:0, background:T.sidebar,
+        display:'flex', borderTop:'1px solid rgba(255,255,255,0.1)', zIndex:100,
+        paddingBottom:'env(safe-area-inset-bottom,8px)' }}>
+        {mainNav.map(item => {
+          const active = page === item.id
+          const badge = (item.id==='leave'&&pendingLeave>0)?pendingLeave:(item.id==='overtime'&&pendingOT>0)?pendingOT:0
+          return (
+            <button key={item.id} onClick={() => { setPage(item.id); setShowMore(false) }}
+              style={{ flex:1, display:'flex', flexDirection:'column', alignItems:'center',
+                justifyContent:'center', padding:'10px 4px', border:'none',
+                background:'transparent', cursor:'pointer', position:'relative',
+                color:active?T.gold:'rgba(255,255,255,0.45)' }}>
+              <span style={{ fontSize:18, marginBottom:3 }}>{item.icon}</span>
+              <span style={{ fontSize:9, fontWeight:active?600:400, fontFamily:'inherit' }}>{item.label}</span>
+              {badge>0 && <span style={{ position:'absolute', top:6, right:'calc(50% - 14px)',
+                background:T.red, color:'#fff', borderRadius:10, fontSize:8, fontWeight:700, padding:'1px 4px' }}>{badge}</span>}
+            </button>
+          )
+        })}
+        <button onClick={() => setShowMore(v => !v)}
+          style={{ flex:1, display:'flex', flexDirection:'column', alignItems:'center',
+            justifyContent:'center', padding:'10px 4px', border:'none',
+            background:showMore?'rgba(196,151,58,0.18)':'transparent', cursor:'pointer',
+            color:showMore?T.gold:'rgba(255,255,255,0.45)' }}>
+          <span style={{ fontSize:18, marginBottom:3 }}>☰</span>
+          <span style={{ fontSize:9, fontFamily:'inherit' }}>Thêm</span>
+        </button>
+      </div>
+    </>
   )
 }
 
