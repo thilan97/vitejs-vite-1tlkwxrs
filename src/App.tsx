@@ -343,7 +343,8 @@ const handleLogin = async () => {
     if (found.pin === '1234' || found.must_change_password === true) {
       setPendingUser(userObj); setMustChange(true); setLoading(false); return
     }
-    onLogin(userObj)
+    localStorage.setItem('la_user', JSON.stringify(userObj))
+onLogin(userObj)
   } catch(e: any) {
     setError('Lỗi: ' + (e?.message || JSON.stringify(e)))
   }
@@ -417,7 +418,8 @@ function ChangePasswordScreen({ user, onDone }: any) {
     setSaving(true)
     await db.from('users').update({ pin: newPw, must_change_password: false }).eq('id', user.id)
     setSaving(false)
-    onDone(newPw)
+    localStorage.setItem('la_user', JSON.stringify({...user, pin: newPw, must_change_password: false}))
+onDone(newPw)
   }
 
   return (
@@ -2634,7 +2636,12 @@ function Settings({ user, setUser, settings, setSettings, onManualReset, mobile 
 
 // ── MAIN APP ──────────────────────────────────────
 export default function App() {
-  const [user, setUser]             = useState<any>(null)
+  const [user, setUser] = useState<any>(() => {
+  try {
+    const saved = localStorage.getItem('la_user')
+    return saved ? JSON.parse(saved) : null
+  } catch { return null }
+})
   const [page, setPage]             = useState('checklist')
   const [allUsers, setAllUsers]     = useState<any[]>([])
   const [departments, setDepts]     = useState<any[]>([])
@@ -2792,7 +2799,7 @@ export default function App() {
         {!mobile && (
           <Sidebar user={user} page={validPage} setPage={setPage}
             pendingLeave={pendingLeave} pendingOT={pendingOT}
-            onLogout={() => { setUser(null); setAllUsers([]); setChecklist([]) }}/>
+            onLogout={() => { localStorage.removeItem('la_user'); setUser(null); setAllUsers([]); setChecklist([]) }}/>
         )}
         <main style={{ flex:1, overflowY:'auto', paddingTop:4 }}>
           {validPage==='dashboard' && <Dashboard {...pp} checklist={checklist} tasks={tasks} attendance={attendance} leaveRequests={leaveRequests} otRequests={[]}/>}
