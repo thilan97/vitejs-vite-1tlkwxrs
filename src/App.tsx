@@ -325,7 +325,7 @@ const handleLogin = async () => {
       must_change_password: found.must_change_password ?? false,
     }
 
-    if (found.pin === '1234' || found.must_change_password) {
+    if (found.pin === '1234' || found.must_change_password === true) {
       setPendingUser(userObj); setMustChange(true); setLoading(false); return
     }
     onLogin(userObj)
