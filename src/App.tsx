@@ -1923,8 +1923,14 @@ export default function App() {
         }
       }
       setLoading(false)
-    }).catch(() => {
+    }).catch((err: any) => {
       setLoading(false)
+      document.body.style.background = '#fff'
+      document.body.innerHTML = `<div style="padding:20px;font-size:13px;color:red;word-break:break-all">
+        <b>LỖI SAU LOGIN:</b><br/><br/>
+        ${err?.message || JSON.stringify(err)}<br/><br/>
+        ${err?.stack || ''}
+      </div>`
     })
   }, [user])
 
