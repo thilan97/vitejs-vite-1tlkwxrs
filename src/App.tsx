@@ -1991,6 +1991,10 @@ export default function App() {
 
   const nav = getNav(user.role)
   const validPage = nav.find(n => n.id === page) ? page : nav[0].id
+  // DEBUG - xóa sau khi tìm được lỗi
+  if (typeof window !== 'undefined') {
+    (window as any)._debug = { user: user?.name, loading, page: validPage, mobile, width }
+  }
   const pp = { user, allUsers, mobile }
 
   const dids = allUsers.filter((u: any) => u.dept_id === user.dept_id).map((u: any) => u.id)
