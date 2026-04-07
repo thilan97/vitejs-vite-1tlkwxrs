@@ -297,12 +297,18 @@ function LoginScreen({ onLogin }: any) {
     setLoading(true); setError('')
     try {
       const { data: users } = await db.from('users')
-        .select('*, positions(*)')
-        .eq('username', username.trim().toLowerCase())
-        .eq('active', true)
+        .select('*')
+        .eq('ini', username.trim().toUpperCase())
         .single()
+
       if (!users) { setError('Tên đăng nhập không tồn tại'); setLoading(false); return }
       if (users.pin !== password) { setError('Mật khẩu không đúng'); setLoading(false); return }
+
+      let posData = null
+      if (users.position_id) {
+        const { data: pos } = await db.from('positions').select('*').eq('id', users.position_id).single()
+        posData = pos
+      }
 
       const { data: depts } = await db.from('departments').select('*')
       const dept = depts?.find((d: any) => d.id === users.dept_id)
@@ -310,10 +316,11 @@ function LoginScreen({ onLogin }: any) {
       const userObj = {
         ...users,
         dept_name: dept?.name || '',
-        position: users.positions || null,
-        position_name: users.positions?.name || '',
+        position: posData,
+        position_name: posData?.name || '',
         must_change_password: users.must_change_password ?? false,
       }
+      onLogin(userObj)
       onLogin(userObj)
     } catch (e) {
       setError('Có lỗi xảy ra, thử lại!')
