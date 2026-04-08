@@ -263,7 +263,7 @@ const AlertBanner = ({ user, checklist, leaveRequests, otRequests, allUsers }: a
   const pendingLeave = leaveRequests.filter((r: any) => {
     if (r.status !== 'pending') return false
     if (perm.viewAllDashboard) return true
-    if (perm.approveLeave) return dids.includes(r.user_id) && !r.needs_admin
+    if (perm.approveLeave) return dids.includes(r.user_id) && r.approver_level !== 'admin'
     return false
   })
   const pendingOT = (otRequests||[]).filter((r: any) => {
@@ -1725,6 +1725,12 @@ function Leave({ user, allUsers, leaveRequests, setLeaveRequests, mobile }: any)
   const [tab, setTab]               = useState('mine')
   const p = mobile ? '16px' : '24px'
 
+  // Refresh data mỗi khi mở tab Nghỉ phép
+  useEffect(() => {
+    db.from('leave_requests').select('*').order('created_at', { ascending:false })
+      .then(({ data }) => { if (data) setLeaveRequests(data) })
+  }, [])
+
   const canApprove = getPerm(user).approveLeave
   const canAll     = getPerm(user).viewAllDashboard
   const dids = allUsers.filter((u: any) => u.dept_id === user.dept_id).map((u: any) => u.id)
@@ -1732,8 +1738,9 @@ function Leave({ user, allUsers, leaveRequests, setLeaveRequests, mobile }: any)
   // Xác định ai duyệt đơn dựa trên số ngày và người xin
   const getApprover = (requestUserId: string, days: number) => {
     const reqUser = allUsers.find((u: any) => u.id === requestUserId)
-    // Quản lý xin nghỉ → admin duyệt
-    if (reqUser?.role === 'mgr') return 'admin'
+    // Quản lý xin nghỉ → admin duyệt (kiểm tra qua quyền approveLeave)
+    const reqPerm = getPerm(reqUser)
+    if (reqPerm.approveLeave || reqPerm.viewAllDashboard) return 'admin'
     // Nhân viên xin >= 4 ngày → admin duyệt
     if (days >= 4) return 'admin'
     // Nhân viên xin 1-3 ngày → quản lý phòng duyệt
@@ -1742,9 +1749,10 @@ function Leave({ user, allUsers, leaveRequests, setLeaveRequests, mobile }: any)
 
   const canReviewReq = (r: any) => {
     if (!canApprove || r.status !== 'pending') return false
-    const approver = getApprover(r.user_id, r.days || 1)
+    if (r.user_id === user.id) return false  // không tự duyệt đơn của mình
+    const approver = r.approver_level || getApprover(r.user_id, r.days || 1)
     if (approver === 'admin') return canAll
-    return canApprove && dids.includes(r.user_id)
+    return dids.includes(r.user_id)
   }
 
   const myReqs   = leaveRequests.filter((r: any) => r.user_id === user.id)
@@ -2820,8 +2828,4 @@ export default function App() {
       </div>
      )
 }
-
-
-
-
 
