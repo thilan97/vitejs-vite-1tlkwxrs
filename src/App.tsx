@@ -2418,7 +2418,7 @@ function ShortageItems({ user, allUsers, mobile }: any) {
   const [dupWarning,   setDupWarning]  = useState<any>(null)
   const [mgrTab,       setMgrTab]      = useState('pending')
   const [sortBy,       setSortBy]      = useState<'hot'|'date'>('hot')
-  const [prodForm,     setProdForm]    = useState({ name:'', code:'', unit:'' })
+  const [prodForm,     setProdForm]    = useState({ name:'', code:'', unit:'', stock:'' })
   const p    = mobile ? '16px' : '24px'
   const perm = getPerm(user)
   const isManager = perm.viewAllDashboard || perm.approveLeave
@@ -2569,8 +2569,22 @@ function ShortageItems({ user, allUsers, mobile }: any) {
           </div>
           {/* Status + KiotViet placeholder */}
           <div style={{ display:'flex', flexDirection:'column', alignItems:'flex-end', gap:5, flexShrink:0 }}>
-            <div style={{ fontSize:10, color:T.light, padding:'2px 8px', borderRadius:20,
-              border:`1px solid ${T.border}`, background:T.bg }}>🔗 KV: —</div>
+            {(() => {
+              const prod = products.find((p: any) =>
+                p.code === item.product_code || norm(p.name) === norm(item.product_name)
+              )
+              const stock = prod?.stock
+              return stock !== undefined && stock !== null && stock !== '' ? (
+                <span style={{ fontSize:11, fontWeight:700, padding:'2px 8px', borderRadius:20,
+                  color:Number(stock)===0?T.red:Number(stock)<=5?T.amber:T.green,
+                  background:Number(stock)===0?T.redBg:Number(stock)<=5?T.amberBg:T.greenBg }}>
+                  📦 Tồn: {stock}
+                </span>
+              ) : (
+                <div style={{ fontSize:10, color:T.light, padding:'2px 8px', borderRadius:20,
+                  border:`1px solid ${T.border}`, background:T.bg }}>🔗 KV: —</div>
+              )
+            })()}
             {item.status==='arrived'  && <span style={{ fontSize:11, fontWeight:700, color:T.green,  background:T.greenBg,  padding:'3px 10px', borderRadius:20 }}>✅ Đã về</span>}
             {item.status==='burned'   && <span style={{ fontSize:11, fontWeight:700, color:T.red,    background:T.redBg,    padding:'3px 10px', borderRadius:20 }}>🔥 Hàng cháy</span>}
             {item.status==='pending'  && <span style={{ fontSize:11, fontWeight:600, color:T.amber,  background:T.amberBg,  padding:'3px 10px', borderRadius:20 }}>⏳ Chờ xử lý</span>}
@@ -2785,17 +2799,36 @@ function ShortageItems({ user, allUsers, mobile }: any) {
                       style={{ padding:'9px 12px', cursor:'pointer', borderBottom:`1px solid ${T.border}`, fontSize:13, color:T.dark }}
                       onMouseEnter={e => (e.currentTarget.style.background=T.goldBg)}
                       onMouseLeave={e => (e.currentTarget.style.background='transparent')}>
-                      <span style={{ fontWeight:500 }}>{pr.name}</span>
-                      {pr.code && <span style={{ fontSize:11, color:T.light, marginLeft:8 }}>#{pr.code}</span>}
-                      {pr.unit && <span style={{ fontSize:11, color:T.med, marginLeft:8 }}>{pr.unit}</span>}
+                      <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', gap:8 }}>
+                        <div>
+                          <span style={{ fontWeight:500 }}>{pr.name}</span>
+                          {pr.code && <span style={{ fontSize:11, color:T.light, marginLeft:8 }}>#{pr.code}</span>}
+                        </div>
+                        {pr.stock !== undefined && pr.stock !== null && pr.stock !== '' && (
+                          <span style={{ fontSize:11, fontWeight:700, flexShrink:0,
+                            color:Number(pr.stock)===0?T.red:Number(pr.stock)<=5?T.amber:T.green,
+                            background:Number(pr.stock)===0?T.redBg:Number(pr.stock)<=5?T.amberBg:T.greenBg,
+                            padding:'2px 8px', borderRadius:20 }}>
+                            Tồn: {pr.stock}
+                          </span>
+                        )}
+                      </div>
                     </div>
                   ))
                 }
               </div>
             )}
             {selectedProd && (
-              <div style={{ padding:'8px 12px', background:T.greenBg, borderRadius:8, marginBottom:10, fontSize:12, color:T.green, fontWeight:600 }}>
-                ✅ Đã chọn: {selectedProd.name}{selectedProd.code ? ` (${selectedProd.code})` : ''}
+              <div style={{ padding:'8px 12px', background:T.greenBg, borderRadius:8, marginBottom:10, fontSize:12, color:T.green, fontWeight:600,
+                display:'flex', justifyContent:'space-between', alignItems:'center' }}>
+                <span>✅ {selectedProd.name}{selectedProd.code ? ` (${selectedProd.code})` : ''}</span>
+                {selectedProd.stock !== undefined && selectedProd.stock !== null && selectedProd.stock !== '' && (
+                  <span style={{ fontSize:12, fontWeight:700,
+                    color:Number(selectedProd.stock)===0?T.red:Number(selectedProd.stock)<=5?T.amber:'#1B5E20',
+                    background:'rgba(255,255,255,0.6)', padding:'2px 8px', borderRadius:20, marginLeft:8 }}>
+                    📦 Tồn kho: {selectedProd.stock}
+                  </span>
+                )}
               </div>
             )}
             <div style={{ marginBottom:14 }}>
@@ -2821,12 +2854,14 @@ function ShortageItems({ user, allUsers, mobile }: any) {
             placeholder="Mã SP" style={{ flex:1, padding:'8px 11px', border:`1px solid ${T.border}`, borderRadius:8, fontSize:13, fontFamily:'inherit', outline:'none' }}/>
           <input value={prodForm.unit} onChange={e => setProdForm(f => ({...f, unit:e.target.value}))}
             placeholder="ĐVT" style={{ flex:1, padding:'8px 11px', border:`1px solid ${T.border}`, borderRadius:8, fontSize:13, fontFamily:'inherit', outline:'none' }}/>
+          <input type="number" value={prodForm.stock} onChange={e => setProdForm(f => ({...f, stock:e.target.value}))}
+            placeholder="Tồn kho" style={{ flex:1, padding:'8px 11px', border:`1px solid ${T.border}`, borderRadius:8, fontSize:13, fontFamily:'inherit', outline:'none' }}/>
           <button onClick={async () => {
             if (!prodForm.name) return
-            const np = { id:'pr'+Date.now(), ...prodForm, active:true }
+            const np = { id:'pr'+Date.now(), ...prodForm, stock:prodForm.stock!==''?Number(prodForm.stock):null, active:true }
             setProducts(prev => [...prev, np])
             await db.from('products').insert(np)
-            setProdForm({ name:'', code:'', unit:'' })
+            setProdForm({ name:'', code:'', unit:'', stock:'' })
           }} style={{ padding:'8px 16px', borderRadius:8, border:'none', background:T.gold, color:'#fff', cursor:'pointer', fontFamily:'inherit', fontWeight:600, fontSize:13, flexShrink:0 }}>+ Thêm</button>
         </div>
         <div style={{ fontSize:11, color:T.light, marginBottom:8 }}>{products.length} sản phẩm · 🔍 Fuzzy search theo tên/mã</div>
@@ -2837,6 +2872,12 @@ function ShortageItems({ user, allUsers, mobile }: any) {
               <div style={{ flex:1, fontSize:13, color:T.dark, fontWeight:500 }}>{pr.name}</div>
               {pr.code && <div style={{ fontSize:11, color:T.light }}>#{pr.code}</div>}
               {pr.unit && <div style={{ fontSize:11, color:T.med }}>{pr.unit}</div>}
+              {pr.stock !== null && pr.stock !== undefined && pr.stock !== '' && (
+                <div style={{ fontSize:11, fontWeight:700,
+                  color:Number(pr.stock)===0?T.red:Number(pr.stock)<=5?T.amber:T.green }}>
+                  Tồn: {pr.stock}
+                </div>
+              )}
               <button onClick={async () => {
                 setProducts(prev => prev.filter(p => p.id!==pr.id))
                 await db.from('products').delete().eq('id', pr.id)
