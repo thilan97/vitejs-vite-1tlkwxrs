@@ -492,7 +492,7 @@ const getNav = (perm: any) => {
   })
 }
 
-function Sidebar({ user, page, setPage, onLogout, pendingCount }: any) {
+function Sidebar({ user, page, setPage, onLogout, pendingLeave, pendingOT }: any) {
   const perm = getPerm(user)
   const nav  = getNav(perm)
   return (
@@ -509,7 +509,7 @@ function Sidebar({ user, page, setPage, onLogout, pendingCount }: any) {
       <nav style={{ flex:1, padding:'8px 8px', overflowY:'auto' }}>
         {nav.map(item => {
           const active = page === item.id
-          const badge = ['leave','overtime'].includes(item.id) && pendingCount > 0 ? pendingCount : 0
+          const badge = item.id==='leave' ? pendingLeave : item.id==='overtime' ? pendingOT : 0
           return (
             <button key={item.id} onClick={() => setPage(item.id)}
               style={{ width:'100%', display:'flex', alignItems:'center', gap:9,
@@ -1152,9 +1152,9 @@ function Attendance({ user, allUsers, leaveRequests, attendance, setAttendance, 
   const [editForm, setEditForm] = useState({ status:'present', late_mins:0, reason:'', notes:'' })
   const p = mobile ? '16px' : '24px'
 
-  const canMarkAll  = getPerm(user, 'perm_view_all_attendance')
-  const canMarkDept = getPerm(user, 'perm_mark_attendance')
-  const canMarkPeer = getPerm(user, 'perm_mark_peer_attendance')
+  const canMarkAll  = getPerm(user).viewAllAttendance
+  const canMarkDept = getPerm(user).markAttendance
+  const canMarkPeer = getPerm(user).markPeerAttendance
   const canMark     = canMarkAll || canMarkDept || canMarkPeer
 
   const peerIds = allUsers
@@ -1486,8 +1486,8 @@ function Overtime({ user, allUsers, mobile }: any) {
   })
   const p = mobile ? '16px' : '24px'
 
-  const canApprove = getPerm(user, 'perm_approve_ot')
-  const canAll     = getPerm(user, 'perm_view_all_dashboard')
+  const canApprove = getPerm(user).approveOT
+  const canAll     = getPerm(user).viewAllDashboard
   const dids = allUsers.filter((u: any) => u.dept_id === user.dept_id).map((u: any) => u.id)
 
   useEffect(() => {
@@ -1725,8 +1725,8 @@ function Leave({ user, allUsers, leaveRequests, setLeaveRequests, mobile }: any)
   const [tab, setTab]               = useState('mine')
   const p = mobile ? '16px' : '24px'
 
-  const canApprove = getPerm(user, 'perm_approve_leave')
-  const canAll     = getPerm(user, 'perm_view_all_dashboard')
+  const canApprove = getPerm(user).approveLeave
+  const canAll     = getPerm(user).viewAllDashboard
   const dids = allUsers.filter((u: any) => u.dept_id === user.dept_id).map((u: any) => u.id)
 
   // Xác định ai duyệt đơn dựa trên số ngày và người xin
@@ -1931,7 +1931,7 @@ function Announcements({ user, allUsers, mobile }: any) {
   const [form, setForm]         = useState({ title:'', content:'', target_dept:'all', priority:'normal' })
   const [expanded, setExpanded] = useState<string[]>([])
   const p = mobile ? '16px' : '24px'
-  const canCreate = getPerm(user, 'perm_announce_all') || getPerm(user, 'perm_create_task')
+  const canCreate = getPerm(user).announceAll || getPerm(user).createTask
 
   useEffect(() => {
     Promise.all([
@@ -2015,7 +2015,7 @@ function Announcements({ user, allUsers, mobile }: any) {
                       </div>
                     </div>
                     <div style={{ display:'flex', gap:6, alignItems:'center' }}>
-                      {(getPerm(user,'perm_announce_all') || a.author_id===user.id) && (
+                      {(getPerm(user).announceAll || a.author_id===user.id) && (
                         <button onClick={e => { e.stopPropagation(); remove(a.id) }}
                           style={{ padding:'4px 8px', borderRadius:6, border:`1px solid ${T.redBg}`, background:T.redBg, cursor:'pointer', fontSize:11, fontFamily:'inherit', color:T.red }}>🗑️</button>
                       )}
@@ -2062,7 +2062,7 @@ function Announcements({ user, allUsers, mobile }: any) {
 // ── ORG CHART ─────────────────────────────────────
 function OrgChart({ user, allUsers, positions, mobile }: any) {
   const p = mobile ? '16px' : '24px'
-  const canEdit = getPerm(user, 'perm_manage_positions') || getPerm(user, 'perm_manage_users')
+  const canEdit = getPerm(user).managePositions || getPerm(user).manageUsers
 
   // Build tree từ positions
   const buildTree = (parentId: string): any[] => {
@@ -2611,7 +2611,7 @@ function Settings({ user, setUser, settings, setSettings, onManualReset, mobile 
           <GoldBtn small onClick={changePassword}>Đổi mật khẩu</GoldBtn>
         </Card>
 
-        {getPerm(user, 'perm_reset_checklist') && (
+        {getPerm(user).resetChecklist && (
           <Card>
             <div style={{ fontSize:13, fontWeight:700, color:T.dark, marginBottom:14 }}>⚙️ Lịch reset tự động</div>
             <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:12, marginBottom:14 }}>
@@ -2821,5 +2821,7 @@ export default function App() {
      )
 }
 
-// ══ KẾT THÚC PHẦN 6 — HOÀN THÀNH! ══
+
+
+
 
