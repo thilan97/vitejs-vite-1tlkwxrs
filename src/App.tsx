@@ -1724,12 +1724,18 @@ function Leave({ user, allUsers, leaveRequests, setLeaveRequests, mobile }: any)
   const [reviewNotes, setReviewNotes] = useState('')
   const [form, setForm]             = useState({ start_date:'', end_date:'', type:'annual', reason:'' })
   const [tab, setTab]               = useState('mine')
+  const [submitError, setSubmitError] = useState('')
+  const [submitting, setSubmitting]   = useState(false)
   const p = mobile ? '16px' : '24px'
 
   // Refresh data mỗi khi mở tab Nghỉ phép
+  // Dùng ref để tránh race condition: fetch cũ đè lên optimistic update mới
+  const fetchingRef = useRef(true)
   useEffect(() => {
+    fetchingRef.current = true
     db.from('leave_requests').select('*').order('created_at', { ascending:false })
-      .then(({ data }) => { if (data) setLeaveRequests(data) })
+      .then(({ data }) => { if (data && fetchingRef.current) setLeaveRequests(data) })
+    return () => { fetchingRef.current = false }
   }, [])
 
   const canApprove = getPerm(user).approveLeave
@@ -1775,13 +1781,33 @@ function Leave({ user, allUsers, leaveRequests, setLeaveRequests, mobile }: any)
 
   const submit = async () => {
     if (!form.start_date || !form.end_date || !form.reason) return
+    setSubmitting(true); setSubmitError('')
     const days = daysBetween(form.start_date, form.end_date)
     const approver = getApprover(user.id, days)
-    const req = { id:'lr'+Date.now(), ...form, user_id:user.id, dept_id:user.dept_id,
+    const now = new Date().toISOString()  // ISO format để Supabase timestamptz nhận đúng
+    const tempId = 'lr'+Date.now()
+    const req = { id:tempId, ...form, user_id:user.id, dept_id:user.dept_id,
       days, approver_level:approver, status:'pending',
-      reviewed_by:'', reviewed_at:'', review_notes:'', created_at:fmtNow() }
+      reviewed_by:'', reviewed_at:'', review_notes:'', created_at:now }
+
+    // Optimistic update
+    fetchingRef.current = false  // chặn fetch cũ đè lên state
     setLeaveRequests((prev: any) => [req, ...prev])
-    await db.from('leave_requests').insert(req)
+
+    const { error } = await db.from('leave_requests').insert(req)
+    if (error) {
+      // Rollback nếu insert thất bại
+      setLeaveRequests((prev: any) => prev.filter((r: any) => r.id !== tempId))
+      setSubmitError('❌ Gửi đơn thất bại: ' + (error.message || 'Lỗi không xác định'))
+      setSubmitting(false)
+      return
+    }
+
+    // Re-fetch để đồng bộ với DB (lấy ID và created_at thực từ server)
+    const { data } = await db.from('leave_requests').select('*').order('created_at', { ascending:false })
+    if (data) setLeaveRequests(data)
+
+    setSubmitting(false)
     setShow(false)
     setForm({ start_date:'', end_date:'', type:'annual', reason:'' })
   }
@@ -1909,9 +1935,12 @@ function Leave({ user, allUsers, leaveRequests, setLeaveRequests, mobile }: any)
           </div>
         )}
         <Inp label="Lý do *" value={form.reason} onChange={(v: string) => setForm(f => ({...f, reason:v}))} placeholder="Nhập lý do xin nghỉ..."/>
+        {submitError && <div style={{ fontSize:12, color:T.red, marginBottom:10 }}>{submitError}</div>}
         <div style={{ display:'flex', justifyContent:'flex-end', gap:10 }}>
-          <GoldBtn outline small onClick={() => setShow(false)}>Hủy</GoldBtn>
-          <GoldBtn small onClick={submit} disabled={!form.start_date||!form.end_date||!form.reason}>Gửi đơn</GoldBtn>
+          <GoldBtn outline small onClick={() => { setShow(false); setSubmitError('') }}>Hủy</GoldBtn>
+          <GoldBtn small onClick={submit} disabled={submitting||!form.start_date||!form.end_date||!form.reason}>
+            {submitting ? '⏳ Đang gửi...' : 'Gửi đơn'}
+          </GoldBtn>
         </div>
       </Modal>
 
