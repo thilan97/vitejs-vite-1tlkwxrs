@@ -2133,73 +2133,127 @@ function OrgChart({ user, allUsers, positions, mobile }: any) {
   const canEdit = getPerm(user).managePositions || getPerm(user).manageUsers
 
   // Build tree từ positions
-  const buildTree = (parentId: string): any[] => {
-    return positions
+  const buildTree = (parentId: string): any[] =>
+    positions
       .filter((pos: any) => pos.reports_to === parentId)
       .map((pos: any) => ({
         ...pos,
         users: allUsers.filter((u: any) => u.position_id === pos.id),
-        children: buildTree(pos.id)
+        children: buildTree(pos.id),
       }))
-  }
 
   const roots = positions.filter((pos: any) => !pos.reports_to || pos.reports_to === '')
   const tree = roots.map((pos: any) => ({
     ...pos,
     users: allUsers.filter((u: any) => u.position_id === pos.id),
-    children: buildTree(pos.id)
+    children: buildTree(pos.id),
   }))
 
-  const NodeCard = ({ node, depth = 0 }: any) => {
-    const [expanded, setExpanded] = useState(true)
+  // ── CSS tree node ──────────────────────────────
+  const NodeCard = ({ node }: any) => {
+    const [collapsed, setCollapsed] = useState(false)
     const deptColor = DEPT_COLOR[node.dept_id] || T.gold
     const hasChildren = node.children && node.children.length > 0
 
     return (
-      <div style={{ display:'flex', flexDirection:'column', alignItems:'center' }}>
-        {/* Node box */}
-        <div style={{ background:T.card, border:`2px solid ${deptColor}`,
-          borderRadius:12, padding:'12px 16px', minWidth:160, maxWidth:200,
-          textAlign:'center', position:'relative', cursor: hasChildren ? 'pointer' : 'default' }}
-          onClick={() => hasChildren && setExpanded(e => !e)}>
-          <div style={{ fontSize:11, fontWeight:700, color:deptColor, textTransform:'uppercase', letterSpacing:.5, marginBottom:4 }}>
+      <li style={{ listStyle:'none', display:'flex', flexDirection:'column', alignItems:'center', position:'relative' }}>
+        {/* ─ Node box ─ */}
+        <div
+          onClick={() => hasChildren && setCollapsed(c => !c)}
+          style={{
+            background: T.card,
+            border: `2px solid ${deptColor}`,
+            borderRadius: 12,
+            padding: '10px 16px',
+            minWidth: 150,
+            maxWidth: 190,
+            textAlign: 'center',
+            cursor: hasChildren ? 'pointer' : 'default',
+            position: 'relative',
+            boxShadow: '0 2px 8px rgba(0,0,0,0.07)',
+            transition: 'box-shadow .2s',
+            userSelect: 'none',
+          }}
+        >
+          {/* Màu top accent */}
+          <div style={{ position:'absolute', top:0, left:16, right:16, height:3, background:deptColor, borderRadius:'0 0 4px 4px' }}/>
+          <div style={{ fontSize:10, fontWeight:700, color:deptColor, textTransform:'uppercase', letterSpacing:.8, marginBottom:6, marginTop:4 }}>
             {node.name}
           </div>
-          {node.users.length > 0 ? (
-            node.users.map((u: any) => (
-              <div key={u.id} style={{ display:'flex', alignItems:'center', justifyContent:'center', gap:6, marginTop:6 }}>
-                <div style={{ width:28, height:28, borderRadius:'50%', background:deptColor,
-                  display:'flex', alignItems:'center', justifyContent:'center',
-                  color:'#fff', fontSize:9, fontWeight:700, flexShrink:0 }}>{u.ini}</div>
-                <div style={{ fontSize:12, fontWeight:600, color:T.dark }}>{u.name}</div>
+          {node.users.length > 0 ? node.users.map((u: any) => (
+            <div key={u.id} style={{ display:'flex', alignItems:'center', justifyContent:'center', gap:7, marginBottom:4 }}>
+              <div style={{ width:30, height:30, borderRadius:'50%', background:deptColor, flexShrink:0,
+                display:'flex', alignItems:'center', justifyContent:'center',
+                color:'#fff', fontSize:10, fontWeight:700, border:`2px solid #fff`,
+                boxShadow:`0 0 0 2px ${deptColor}40` }}>
+                {u.ini}
               </div>
-            ))
-          ) : (
-            <div style={{ fontSize:11, color:T.light, marginTop:4 }}>Chưa có nhân viên</div>
+              <div style={{ fontSize:12, fontWeight:600, color:T.dark, textAlign:'left' }}>{u.name}</div>
+            </div>
+          )) : (
+            <div style={{ fontSize:10, color:T.light, fontStyle:'italic', padding:'4px 0' }}>Chưa có nhân viên</div>
           )}
           {hasChildren && (
-            <div style={{ position:'absolute', bottom:-10, left:'50%', transform:'translateX(-50%)',
-              background:deptColor, color:'#fff', borderRadius:'50%', width:20, height:20,
-              display:'flex', alignItems:'center', justifyContent:'center', fontSize:11, fontWeight:700 }}>
-              {expanded ? '▼' : '▶'}
+            <div style={{ marginTop:6, fontSize:10, color:deptColor, fontWeight:700 }}>
+              {collapsed ? `▶ ${node.children.length} cấp dưới` : '▼ Thu gọn'}
             </div>
           )}
         </div>
 
-        {/* Children */}
-        {hasChildren && expanded && (
-          <div style={{ marginTop:24, display:'flex', gap:16, flexWrap:'wrap', justifyContent:'center', position:'relative' }}>
-            {/* Connector line */}
-            <div style={{ position:'absolute', top:-16, left:'50%', width:2, height:16,
-              background:T.border, transform:'translateX(-50%)' }}/>
-            {node.children.map((child: any) => (
-              <div key={child.id} style={{ display:'flex', flexDirection:'column', alignItems:'center' }}>
-                <NodeCard node={child} depth={depth+1}/>
-              </div>
-            ))}
-          </div>
+        {/* ─ Children với CSS tree lines ─ */}
+        {hasChildren && !collapsed && (
+          <ul style={{
+            display: 'flex',
+            gap: 0,
+            padding: 0,
+            margin: 0,
+            paddingTop: 32,
+            position: 'relative',
+          }}>
+            {/* Đường dọc từ parent xuống */}
+            <li style={{
+              position: 'absolute', top: 0, left: '50%',
+              width: 2, height: 32,
+              background: deptColor + '80',
+              transform: 'translateX(-50%)',
+              listStyle: 'none',
+            }}/>
+            {node.children.map((child: any, ci: number) => {
+              const isOnly = node.children.length === 1
+              const isFirst = ci === 0
+              const isLast = ci === node.children.length - 1
+              const childColor = DEPT_COLOR[child.dept_id] || T.gold
+              return (
+                <li key={child.id} style={{
+                  listStyle: 'none',
+                  display: 'flex',
+                  flexDirection: 'column',
+                  alignItems: 'center',
+                  padding: '0 12px',
+                  position: 'relative',
+                }}>
+                  {/* Đường ngang nối các anh em */}
+                  {!isOnly && (
+                    <div style={{
+                      position: 'absolute', top: 0, height: 2,
+                      background: deptColor + '60',
+                      left: isFirst ? '50%' : 0,
+                      right: isLast ? '50%' : 0,
+                    }}/>
+                  )}
+                  {/* Đường dọc từ đường ngang xuống node con */}
+                  <div style={{
+                    width: 2, height: 22,
+                    background: childColor + '80',
+                    flexShrink: 0,
+                  }}/>
+                  <NodeCard node={child}/>
+                </li>
+              )
+            })}
+          </ul>
         )}
-      </div>
+      </li>
     )
   }
 
@@ -2219,21 +2273,23 @@ function OrgChart({ user, allUsers, positions, mobile }: any) {
           <div style={{ fontSize:12, marginTop:6 }}>Vào mục Vị trí để tạo cấu trúc công ty</div>
         </Card>
       ) : (
-        <div style={{ overflowX:'auto', paddingBottom:20 }}>
-          <div style={{ display:'flex', gap:24, justifyContent:'center', flexWrap:'wrap', minWidth:400 }}>
+        <div style={{ overflowX:'auto', overflowY:'visible', paddingBottom:32, paddingTop:8 }}>
+          <ul style={{ display:'flex', gap:0, padding:0, margin:0, justifyContent:'center', minWidth:'max-content' }}>
             {tree.map(node => <NodeCard key={node.id} node={node}/>)}
-          </div>
+          </ul>
         </div>
       )}
 
       {/* Legend */}
-      <div style={{ display:'flex', gap:12, marginTop:20, flexWrap:'wrap', justifyContent:'center' }}>
+      <div style={{ display:'flex', gap:16, marginTop:16, flexWrap:'wrap', justifyContent:'center',
+        padding:'12px 16px', background:T.bg, borderRadius:10, border:`1px solid ${T.border}` }}>
         {['kho','sale','vp','all'].map(d => (
           <div key={d} style={{ display:'flex', alignItems:'center', gap:6, fontSize:12, color:T.med }}>
-            <div style={{ width:12, height:12, borderRadius:3, background:DEPT_COLOR[d] }}/>
-            {DEPT_NAME[d]}
+            <div style={{ width:10, height:10, borderRadius:'50%', background:DEPT_COLOR[d] }}/>
+            <span style={{ fontWeight:500 }}>{DEPT_NAME[d]}</span>
           </div>
         ))}
+        <div style={{ fontSize:11, color:T.light, marginLeft:'auto' }}>Click node để thu/mở cấp dưới</div>
       </div>
     </div>
   )
