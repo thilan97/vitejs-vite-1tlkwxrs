@@ -467,7 +467,7 @@ onDone(newPw)
 }
 
 // ── NAVIGATION ───────────────────────────────────
-const getNav = (perm: any) => {
+const getNav = (perm: any, deptId = '') => {
   const all = [
     { id:'dashboard',  icon:'📊', label:'Dashboard'   },
     { id:'checklist',  icon:'✅', label:'Checklist'   },
@@ -477,6 +477,7 @@ const getNav = (perm: any) => {
     { id:'overtime',   icon:'⏰', label:'Làm thêm'    },
     { id:'announce',   icon:'📣', label:'Thông báo'   },
     { id:'leave',      icon:'🏖️', label:'Nghỉ phép'   },
+    { id:'shortage',   icon:'📦', label:'Hàng thiếu'  },
     { id:'orgchart',   icon:'🏢', label:'Sơ đồ tổ chức'},
     { id:'history',    icon:'🗂️', label:'Lịch sử'    },
     { id:'users',      icon:'👥', label:'Nhân viên'   },
@@ -489,13 +490,14 @@ const getNav = (perm: any) => {
     if (n.id === 'users')      return perm.manageUsers
     if (n.id === 'positions')  return perm.managePositions
     if (n.id === 'dashboard')  return perm.viewAllDashboard || perm.viewDeptChecklist
+    if (n.id === 'shortage')   return deptId === 'sale' || perm.viewAllDashboard || perm.approveLeave
     return true
   })
 }
 
 function Sidebar({ user, page, setPage, onLogout, pendingLeave, pendingOT }: any) {
   const perm = getPerm(user)
-  const nav  = getNav(perm)
+  const nav  = getNav(perm, user?.dept_id||'')
   return (
     <div style={{ width:215, background:T.sidebar, display:'flex', flexDirection:'column',
       flexShrink:0, height:'100vh', position:'sticky', top:0 }}>
@@ -549,7 +551,7 @@ function Sidebar({ user, page, setPage, onLogout, pendingLeave, pendingOT }: any
 }
 
 function BottomNav({ page, setPage, user, pendingLeave, pendingOT }: any) {
-  const allNav = getNav(getPerm(user))
+  const allNav = getNav(getPerm(user), user?.dept_id||'')
   const mainNav = allNav.slice(0, 4)
   const [showMore, setShowMore] = useState(false)
 
@@ -2404,6 +2406,450 @@ function Announcements({ user, allUsers, mobile }: any) {
   )
 }
 
+// ── SHORTAGE ITEMS ───────────────────────────────
+function ShortageItems({ user, allUsers, mobile }: any) {
+  const [items,        setItems]       = useState<any[]>([])
+  const [products,     setProducts]    = useState<any[]>([])
+  const [showAdd,      setShowAdd]     = useState(false)
+  const [showProdMgmt, setShowProdMgmt] = useState(false)
+  const [search,       setSearch]      = useState('')
+  const [selectedProd, setSelectedProd] = useState<any>(null)
+  const [note,         setNote]        = useState('')
+  const [dupWarning,   setDupWarning]  = useState<any>(null)
+  const [mgrTab,       setMgrTab]      = useState('pending')
+  const [sortBy,       setSortBy]      = useState<'hot'|'date'>('hot')
+  const [prodForm,     setProdForm]    = useState({ name:'', code:'', unit:'' })
+  const p    = mobile ? '16px' : '24px'
+  const perm = getPerm(user)
+  const isManager = perm.viewAllDashboard || perm.approveLeave
+  const isSale    = user.dept_id === 'sale'
+
+  useEffect(() => {
+    Promise.all([
+      db.from('shortage_items').select('*').order('created_at', { ascending:false }),
+      db.from('products').select('*').eq('active', true).order('name'),
+    ]).then(([si, pr]) => { setItems(si.data||[]); setProducts(pr.data||[]) })
+  }, [])
+
+  // Auto-filter: ẩn hàng đã về > 3 ngày
+  const visibleItems = useMemo(() => items.filter(item => {
+    if (item.status !== 'arrived') return true
+    if (!item.arrived_at) return true
+    return (Date.now() - new Date(item.arrived_at).getTime()) / 86400000 <= 3
+  }), [items])
+
+  // ── Fuzzy search: chuẩn hóa + match từng token ──
+  const norm = (s: string) => (s||'').toLowerCase()
+    .normalize('NFD').replace(/[\u0300-\u036f]/g,'')
+    .replace(/đ/g,'d')
+  const fuzzy = (prod: any, q: string) => {
+    if (!q.trim()) return true
+    const hay = norm(prod.name+' '+(prod.code||'')+' '+(prod.unit||''))
+    return norm(q).split(/\s+/).filter(Boolean).every(t => hay.includes(t))
+  }
+  const searchResults = useMemo(() => products.filter(p => fuzzy(p, search)).slice(0,15), [products, search])
+
+  const daysRemaining = (item: any) => {
+    if (!item.arrival_date) return null
+    const today = new Date(); today.setHours(0,0,0,0)
+    return Math.ceil((new Date(item.arrival_date).getTime() - today.getTime()) / 86400000)
+  }
+
+  // ── Report hàng thiếu ──
+  const report = async () => {
+    if (!selectedProd) return
+    const existing = visibleItems.find(i =>
+      norm(i.product_name) === norm(selectedProd.name) &&
+      !['arrived','burned'].includes(i.status)
+    )
+    if (existing) {
+      const alreadyMe = existing.reporters?.some((r: any) => r.user_id === user.id)
+      setDupWarning({ type: alreadyMe ? 'self' : 'other', item: existing })
+      return
+    }
+    const newItem = {
+      id:'si'+Date.now(), product_name:selectedProd.name, product_code:selectedProd.code||'',
+      kiot_stock:'',
+      reporters:[{ user_id:user.id, name:user.name, reported_at:new Date().toISOString(), note }],
+      status:'pending', arrival_date:'', arrival_qty:0, manager_note:'',
+      arrived_at:'', archived_at:'', created_at:new Date().toISOString(), updated_at:new Date().toISOString(),
+    }
+    setItems(prev => [newItem, ...prev])
+    const { error } = await db.from('shortage_items').insert(newItem)
+    if (error) { setItems(prev => prev.filter(i => i.id !== newItem.id)); alert('❌ Lỗi: '+error.message); return }
+    closeAdd()
+  }
+
+  const addReporter = async (itemId: string) => {
+    const item = items.find(i => i.id === itemId); if (!item) return
+    const newReporters = [...(item.reporters||[]), { user_id:user.id, name:user.name, reported_at:new Date().toISOString(), note }]
+    const updated = { ...item, reporters:newReporters, updated_at:new Date().toISOString() }
+    setItems(prev => prev.map(i => i.id === itemId ? updated : i))
+    await db.from('shortage_items').update({ reporters:newReporters, updated_at:updated.updated_at }).eq('id', itemId)
+    closeAdd()
+  }
+
+  const updateItem = async (id: string, changes: any) => {
+    const upd = { ...items.find(i => i.id === id), ...changes, updated_at:new Date().toISOString() }
+    setItems(prev => prev.map(i => i.id === id ? upd : i))
+    await db.from('shortage_items').update({ ...changes, updated_at:upd.updated_at }).eq('id', id)
+  }
+
+  const closeAdd = () => { setShowAdd(false); setSearch(''); setSelectedProd(null); setNote(''); setDupWarning(null) }
+
+  // ── Manager view data ──
+  const pendingList  = visibleItems.filter(i => i.status==='pending').sort((a,b) => (b.reporters?.length||0)-(a.reporters?.length||0))
+  const incomingList = visibleItems.filter(i => i.status==='incoming').sort((a,b) =>
+    sortBy==='hot' ? (b.reporters?.length||0)-(a.reporters?.length||0)
+    : (a.arrival_date||'zzz').localeCompare(b.arrival_date||'zzz')
+  )
+  const burnedList   = visibleItems.filter(i => i.status==='burned')
+  const arrivedList  = visibleItems.filter(i => i.status==='arrived')
+
+  // ── Sale view data ──
+  const myItems    = visibleItems.filter(i => i.reporters?.some((r: any) => r.user_id===user.id))
+  const otherItems = visibleItems.filter(i => !i.reporters?.some((r: any) => r.user_id===user.id) && i.status!=='arrived')
+
+  // ── Item Card ──
+  const ItemCard = ({ item, canManage }: any) => {
+    const [editMode, setEditMode] = useState(false)
+    const [arrDate,  setArrDate]  = useState(item.arrival_date||'')
+    const [arrQty,   setArrQty]   = useState(String(item.arrival_qty||''))
+    const [mgrNote,  setMgrNote]  = useState(item.manager_note||'')
+    const days     = daysRemaining(item)
+    const reporters = item.reporters || []
+    const hot      = reporters.length
+
+    const save = async () => {
+      if (!arrDate) return
+      await updateItem(item.id, { status:'incoming', arrival_date:arrDate, arrival_qty:Number(arrQty)||0, manager_note:mgrNote })
+      setEditMode(false)
+    }
+    const setBurned = async () => {
+      await updateItem(item.id, { status:'burned', arrival_date:'', manager_note:mgrNote })
+      setEditMode(false)
+    }
+    const markArrived = async () => {
+      await updateItem(item.id, { status:'arrived', arrived_at:new Date().toISOString() })
+    }
+
+    const borderColor = item.status==='arrived' ? T.green
+      : item.status==='burned' ? T.red
+      : hot>=3 ? '#E65100' : hot===2 ? T.amber : T.border
+
+    return (
+      <div style={{ background:T.card, borderRadius:12, border:`1.5px solid ${borderColor}`,
+        padding:'14px 16px', marginBottom:10 }}>
+        {/* ── Header ── */}
+        <div style={{ display:'flex', justifyContent:'space-between', alignItems:'flex-start', gap:10, marginBottom:8 }}>
+          <div style={{ flex:1 }}>
+            <div style={{ display:'flex', alignItems:'center', gap:7, flexWrap:'wrap', marginBottom:6 }}>
+              {hot>=3 && <span style={{ fontSize:11, fontWeight:700, color:'#BF360C', background:'#FBE9E7', padding:'2px 8px', borderRadius:20 }}>🔥 {hot} sale hỏi</span>}
+              {hot===2 && <span style={{ fontSize:11, fontWeight:700, color:T.amber, background:T.amberBg, padding:'2px 8px', borderRadius:20 }}>⚡ {hot} sale hỏi</span>}
+              <span style={{ fontSize:14, fontWeight:700, color:T.dark }}>{item.product_name}</span>
+              {item.product_code && <span style={{ fontSize:11, color:T.light }}>#{item.product_code}</span>}
+            </div>
+            {/* Reporters pills */}
+            <div style={{ display:'flex', gap:5, flexWrap:'wrap' }}>
+              {reporters.map((r: any, i: number) => {
+                const u = allUsers.find((u: any) => u.id===r.user_id)
+                return (
+                  <div key={i} style={{ display:'flex', alignItems:'center', gap:4, padding:'2px 8px',
+                    background:T.goldBg, borderRadius:20, border:`1px solid ${T.goldBorder}` }}>
+                    <div style={{ width:18, height:18, borderRadius:'50%', background:T.gold,
+                      display:'flex', alignItems:'center', justifyContent:'center', color:'#fff', fontSize:8, fontWeight:700 }}>
+                      {u?.ini||'?'}
+                    </div>
+                    <span style={{ fontSize:11, fontWeight:600, color:T.goldText }}>{r.name}</span>
+                    {r.note && <span style={{ fontSize:10, color:T.med }}>· {r.note}</span>}
+                  </div>
+                )
+              })}
+            </div>
+          </div>
+          {/* Status + KiotViet placeholder */}
+          <div style={{ display:'flex', flexDirection:'column', alignItems:'flex-end', gap:5, flexShrink:0 }}>
+            <div style={{ fontSize:10, color:T.light, padding:'2px 8px', borderRadius:20,
+              border:`1px solid ${T.border}`, background:T.bg }}>🔗 KV: —</div>
+            {item.status==='arrived'  && <span style={{ fontSize:11, fontWeight:700, color:T.green,  background:T.greenBg,  padding:'3px 10px', borderRadius:20 }}>✅ Đã về</span>}
+            {item.status==='burned'   && <span style={{ fontSize:11, fontWeight:700, color:T.red,    background:T.redBg,    padding:'3px 10px', borderRadius:20 }}>🔥 Hàng cháy</span>}
+            {item.status==='pending'  && <span style={{ fontSize:11, fontWeight:600, color:T.amber,  background:T.amberBg,  padding:'3px 10px', borderRadius:20 }}>⏳ Chờ xử lý</span>}
+            {item.status==='incoming' && days !== null && (
+              days > 0  ? <span style={{ fontSize:11, fontWeight:700, color:T.blue,  background:T.blueBg,  padding:'3px 10px', borderRadius:20 }}>📅 Còn {days} ngày</span>
+            : days===0  ? <span style={{ fontSize:11, fontWeight:700, color:T.amber, background:T.amberBg, padding:'3px 10px', borderRadius:20 }}>⏰ Hôm nay về!</span>
+            : <span style={{ fontSize:11, fontWeight:700, color:T.red, background:T.redBg, padding:'3px 10px', borderRadius:20 }}>⚠️ Quá {Math.abs(days)} ngày</span>
+            )}
+          </div>
+        </div>
+
+        {/* Manager note reply (visible to sale) */}
+        {item.manager_note && !editMode && (
+          <div style={{ padding:'7px 10px', background:T.blueBg, borderRadius:8, fontSize:12, color:T.blue, marginBottom:8 }}>
+            💬 QM: {item.manager_note}
+            {item.arrival_date && <b> · Ngày về: {fmtDate(item.arrival_date)}{item.arrival_qty ? ` · ${item.arrival_qty} sản phẩm` : ''}</b>}
+          </div>
+        )}
+
+        {/* Arrived button for sale when deadline passed */}
+        {!canManage && item.status==='incoming' && days!==null && days<=0 && (
+          <button onClick={markArrived}
+            style={{ padding:'5px 13px', borderRadius:7, border:`1.5px solid ${T.green}`,
+              background:T.greenBg, cursor:'pointer', fontSize:12, fontFamily:'inherit', color:T.green, fontWeight:600, marginBottom:8 }}>
+            ✅ Xác nhận hàng đã về
+          </button>
+        )}
+
+        {/* Manager actions */}
+        {canManage && item.status!=='arrived' && !editMode && (
+          <div style={{ display:'flex', gap:7, flexWrap:'wrap', marginBottom:4 }}>
+            <button onClick={() => setEditMode(true)}
+              style={{ padding:'5px 12px', borderRadius:7, border:`1.5px solid ${T.gold}`,
+                background:T.goldBg, cursor:'pointer', fontSize:12, fontFamily:'inherit', color:T.goldText, fontWeight:600 }}>
+              ✏️ Cập nhật
+            </button>
+            {item.status==='incoming' && days!==null && days<=0 && (
+              <button onClick={markArrived}
+                style={{ padding:'5px 12px', borderRadius:7, border:`1.5px solid ${T.green}`,
+                  background:T.greenBg, cursor:'pointer', fontSize:12, fontFamily:'inherit', color:T.green, fontWeight:600 }}>
+                ✅ Xác nhận đã về
+              </button>
+            )}
+          </div>
+        )}
+
+        {/* Manager edit form */}
+        {canManage && editMode && (
+          <div style={{ padding:'12px', background:T.bg, borderRadius:8, border:`1px solid ${T.border}`, marginTop:8 }}>
+            <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:10, marginBottom:10 }}>
+              <div>
+                <div style={{ fontSize:11, color:T.med, marginBottom:4 }}>📅 Ngày về dự kiến</div>
+                <input type="date" value={arrDate} onChange={e => setArrDate(e.target.value)}
+                  style={{ width:'100%', padding:'7px 9px', border:`1px solid ${T.border}`, borderRadius:7,
+                    fontSize:12, fontFamily:'inherit', color:T.dark, background:'#fff', boxSizing:'border-box' as any }}/>
+              </div>
+              <div>
+                <div style={{ fontSize:11, color:T.med, marginBottom:4 }}>📦 Số lượng về</div>
+                <input type="number" value={arrQty} onChange={e => setArrQty(e.target.value)} placeholder="0"
+                  style={{ width:'100%', padding:'7px 9px', border:`1px solid ${T.border}`, borderRadius:7,
+                    fontSize:12, fontFamily:'inherit', color:T.dark, background:'#fff', boxSizing:'border-box' as any }}/>
+              </div>
+            </div>
+            <div style={{ marginBottom:10 }}>
+              <div style={{ fontSize:11, color:T.med, marginBottom:4 }}>💬 Phản hồi cho sale</div>
+              <input value={mgrNote} onChange={e => setMgrNote(e.target.value)}
+                placeholder="VD: Đã liên hệ NCC, dự kiến về 15/4..."
+                style={{ width:'100%', padding:'7px 9px', border:`1px solid ${T.border}`, borderRadius:7,
+                  fontSize:12, fontFamily:'inherit', color:T.dark, background:'#fff', boxSizing:'border-box' as any }}/>
+            </div>
+            <div style={{ display:'flex', gap:7, flexWrap:'wrap' }}>
+              <button onClick={save} disabled={!arrDate}
+                style={{ padding:'6px 14px', borderRadius:7, border:'none',
+                  background:arrDate?T.gold:T.border, color:'#fff', cursor:arrDate?'pointer':'not-allowed',
+                  fontSize:12, fontFamily:'inherit', fontWeight:600 }}>💾 Lưu ngày về</button>
+              <button onClick={setBurned}
+                style={{ padding:'6px 14px', borderRadius:7, border:`1px solid ${T.red}`,
+                  background:T.redBg, color:T.red, cursor:'pointer', fontSize:12, fontFamily:'inherit', fontWeight:600 }}>🔥 Hàng cháy</button>
+              <button onClick={() => setEditMode(false)}
+                style={{ padding:'6px 12px', borderRadius:7, border:`1px solid ${T.border}`,
+                  background:'transparent', color:T.med, cursor:'pointer', fontSize:12, fontFamily:'inherit' }}>Hủy</button>
+            </div>
+          </div>
+        )}
+
+        <div style={{ marginTop:7, fontSize:10, color:T.light }}>
+          Báo lúc: {reporters[0]?.reported_at ? new Date(reporters[0].reported_at).toLocaleString('vi-VN') : '—'}
+        </div>
+      </div>
+    )
+  }
+
+  const tabData: any = { pending:pendingList, incoming:incomingList, burned:burnedList, arrived:arrivedList }
+  const TAB_CFG = [
+    ['pending',  `⏳ Chờ xử lý`,   pendingList.length],
+    ['incoming', `📅 Sắp về`,       incomingList.length],
+    ['burned',   `🔥 Hàng cháy`,    burnedList.length],
+    ['arrived',  `✅ Đã về`,        arrivedList.length],
+  ]
+
+  return (
+    <div style={{ padding:`0 ${p} ${mobile?'80px':p}` }}>
+      <Topbar mobile={mobile} title="📦 Hàng thiếu" subtitle="Theo dõi tình trạng hàng hóa phòng Sale"
+        action={
+          <div style={{ display:'flex', gap:8 }}>
+            {perm.manageUsers && <GoldBtn outline small onClick={() => setShowProdMgmt(true)}>📋 DS Sản phẩm</GoldBtn>}
+            {isSale && <GoldBtn small onClick={() => { setShowAdd(true); setSearch(''); setSelectedProd(null); setNote('') }}>+ Báo thiếu</GoldBtn>}
+          </div>
+        }/>
+
+      {/* ══ MANAGER VIEW ══ */}
+      {isManager ? (
+        <div>
+          <div style={{ display:'flex', gap:6, marginBottom:14, flexWrap:'wrap', alignItems:'center' }}>
+            {TAB_CFG.map(([id, label, count]) => (
+              <button key={id} onClick={() => setMgrTab(id as string)}
+                style={{ padding:'6px 13px', borderRadius:8, cursor:'pointer', fontFamily:'inherit', fontSize:12,
+                  border:`1.5px solid ${mgrTab===id?T.gold:T.border}`,
+                  background:mgrTab===id?T.goldBg:'transparent',
+                  color:mgrTab===id?T.goldText:T.med, fontWeight:mgrTab===id?600:400 }}>
+                {label} <span style={{ fontSize:11, opacity:.8 }}>({count})</span>
+              </button>
+            ))}
+            {mgrTab==='incoming' && (
+              <select value={sortBy} onChange={e => setSortBy(e.target.value as any)}
+                style={{ marginLeft:'auto', padding:'6px 10px', borderRadius:8, border:`1px solid ${T.border}`,
+                  fontSize:12, fontFamily:'inherit', color:T.dark, background:T.bg, cursor:'pointer', outline:'none' }}>
+                <option value="hot">🔥 Nóng nhất</option>
+                <option value="date">📅 Ngày về gần nhất</option>
+              </select>
+            )}
+          </div>
+          {tabData[mgrTab]?.length === 0 ? (
+            <Card style={{ textAlign:'center', padding:'40px', color:T.light }}>
+              <div style={{ fontSize:32, marginBottom:8 }}>📦</div>
+              <div>Không có mục nào</div>
+            </Card>
+          ) : tabData[mgrTab].map((item: any) => <ItemCard key={item.id} item={item} canManage={true}/>)}
+        </div>
+      ) : (
+        /* ══ SALE VIEW ══ */
+        <div style={{ display:'grid', gridTemplateColumns:mobile?'1fr':'1fr 1fr', gap:16 }}>
+          {/* Mã tôi báo */}
+          <div>
+            <div style={{ display:'flex', alignItems:'center', gap:8, marginBottom:10 }}>
+              <div style={{ fontSize:13, fontWeight:700, color:T.dark }}>📋 Mã tôi báo</div>
+              <span style={{ fontSize:11, background:T.goldBg, color:T.goldText, padding:'2px 8px', borderRadius:20, fontWeight:600 }}>{myItems.length}</span>
+            </div>
+            {myItems.length===0
+              ? <div style={{ padding:'32px', textAlign:'center', color:T.light, background:T.card, borderRadius:12, border:`1px solid ${T.border}` }}>
+                  <div style={{ fontSize:28, marginBottom:8 }}>📦</div><div style={{ fontSize:13 }}>Chưa báo mã nào</div>
+                </div>
+              : myItems.map(item => <ItemCard key={item.id} item={item} canManage={false}/>)
+            }
+          </div>
+          {/* Mã sale khác báo */}
+          <div>
+            <div style={{ display:'flex', alignItems:'center', gap:8, marginBottom:10 }}>
+              <div style={{ fontSize:13, fontWeight:700, color:T.dark }}>👥 Mã sale khác báo</div>
+              <span style={{ fontSize:11, background:T.grayBg, color:T.gray, padding:'2px 8px', borderRadius:20, fontWeight:600 }}>{otherItems.length}</span>
+            </div>
+            {otherItems.length===0
+              ? <div style={{ padding:'32px', textAlign:'center', color:T.light, background:T.card, borderRadius:12, border:`1px solid ${T.border}` }}>
+                  <div style={{ fontSize:28, marginBottom:8 }}>👥</div><div style={{ fontSize:13 }}>Không có mã nào</div>
+                </div>
+              : otherItems.map(item => <ItemCard key={item.id} item={item} canManage={false}/>)
+            }
+          </div>
+        </div>
+      )}
+
+      {/* ══ Modal: Báo thiếu ══ */}
+      <Modal open={showAdd} onClose={closeAdd} title="Báo hàng thiếu">
+        {dupWarning ? (
+          dupWarning.type==='self' ? (
+            <div style={{ padding:'14px', background:T.amberBg, borderRadius:10, fontSize:13, color:T.amber, textAlign:'center' }}>
+              ⚠️ Bạn đã báo <b>{dupWarning.item.product_name}</b> rồi!
+              <div style={{ marginTop:12 }}><GoldBtn small onClick={closeAdd}>Đóng</GoldBtn></div>
+            </div>
+          ) : (
+            <div>
+              <div style={{ padding:'12px', background:T.goldBg, borderRadius:8, fontSize:13, color:T.goldText, marginBottom:14 }}>
+                📢 <b>{dupWarning.item.product_name}</b> đã có trong list, báo bởi: <b>{dupWarning.item.reporters?.map((r: any) => r.name).join(', ')}</b>
+              </div>
+              <div style={{ marginBottom:14 }}>
+                <div style={{ fontSize:12, color:T.med, marginBottom:5 }}>Ghi chú thêm (tùy chọn)</div>
+                <input value={note} onChange={e => setNote(e.target.value)} placeholder="Ghi chú..."
+                  style={{ width:'100%', padding:'8px 11px', border:`1px solid ${T.border}`, borderRadius:8,
+                    fontSize:13, fontFamily:'inherit', color:T.dark, background:'#fff', boxSizing:'border-box' as any, outline:'none' }}/>
+              </div>
+              <div style={{ display:'flex', gap:10, justifyContent:'flex-end' }}>
+                <GoldBtn outline small onClick={closeAdd}>Hủy</GoldBtn>
+                <GoldBtn small onClick={() => addReporter(dupWarning.item.id)}>Thêm tên tôi vào list</GoldBtn>
+              </div>
+            </div>
+          )
+        ) : (
+          <div>
+            <div style={{ marginBottom:8 }}>
+              <div style={{ fontSize:12, fontWeight:500, color:T.med, marginBottom:5 }}>🔍 Tìm sản phẩm *</div>
+              <input value={search} onChange={e => { setSearch(e.target.value); setSelectedProd(null) }}
+                placeholder="Gõ tên hoặc mã... VD: 'nạ ủ ahoh 20'"
+                style={{ width:'100%', padding:'9px 12px', border:`1.5px solid ${selectedProd?T.green:T.border}`, borderRadius:8,
+                  fontSize:13, fontFamily:'inherit', color:T.dark, background:'#fff', boxSizing:'border-box' as any, outline:'none' }}/>
+            </div>
+            {search && !selectedProd && (
+              <div style={{ maxHeight:200, overflowY:'auto', border:`1px solid ${T.border}`, borderRadius:8, marginBottom:10 }}>
+                {searchResults.length===0
+                  ? <div style={{ padding:'16px', textAlign:'center', color:T.light, fontSize:12 }}>Không tìm thấy sản phẩm</div>
+                  : searchResults.map(pr => (
+                    <div key={pr.id} onClick={() => { setSelectedProd(pr); setSearch(pr.name) }}
+                      style={{ padding:'9px 12px', cursor:'pointer', borderBottom:`1px solid ${T.border}`, fontSize:13, color:T.dark }}
+                      onMouseEnter={e => (e.currentTarget.style.background=T.goldBg)}
+                      onMouseLeave={e => (e.currentTarget.style.background='transparent')}>
+                      <span style={{ fontWeight:500 }}>{pr.name}</span>
+                      {pr.code && <span style={{ fontSize:11, color:T.light, marginLeft:8 }}>#{pr.code}</span>}
+                      {pr.unit && <span style={{ fontSize:11, color:T.med, marginLeft:8 }}>{pr.unit}</span>}
+                    </div>
+                  ))
+                }
+              </div>
+            )}
+            {selectedProd && (
+              <div style={{ padding:'8px 12px', background:T.greenBg, borderRadius:8, marginBottom:10, fontSize:12, color:T.green, fontWeight:600 }}>
+                ✅ Đã chọn: {selectedProd.name}{selectedProd.code ? ` (${selectedProd.code})` : ''}
+              </div>
+            )}
+            <div style={{ marginBottom:14 }}>
+              <div style={{ fontSize:12, fontWeight:500, color:T.med, marginBottom:5 }}>💬 Ghi chú cho quản lý (tùy chọn)</div>
+              <input value={note} onChange={e => setNote(e.target.value)} placeholder="VD: Khách hỏi nhiều, cần gấp..."
+                style={{ width:'100%', padding:'8px 11px', border:`1px solid ${T.border}`, borderRadius:8,
+                  fontSize:13, fontFamily:'inherit', color:T.dark, background:'#fff', boxSizing:'border-box' as any, outline:'none' }}/>
+            </div>
+            <div style={{ display:'flex', justifyContent:'flex-end', gap:10 }}>
+              <GoldBtn outline small onClick={closeAdd}>Hủy</GoldBtn>
+              <GoldBtn small onClick={report} disabled={!selectedProd}>Báo thiếu</GoldBtn>
+            </div>
+          </div>
+        )}
+      </Modal>
+
+      {/* ══ Modal: Quản lý sản phẩm (Admin) ══ */}
+      <Modal open={showProdMgmt} onClose={() => setShowProdMgmt(false)} title="📋 Danh sách sản phẩm" wide>
+        <div style={{ display:'flex', gap:8, marginBottom:14 }}>
+          <input value={prodForm.name} onChange={e => setProdForm(f => ({...f, name:e.target.value}))}
+            placeholder="Tên sản phẩm *" style={{ flex:3, padding:'8px 11px', border:`1px solid ${T.border}`, borderRadius:8, fontSize:13, fontFamily:'inherit', outline:'none' }}/>
+          <input value={prodForm.code} onChange={e => setProdForm(f => ({...f, code:e.target.value}))}
+            placeholder="Mã SP" style={{ flex:1, padding:'8px 11px', border:`1px solid ${T.border}`, borderRadius:8, fontSize:13, fontFamily:'inherit', outline:'none' }}/>
+          <input value={prodForm.unit} onChange={e => setProdForm(f => ({...f, unit:e.target.value}))}
+            placeholder="ĐVT" style={{ flex:1, padding:'8px 11px', border:`1px solid ${T.border}`, borderRadius:8, fontSize:13, fontFamily:'inherit', outline:'none' }}/>
+          <button onClick={async () => {
+            if (!prodForm.name) return
+            const np = { id:'pr'+Date.now(), ...prodForm, active:true }
+            setProducts(prev => [...prev, np])
+            await db.from('products').insert(np)
+            setProdForm({ name:'', code:'', unit:'' })
+          }} style={{ padding:'8px 16px', borderRadius:8, border:'none', background:T.gold, color:'#fff', cursor:'pointer', fontFamily:'inherit', fontWeight:600, fontSize:13, flexShrink:0 }}>+ Thêm</button>
+        </div>
+        <div style={{ fontSize:11, color:T.light, marginBottom:8 }}>{products.length} sản phẩm · 🔍 Fuzzy search theo tên/mã</div>
+        <div style={{ maxHeight:360, overflowY:'auto', border:`1px solid ${T.border}`, borderRadius:8 }}>
+          {products.map((pr, i) => (
+            <div key={pr.id} style={{ display:'flex', alignItems:'center', gap:10, padding:'9px 12px',
+              borderBottom:i<products.length-1?`1px solid ${T.border}`:'none', background:i%2===0?'#fff':T.bg }}>
+              <div style={{ flex:1, fontSize:13, color:T.dark, fontWeight:500 }}>{pr.name}</div>
+              {pr.code && <div style={{ fontSize:11, color:T.light }}>#{pr.code}</div>}
+              {pr.unit && <div style={{ fontSize:11, color:T.med }}>{pr.unit}</div>}
+              <button onClick={async () => {
+                setProducts(prev => prev.filter(p => p.id!==pr.id))
+                await db.from('products').delete().eq('id', pr.id)
+              }} style={{ padding:'3px 8px', borderRadius:6, border:`1px solid ${T.redBg}`, background:T.redBg, cursor:'pointer', fontSize:11, fontFamily:'inherit', color:T.red }}>✕</button>
+            </div>
+          ))}
+          {products.length===0 && <div style={{ padding:'24px', textAlign:'center', color:T.light, fontSize:13 }}>Chưa có sản phẩm nào. Thêm ở trên.</div>}
+        </div>
+      </Modal>
+    </div>
+  )
+}
+
 // ── ORG CHART ─────────────────────────────────────
 function OrgChart({ user, allUsers, positions, mobile }: any) {
   const p = mobile ? '16px' : '24px'
@@ -3207,7 +3653,7 @@ export default function App() {
     </div>
   )
 
-  const nav = getNav(getPerm(user))
+  const nav = getNav(getPerm(user), user?.dept_id||'')
   const validPage = nav.find(n => n.id===page) ? page : nav[0].id
   const pp = { user, allUsers, mobile }
 
@@ -3239,6 +3685,7 @@ export default function App() {
           {validPage==='history'    && <History {...pp} history={history}/>}
           {validPage==='users'      && <UserManagement {...pp} setAllUsers={setAllUsers} departments={departments} positions={positions}/>}
           {validPage==='positions'  && <PositionsManagement positions={positions} setPositions={setPositions} mobile={mobile}/>}
+          {validPage==='shortage'   && <ShortageItems {...pp}/>}
           {validPage==='settings'   && <Settings {...pp} setUser={setUser} settings={settings} setSettings={setSettings} onManualReset={manualReset}/>}
         </main>
         {mobile && <BottomNav user={user} page={validPage} setPage={setPage} pendingLeave={pendingLeave} pendingOT={pendingOT}/>}
