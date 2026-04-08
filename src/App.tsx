@@ -1806,17 +1806,22 @@ function Leave({ user, allUsers, leaveRequests, setLeaveRequests, mobile }: any)
 
     const { error } = await db.from('leave_requests').insert(req)
     if (error) {
-      // Insert thất bại → rollback optimistic update + hiện lỗi
+      // Insert thất bại → rollback + hiện lỗi rõ ràng
       setLeaveRequests((prev: any) => prev.filter((r: any) => r.id !== tempId))
-      setSubmitError('❌ Gửi đơn thất bại: ' + (error.message || 'Lỗi kết nối'))
+      const errMsg = '❌ Gửi đơn thất bại: ' + (error.message || 'Lỗi kết nối Supabase')
+      setSubmitError(errMsg)
+      alert(errMsg + '\n\nVui lòng kiểm tra kết nối và thử lại.')
       console.error('Leave insert error:', error)
       setSubmitting(false)
       return
     }
 
-    // Insert thành công → GIỮ optimistic item, KHÔNG re-fetch toàn bộ
-    // (re-fetch toàn bộ có thể trả về [] nếu Supabase RLS chặn SELECT → xóa mất đơn)
-    // Đơn sẽ được sync từ DB lần sau khi user vào lại tab này
+    // Insert thành công → lưu backup vào localStorage để tránh mất khi reload
+    try {
+      const stored = JSON.parse(localStorage.getItem('la_leave_backup') || '[]')
+      localStorage.setItem('la_leave_backup', JSON.stringify([req, ...stored]))
+    } catch {}
+
     setSubmitting(false)
     setShow(false)
     setForm({ start_date:'', end_date:'', type:'annual', reason:'' })
@@ -1827,6 +1832,11 @@ function Leave({ user, allUsers, leaveRequests, setLeaveRequests, mobile }: any)
     const updated = {...req, status, reviewed_by:user.id, reviewed_at:fmtNow(), review_notes:reviewNotes}
     setLeaveRequests((prev: any) => prev.map((r: any) => r.id === id ? updated : r))
     await db.from('leave_requests').upsert(updated)
+    // Cập nhật localStorage backup
+    try {
+      const stored = JSON.parse(localStorage.getItem('la_leave_backup') || '[]')
+      localStorage.setItem('la_leave_backup', JSON.stringify(stored.map((r: any) => r.id === id ? updated : r)))
+    } catch {}
     setReviewItem(null); setReviewNotes('')
   }
 
@@ -1834,6 +1844,11 @@ function Leave({ user, allUsers, leaveRequests, setLeaveRequests, mobile }: any)
     if (!confirm('Xóa đơn nghỉ phép này?')) return
     setLeaveRequests((prev: any) => prev.filter((r: any) => r.id !== id))
     await db.from('leave_requests').delete().eq('id', id)
+    // Xóa khỏi localStorage backup
+    try {
+      const stored = JSON.parse(localStorage.getItem('la_leave_backup') || '[]')
+      localStorage.setItem('la_leave_backup', JSON.stringify(stored.filter((r: any) => r.id !== id)))
+    } catch {}
   }
 
   const LS: any = {
@@ -2798,7 +2813,23 @@ export default function App() {
       setDepts(deptsData); setAllUsers(usersData); setTemplates(tmplData)
       setTasks(tk.data||[]); setHistory(hist.data||[])
       setSettings(stData); setAttendance(att.data||[])
-      setLeaveReqs(lr.data||[]); setPositions(posData)
+      setPositions(posData)
+
+      // Merge DB data với localStorage backup để tránh mất đơn khi Supabase RLS chặn SELECT
+      const dbLeave = lr.data || []
+      const dbLeaveIds = new Set(dbLeave.map((r: any) => r.id))
+      try {
+        const localLeave = JSON.parse(localStorage.getItem('la_leave_backup') || '[]')
+        // Chỉ giữ local items chưa có trong DB (chưa sync được)
+        const localOnly = localLeave.filter((r: any) => !dbLeaveIds.has(r.id))
+        const merged = [...dbLeave, ...localOnly]
+        setLeaveReqs(merged)
+        // Xóa local items đã sync thành công với DB
+        const stillLocal = localLeave.filter((r: any) => !dbLeaveIds.has(r.id))
+        localStorage.setItem('la_leave_backup', JSON.stringify(stillLocal))
+      } catch {
+        setLeaveReqs(dbLeave)
+      }
 
       // Cập nhật user hiện tại với data mới nhất
       const freshUser = usersData.find((u: any) => u.id === user.id)
