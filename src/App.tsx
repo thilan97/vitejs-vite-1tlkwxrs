@@ -745,99 +745,438 @@ function Dashboard({ user, checklist, tasks, allUsers, attendance, leaveRequests
 
 // ── CHECKLIST ────────────────────────────────────
 function Checklist({ user, checklist, setChecklist, addLog, allUsers, mobile }: any) {
-  const [personFilter, setPersonFilter] = useState('all')
-  const [freqFilter, setFreqFilter]     = useState('all')
+  const [filterDept, setFilterDept]     = useState('all')
+  const [filterPerson, setFilterPerson] = useState('all')
+  const [filterFreq, setFilterFreq]     = useState('all')
   const p = mobile ? '16px' : '24px'
   const perm = getPerm(user)
   const dids = allUsers.filter((u: any) => u.dept_id === user.dept_id).map((u: any) => u.id)
   const sopts = Object.entries(STATUS_CFG).map(([v, s]: any) => ({ value:v, label:s.label }))
 
-  const items = useMemo(() => {
-    let list = perm.viewAllChecklist ? checklist
+  // Danh sách item theo quyền
+  const baseItems = useMemo(() => {
+    return perm.viewAllChecklist ? checklist
       : perm.viewDeptChecklist ? checklist.filter((c: any) => dids.includes(c.assignee_id))
       : checklist.filter((c: any) => c.assignee_id === user.id)
-    if (personFilter !== 'all') list = list.filter((c: any) => c.assignee_id === personFilter)
-    if (freqFilter !== 'all')   list = list.filter((c: any) => c.freq === freqFilter)
-    return list
-  }, [checklist, personFilter, freqFilter, user, perm, dids])
+  }, [checklist, user, perm, dids])
+
+  // Áp filter
+  const items = useMemo(() => {
+    return baseItems.filter((c: any) => {
+      const av = allUsers.find((u: any) => u.id === c.assignee_id)
+      if (filterDept !== 'all' && av?.dept_id !== filterDept) return false
+      if (filterPerson !== 'all' && c.assignee_id !== filterPerson) return false
+      if (filterFreq !== 'all' && c.freq !== filterFreq) return false
+      return true
+    })
+  }, [baseItems, filterDept, filterPerson, filterFreq, allUsers])
 
   const updateStatus = async (id: string, newStatus: string) => {
     const item = checklist.find((c: any) => c.id === id); if (!item) return
     const done_at = newStatus === 'done' ? fmtNow() : ''
     setChecklist((prev: any) => prev.map((c: any) => c.id === id ? {...c, status:newStatus, done_at} : c))
     await db.from('checklist').upsert({...item, status:newStatus, done_at})
-    addLog({ sheet:'Checklist', task:item.title,
-      person:allUsers.find((u: any) => u.id === item.assignee_id)?.name || '',
-      from:STATUS_CFG[item.status]?.label, to:STATUS_CFG[newStatus]?.label })
   }
 
-  const done = items.filter((c: any) => c.status === 'done').length
-  const filterUsers = perm.viewAllChecklist
-    ? allUsers.filter((u: any) => u.id !== 'admin')
-    : allUsers.filter((u: any) => u.dept_id === user.dept_id)
+  const canEditItem = (item: any) =>
+    perm.viewAllChecklist || item.assignee_id === user.id || (perm.viewDeptChecklist && dids.includes(item.assignee_id))
 
-  const canEditItem = (item: any) => perm.viewAllChecklist || item.assignee_id === user.id || (perm.viewDeptChecklist && dids.includes(item.assignee_id))
+  // Nhóm item theo assignee
+  const groups = useMemo(() => {
+    const map: Record<string, any[]> = {}
+    items.forEach((c: any) => {
+      if (!map[c.assignee_id]) map[c.assignee_id] = []
+      map[c.assignee_id].push(c)
+    })
+    return Object.entries(map).map(([uid, its]) => ({
+      uid,
+      person: allUsers.find((u: any) => u.id === uid),
+      items: its.sort((a: any, b: any) => (a.time_start||a.deadline||'').localeCompare(b.time_start||b.deadline||'')),
+      done: its.filter((c: any) => c.status === 'done').length,
+      total: its.length,
+    })).sort((a, b) => (a.person?.name||'').localeCompare(b.person?.name||''))
+  }, [items, allUsers])
+
+  const totalDone  = items.filter((c: any) => c.status === 'done').length
+  const totalItems = items.length
+
+  const filterableUsers = perm.viewAllChecklist
+    ? allUsers.filter((u: any) => u.id !== 'admin')
+    : allUsers.filter((u: any) => dids.includes(u.id))
 
   return (
     <div style={{ padding:`0 ${p} ${mobile?'80px':p}` }}>
       <Topbar mobile={mobile} title="Checklist hàng ngày"
-        subtitle={`${todayStr()} — ${done}/${items.length} hoàn thành`}/>
+        subtitle={`${todayStr()} — ${totalDone}/${totalItems} hoàn thành`}/>
 
-      <div style={{ display:'flex', gap:6, flexWrap:'wrap', marginBottom:14 }}>
-        {(perm.viewAllChecklist || perm.viewDeptChecklist) && [
-          { value:'all', label:'Tất cả' },
-          ...filterUsers.map((u: any) => ({ value:u.id, label:u.name }))
-        ].map(f => (
-          <button key={f.value} onClick={() => setPersonFilter(f.value)}
-            style={{ padding:'5px 11px', borderRadius:7, cursor:'pointer', fontFamily:'inherit', fontSize:12,
-              border:`1.5px solid ${personFilter===f.value?T.gold:T.border}`,
-              background:personFilter===f.value?T.goldBg:'transparent',
-              color:personFilter===f.value?T.goldText:T.med,
-              fontWeight:personFilter===f.value?600:400 }}>{f.label}</button>
-        ))}
-        {['all','Hàng ngày','Hàng tuần','Hàng tháng'].map(f => (
-          <button key={f} onClick={() => setFreqFilter(f)}
-            style={{ padding:'5px 11px', borderRadius:7, cursor:'pointer', fontFamily:'inherit', fontSize:12,
-              border:`1.5px solid ${freqFilter===f?T.purple:T.border}`,
-              background:freqFilter===f?T.purpleBg:'transparent',
-              color:freqFilter===f?T.purple:T.med,
-              fontWeight:freqFilter===f?600:400 }}>
-            {f==='all'?'Tất cả':f}
+      {/* ── Filter bar ── */}
+      <div style={{ display:'flex', gap:8, marginBottom:16, flexWrap:'wrap', alignItems:'center' }}>
+        {(perm.viewAllChecklist || perm.viewDeptChecklist) && (
+          <select value={filterDept} onChange={e => { setFilterDept(e.target.value); setFilterPerson('all') }}
+            style={{ padding:'6px 10px', borderRadius:8, fontSize:12, fontFamily:'inherit',
+              border:`1.5px solid ${filterDept!=='all'?T.gold:T.border}`,
+              background:filterDept!=='all'?T.goldBg:T.bg, color:T.dark, cursor:'pointer' }}>
+            <option value="all">🏢 Tất cả phòng</option>
+            {(['kho','sale','vp'] as string[]).map(d => <option key={d} value={d}>{DEPT_NAME[d]}</option>)}
+          </select>
+        )}
+        {(perm.viewAllChecklist || perm.viewDeptChecklist) && (
+          <select value={filterPerson} onChange={e => setFilterPerson(e.target.value)}
+            style={{ padding:'6px 10px', borderRadius:8, fontSize:12, fontFamily:'inherit',
+              border:`1.5px solid ${filterPerson!=='all'?T.gold:T.border}`,
+              background:filterPerson!=='all'?T.goldBg:T.bg, color:T.dark, cursor:'pointer' }}>
+            <option value="all">👤 Tất cả người</option>
+            {filterableUsers
+              .filter((u: any) => filterDept==='all' || u.dept_id===filterDept)
+              .map((u: any) => <option key={u.id} value={u.id}>{u.name}</option>)}
+          </select>
+        )}
+        {/* Tab tần suất */}
+        <div style={{ display:'flex', gap:4 }}>
+          {(['all','Hàng ngày','Hàng tuần','Hàng tháng'] as string[]).map(f => (
+            <button key={f} onClick={() => setFilterFreq(f)}
+              style={{ padding:'5px 11px', borderRadius:7, cursor:'pointer', fontFamily:'inherit', fontSize:12,
+                border:`1.5px solid ${filterFreq===f?T.purple:T.border}`,
+                background:filterFreq===f?T.purpleBg:'transparent',
+                color:filterFreq===f?T.purple:T.med, fontWeight:filterFreq===f?600:400 }}>
+              {f==='all'?'Tất cả':f}
+            </button>
+          ))}
+        </div>
+        {(filterDept!=='all'||filterPerson!=='all'||filterFreq!=='all') && (
+          <button onClick={() => { setFilterDept('all'); setFilterPerson('all'); setFilterFreq('all') }}
+            style={{ padding:'5px 10px', borderRadius:7, border:`1px solid ${T.border}`,
+              fontSize:12, fontFamily:'inherit', color:T.med, background:'transparent', cursor:'pointer' }}>
+            ✕ Xóa filter
           </button>
-        ))}
+        )}
       </div>
 
-      {mobile ? (
-        <div style={{ display:'flex', flexDirection:'column', gap:10 }}>
-          {items.map((item: any) => {
-            const late = isOverdue(item)
-            const sc = STATUS_CFG[item.status]||{}
-            const assignee = allUsers.find((u: any) => u.id === item.assignee_id)
-            const canEdit = canEditItem(item)
+      {/* ── Tổng progress bar ── */}
+      {totalItems > 0 && (
+        <div style={{ marginBottom:16, padding:'12px 16px', background:T.card,
+          borderRadius:10, border:`1px solid ${T.border}` }}>
+          <div style={{ display:'flex', justifyContent:'space-between', fontSize:12, marginBottom:6 }}>
+            <span style={{ fontWeight:600, color:T.dark }}>Tiến độ tổng thể hôm nay</span>
+            <span style={{ color:totalDone===totalItems?T.green:T.med, fontWeight:700 }}>
+              {totalDone}/{totalItems} — {Math.round(totalDone/totalItems*100)}%
+            </span>
+          </div>
+          <div style={{ height:8, background:T.border, borderRadius:4, overflow:'hidden' }}>
+            <div style={{ height:'100%', borderRadius:4, transition:'width .4s',
+              width:`${totalItems>0?Math.round(totalDone/totalItems*100):0}%`,
+              background: totalDone===totalItems ? T.green : T.gold }}/>
+          </div>
+        </div>
+      )}
+
+      {/* ── Groups theo người ── */}
+      {groups.length === 0 ? (
+        <Card style={{ textAlign:'center', padding:'48px', color:T.light }}>
+          <div style={{ fontSize:36, marginBottom:10 }}>✅</div>
+          <div style={{ fontSize:14, fontWeight:500 }}>Không có checklist nào</div>
+        </Card>
+      ) : (
+        <div style={{ display:'flex', flexDirection:'column', gap:14 }}>
+          {groups.map((g: any) => {
+            const pct = g.total > 0 ? Math.round(g.done/g.total*100) : 0
+            const deptColor = DEPT_COLOR[g.person?.dept_id] || T.gold
             return (
-              <div key={item.id} style={{ background:late&&item.status!=='done'?'#FFF5F5':T.card,
-                border:`1px solid ${late&&item.status!=='done'?T.red:T.border}`, borderRadius:10, padding:'12px 14px' }}>
+              <div key={g.uid} style={{ border:`1px solid ${T.border}`, borderRadius:12, overflow:'hidden', background:T.card }}>
+                {/* Group header */}
+                <div style={{ padding:'12px 16px', background:`${deptColor}12`,
+                  borderBottom:`1px solid ${T.border}`, display:'flex', alignItems:'center', gap:12 }}>
+                  {g.person && <Av u={g.person} size={36} showTitle/>}
+                  <div style={{ flex:1 }}>
+                    <div style={{ display:'flex', justifyContent:'space-between', marginBottom:5 }}>
+                      <span style={{ fontSize:12, color:T.med }}>
+                        {g.done===g.total && g.total>0 ? '🎉 Hoàn thành hết!' : `${g.done}/${g.total} việc xong`}
+                      </span>
+                      <span style={{ fontSize:12, fontWeight:700,
+                        color:pct===100?T.green:pct>=60?T.amber:T.red }}>{pct}%</span>
+                    </div>
+                    <div style={{ height:6, background:T.border, borderRadius:3, overflow:'hidden' }}>
+                      <div style={{ height:'100%', borderRadius:3, transition:'width .4s',
+                        width:`${pct}%`,
+                        background:pct===100?T.green:pct>=60?T.amber:T.red }}/>
+                    </div>
+                  </div>
+                </div>
+
+                {/* Items */}
+                {mobile ? (
+                  <div style={{ display:'flex', flexDirection:'column', gap:0 }}>
+                    {g.items.map((item: any, idx: number) => {
+                      const late = isOverdue(item)
+                      const sc = STATUS_CFG[item.status]||{}
+                      const canEdit = canEditItem(item)
+                      return (
+                        <div key={item.id} style={{
+                          padding:'11px 14px', display:'flex', gap:10, alignItems:'center',
+                          borderBottom: idx<g.items.length-1?`1px solid ${T.border}`:'none',
+                          background: item.status==='done'?'#F8FFF8': late&&item.status!=='done'?'#FFF5F5':'transparent'
+                        }}>
+                          <div style={{ flex:1 }}>
+                            <div style={{ fontSize:13, fontWeight:500,
+                              color:item.status==='done'?T.green:late&&item.status!=='done'?T.red:T.dark,
+                              textDecoration:item.status==='done'?'line-through':'none' }}>
+                              {item.title}
+                            </div>
+                            <div style={{ display:'flex', gap:8, marginTop:4, alignItems:'center', flexWrap:'wrap' }}>
+                              {(item.time_start||item.time_end) && (
+                                <span style={{ fontSize:11, color:T.blue, fontWeight:600 }}>
+                                  🕐 {item.time_start||'?'} → {item.time_end||item.deadline||'?'}
+                                </span>
+                              )}
+                              <span style={{ fontSize:10, padding:'1px 6px', borderRadius:20, fontWeight:600,
+                                color:FREQ_COLOR[item.freq]?.color, background:FREQ_COLOR[item.freq]?.bg }}>
+                                {item.freq}
+                              </span>
+                              <Badge cfg={PRI_CFG[item.priority]} small/>
+                            </div>
+                          </div>
+                          {canEdit ? (
+                            <select value={item.status} onChange={e => updateStatus(item.id, e.target.value)}
+                              style={{ padding:'4px 7px', borderRadius:7, border:`1.5px solid ${sc.color||T.border}`,
+                                background:sc.bg||'#fff', color:sc.color||T.dark, fontSize:11, fontWeight:600,
+                                cursor:'pointer', fontFamily:'inherit', outline:'none', flexShrink:0 }}>
+                              {sopts.map(o => <option key={o.value} value={o.value}>{o.label}</option>)}
+                            </select>
+                          ) : <Badge type={item.status} small/>}
+                        </div>
+                      )
+                    })}
+                  </div>
+                ) : (
+                  <table style={{ width:'100%', borderCollapse:'collapse' }}>
+                    <TH cols={['Công việc','Tần suất','Ưu tiên','Khung giờ','Trạng thái','Xong lúc']}/>
+                    <tbody>
+                      {g.items.map((item: any, idx: number) => {
+                        const late = isOverdue(item)
+                        const sc = STATUS_CFG[item.status]||{}
+                        const canEdit = canEditItem(item)
+                        return (
+                          <tr key={item.id} style={{
+                            background: item.status==='done'?'#F8FFF8': late&&item.status!=='done'?'#FFF5F5': idx%2===0?'#fff':T.bg,
+                            borderBottom:`1px solid ${T.border}`
+                          }}>
+                            <td style={{ padding:'10px 14px', maxWidth:260 }}>
+                              <div style={{ fontSize:13, fontWeight:500,
+                                color:item.status==='done'?T.green:late&&item.status!=='done'?T.red:T.dark,
+                                textDecoration:item.status==='done'?'line-through':'none' }}>
+                                {late&&item.status!=='done'&&'⚠️ '}{item.title}
+                              </div>
+                              {item.description && <div style={{ fontSize:11, color:T.light }}>{item.description}</div>}
+                            </td>
+                            <td style={{ padding:'10px 13px' }}>
+                              <span style={{ fontSize:10, fontWeight:600, padding:'2px 7px', borderRadius:20,
+                                color:FREQ_COLOR[item.freq]?.color, background:FREQ_COLOR[item.freq]?.bg }}>{item.freq}</span>
+                            </td>
+                            <td style={{ padding:'10px 13px' }}><Badge cfg={PRI_CFG[item.priority]} small/></td>
+                            <td style={{ padding:'10px 14px', whiteSpace:'nowrap' }}>
+                              {(item.time_start||item.time_end) ? (
+                                <span style={{ fontSize:12, fontWeight:700, color:T.blue }}>
+                                  🕐 {item.time_start||'?'} → {item.time_end||item.deadline||'?'}
+                                </span>
+                              ) : item.deadline ? (
+                                <span style={{ fontSize:12, color:late&&item.status!=='done'?T.red:T.med }}>
+                                  ⏰ {item.deadline}
+                                </span>
+                              ) : <span style={{ color:T.light }}>—</span>}
+                            </td>
+                            <td style={{ padding:'10px 13px' }}>
+                              {canEdit ? (
+                                <select value={item.status} onChange={e => updateStatus(item.id, e.target.value)}
+                                  style={{ padding:'4px 8px', borderRadius:7, border:`1.5px solid ${sc.color||T.border}`,
+                                    background:sc.bg||'#fff', color:sc.color||T.dark, fontSize:11, fontWeight:600,
+                                    cursor:'pointer', fontFamily:'inherit', outline:'none' }}>
+                                  {sopts.map(o => <option key={o.value} value={o.value}>{o.label}</option>)}
+                                </select>
+                              ) : <Badge type={item.status} small/>}
+                            </td>
+                            <td style={{ padding:'10px 13px', fontSize:11, color:item.done_at?T.green:T.light }}>
+                              {item.done_at||'—'}
+                            </td>
+                          </tr>
+                        )
+                      })}
+                    </tbody>
+                  </table>
+                )}
+              </div>
+            )
+          })}
+        </div>
+      )}
+    </div>
+  )
+}
+
+// ── TASKS ────────────────────────────────────────
+function Tasks({ user, tasks, setTasks, addLog, allUsers, mobile }: any) {
+  const [show, setShow]           = useState(false)
+  const [filterDept, setFilterDept] = useState('all')
+  const [filterPerson, setFilterPerson] = useState('all')
+  const [filterStatus, setFilterStatus] = useState('all')
+  const [form, setForm] = useState({
+    title:'', description:'', assignee_id:'', priority:'high',
+    deadline:'', deadline_time:'17:00', notes:''
+  })
+  const p = mobile ? '16px' : '24px'
+  const perm = getPerm(user)
+  const dids = allUsers.filter((u: any) => u.dept_id === user.dept_id).map((u: any) => u.id)
+  const sopts = Object.entries(STATUS_CFG).map(([v, s]: any) => ({ value:v, label:s.label }))
+
+  // Danh sách hiển thị theo quyền
+  const base = perm.viewAllChecklist ? tasks
+    : perm.viewDeptChecklist ? tasks.filter((t: any) => dids.includes(t.assignee_id) || t.created_by === user.id)
+    : tasks.filter((t: any) => t.assignee_id === user.id)
+
+  // Áp filter
+  const mine = base.filter((t: any) => {
+    const av = allUsers.find((u: any) => u.id === t.assignee_id)
+    if (filterDept !== 'all' && av?.dept_id !== filterDept) return false
+    if (filterPerson !== 'all' && t.assignee_id !== filterPerson) return false
+    if (filterStatus !== 'all' && t.status !== filterStatus) return false
+    return true
+  })
+
+  const assignable = perm.viewAllChecklist
+    ? allUsers.filter((u: any) => u.id !== 'admin')
+    : allUsers.filter((u: any) => u.dept_id === user.dept_id && u.id !== user.id)
+
+  // Danh sách người để filter
+  const filterableUsers = perm.viewAllChecklist
+    ? allUsers.filter((u: any) => u.id !== 'admin')
+    : allUsers.filter((u: any) => dids.includes(u.id))
+
+  const canDelete = (t: any) =>
+    perm.viewAllDashboard || t.created_by === user.id
+
+  const upd = async (id: string, newStatus: string) => {
+    const task = tasks.find((t: any) => t.id === id); if (!task) return
+    const done_at = newStatus === 'done' ? fmtNow() : ''
+    setTasks((prev: any) => prev.map((t: any) => t.id === id ? {...t, status:newStatus, done_at} : t))
+    await db.from('tasks').upsert({...task, status:newStatus, done_at})
+  }
+
+  const del = async (id: string) => {
+    if (!confirm('Xóa task này?')) return
+    setTasks((prev: any) => prev.filter((t: any) => t.id !== id))
+    await db.from('tasks').delete().eq('id', id)
+  }
+
+  const create = async () => {
+    if (!form.title || !form.deadline || !form.assignee_id) return
+    const now = new Date()
+    const start_time = `${String(now.getHours()).padStart(2,'0')}:${String(now.getMinutes()).padStart(2,'0')}`
+    const newTask = {
+      id:'t'+Date.now(), ...form,
+      start_time,
+      created_by: user.id,
+      assigned: todayStr(),
+      status:'notyet', done_at:'',
+      dept_id: allUsers.find((u: any) => u.id === form.assignee_id)?.dept_id||''
+    }
+    setTasks((prev: any) => [newTask, ...prev])
+    await db.from('tasks').insert(newTask)
+    setShow(false)
+    setForm({ title:'', description:'', assignee_id:'', priority:'high', deadline:'', deadline_time:'17:00', notes:'' })
+  }
+
+  const done  = mine.filter((t: any) => t.status==='done').length
+
+  const FilterBar = () => (
+    <div style={{ display:'flex', gap:8, marginBottom:14, flexWrap:'wrap', alignItems:'center' }}>
+      {/* Phòng ban */}
+      {(perm.viewAllChecklist || perm.viewDeptChecklist) && (
+        <select value={filterDept} onChange={e => { setFilterDept(e.target.value); setFilterPerson('all') }}
+          style={{ padding:'6px 10px', borderRadius:8, border:`1.5px solid ${filterDept!=='all'?T.gold:T.border}`,
+            fontSize:12, fontFamily:'inherit', color:T.dark, background:filterDept!=='all'?T.goldBg:T.bg, cursor:'pointer' }}>
+          <option value="all">🏢 Tất cả phòng</option>
+          {(['kho','sale','vp'] as string[]).map(d => <option key={d} value={d}>{DEPT_NAME[d]}</option>)}
+        </select>
+      )}
+      {/* Người */}
+      {(perm.viewAllChecklist || perm.viewDeptChecklist) && (
+        <select value={filterPerson} onChange={e => setFilterPerson(e.target.value)}
+          style={{ padding:'6px 10px', borderRadius:8, border:`1.5px solid ${filterPerson!=='all'?T.gold:T.border}`,
+            fontSize:12, fontFamily:'inherit', color:T.dark, background:filterPerson!=='all'?T.goldBg:T.bg, cursor:'pointer' }}>
+          <option value="all">👤 Tất cả người</option>
+          {filterableUsers
+            .filter((u: any) => filterDept === 'all' || u.dept_id === filterDept)
+            .map((u: any) => <option key={u.id} value={u.id}>{u.name}</option>)}
+        </select>
+      )}
+      {/* Trạng thái */}
+      <select value={filterStatus} onChange={e => setFilterStatus(e.target.value)}
+        style={{ padding:'6px 10px', borderRadius:8, border:`1.5px solid ${filterStatus!=='all'?T.purple:T.border}`,
+          fontSize:12, fontFamily:'inherit', color:T.dark, background:filterStatus!=='all'?T.purpleBg:T.bg, cursor:'pointer' }}>
+        <option value="all">📋 Tất cả trạng thái</option>
+        {Object.entries(STATUS_CFG).map(([v, s]: any) => <option key={v} value={v}>{s.label}</option>)}
+      </select>
+      {/* Reset filter */}
+      {(filterDept!=='all'||filterPerson!=='all'||filterStatus!=='all') && (
+        <button onClick={() => { setFilterDept('all'); setFilterPerson('all'); setFilterStatus('all') }}
+          style={{ padding:'6px 10px', borderRadius:8, border:`1px solid ${T.border}`,
+            fontSize:12, fontFamily:'inherit', color:T.med, background:'transparent', cursor:'pointer' }}>
+          ✕ Xóa filter
+        </button>
+      )}
+      <div style={{ marginLeft:'auto', fontSize:12, color:T.light }}>{done}/{mine.length} hoàn thành</div>
+    </div>
+  )
+
+  return (
+    <div style={{ padding:`0 ${p} ${mobile?'80px':p}` }}>
+      <Topbar mobile={mobile}
+        title={perm.viewAllChecklist?'Giao việc':perm.viewDeptChecklist?'Việc phòng tôi':'Việc của tôi'}
+        subtitle={`Hôm nay: ${todayStr()}`}
+        action={perm.createTask && <GoldBtn small onClick={() => setShow(true)}>+ Tạo task</GoldBtn>}/>
+
+      <FilterBar/>
+
+      {mine.length === 0 ? (
+        <Card style={{ textAlign:'center', padding:'40px', color:T.light }}>
+          <div style={{ fontSize:32, marginBottom:8 }}>📌</div>
+          <div style={{ fontSize:14 }}>Không có task nào</div>
+        </Card>
+      ) : mobile ? (
+        <div style={{ display:'flex', flexDirection:'column', gap:10 }}>
+          {mine.map((t: any) => {
+            const late = isOverdue(t), sc = STATUS_CFG[t.status]||{}
+            const av = allUsers.find((u: any) => u.id === t.assignee_id)
+            const ce = perm.viewAllChecklist || t.assignee_id === user.id || (perm.viewDeptChecklist && dids.includes(t.assignee_id))
+            return (
+              <div key={t.id} style={{ background:late&&t.status!=='done'?'#FFF5F5':T.card,
+                border:`1px solid ${late&&t.status!=='done'?T.red:T.border}`, borderRadius:10, padding:'12px 14px' }}>
                 <div style={{ display:'flex', justifyContent:'space-between', marginBottom:8 }}>
                   <div style={{ flex:1, marginRight:8 }}>
-                    <div style={{ fontSize:13, fontWeight:600, color:late&&item.status!=='done'?T.red:T.dark }}>{item.title}</div>
-                    {item.description && <div style={{ fontSize:11, color:T.light, marginTop:2 }}>{item.description}</div>}
+                    <div style={{ fontSize:13, fontWeight:600, color:late&&t.status!=='done'?T.red:T.dark }}>{t.title}</div>
+                    {t.description && <div style={{ fontSize:11, color:T.light }}>{t.description}</div>}
+                    {t.notes && <div style={{ fontSize:11, color:T.blue }}>📝 {t.notes}</div>}
+                    <div style={{ fontSize:11, color:T.light, marginTop:4 }}>
+                      ⏰ {t.start_time||'--:--'} → {t.deadline_time||'--:--'} &nbsp;·&nbsp; 📅 {fmtDate(t.deadline)}
+                    </div>
                   </div>
-                  <Badge cfg={PRI_CFG[item.priority]} small/>
+                  <Badge cfg={PRI_CFG[t.priority]} small/>
                 </div>
                 <div style={{ display:'flex', alignItems:'center', justifyContent:'space-between', flexWrap:'wrap', gap:6 }}>
                   <div style={{ display:'flex', gap:6, alignItems:'center' }}>
-                    {assignee && <Av u={assignee} size={22}/>}
-                    <span style={{ fontSize:11, color:T.light }}>{item.deadline||''}</span>
-                    <span style={{ fontSize:10, fontWeight:600, padding:'2px 6px', borderRadius:20,
-                      color:FREQ_COLOR[item.freq]?.color, background:FREQ_COLOR[item.freq]?.bg }}>{item.freq}</span>
-                  </div>
-                  {canEdit && (
-                    <select value={item.status} onChange={e => updateStatus(item.id, e.target.value)}
+                    {av && <Av u={av} size={20}/>}
+                    {ce && <select value={t.status} onChange={e => upd(t.id, e.target.value)}
                       style={{ padding:'4px 7px', borderRadius:7, border:`1.5px solid ${sc.color||T.border}`,
                         background:sc.bg||'#fff', color:sc.color||T.dark, fontSize:11, fontWeight:600,
                         cursor:'pointer', fontFamily:'inherit', outline:'none' }}>
                       {sopts.map(o => <option key={o.value} value={o.value}>{o.label}</option>)}
-                    </select>
+                    </select>}
+                  </div>
+                  {canDelete(t) && (
+                    <button onClick={() => del(t.id)}
+                      style={{ padding:'4px 9px', borderRadius:6, border:`1px solid ${T.redBg}`,
+                        background:T.redBg, cursor:'pointer', fontSize:11, fontFamily:'inherit', color:T.red }}>
+                      🗑️
+                    </button>
                   )}
                 </div>
               </div>
@@ -847,150 +1186,31 @@ function Checklist({ user, checklist, setChecklist, addLog, allUsers, mobile }: 
       ) : (
         <Card style={{ padding:0, overflow:'hidden' }}>
           <table style={{ width:'100%', borderCollapse:'collapse' }}>
-            <TH cols={['#','Công việc','Nhân viên','Tần suất','Ưu tiên','Deadline','Trạng thái','Xong lúc']}/>
-            <tbody>
-              {items.map((item: any, i: number) => {
-                const late = isOverdue(item)
-                const sc = STATUS_CFG[item.status]||{}
-                const assignee = allUsers.find((u: any) => u.id === item.assignee_id)
-                const canEdit = canEditItem(item)
-                return (
-                  <tr key={item.id} style={{ background:late&&item.status!=='done'?'#FFF5F5':i%2===0?'#fff':T.bg, borderBottom:`1px solid ${T.border}` }}>
-                    <td style={{ padding:'10px 13px', color:T.light, fontSize:12 }}>{i+1}</td>
-                    <td style={{ padding:'10px 13px' }}>
-                      <div style={{ fontSize:13, fontWeight:500, color:late&&item.status!=='done'?T.red:T.dark }}>{item.title}</div>
-                      {item.description && <div style={{ fontSize:11, color:T.light }}>{item.description}</div>}
-                    </td>
-                    <td style={{ padding:'10px 13px' }}>{assignee && <Av u={assignee} size={26} showDept/>}</td>
-                    <td style={{ padding:'10px 13px' }}>
-                      <span style={{ fontSize:10, fontWeight:600, padding:'2px 7px', borderRadius:20,
-                        color:FREQ_COLOR[item.freq]?.color, background:FREQ_COLOR[item.freq]?.bg }}>{item.freq}</span>
-                    </td>
-                    <td style={{ padding:'10px 13px' }}><Badge cfg={PRI_CFG[item.priority]} small/></td>
-                    <td style={{ padding:'10px 13px', fontSize:12, fontWeight:500, color:late&&item.status!=='done'?T.red:T.dark }}>
-                      {late&&item.status!=='done'?'⚠️ ':''}{item.deadline||'—'}
-                    </td>
-                    <td style={{ padding:'10px 13px' }}>
-                      {canEdit ? (
-                        <select value={item.status} onChange={e => updateStatus(item.id, e.target.value)}
-                          style={{ padding:'4px 8px', borderRadius:7, border:`1.5px solid ${sc.color||T.border}`,
-                            background:sc.bg||'#fff', color:sc.color||T.dark, fontSize:11, fontWeight:600,
-                            cursor:'pointer', fontFamily:'inherit', outline:'none' }}>
-                          {sopts.map(o => <option key={o.value} value={o.value}>{o.label}</option>)}
-                        </select>
-                      ) : <Badge type={item.status} small/>}
-                    </td>
-                    <td style={{ padding:'10px 13px', fontSize:11, color:item.done_at?T.green:T.light }}>{item.done_at||'—'}</td>
-                  </tr>
-                )
-              })}
-            </tbody>
-          </table>
-        </Card>
-      )}
-    </div>
-  )
-}
-
-// ── TASKS ────────────────────────────────────────
-function Tasks({ user, tasks, setTasks, addLog, allUsers, mobile }: any) {
-  const [show, setShow] = useState(false)
-  const [form, setForm] = useState({ title:'', description:'', assignee_id:'', priority:'high', deadline:'', notes:'' })
-  const p = mobile ? '16px' : '24px'
-  const perm = getPerm(user)
-  const dids = allUsers.filter((u: any) => u.dept_id === user.dept_id).map((u: any) => u.id)
-  const sopts = Object.entries(STATUS_CFG).map(([v, s]: any) => ({ value:v, label:s.label }))
-
-  const mine = perm.viewAllChecklist ? tasks
-    : perm.viewDeptChecklist ? tasks.filter((t: any) => dids.includes(t.assignee_id) || t.created_by === user.id)
-    : tasks.filter((t: any) => t.assignee_id === user.id)
-
-  const assignable = perm.viewAllChecklist
-    ? allUsers.filter((u: any) => u.id !== 'admin')
-    : allUsers.filter((u: any) => u.dept_id === user.dept_id && u.id !== user.id)
-
-  const upd = async (id: string, newStatus: string) => {
-    const task = tasks.find((t: any) => t.id === id); if (!task) return
-    const done_at = newStatus === 'done' ? fmtNow() : ''
-    setTasks((prev: any) => prev.map((t: any) => t.id === id ? {...t, status:newStatus, done_at} : t))
-    await db.from('tasks').upsert({...task, status:newStatus, done_at})
-    addLog({ sheet:'Giao việc', task:task.title,
-      person:allUsers.find((u: any) => u.id === task.assignee_id)?.name||'',
-      from:STATUS_CFG[task.status]?.label, to:STATUS_CFG[newStatus]?.label })
-  }
-
-  const create = async () => {
-    if (!form.title || !form.deadline || !form.assignee_id) return
-    const newTask = { id:'t'+Date.now(), ...form, created_by:user.id, assigned:todayStr(),
-      status:'notyet', done_at:'', dept_id:allUsers.find((u: any) => u.id === form.assignee_id)?.dept_id||'' }
-    setTasks((prev: any) => [newTask, ...prev])
-    await db.from('tasks').insert(newTask)
-    setShow(false)
-    setForm({ title:'', description:'', assignee_id:'', priority:'high', deadline:'', notes:'' })
-  }
-
-  return (
-    <div style={{ padding:`0 ${p} ${mobile?'80px':p}` }}>
-      <Topbar mobile={mobile}
-        title={perm.viewAllChecklist?'Giao việc':perm.viewDeptChecklist?'Việc phòng tôi':'Việc của tôi'}
-        subtitle={`${mine.filter((t: any) => t.status==='done').length}/${mine.length} hoàn thành`}
-        action={perm.createTask && <GoldBtn small onClick={() => setShow(true)}>+ Tạo task</GoldBtn>}/>
-
-      {mobile ? (
-        <div style={{ display:'flex', flexDirection:'column', gap:10 }}>
-          {mine.map((t: any) => {
-            const late = isOverdue(t), sc = STATUS_CFG[t.status]||{}
-            const av = allUsers.find((u: any) => u.id === t.assignee_id)
-            const cr = allUsers.find((u: any) => u.id === t.created_by)
-            const ce = perm.viewAllChecklist || t.assignee_id === user.id || (perm.viewDeptChecklist && dids.includes(t.assignee_id))
-            return (
-              <div key={t.id} style={{ background:late&&t.status!=='done'?'#FFF5F5':T.card,
-                border:`1px solid ${late&&t.status!=='done'?T.red:T.border}`, borderRadius:10, padding:'12px 14px' }}>
-                <div style={{ display:'flex', justifyContent:'space-between', marginBottom:8 }}>
-                  <div style={{ flex:1, marginRight:8 }}>
-                    <div style={{ fontSize:13, fontWeight:600, color:late&&t.status!=='done'?T.red:T.dark }}>{t.title}</div>
-                    {t.notes && <div style={{ fontSize:11, color:T.blue }}>📝 {t.notes}</div>}
-                  </div>
-                  <Badge cfg={PRI_CFG[t.priority]} small/>
-                </div>
-                <div style={{ display:'flex', alignItems:'center', justifyContent:'space-between', flexWrap:'wrap', gap:6 }}>
-                  <div style={{ display:'flex', gap:6, alignItems:'center', fontSize:11, color:T.light }}>
-                    {av && <Av u={av} size={20}/>}
-                    <span>{fmtDate(t.deadline)}</span>
-                    {cr && <span>· {cr.name}</span>}
-                  </div>
-                  {ce && <select value={t.status} onChange={e => upd(t.id, e.target.value)}
-                    style={{ padding:'4px 7px', borderRadius:7, border:`1.5px solid ${sc.color||T.border}`,
-                      background:sc.bg||'#fff', color:sc.color||T.dark, fontSize:11, fontWeight:600,
-                      cursor:'pointer', fontFamily:'inherit', outline:'none' }}>
-                    {sopts.map(o => <option key={o.value} value={o.value}>{o.label}</option>)}
-                  </select>}
-                </div>
-              </div>
-            )
-          })}
-        </div>
-      ) : (
-        <Card style={{ padding:0, overflow:'hidden' }}>
-          <table style={{ width:'100%', borderCollapse:'collapse' }}>
-            <TH cols={['Tiêu đề','Giao cho','Người tạo','Ưu tiên','Deadline','Trạng thái','Xong lúc']}/>
+            <TH cols={['Tiêu đề','Giao cho','Ưu tiên','Bắt đầu','Deadline','Trạng thái','Xong lúc','']}/>
             <tbody>
               {mine.map((t: any, i: number) => {
                 const late = isOverdue(t), sc = STATUS_CFG[t.status]||{}
                 const av = allUsers.find((u: any) => u.id === t.assignee_id)
-                const cr = allUsers.find((u: any) => u.id === t.created_by)
                 const ce = perm.viewAllChecklist || t.assignee_id === user.id || (perm.viewDeptChecklist && dids.includes(t.assignee_id))
                 return (
                   <tr key={t.id} style={{ background:late&&t.status!=='done'?'#FFF5F5':i%2===0?'#fff':T.bg, borderBottom:`1px solid ${T.border}` }}>
-                    <td style={{ padding:'10px 13px' }}>
+                    <td style={{ padding:'10px 13px', maxWidth:220 }}>
                       <div style={{ fontSize:13, fontWeight:500, color:late&&t.status!=='done'?T.red:T.dark }}>{t.title}</div>
+                      {t.description && <div style={{ fontSize:11, color:T.light, marginTop:2 }}>{t.description}</div>}
                       {t.notes && <div style={{ fontSize:11, color:T.blue }}>📝 {t.notes}</div>}
                     </td>
                     <td style={{ padding:'10px 13px' }}>{av && <Av u={av} size={24} showTitle/>}</td>
-                    <td style={{ padding:'10px 13px', fontSize:12, color:T.med }}>{cr?.name||'—'}</td>
                     <td style={{ padding:'10px 13px' }}><Badge cfg={PRI_CFG[t.priority]} small/></td>
-                    <td style={{ padding:'10px 13px', fontSize:12, fontWeight:500, color:late&&t.status!=='done'?T.red:T.dark }}>
-                      {late&&t.status!=='done'?'⚠️ ':''}{fmtDate(t.deadline)}
+                    <td style={{ padding:'10px 13px', fontSize:12, color:T.med, whiteSpace:'nowrap' }}>
+                      <div style={{ fontWeight:500, color:T.dark }}>{t.start_time||'—'}</div>
+                      <div style={{ fontSize:10, color:T.light }}>{fmtDate(t.assigned||'')||'—'}</div>
+                    </td>
+                    <td style={{ padding:'10px 13px', whiteSpace:'nowrap' }}>
+                      <div style={{ fontSize:12, fontWeight:600, color:late&&t.status!=='done'?T.red:T.dark }}>
+                        {late&&t.status!=='done'?'⚠️ ':''}
+                        {t.deadline_time||'--:--'}
+                      </div>
+                      <div style={{ fontSize:11, color:T.light }}>{fmtDate(t.deadline)}</div>
                     </td>
                     <td style={{ padding:'10px 13px' }}>
                       {ce ? <select value={t.status} onChange={e => upd(t.id, e.target.value)}
@@ -1001,6 +1221,15 @@ function Tasks({ user, tasks, setTasks, addLog, allUsers, mobile }: any) {
                       </select> : <Badge type={t.status} small/>}
                     </td>
                     <td style={{ padding:'10px 13px', fontSize:11, color:t.done_at?T.green:T.light }}>{t.done_at||'—'}</td>
+                    <td style={{ padding:'10px 8px' }}>
+                      {canDelete(t) && (
+                        <button onClick={() => del(t.id)}
+                          style={{ padding:'4px 8px', borderRadius:6, border:`1px solid ${T.redBg}`,
+                            background:T.redBg, cursor:'pointer', fontSize:11, fontFamily:'inherit', color:T.red }}>
+                          🗑️
+                        </button>
+                      )}
+                    </td>
                   </tr>
                 )
               })}
@@ -1016,7 +1245,13 @@ function Tasks({ user, tasks, setTasks, addLog, allUsers, mobile }: any) {
           options={[{value:'',label:'— Chọn nhân viên —'},...assignable.map((u: any) => ({value:u.id,label:`${u.name} — ${u.position_name||u.dept_name||''}`}))]}/>
         <Sel label="Mức ưu tiên" value={form.priority} onChange={(v: string) => setForm(f => ({...f, priority:v}))}
           options={[{value:'high',label:'🔴 Cao'},{value:'mid',label:'🟡 Trung bình'},{value:'low',label:'🟢 Thấp'}]}/>
-        <Inp label="Deadline *" type="date" value={form.deadline} onChange={(v: string) => setForm(f => ({...f, deadline:v}))}/>
+        <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:12 }}>
+          <Inp label="Ngày deadline *" type="date" value={form.deadline} onChange={(v: string) => setForm(f => ({...f, deadline:v}))}/>
+          <Inp label="Giờ kết thúc *" type="time" value={form.deadline_time} onChange={(v: string) => setForm(f => ({...f, deadline_time:v}))}/>
+        </div>
+        <div style={{ padding:'8px 12px', background:T.goldBg, borderRadius:8, fontSize:12, color:T.goldText, marginBottom:13 }}>
+          ⏰ Giờ bắt đầu sẽ tự động ghi nhận thời điểm tạo task
+        </div>
         <Inp label="Ghi chú" value={form.notes} onChange={(v: string) => setForm(f => ({...f, notes:v}))} placeholder="Ghi chú thêm..."/>
         <div style={{ display:'flex', justifyContent:'flex-end', gap:10, marginTop:8 }}>
           <GoldBtn outline small onClick={() => setShow(false)}>Hủy</GoldBtn>
@@ -1029,23 +1264,36 @@ function Tasks({ user, tasks, setTasks, addLog, allUsers, mobile }: any) {
 
 // ── TEMPLATES ────────────────────────────────────
 function Templates({ templates, setTemplates, allUsers, mobile }: any) {
-  const [show, setShow]   = useState(false)
-  const [edit, setEdit]   = useState<any>(null)
-  const [form, setForm]   = useState({ title:'', description:'', assignee_id:'', priority:'mid', freq:'Hàng ngày', deadline_suggest:'', mins:'30', active:true })
+  const [show, setShow] = useState(false)
+  const [edit, setEdit] = useState<any>(null)
+  const emptyForm = { title:'', description:'', assignee_id:'', priority:'mid',
+    freq:'Hàng ngày', time_start:'08:00', time_end:'09:00',
+    day_of_month:'1', mins:'60', active:true }
+  const [form, setForm] = useState<any>(emptyForm)
   const p = mobile ? '16px' : '24px'
   const staff = allUsers.filter((u: any) => u.id !== 'admin')
 
-  const openCreate = () => { setEdit(null); setForm({ title:'', description:'', assignee_id:'', priority:'mid', freq:'Hàng ngày', deadline_suggest:'', mins:'30', active:true }); setShow(true) }
-  const openEdit = (t: any) => { setEdit(t); setForm({ title:t.title, description:t.description||'', assignee_id:t.assignee_id||'', priority:t.priority, freq:t.freq, deadline_suggest:t.deadline_suggest||'', mins:String(t.mins), active:t.active }); setShow(true) }
+  const openCreate = () => { setEdit(null); setForm(emptyForm); setShow(true) }
+  const openEdit = (t: any) => {
+    setEdit(t)
+    setForm({ title:t.title, description:t.description||'', assignee_id:t.assignee_id||'',
+      priority:t.priority, freq:t.freq, time_start:t.time_start||'08:00',
+      time_end:t.time_end||'09:00', day_of_month:String(t.day_of_month||1),
+      mins:String(t.mins||60), active:t.active })
+    setShow(true)
+  }
 
   const save = async () => {
     if (!form.title || !form.assignee_id) return
+    const data = { ...form, mins:Number(form.mins), day_of_month:Number(form.day_of_month),
+      // deadline_suggest vẫn giữ = time_end để tương thích với performReset
+      deadline_suggest: form.time_end }
     if (edit) {
-      const updated = {...edit, ...form, mins:Number(form.mins)}
+      const updated = {...edit, ...data}
       setTemplates((prev: any) => prev.map((t: any) => t.id === edit.id ? updated : t))
       await db.from('checklist_templates').upsert(updated)
     } else {
-      const newT = { id:'tp'+Date.now(), ...form, mins:Number(form.mins) }
+      const newT = { id:'tp'+Date.now(), ...data }
       setTemplates((prev: any) => [...prev, newT])
       await db.from('checklist_templates').insert(newT)
     }
@@ -1063,32 +1311,46 @@ function Templates({ templates, setTemplates, allUsers, mobile }: any) {
     items:templates.filter((t: any) => allUsers.find((u: any) => u.id === t.assignee_id)?.dept_id === d)
   }))
 
+  const timeRange = (tp: any) => {
+    if (tp.time_start && tp.time_end) return `${tp.time_start} → ${tp.time_end}`
+    if (tp.deadline_suggest) return `→ ${tp.deadline_suggest}`
+    return '—'
+  }
+
   return (
     <div style={{ padding:`0 ${p} ${mobile?'80px':p}` }}>
       <Topbar mobile={mobile} title="Template checklist" subtitle="Tự sinh checklist hàng ngày"
         action={<GoldBtn small onClick={openCreate}>+ Thêm template</GoldBtn>}/>
 
-      {deptGroups.map(group => (
+      {deptGroups.map(group => group.items.length === 0 ? null : (
         <Card key={group.dept} style={{ padding:0, overflow:'hidden', marginBottom:16 }}>
           <div style={{ background:DEPT_COLOR[group.dept], padding:'11px 16px' }}>
             <span style={{ color:'#fff', fontWeight:700, fontSize:14 }}>{group.name} — {group.items.length} template</span>
           </div>
           <table style={{ width:'100%', borderCollapse:'collapse' }}>
-            <TH cols={['Công việc','Giao cho','Tần suất','Ưu tiên','Phút','Deadline gợi ý','Trạng thái','']}/>
+            <TH cols={['Công việc','Giao cho','Tần suất','Ưu tiên','Khung giờ','Trạng thái','']}/>
             <tbody>
               {group.items.map((tp: any, i: number) => {
                 const assignee = allUsers.find((u: any) => u.id === tp.assignee_id)
                 return (
                   <tr key={tp.id} style={{ background:i%2===0?'#fff':T.bg, borderBottom:`1px solid ${T.border}`, opacity:tp.active?1:0.5 }}>
-                    <td style={{ padding:'9px 13px', fontSize:13, fontWeight:500, color:T.dark }}>{tp.title}</td>
+                    <td style={{ padding:'9px 13px' }}>
+                      <div style={{ fontSize:13, fontWeight:500, color:T.dark }}>{tp.title}</div>
+                      {tp.description && <div style={{ fontSize:11, color:T.light }}>{tp.description}</div>}
+                    </td>
                     <td style={{ padding:'9px 13px' }}>{assignee && <Av u={assignee} size={22} showTitle/>}</td>
                     <td style={{ padding:'9px 13px' }}>
                       <span style={{ fontSize:10, fontWeight:600, padding:'2px 7px', borderRadius:20,
                         color:FREQ_COLOR[tp.freq]?.color, background:FREQ_COLOR[tp.freq]?.bg }}>{tp.freq}</span>
+                      {tp.freq==='Hàng tháng' && tp.day_of_month && (
+                        <div style={{ fontSize:10, color:T.light, marginTop:2 }}>Ngày {tp.day_of_month}</div>
+                      )}
                     </td>
                     <td style={{ padding:'9px 13px' }}><Badge cfg={PRI_CFG[tp.priority]} small/></td>
-                    <td style={{ padding:'9px 13px', fontSize:12, color:T.med }}>{tp.mins}'</td>
-                    <td style={{ padding:'9px 13px', fontSize:12, color:T.med }}>{tp.deadline_suggest||'—'}</td>
+                    <td style={{ padding:'9px 13px', fontSize:12, fontWeight:600, color:T.dark }}>
+                      🕐 {timeRange(tp)}
+                      <div style={{ fontSize:10, color:T.light }}>{tp.mins} phút</div>
+                    </td>
                     <td style={{ padding:'9px 13px' }}>
                       <span style={{ fontSize:10, fontWeight:600, padding:'2px 7px', borderRadius:20,
                         color:tp.active?T.green:T.gray, background:tp.active?T.greenBg:T.grayBg }}>
@@ -1109,23 +1371,38 @@ function Templates({ templates, setTemplates, allUsers, mobile }: any) {
         </Card>
       ))}
 
-      <Modal open={show} onClose={() => setShow(false)} title={edit?'Sửa template':'Thêm template mới'}>
-        <Inp label="Tiêu đề *" value={form.title} onChange={(v: string) => setForm(f => ({...f, title:v}))} placeholder="Nhập tiêu đề..."/>
-        <Inp label="Mô tả" value={form.description} onChange={(v: string) => setForm(f => ({...f, description:v}))} placeholder="Mô tả ngắn..."/>
-        <Sel label="Giao cho *" value={form.assignee_id} onChange={(v: string) => setForm(f => ({...f, assignee_id:v}))}
-          options={[{value:'',label:'— Chọn nhân viên —'},...staff.map((u: any) => ({value:u.id,label:`${u.name} — ${u.position_name||u.dept_name||''}`}))]}/>
+      <Modal open={show} onClose={() => setShow(false)} title={edit?'Sửa template':'Thêm template mới'} wide>
         <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:12 }}>
-          <Sel label="Tần suất" value={form.freq} onChange={(v: string) => setForm(f => ({...f, freq:v}))}
+          <div style={{ gridColumn:'1/-1' }}>
+            <Inp label="Tiêu đề *" value={form.title} onChange={(v: string) => setForm((f: any) => ({...f, title:v}))} placeholder="Nhập tiêu đề..."/>
+          </div>
+          <div style={{ gridColumn:'1/-1' }}>
+            <Inp label="Mô tả" value={form.description} onChange={(v: string) => setForm((f: any) => ({...f, description:v}))} placeholder="Mô tả ngắn..."/>
+          </div>
+          <div style={{ gridColumn:'1/-1' }}>
+            <Sel label="Giao cho *" value={form.assignee_id} onChange={(v: string) => setForm((f: any) => ({...f, assignee_id:v}))}
+              options={[{value:'',label:'— Chọn nhân viên —'},...staff.map((u: any) => ({value:u.id,label:`${u.name} — ${u.position_name||u.dept_name||''}`}))]}/>
+          </div>
+          <Sel label="Tần suất" value={form.freq} onChange={(v: string) => setForm((f: any) => ({...f, freq:v}))}
             options={['Hàng ngày','Hàng tuần','Hàng tháng'].map(v => ({value:v,label:v}))}/>
-          <Sel label="Ưu tiên" value={form.priority} onChange={(v: string) => setForm(f => ({...f, priority:v}))}
+          <Sel label="Ưu tiên" value={form.priority} onChange={(v: string) => setForm((f: any) => ({...f, priority:v}))}
             options={[{value:'high',label:'🔴 Cao'},{value:'mid',label:'🟡 Trung bình'},{value:'low',label:'🟢 Thấp'}]}/>
+          <Inp label="🕐 Giờ bắt đầu" type="time" value={form.time_start} onChange={(v: string) => setForm((f: any) => ({...f, time_start:v}))}/>
+          <Inp label="🏁 Giờ kết thúc" type="time" value={form.time_end} onChange={(v: string) => setForm((f: any) => ({...f, time_end:v}))}/>
+          {form.freq === 'Hàng tháng' && (
+            <Inp label="📅 Ngày trong tháng (1-28)" type="number" min="1" max="28"
+              value={form.day_of_month} onChange={(v: string) => setForm((f: any) => ({...f, day_of_month:v}))}/>
+          )}
+          <Inp label="Thời lượng (phút)" type="number" value={form.mins} onChange={(v: string) => setForm((f: any) => ({...f, mins:v}))}/>
         </div>
-        <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:12 }}>
-          <Inp label="Thời gian (phút)" type="number" value={form.mins} onChange={(v: string) => setForm(f => ({...f, mins:v}))}/>
-          <Inp label="Deadline gợi ý" value={form.deadline_suggest} onChange={(v: string) => setForm(f => ({...f, deadline_suggest:v}))} placeholder="vd: 09:00"/>
-        </div>
+        {form.time_start && form.time_end && (
+          <div style={{ padding:'8px 12px', background:T.goldBg, borderRadius:8, fontSize:12, color:T.goldText, margin:'8px 0 13px', fontWeight:600 }}>
+            🕐 Khung giờ: <b>{form.time_start} → {form.time_end}</b>
+            {form.freq==='Hàng tháng' && ` — Ngày ${form.day_of_month} hàng tháng`}
+          </div>
+        )}
         <div style={{ display:'flex', alignItems:'center', gap:10, marginBottom:16 }}>
-          <input type="checkbox" id="tpact" checked={form.active} onChange={e => setForm(f => ({...f, active:e.target.checked}))}/>
+          <input type="checkbox" id="tpact" checked={form.active} onChange={e => setForm((f: any) => ({...f, active:e.target.checked}))}/>
           <label htmlFor="tpact" style={{ fontSize:13, color:T.dark, cursor:'pointer' }}>Đang hoạt động</label>
         </div>
         <div style={{ display:'flex', justifyContent:'flex-end', gap:10 }}>
