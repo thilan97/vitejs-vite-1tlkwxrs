@@ -550,7 +550,7 @@ function Sidebar({ user, page, setPage, onLogout, pendingLeave, pendingOT }: any
   )
 }
 
-function BottomNav({ page, setPage, user, pendingLeave, pendingOT }: any) {
+function BottomNav({ page, setPage, user, pendingLeave, pendingOT, onLogout }: any) {
   const allNav = getNav(getPerm(user), user?.dept_id||'')
   const mainNav = allNav.slice(0, 4)
   const [showMore, setShowMore] = useState(false)
@@ -560,6 +560,17 @@ function BottomNav({ page, setPage, user, pendingLeave, pendingOT }: any) {
       {showMore && (
         <div style={{ position:'fixed', bottom:60, left:0, right:0, background:T.sidebar,
           borderTop:'1px solid rgba(255,255,255,0.15)', zIndex:99, padding:'8px' }}>
+          {/* User info mini */}
+          <div style={{ display:'flex', alignItems:'center', gap:10, padding:'10px 14px 8px',
+            borderBottom:'1px solid rgba(255,255,255,0.08)', marginBottom:4 }}>
+            <div style={{ width:32, height:32, borderRadius:'50%', background:DEPT_COLOR[user.dept_id]||T.gold,
+              flexShrink:0, display:'flex', alignItems:'center', justifyContent:'center',
+              color:'#fff', fontSize:10, fontWeight:700 }}>{user.ini}</div>
+            <div>
+              <div style={{ color:'rgba(255,255,255,0.9)', fontSize:12, fontWeight:600 }}>{user.name}</div>
+              <div style={{ color:T.gold, fontSize:10 }}>{user.position_name||user.dept_name||''}</div>
+            </div>
+          </div>
           {allNav.slice(4).map(item => {
             const active = page === item.id
             return (
@@ -574,6 +585,15 @@ function BottomNav({ page, setPage, user, pendingLeave, pendingOT }: any) {
               </button>
             )
           })}
+          {/* Đăng xuất */}
+          <button onClick={() => { if(confirm('Đăng xuất khỏi tài khoản?')) onLogout() }}
+            style={{ width:'100%', display:'flex', alignItems:'center', gap:10,
+              padding:'10px 14px', borderRadius:8, marginBottom:2, border:'none',
+              background:'transparent', color:'#F87171',
+              cursor:'pointer', fontFamily:'inherit', fontSize:13, textAlign:'left' }}>
+            <span style={{ fontSize:16 }}>🚪</span>
+            <span>Đăng xuất</span>
+          </button>
         </div>
       )}
       <div style={{ position:'fixed', bottom:0, left:0, right:0, background:T.sidebar,
@@ -3729,7 +3749,7 @@ export default function App() {
           {validPage==='shortage'   && <ShortageItems {...pp}/>}
           {validPage==='settings'   && <Settings {...pp} setUser={setUser} settings={settings} setSettings={setSettings} onManualReset={manualReset}/>}
         </main>
-        {mobile && <BottomNav user={user} page={validPage} setPage={setPage} pendingLeave={pendingLeave} pendingOT={pendingOT}/>}
+        {mobile && <BottomNav user={user} page={validPage} setPage={setPage} pendingLeave={pendingLeave} pendingOT={pendingOT} onLogout={() => { localStorage.removeItem('la_user'); setUser(null); setAllUsers([]); setChecklist([]) }}/>}
       </div>
      )
 }
