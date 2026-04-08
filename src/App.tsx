@@ -1520,9 +1520,15 @@ function Overtime({ user, allUsers, mobile }: any) {
     if (!form.date || !form.start_time || !form.end_time || !form.reason) return
     const hours = calcHours(form.start_time, form.end_time)
     const req = { id:'ot'+Date.now(), ...form, hours, user_id:user.id, dept_id:user.dept_id,
-      status:'pending', reviewed_by:'', reviewed_at:'', review_notes:'', created_at:fmtNow() }
+      status:'pending', reviewed_by:'', reviewed_at:'', review_notes:'', created_at:new Date().toISOString() }
     setRequests(prev => [req, ...prev])
-    await db.from('overtime_requests').insert(req)
+    const { error } = await db.from('overtime_requests').insert(req)
+    if (error) {
+      setRequests(prev => prev.filter((r: any) => r.id !== req.id))
+      alert('❌ Gửi đơn OT thất bại: ' + error.message)
+      console.error('OT insert error:', error)
+      return
+    }
     setShow(false)
     setForm({ date:'', start_time:'', end_time:'', reason:'' })
   }
@@ -1729,12 +1735,15 @@ function Leave({ user, allUsers, leaveRequests, setLeaveRequests, mobile }: any)
   const p = mobile ? '16px' : '24px'
 
   // Refresh data mỗi khi mở tab Nghỉ phép
-  // Dùng ref để tránh race condition: fetch cũ đè lên optimistic update mới
   const fetchingRef = useRef(true)
   useEffect(() => {
     fetchingRef.current = true
     db.from('leave_requests').select('*').order('created_at', { ascending:false })
-      .then(({ data }) => { if (data && fetchingRef.current) setLeaveRequests(data) })
+      .then(({ data }) => {
+        // Chỉ ghi đè nếu fetch vẫn hợp lệ VÀ DB trả về data có nội dung
+        // Nếu data = [] hoặc null (có thể do Supabase RLS chặn), giữ nguyên state hiện tại
+        if (data && data.length > 0 && fetchingRef.current) setLeaveRequests(data)
+      })
     return () => { fetchingRef.current = false }
   }, [])
 
@@ -1784,29 +1793,30 @@ function Leave({ user, allUsers, leaveRequests, setLeaveRequests, mobile }: any)
     setSubmitting(true); setSubmitError('')
     const days = daysBetween(form.start_date, form.end_date)
     const approver = getApprover(user.id, days)
-    const now = new Date().toISOString()  // ISO format để Supabase timestamptz nhận đúng
-    const tempId = 'lr'+Date.now()
+    const now = new Date().toISOString()
+    const tempId = 'lr' + Date.now()
     const req = { id:tempId, ...form, user_id:user.id, dept_id:user.dept_id,
       days, approver_level:approver, status:'pending',
       reviewed_by:'', reviewed_at:'', review_notes:'', created_at:now }
 
-    // Optimistic update
-    fetchingRef.current = false  // chặn fetch cũ đè lên state
+    // Chặn useEffect fetch đang pending đè lên optimistic update
+    fetchingRef.current = false
+    // Optimistic update: thêm đơn vào list ngay lập tức
     setLeaveRequests((prev: any) => [req, ...prev])
 
     const { error } = await db.from('leave_requests').insert(req)
     if (error) {
-      // Rollback nếu insert thất bại
+      // Insert thất bại → rollback optimistic update + hiện lỗi
       setLeaveRequests((prev: any) => prev.filter((r: any) => r.id !== tempId))
-      setSubmitError('❌ Gửi đơn thất bại: ' + (error.message || 'Lỗi không xác định'))
+      setSubmitError('❌ Gửi đơn thất bại: ' + (error.message || 'Lỗi kết nối'))
+      console.error('Leave insert error:', error)
       setSubmitting(false)
       return
     }
 
-    // Re-fetch để đồng bộ với DB (lấy ID và created_at thực từ server)
-    const { data } = await db.from('leave_requests').select('*').order('created_at', { ascending:false })
-    if (data) setLeaveRequests(data)
-
+    // Insert thành công → GIỮ optimistic item, KHÔNG re-fetch toàn bộ
+    // (re-fetch toàn bộ có thể trả về [] nếu Supabase RLS chặn SELECT → xóa mất đơn)
+    // Đơn sẽ được sync từ DB lần sau khi user vào lại tab này
     setSubmitting(false)
     setShow(false)
     setForm({ start_date:'', end_date:'', type:'annual', reason:'' })
