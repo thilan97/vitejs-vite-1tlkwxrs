@@ -60,21 +60,22 @@ const PRI_CFG: any = {
 // ── PERMISSION SYSTEM ────────────────────────────
 const getPerm = (user: any) => {
   const pos = user?.position || {}
+  const isAdmin = pos.perm_view_all_dashboard ?? false
   return {
-    viewDeptChecklist:  pos.perm_view_dept_checklist  ?? true,
-    viewAllChecklist:   pos.perm_view_all_checklist   ?? false,
-    createTask:         pos.perm_create_task          ?? false,
-    manageTemplate:     pos.perm_manage_template      ?? false,
-    markAttendance:     pos.perm_mark_attendance      ?? false,
-    markPeerAttendance: pos.perm_mark_peer_attendance ?? false,
-    approveLeave:       pos.perm_approve_leave        ?? false,
-    approveOT:          pos.perm_approve_ot           ?? false,
-    viewAllAttendance:  pos.perm_view_all_attendance  ?? false,
+    viewDeptChecklist:  isAdmin || (pos.perm_view_dept_checklist  ?? true),
+    viewAllChecklist:   isAdmin || (pos.perm_view_all_checklist   ?? false),
+    createTask:         isAdmin || (pos.perm_create_task          ?? false),
+    manageTemplate:     isAdmin || (pos.perm_manage_template      ?? false),
+    markAttendance:     isAdmin || (pos.perm_mark_attendance      ?? false),
+    markPeerAttendance: isAdmin || (pos.perm_mark_peer_attendance ?? false),
+    approveLeave:       isAdmin || (pos.perm_approve_leave        ?? false),
+    approveOT:          isAdmin || (pos.perm_approve_ot           ?? false),
+    viewAllAttendance:  isAdmin || (pos.perm_view_all_attendance  ?? false),
     manageUsers:        pos.perm_manage_users         ?? false,
     managePositions:    pos.perm_manage_positions     ?? false,
-    announceAll:        pos.perm_announce_all         ?? false,
-    viewAllDashboard:   pos.perm_view_all_dashboard   ?? false,
-    resetChecklist:     pos.perm_reset_checklist      ?? false,
+    announceAll:        isAdmin || (pos.perm_announce_all         ?? false),
+    viewAllDashboard:   isAdmin,
+    resetChecklist:     isAdmin || (pos.perm_reset_checklist      ?? false),
   }
 }
 
@@ -2842,3 +2843,4 @@ export default function App() {
      )
 }
 
+// ══ KẾT THÚC PHẦN 6 — HOÀN THÀNH! ══
