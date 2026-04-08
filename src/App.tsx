@@ -1748,10 +1748,14 @@ function Leave({ user, allUsers, leaveRequests, setLeaveRequests, mobile }: any)
   }
 
   const canReviewReq = (r: any) => {
-    if (!canApprove || r.status !== 'pending') return false
+    if (r.status !== 'pending') return false
     if (r.user_id === user.id) return false  // không tự duyệt đơn của mình
+    // Admin (viewAllDashboard) duyệt được MỌI đơn
+    if (canAll) return true
+    // Quản lý phòng chỉ duyệt đơn của nhân viên cùng phòng (1-3 ngày)
+    if (!canApprove) return false
     const approver = r.approver_level || getApprover(r.user_id, r.days || 1)
-    if (approver === 'admin') return canAll
+    if (approver === 'admin') return false  // loại này chỉ admin mới duyệt
     return dids.includes(r.user_id)
   }
 
@@ -1760,7 +1764,8 @@ function Leave({ user, allUsers, leaveRequests, setLeaveRequests, mobile }: any)
   const allV     = canAll ? leaveRequests : leaveRequests.filter((r: any) => dids.includes(r.user_id) || r.user_id === user.id)
 
   const tabList: Array<[string,string]> = [['mine', `📋 Đơn của tôi (${myReqs.length})`]]
-  if (canApprove) {
+  // Admin (canAll) hoặc Quản lý (canApprove) đều thấy tab chờ duyệt + tất cả
+  if (canAll || canApprove) {
     tabList.push(['pending', `⏳ Chờ duyệt (${pending.length})`])
     tabList.push(['all', `📊 Tất cả (${allV.length})`])
   }
@@ -2275,7 +2280,8 @@ function History({ user, history, allUsers, mobile }: any) {
 }
 
 // ── USER MANAGEMENT ───────────────────────────────
-function UserManagement({ allUsers, setAllUsers, departments, positions, mobile }: any) {
+function UserManagement({ user, allUsers, setAllUsers, departments, positions, mobile }: any) {
+  const isAdmin = getPerm(user).viewAllDashboard  // admin: được sửa ini
   const [show, setShow]   = useState(false)
   const [edit, setEdit]   = useState<any>(null)
   const [form, setForm]   = useState({ name:'', dept_id:'kho', position_id:'', ini:'', pin:'1234', active:true })
@@ -2389,8 +2395,15 @@ function UserManagement({ allUsers, setAllUsers, departments, positions, mobile 
         <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:12 }}>
           <Inp label="Họ tên *" value={form.name}
             onChange={(v: string) => setForm(f => ({...f, name:v, ini:autoIni(v)}))} placeholder="Nguyễn Văn A"/>
-          <Inp label="Viết tắt (dùng để đăng nhập)" value={form.ini}
-            onChange={(v: string) => setForm(f => ({...f, ini:v.toUpperCase().slice(0,4)}))} placeholder="VA"/>
+          {isAdmin ? (
+            <Inp label="Tên đăng nhập (ini) 🔐 Admin" value={form.ini}
+              onChange={(v: string) => setForm(f => ({...f, ini:v.toUpperCase().slice(0,4)}))} placeholder="VA"/>
+          ) : (
+            <div style={{ marginBottom:13 }}>
+              <div style={{ fontSize:12, fontWeight:500, color:T.med, marginBottom:5 }}>Tên đăng nhập (ini)</div>
+              <div style={{ padding:'8px 11px', border:`1px solid ${T.border}`, borderRadius:8, fontSize:13, color:T.light, background:T.bg }}>{form.ini} <span style={{ fontSize:11, color:T.amber }}>(Chỉ Admin được sửa)</span></div>
+            </div>
+          )}
         </div>
         <Sel label="Phòng ban" value={form.dept_id} onChange={(v: string) => setForm(f => ({...f, dept_id:v}))}
           options={departments.filter((d: any) => d.id!=='all').map((d: any) => ({value:d.id,label:d.name}))}/>
