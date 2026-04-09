@@ -44,7 +44,8 @@ const ATT_STATUS: any = {
   half:    { label:'🌓 Nửa ngày',  color:T.teal,   bg:T.tealBg   },
 }
 const LEAVE_TYPE: any = {
-  annual:'Nghỉ phép năm', sick:'Nghỉ bệnh', personal:'Việc cá nhân', unpaid:'Nghỉ không lương'
+  annual:'Nghỉ phép năm', sick:'Nghỉ bệnh', personal:'Việc cá nhân', unpaid:'Nghỉ không lương', half:'Nghỉ nửa ngày',
+  half:'Nghỉ nửa ngày'
 }
 const FREQ_COLOR: any = {
   'Hàng ngày':  { color:'#1D4ED8', bg:'#DBEAFE' },
@@ -2175,7 +2176,7 @@ function Leave({ user, allUsers, leaveRequests, setLeaveRequests, mobile }: any)
   const [show, setShow]             = useState(false)
   const [reviewItem, setReviewItem] = useState<any>(null)
   const [reviewNotes, setReviewNotes] = useState('')
-  const [form, setForm]             = useState({ start_date:'', end_date:'', type:'annual', reason:'' })
+  const [form, setForm]             = useState({ start_date:'', end_date:'', type:'annual', reason:'', half_day:'', half_day_session:'' })
   const [tab, setTab]               = useState('mine')
   const [submitError, setSubmitError] = useState('')
   const [submitting, setSubmitting]   = useState(false)
@@ -2203,7 +2204,7 @@ function Leave({ user, allUsers, leaveRequests, setLeaveRequests, mobile }: any)
     const reqUser = allUsers.find((u: any) => u.id === requestUserId)
     const reqPerm = getPerm(reqUser)
     if (reqPerm.approveLeave || reqPerm.viewAllDashboard) return 'admin_only'
-    if (days <= 3) return 'mgr_only'
+    if (days <= 3) return 'mgr_only'   // 0.5 ngày cũng vào đây
     return 'mgr_then_admin'
   }
   const currentStep = (r: any) => r.status || 'pending_mgr'
@@ -2234,7 +2235,8 @@ function Leave({ user, allUsers, leaveRequests, setLeaveRequests, mobile }: any)
   const submit = async () => {
     if (!form.start_date || !form.end_date || !form.reason) return
     setSubmitting(true); setSubmitError('')
-    const days = daysBetween(form.start_date, form.end_date)
+    const isHalf = form.half_day === 'yes'
+    const days = isHalf ? 0.5 : daysBetween(form.start_date, form.end_date)
     const approver = getApproverLevel(user.id, days)
     const initStatus = approver === 'admin_only' ? 'pending_admin' : 'pending_mgr'
     const now = new Date().toISOString()
@@ -2268,7 +2270,7 @@ function Leave({ user, allUsers, leaveRequests, setLeaveRequests, mobile }: any)
 
     setSubmitting(false)
     setShow(false)
-    setForm({ start_date:'', end_date:'', type:'annual', reason:'' })
+    setForm({ start_date:'', end_date:'', type:'annual', reason:'', half_day:'', half_day_session:'' })
   }
 
   const review = async (id: string, action: string) => {
@@ -2368,12 +2370,21 @@ function Leave({ user, allUsers, leaveRequests, setLeaveRequests, mobile }: any)
                       <span style={{ fontSize:13, fontWeight:700, padding:'2px 9px', borderRadius:20, color:T.goldText, background:T.goldBg }}>
                         {LEAVE_TYPE[r.type]||r.type}
                       </span>
-                      <span style={{ fontSize:11, color:T.light }}>{days} ngày</span>
+                      <span style={{ fontSize:11, color:T.light }}>
+                        {r.half_day==='yes'
+                          ? `🌓 Nửa ngày${r.half_day_session==='morning'?' (sáng)':r.half_day_session==='afternoon'?' (chiều)':''}`
+                          : `${days} ngày`}
+                      </span>
                       <span style={{ fontSize:10, padding:'2px 7px', borderRadius:20, background:T.grayBg, color:T.gray }}>
                         {approverLabel(r)}
                       </span>
                     </div>
-                    <div style={{ fontSize:12, color:T.dark, marginBottom:3 }}>📅 {fmtDate(r.start_date)} → {fmtDate(r.end_date)}</div>
+                    <div style={{ fontSize:12, color:T.dark, marginBottom:3 }}>
+                      {r.half_day==='yes'
+                        ? <>🌓 {fmtDate(r.start_date)} — {r.half_day_session==='morning'?'Buổi sáng':'Buổi chiều'}</>
+                        : <>📅 {fmtDate(r.start_date)} → {fmtDate(r.end_date)}</>
+                      }
+                    </div>
                     <div style={{ fontSize:12, color:T.med }}>Lý do: {r.reason}</div>
                     {r.review_notes && <div style={{ fontSize:11, color:T.blue, marginTop:4 }}>💬 {r.review_notes}</div>}
                     {rev && r.reviewed_at && <div style={{ fontSize:11, color:T.light, marginTop:3 }}>Xử lý bởi {rev.name} • {r.reviewed_at}</div>}
@@ -2404,28 +2415,70 @@ function Leave({ user, allUsers, leaveRequests, setLeaveRequests, mobile }: any)
       )}
 
       <Modal open={show} onClose={() => setShow(false)} title="Xin nghỉ phép">
-        <Sel label="Loại nghỉ phép" value={form.type} onChange={(v: string) => setForm(f => ({...f, type:v}))}
+        <Sel label="Loại nghỉ phép" value={form.type}
+          onChange={(v: string) => setForm((f: any) => ({
+            ...f, type:v,
+            half_day: v === 'half' ? 'yes' : '',
+            start_date: v === 'half' ? f.start_date : f.start_date,
+            end_date:   v === 'half' ? f.start_date : f.end_date,
+          }))}
           options={Object.entries(LEAVE_TYPE).map(([v, l]) => ({ value:v, label:l }))}/>
-        <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:12 }}>
-          <Inp label="Từ ngày *" type="date" value={form.start_date} onChange={(v: string) => setForm(f => ({...f, start_date:v}))}/>
-          <Inp label="Đến ngày *" type="date" value={form.end_date} onChange={(v: string) => setForm(f => ({...f, end_date:v, start_date:f.start_date||v}))}/>
-        </div>
-        {form.start_date && form.end_date && (
-          <div style={{ padding:'8px 12px', background:T.goldBg, borderRadius:8, fontSize:12, color:T.goldText, marginBottom:13, fontWeight:600 }}>
-            📅 Tổng {daysBetween(form.start_date, form.end_date)} ngày — {
-              getApproverLevel(user.id, daysBetween(form.start_date, form.end_date)) === 'admin_only'
-                ? '📌 GĐ/Admin duyệt'
-                : getApproverLevel(user.id, daysBetween(form.start_date, form.end_date)) === 'mgr_then_admin'
-                ? '📌 Quản lý duyệt → GĐ/Admin duyệt (2 bước)'
-                : '📌 Quản lý phòng duyệt'
-            }
+
+        {/* Chế độ nửa ngày */}
+        {form.half_day === 'yes' ? (
+          <div>
+            <Inp label="Ngày nghỉ *" type="date" value={form.start_date}
+              onChange={(v: string) => setForm((f: any) => ({...f, start_date:v, end_date:v}))}/>
+            <div style={{ marginBottom:13 }}>
+              <div style={{ fontSize:12, fontWeight:500, color:T.med, marginBottom:6 }}>Chọn buổi *</div>
+              <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:10 }}>
+                {[['morning','🌅 Buổi sáng'],['afternoon','🌆 Buổi chiều']].map(([val, lbl]) => (
+                  <button key={val} onClick={() => setForm((f: any) => ({...f, half_day_session:val}))}
+                    style={{ padding:'12px', borderRadius:9,
+                      border:`2px solid ${form.half_day_session===val?T.gold:T.border}`,
+                      background:form.half_day_session===val?T.goldBg:T.bg,
+                      cursor:'pointer', fontFamily:'inherit',
+                      fontWeight:form.half_day_session===val?700:400,
+                      color:form.half_day_session===val?T.goldText:T.med,
+                      fontSize:13 }}>
+                    {lbl}
+                  </button>
+                ))}
+              </div>
+            </div>
+          </div>
+        ) : (
+          <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:12 }}>
+            <Inp label="Từ ngày *" type="date" value={form.start_date}
+              onChange={(v: string) => setForm((f: any) => ({...f, start_date:v}))}/>
+            <Inp label="Đến ngày *" type="date" value={form.end_date}
+              onChange={(v: string) => setForm((f: any) => ({...f, end_date:v, start_date:f.start_date||v}))}/>
           </div>
         )}
-        <Inp label="Lý do *" value={form.reason} onChange={(v: string) => setForm(f => ({...f, reason:v}))} placeholder="Nhập lý do xin nghỉ..."/>
+
+        {/* Summary */}
+        {form.start_date && (form.half_day === 'yes' || form.end_date) && (
+          <div style={{ padding:'8px 12px', background:T.goldBg, borderRadius:8, fontSize:12, color:T.goldText, marginBottom:13, fontWeight:600 }}>
+            {form.half_day === 'yes' ? (
+              <>🌓 Nửa ngày {form.half_day_session==='morning'?'(Buổi sáng)':form.half_day_session==='afternoon'?'(Buổi chiều)':''} — {fmtDate(form.start_date)} — 📌 Quản lý phòng duyệt</>
+            ) : (
+              <>📅 Tổng {daysBetween(form.start_date, form.end_date)} ngày — {
+                getApproverLevel(user.id, daysBetween(form.start_date, form.end_date)) === 'admin_only'
+                  ? '📌 GĐ/Admin duyệt'
+                  : getApproverLevel(user.id, daysBetween(form.start_date, form.end_date)) === 'mgr_then_admin'
+                  ? '📌 Quản lý duyệt → GĐ/Admin duyệt (2 bước)'
+                  : '📌 Quản lý phòng duyệt'
+              }</>
+            )}
+          </div>
+        )}
+        <Inp label="Lý do *" value={form.reason} onChange={(v: string) => setForm((f: any) => ({...f, reason:v}))} placeholder="Nhập lý do xin nghỉ..."/>
         {submitError && <div style={{ fontSize:12, color:T.red, marginBottom:10 }}>{submitError}</div>}
         <div style={{ display:'flex', justifyContent:'flex-end', gap:10 }}>
           <GoldBtn outline small onClick={() => { setShow(false); setSubmitError('') }}>Hủy</GoldBtn>
-          <GoldBtn small onClick={submit} disabled={submitting||!form.start_date||!form.end_date||!form.reason}>
+          <GoldBtn small onClick={submit}
+            disabled={submitting || !form.start_date || !form.reason ||
+              (form.half_day==='yes' ? !form.half_day_session : !form.end_date)}>
             {submitting ? '⏳ Đang gửi...' : 'Gửi đơn'}
           </GoldBtn>
         </div>
@@ -2437,8 +2490,18 @@ function Leave({ user, allUsers, leaveRequests, setLeaveRequests, mobile }: any)
             <div style={{ fontSize:13, fontWeight:600, color:T.dark, marginBottom:6 }}>
               {allUsers.find((u: any) => u.id === reviewItem.user_id)?.name}
             </div>
-            <div style={{ fontSize:12, color:T.med }}>{LEAVE_TYPE[reviewItem.type]} — {reviewItem.days} ngày</div>
-            <div style={{ fontSize:12, color:T.med }}>📅 {fmtDate(reviewItem.start_date)} → {fmtDate(reviewItem.end_date)}</div>
+            <div style={{ fontSize:12, color:T.med }}>
+              {LEAVE_TYPE[reviewItem.type]} —{' '}
+              {reviewItem.half_day==='yes'
+                ? `🌓 Nửa ngày ${reviewItem.half_day_session==='morning'?'(sáng)':reviewItem.half_day_session==='afternoon'?'(chiều)':''}`
+                : `${reviewItem.days} ngày`}
+            </div>
+            <div style={{ fontSize:12, color:T.med }}>
+              {reviewItem.half_day==='yes'
+                ? <>🌓 {fmtDate(reviewItem.start_date)} — {reviewItem.half_day_session==='morning'?'Buổi sáng':'Buổi chiều'}</>
+                : <>📅 {fmtDate(reviewItem.start_date)} → {fmtDate(reviewItem.end_date)}</>
+              }
+            </div>
             <div style={{ fontSize:12, color:T.dark, marginTop:6 }}>Lý do: {reviewItem.reason}</div>
           </div>
           <Inp label="Ghi chú phản hồi" value={reviewNotes} onChange={setReviewNotes} placeholder="Nhập ghi chú (tùy chọn)..."/>
