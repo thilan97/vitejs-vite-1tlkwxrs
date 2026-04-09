@@ -62,7 +62,7 @@ const getPerm = (user: any) => {
   const pos = user?.position || {}
   const isAdmin = pos.perm_view_all_dashboard ?? false
   return {
-    viewDeptChecklist:  isAdmin || (pos.perm_view_dept_checklist  ?? true),
+    viewDeptChecklist:  isAdmin || (pos.perm_view_dept_checklist  ?? false),
     viewAllChecklist:   isAdmin || (pos.perm_view_all_checklist   ?? false),
     createTask:         isAdmin || (pos.perm_create_task          ?? false),
     manageTemplate:     isAdmin || (pos.perm_manage_template      ?? false),
