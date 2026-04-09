@@ -264,7 +264,7 @@ const AlertBanner = ({ user, checklist, leaveRequests, otRequests, allUsers }: a
   const pendingLeave = leaveRequests.filter((r: any) => {
     if (r.status !== 'pending') return false
     if (perm.viewAllDashboard) return true
-    if (perm.approveLeave) return dids.includes(r.user_id) && r.approver_level !== 'admin'
+    if (perm.approveLeave) return dids.includes(r.user_id) && !['pending_admin','approved','rejected'].includes(r.status)
     return false
   })
   const pendingOT = (otRequests||[]).filter((r: any) => {
@@ -467,162 +467,243 @@ onDone(newPw)
 }
 
 // ── NAVIGATION ───────────────────────────────────
+// ── NAV GROUPS (5 nhóm chính) ────────────────────
+const NAV_GROUPS = (perm: any, deptId = '') => {
+  const hasDashboard  = perm.viewAllDashboard || perm.viewDeptChecklist
+  const hasAttendance = perm.markAttendance || perm.markPeerAttendance || perm.viewAllAttendance
+  const hasShortage   = deptId === 'sale' || perm.viewAllDashboard
+  const hasManage     = perm.manageUsers || perm.managePositions || perm.manageTemplate ||
+                        perm.announceAll || perm.viewAllDashboard || perm.resetChecklist
+
+  const groups = [
+    hasDashboard && {
+      id:'dashboard', icon:'📊', label:'Tổng quan',
+      pages:[{ id:'dashboard', icon:'📊', label:'Dashboard' }]
+    },
+    {
+      id:'work', icon:'✅', label:'Công việc',
+      pages:[
+        { id:'checklist',  icon:'✅', label:'Checklist'  },
+        { id:'tasks',      icon:'📌', label:'Giao việc'  },
+        perm.manageTemplate && { id:'templates', icon:'📋', label:'Template' },
+        { id:'history',    icon:'🗂️', label:'Lịch sử'   },
+      ].filter(Boolean)
+    },
+    hasAttendance && {
+      id:'hr', icon:'👥', label:'Nhân sự',
+      pages:[
+        { id:'attendance', icon:'🕐', label:'Chấm công' },
+        { id:'overtime',   icon:'⏰', label:'Làm thêm'  },
+        { id:'leave',      icon:'🏖️', label:'Nghỉ phép' },
+      ]
+    },
+    !hasAttendance && {
+      id:'hr', icon:'👥', label:'Nhân sự',
+      pages:[
+        { id:'overtime',   icon:'⏰', label:'Làm thêm'  },
+        { id:'leave',      icon:'🏖️', label:'Nghỉ phép' },
+      ]
+    },
+    hasShortage && {
+      id:'shortage', icon:'📦', label:'Hàng thiếu',
+      pages:[{ id:'shortage', icon:'📦', label:'Hàng thiếu' }]
+    },
+    {
+      id:'manage', icon:'⚙️', label:'Quản lý',
+      pages:[
+        { id:'announce',  icon:'📣', label:'Thông báo'  },
+        { id:'orgchart',  icon:'🏢', label:'Sơ đồ'      },
+        perm.manageUsers     && { id:'users',     icon:'👥', label:'Nhân viên' },
+        perm.managePositions && { id:'positions',  icon:'🎯', label:'Vị trí'   },
+        { id:'settings',  icon:'⚙️', label:'Cài đặt'   },
+      ].filter(Boolean)
+    },
+  ].filter(Boolean) as any[]
+
+  return groups
+}
+
+// For backward compat — flat list of all accessible page IDs
 const getNav = (perm: any, deptId = '') => {
-  const all = [
-    { id:'dashboard',  icon:'📊', label:'Dashboard'   },
-    { id:'checklist',  icon:'✅', label:'Checklist'   },
-    { id:'tasks',      icon:'📌', label:'Giao việc'   },
-    { id:'templates',  icon:'📋', label:'Template'    },
-    { id:'attendance', icon:'🕐', label:'Chấm công'   },
-    { id:'overtime',   icon:'⏰', label:'Làm thêm'    },
-    { id:'announce',   icon:'📣', label:'Thông báo'   },
-    { id:'leave',      icon:'🏖️', label:'Nghỉ phép'   },
-    { id:'shortage',   icon:'📦', label:'Hàng thiếu'  },
-    { id:'orgchart',   icon:'🏢', label:'Sơ đồ tổ chức'},
-    { id:'history',    icon:'🗂️', label:'Lịch sử'    },
-    { id:'users',      icon:'👥', label:'Nhân viên'   },
-    { id:'positions',  icon:'🎯', label:'Vị trí'      },
-    { id:'settings',   icon:'⚙️', label:'Cài đặt'    },
-  ]
-  return all.filter(n => {
-    if (n.id === 'templates')  return perm.manageTemplate
-    if (n.id === 'attendance') return perm.markAttendance || perm.markPeerAttendance || perm.viewAllAttendance
-    if (n.id === 'users')      return perm.manageUsers
-    if (n.id === 'positions')  return perm.managePositions
-    if (n.id === 'dashboard')  return perm.viewAllDashboard || perm.viewDeptChecklist
-    if (n.id === 'shortage')   return deptId === 'sale' || perm.viewAllDashboard || perm.approveLeave
-    return true
-  })
+  return NAV_GROUPS(perm, deptId).flatMap((g: any) => g.pages)
+}
+
+// Get group for a page
+const getGroupForPage = (pageId: string, perm: any, deptId = '') => {
+  const groups = NAV_GROUPS(perm, deptId)
+  return groups.find((g: any) => g.pages.some((p: any) => p.id === pageId))
 }
 
 function Sidebar({ user, page, setPage, onLogout, pendingLeave, pendingOT }: any) {
-  const perm = getPerm(user)
-  const nav  = getNav(perm, user?.dept_id||'')
+  const perm   = getPerm(user)
+  const groups = NAV_GROUPS(perm, user?.dept_id||'')
+  const activeGroup = getGroupForPage(page, perm, user?.dept_id||'')
+
   return (
-    <div style={{ width:215, background:T.sidebar, display:'flex', flexDirection:'column',
+    <div style={{ width:220, background:T.sidebar, display:'flex', flexDirection:'column',
       flexShrink:0, height:'100vh', position:'sticky', top:0 }}>
-      <div style={{ padding:'18px 16px 14px', borderBottom:'1px solid rgba(255,255,255,0.07)' }}>
+      {/* Logo */}
+      <div style={{ padding:'16px 14px 12px', borderBottom:'1px solid rgba(255,255,255,0.07)' }}>
         <div style={{ display:'flex', alignItems:'center', gap:10 }}>
-          <LALogo size={32}/>
+          <LALogo size={30}/>
           <div style={{ color:T.gold, fontSize:11, fontFamily:'Georgia,serif', lineHeight:1.4, letterSpacing:.5 }}>
             LA Global<br/>Beauty
           </div>
         </div>
       </div>
-      <nav style={{ flex:1, padding:'8px 8px', overflowY:'auto' }}>
-        {nav.map(item => {
-          const active = page === item.id
-          const badge = item.id==='leave' ? pendingLeave : item.id==='overtime' ? pendingOT : 0
+      {/* Groups */}
+      <nav style={{ flex:1, padding:'6px', overflowY:'auto' }}>
+        {groups.map((group: any) => {
+          const isActiveGroup = activeGroup?.id === group.id
+          const groupBadge = group.id==='hr' ? pendingLeave+pendingOT : 0
           return (
-            <button key={item.id} onClick={() => setPage(item.id)}
-              style={{ width:'100%', display:'flex', alignItems:'center', gap:9,
-                padding:'8px 10px', borderRadius:8, marginBottom:1, border:'none',
-                cursor:'pointer', fontFamily:'inherit', fontSize:12, textAlign:'left',
-                background:active?'rgba(196,151,58,0.18)':'transparent',
-                color:active?T.gold:'rgba(255,255,255,0.55)',
-                fontWeight:active?600:400 }}
-              onMouseEnter={e => { if (!active) (e.currentTarget as any).style.background='rgba(255,255,255,0.06)' }}
-              onMouseLeave={e => { if (!active) (e.currentTarget as any).style.background='transparent' }}>
-              <span style={{ fontSize:13 }}>{item.icon}</span>
-              <span style={{ flex:1 }}>{item.label}</span>
-              {badge > 0 && <span style={{ background:T.red, color:'#fff', borderRadius:10, fontSize:9, fontWeight:700, padding:'1px 5px' }}>{badge}</span>}
-            </button>
+            <div key={group.id} style={{ marginBottom:4 }}>
+              {/* Group header */}
+              <div style={{ display:'flex', alignItems:'center', gap:7, padding:'6px 8px 4px',
+                fontSize:10, fontWeight:700, color:isActiveGroup?T.gold:'rgba(255,255,255,0.3)',
+                textTransform:'uppercase', letterSpacing:.8 }}>
+                <span>{group.icon}</span>
+                <span style={{ flex:1 }}>{group.label}</span>
+                {groupBadge>0 && <span style={{ background:T.red, color:'#fff', borderRadius:10,
+                  fontSize:9, fontWeight:700, padding:'1px 5px' }}>{groupBadge}</span>}
+              </div>
+              {/* Sub-pages */}
+              {group.pages.map((item: any) => {
+                const active = page === item.id
+                const badge = item.id==='leave' ? pendingLeave : item.id==='overtime' ? pendingOT : 0
+                return (
+                  <button key={item.id} onClick={() => setPage(item.id)}
+                    style={{ width:'100%', display:'flex', alignItems:'center', gap:8,
+                      padding:'7px 10px 7px 20px', borderRadius:7, marginBottom:1, border:'none',
+                      cursor:'pointer', fontFamily:'inherit', fontSize:12, textAlign:'left',
+                      background:active?'rgba(196,151,58,0.2)':'transparent',
+                      color:active?T.gold:'rgba(255,255,255,0.5)',
+                      fontWeight:active?600:400 }}
+                    onMouseEnter={e => { if (!active) (e.currentTarget as any).style.background='rgba(255,255,255,0.05)' }}
+                    onMouseLeave={e => { if (!active) (e.currentTarget as any).style.background='transparent' }}>
+                    <span style={{ fontSize:12 }}>{item.icon}</span>
+                    <span style={{ flex:1 }}>{item.label}</span>
+                    {badge>0 && <span style={{ background:T.red, color:'#fff', borderRadius:10,
+                      fontSize:9, fontWeight:700, padding:'1px 5px' }}>{badge}</span>}
+                  </button>
+                )
+              })}
+            </div>
           )
         })}
       </nav>
-      <div style={{ padding:'10px 10px', borderTop:'1px solid rgba(255,255,255,0.07)' }}>
+      {/* User info + logout */}
+      <div style={{ padding:'10px', borderTop:'1px solid rgba(255,255,255,0.07)' }}>
         <div style={{ display:'flex', alignItems:'center', gap:8, marginBottom:8 }}>
-          <div style={{ width:28, height:28, borderRadius:'50%', background:DEPT_COLOR[user.dept_id]||T.gold,
+          <div style={{ width:30, height:30, borderRadius:'50%', background:DEPT_COLOR[user.dept_id]||T.gold,
             flexShrink:0, display:'flex', alignItems:'center', justifyContent:'center',
             color:'#fff', fontSize:9, fontWeight:700 }}>{user.ini}</div>
-          <div>
-            <div style={{ color:'rgba(255,255,255,0.85)', fontSize:11, fontWeight:600 }}>{user.name}</div>
-            <div style={{ color:T.gold, fontSize:9, fontWeight:600 }}>{user.position_name||user.dept_name}</div>
+          <div style={{ flex:1, minWidth:0 }}>
+            <div style={{ color:'rgba(255,255,255,0.85)', fontSize:11, fontWeight:600,
+              overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap' }}>{user.name}</div>
+            <div style={{ color:T.gold, fontSize:9 }}>{user.position_name||user.dept_name}</div>
           </div>
         </div>
         <button onClick={onLogout}
           style={{ width:'100%', padding:'6px', borderRadius:7, border:'1px solid rgba(255,255,255,0.1)',
-            background:'transparent', color:'rgba(255,255,255,0.4)', fontSize:11, cursor:'pointer', fontFamily:'inherit' }}>
-          Đăng xuất
-        </button>
+            background:'transparent', color:'rgba(255,255,255,0.4)', fontSize:11,
+            cursor:'pointer', fontFamily:'inherit' }}>🚪 Đăng xuất</button>
       </div>
     </div>
   )
 }
 
 function BottomNav({ page, setPage, user, pendingLeave, pendingOT, onLogout }: any) {
-  const allNav = getNav(getPerm(user), user?.dept_id||'')
-  const mainNav = allNav.slice(0, 4)
-  const [showMore, setShowMore] = useState(false)
+  const perm   = getPerm(user)
+  const groups = NAV_GROUPS(perm, user?.dept_id||'')
+  const activeGroup = getGroupForPage(page, perm, user?.dept_id||'')
+  const [showSubTabs, setShowSubTabs] = useState(false)
+
+  const handleGroupClick = (group: any) => {
+    if (activeGroup?.id === group.id) {
+      setShowSubTabs(v => !v)
+    } else {
+      // Navigate to first page of group
+      const firstPage = group.pages[0]?.id
+      if (firstPage) { setPage(firstPage); setShowSubTabs(false) }
+    }
+  }
 
   return (
     <>
-      {showMore && (
+      {/* Sub-tab strip — hiện khi tap vào group đang active */}
+      {showSubTabs && activeGroup && activeGroup.pages.length > 1 && (
         <div style={{ position:'fixed', bottom:60, left:0, right:0, background:T.sidebar,
-          borderTop:'1px solid rgba(255,255,255,0.15)', zIndex:99, padding:'8px' }}>
-          {/* User info mini */}
-          <div style={{ display:'flex', alignItems:'center', gap:10, padding:'10px 14px 8px',
-            borderBottom:'1px solid rgba(255,255,255,0.08)', marginBottom:4 }}>
-            <div style={{ width:32, height:32, borderRadius:'50%', background:DEPT_COLOR[user.dept_id]||T.gold,
-              flexShrink:0, display:'flex', alignItems:'center', justifyContent:'center',
-              color:'#fff', fontSize:10, fontWeight:700 }}>{user.ini}</div>
-            <div>
-              <div style={{ color:'rgba(255,255,255,0.9)', fontSize:12, fontWeight:600 }}>{user.name}</div>
-              <div style={{ color:T.gold, fontSize:10 }}>{user.position_name||user.dept_name||''}</div>
+          borderTop:'1px solid rgba(255,255,255,0.12)', zIndex:99 }}>
+          {/* User info */}
+          <div style={{ display:'flex', alignItems:'center', justifyContent:'space-between',
+            padding:'8px 14px', borderBottom:'1px solid rgba(255,255,255,0.06)' }}>
+            <div style={{ display:'flex', alignItems:'center', gap:8 }}>
+              <div style={{ width:26, height:26, borderRadius:'50%', background:DEPT_COLOR[user.dept_id]||T.gold,
+                display:'flex', alignItems:'center', justifyContent:'center', color:'#fff', fontSize:8, fontWeight:700 }}>{user.ini}</div>
+              <div>
+                <div style={{ color:'rgba(255,255,255,0.85)', fontSize:11, fontWeight:600 }}>{user.name}</div>
+                <div style={{ color:T.gold, fontSize:9 }}>{user.position_name||user.dept_name}</div>
+              </div>
             </div>
+            <button onClick={() => { if(confirm('Đăng xuất?')) onLogout() }}
+              style={{ padding:'4px 10px', borderRadius:6, border:'1px solid rgba(255,100,100,0.4)',
+                background:'transparent', color:'#F87171', fontSize:11, cursor:'pointer', fontFamily:'inherit' }}>
+              🚪 Đăng xuất
+            </button>
           </div>
-          {allNav.slice(4).map(item => {
-            const active = page === item.id
-            return (
-              <button key={item.id} onClick={() => { setPage(item.id); setShowMore(false) }}
-                style={{ width:'100%', display:'flex', alignItems:'center', gap:10,
-                  padding:'10px 14px', borderRadius:8, marginBottom:2, border:'none',
-                  background:active?'rgba(196,151,58,0.18)':'transparent',
-                  color:active?T.gold:'rgba(255,255,255,0.7)',
-                  cursor:'pointer', fontFamily:'inherit', fontSize:13, textAlign:'left' }}>
-                <span style={{ fontSize:16 }}>{item.icon}</span>
-                <span>{item.label}</span>
-              </button>
-            )
-          })}
-          {/* Đăng xuất */}
-          <button onClick={() => { if(confirm('Đăng xuất khỏi tài khoản?')) onLogout() }}
-            style={{ width:'100%', display:'flex', alignItems:'center', gap:10,
-              padding:'10px 14px', borderRadius:8, marginBottom:2, border:'none',
-              background:'transparent', color:'#F87171',
-              cursor:'pointer', fontFamily:'inherit', fontSize:13, textAlign:'left' }}>
-            <span style={{ fontSize:16 }}>🚪</span>
-            <span>Đăng xuất</span>
-          </button>
+          {/* Sub pages */}
+          <div style={{ display:'flex', flexWrap:'wrap', padding:'6px 8px', gap:4 }}>
+            {activeGroup.pages.map((item: any) => {
+              const active = page === item.id
+              const badge = item.id==='leave' ? pendingLeave : item.id==='overtime' ? pendingOT : 0
+              return (
+                <button key={item.id} onClick={() => { setPage(item.id); setShowSubTabs(false) }}
+                  style={{ flex:'1 1 auto', display:'flex', alignItems:'center', justifyContent:'center',
+                    gap:6, padding:'8px 10px', borderRadius:8, border:'none',
+                    background:active?'rgba(196,151,58,0.22)':'rgba(255,255,255,0.06)',
+                    color:active?T.gold:'rgba(255,255,255,0.65)',
+                    cursor:'pointer', fontFamily:'inherit', fontSize:12,
+                    fontWeight:active?600:400, position:'relative' }}>
+                  <span>{item.icon}</span>
+                  <span>{item.label}</span>
+                  {badge>0 && <span style={{ position:'absolute', top:3, right:6, background:T.red,
+                    color:'#fff', borderRadius:10, fontSize:8, fontWeight:700, padding:'1px 4px' }}>{badge}</span>}
+                </button>
+              )
+            })}
+          </div>
         </div>
       )}
+
+      {/* Main bottom bar — 5 group icons */}
       <div style={{ position:'fixed', bottom:0, left:0, right:0, background:T.sidebar,
         display:'flex', borderTop:'1px solid rgba(255,255,255,0.1)', zIndex:100,
-        paddingBottom:'env(safe-area-inset-bottom,8px)' }}>
-        {mainNav.map(item => {
-          const active = page === item.id
-          const badge = (item.id==='leave'&&pendingLeave>0)?pendingLeave:(item.id==='overtime'&&pendingOT>0)?pendingOT:0
+        paddingBottom:'env(safe-area-inset-bottom,0px)' }}>
+        {groups.map((group: any) => {
+          const isActive = activeGroup?.id === group.id
+          const badge = group.id==='hr' ? pendingLeave+pendingOT : 0
+          const hasMultiple = group.pages.length > 1
           return (
-            <button key={item.id} onClick={() => { setPage(item.id); setShowMore(false) }}
+            <button key={group.id} onClick={() => handleGroupClick(group)}
               style={{ flex:1, display:'flex', flexDirection:'column', alignItems:'center',
-                justifyContent:'center', padding:'10px 4px', border:'none',
-                background:'transparent', cursor:'pointer', position:'relative',
-                color:active?T.gold:'rgba(255,255,255,0.45)' }}>
-              <span style={{ fontSize:18, marginBottom:3 }}>{item.icon}</span>
-              <span style={{ fontSize:9, fontWeight:active?600:400, fontFamily:'inherit' }}>{item.label}</span>
-              {badge>0 && <span style={{ position:'absolute', top:6, right:'calc(50% - 14px)',
+                justifyContent:'center', padding:'10px 2px', border:'none',
+                background: isActive && showSubTabs ? 'rgba(196,151,58,0.15)' : 'transparent',
+                cursor:'pointer', position:'relative',
+                color:isActive?T.gold:'rgba(255,255,255,0.4)' }}>
+              <span style={{ fontSize:19, marginBottom:2 }}>{group.icon}</span>
+              <span style={{ fontSize:9, fontWeight:isActive?700:400, fontFamily:'inherit',
+                letterSpacing:.2 }}>{group.label}</span>
+              {isActive && hasMultiple && (
+                <span style={{ fontSize:7, color:T.gold, marginTop:1 }}>
+                  {showSubTabs ? '▲' : '▼'}
+                </span>
+              )}
+              {badge>0 && <span style={{ position:'absolute', top:5, right:'calc(50% - 16px)',
                 background:T.red, color:'#fff', borderRadius:10, fontSize:8, fontWeight:700, padding:'1px 4px' }}>{badge}</span>}
             </button>
           )
         })}
-        <button onClick={() => setShowMore(v => !v)}
-          style={{ flex:1, display:'flex', flexDirection:'column', alignItems:'center',
-            justifyContent:'center', padding:'10px 4px', border:'none',
-            background:showMore?'rgba(196,151,58,0.18)':'transparent', cursor:'pointer',
-            color:showMore?T.gold:'rgba(255,255,255,0.45)' }}>
-          <span style={{ fontSize:18, marginBottom:3 }}>☰</span>
-          <span style={{ fontSize:9, fontFamily:'inherit' }}>Thêm</span>
-        </button>
       </div>
     </>
   )
@@ -1461,10 +1542,11 @@ function Attendance({ user, allUsers, leaveRequests, attendance, setAttendance, 
     .filter((u: any) => u.reports_to && u.reports_to === user.position_id && u.id !== user.id)
     .map((u: any) => u.id)
 
+  // Quản lý tự chấm được cho bản thân + nhân viên phòng mình
   const staffList = canMarkAll
-    ? allUsers.filter((u: any) => u.id !== user.id)
+    ? allUsers  // Admin thấy tất cả (kể cả mình)
     : canMarkDept
-    ? allUsers.filter((u: any) => u.dept_id === user.dept_id && u.id !== user.id)
+    ? allUsers.filter((u: any) => u.dept_id === user.dept_id)  // Quản lý: cả phòng kể cả mình
     : allUsers.filter((u: any) => peerIds.includes(u.id))
 
   const deptGroups = canMarkAll
@@ -2050,36 +2132,32 @@ function Leave({ user, allUsers, leaveRequests, setLeaveRequests, mobile }: any)
   const canAll     = getPerm(user).viewAllDashboard
   const dids = allUsers.filter((u: any) => u.dept_id === user.dept_id).map((u: any) => u.id)
 
-  // Xác định ai duyệt đơn dựa trên số ngày và người xin
-  const getApprover = (requestUserId: string, days: number) => {
+  // Xác định level duyệt
+  const getApproverLevel = (requestUserId: string, days: number) => {
     const reqUser = allUsers.find((u: any) => u.id === requestUserId)
-    // Quản lý xin nghỉ → admin duyệt (kiểm tra qua quyền approveLeave)
     const reqPerm = getPerm(reqUser)
-    if (reqPerm.approveLeave || reqPerm.viewAllDashboard) return 'admin'
-    // Nhân viên xin >= 4 ngày → admin duyệt
-    if (days >= 4) return 'admin'
-    // Nhân viên xin 1-3 ngày → quản lý phòng duyệt
-    return 'mgr'
+    if (reqPerm.approveLeave || reqPerm.viewAllDashboard) return 'admin_only'
+    if (days <= 3) return 'mgr_only'
+    return 'mgr_then_admin'
   }
-
+  const currentStep = (r: any) => r.status || 'pending_mgr'
   const canReviewReq = (r: any) => {
-    if (r.status !== 'pending') return false
-    if (r.user_id === user.id) return false  // không tự duyệt đơn của mình
-    // Admin (viewAllDashboard) duyệt được MỌI đơn
+    if (['approved','rejected'].includes(r.status)) return false
+    if (r.user_id === user.id) return false
+    const level = r.approver_level || getApproverLevel(r.user_id, r.days||1)
+    const step  = currentStep(r)
     if (canAll) return true
-    // Quản lý phòng chỉ duyệt đơn của nhân viên cùng phòng (1-3 ngày)
     if (!canApprove) return false
-    const approver = r.approver_level || getApprover(r.user_id, r.days || 1)
-    if (approver === 'admin') return false  // loại này chỉ admin mới duyệt
-    return dids.includes(r.user_id)
+    if (!dids.includes(r.user_id)) return false
+    if (level === 'admin_only') return false
+    return step === 'pending_mgr'
   }
-
-  const myReqs   = leaveRequests.filter((r: any) => r.user_id === user.id)
-  const pending  = leaveRequests.filter((r: any) => canReviewReq(r))
-  const allV     = canAll ? leaveRequests : leaveRequests.filter((r: any) => dids.includes(r.user_id) || r.user_id === user.id)
-
+  const myReqs  = leaveRequests.filter((r: any) => r.user_id === user.id)
+  const pending = leaveRequests.filter((r: any) => canReviewReq(r))
+  const allV    = canAll
+    ? leaveRequests
+    : leaveRequests.filter((r: any) => dids.includes(r.user_id) || r.user_id === user.id)
   const tabList: Array<[string,string]> = [['mine', `📋 Đơn của tôi (${myReqs.length})`]]
-  // Admin (canAll) hoặc Quản lý (canApprove) đều thấy tab chờ duyệt + tất cả
   if (canAll || canApprove) {
     tabList.push(['pending', `⏳ Chờ duyệt (${pending.length})`])
     tabList.push(['all', `📊 Tất cả (${allV.length})`])
@@ -2091,11 +2169,12 @@ function Leave({ user, allUsers, leaveRequests, setLeaveRequests, mobile }: any)
     if (!form.start_date || !form.end_date || !form.reason) return
     setSubmitting(true); setSubmitError('')
     const days = daysBetween(form.start_date, form.end_date)
-    const approver = getApprover(user.id, days)
+    const approver = getApproverLevel(user.id, days)
+    const initStatus = approver === 'admin_only' ? 'pending_admin' : 'pending_mgr'
     const now = new Date().toISOString()
     const tempId = 'lr' + Date.now()
     const req = { id:tempId, ...form, user_id:user.id, dept_id:user.dept_id,
-      days, approver_level:approver, status:'pending',
+      days, approver_level:approver, status:initStatus, mgr_reviewed_by:'', mgr_reviewed_at:'',
       reviewed_by:'', reviewed_at:'', review_notes:'', created_at:now }
 
     // Chặn useEffect fetch đang pending đè lên optimistic update
@@ -2126,12 +2205,24 @@ function Leave({ user, allUsers, leaveRequests, setLeaveRequests, mobile }: any)
     setForm({ start_date:'', end_date:'', type:'annual', reason:'' })
   }
 
-  const review = async (id: string, status: string) => {
+  const review = async (id: string, action: string) => {
     const req = leaveRequests.find((r: any) => r.id === id); if (!req) return
-    const updated = {...req, status, reviewed_by:user.id, reviewed_at:fmtNow(), review_notes:reviewNotes}
+    const days  = req.days || 1
+    const level = req.approver_level || getApproverLevel(req.user_id, days)
+    const step  = currentStep(req)
+
+    let newStatus = action  // 'approved' or 'rejected'
+    // Quản lý duyệt bước 1 của đơn 4+ ngày → chuyển sang bước 2 (admin)
+    if (action === 'approved' && !canAll && level === 'mgr_then_admin' && step === 'pending_mgr') {
+      newStatus = 'pending_admin'
+    }
+
+    const updated = {...req, status:newStatus,
+      ...(canAll ? { reviewed_by:user.id, reviewed_at:fmtNow(), review_notes:reviewNotes }
+                 : { mgr_reviewed_by:user.id, mgr_reviewed_at:fmtNow(), review_notes:reviewNotes }),
+    }
     setLeaveRequests((prev: any) => prev.map((r: any) => r.id === id ? updated : r))
     await db.from('leave_requests').upsert(updated)
-    // Cập nhật localStorage backup
     try {
       const stored = JSON.parse(localStorage.getItem('la_leave_backup') || '[]')
       localStorage.setItem('la_leave_backup', JSON.stringify(stored.map((r: any) => r.id === id ? updated : r)))
@@ -2151,14 +2242,18 @@ function Leave({ user, allUsers, leaveRequests, setLeaveRequests, mobile }: any)
   }
 
   const LS: any = {
-    pending:  { label:'⏳ Chờ duyệt', color:T.amber, bg:T.amberBg },
-    approved: { label:'✅ Đã duyệt',  color:T.green, bg:T.greenBg },
-    rejected: { label:'❌ Từ chối',   color:T.red,   bg:T.redBg   },
+    pending_mgr:   { label:'⏳ Chờ QM duyệt',  color:T.amber,  bg:T.amberBg  },
+    pending_admin: { label:'⏳ Chờ GĐ duyệt',  color:T.purple, bg:T.purpleBg },
+    pending:       { label:'⏳ Chờ duyệt',      color:T.amber,  bg:T.amberBg  },
+    approved:      { label:'✅ Đã duyệt',        color:T.green,  bg:T.greenBg  },
+    rejected:      { label:'❌ Từ chối',         color:T.red,    bg:T.redBg    },
   }
 
   const approverLabel = (r: any) => {
-    const lvl = r.approver_level || getApprover(r.user_id, r.days||1)
-    return lvl === 'admin' ? '👤 Admin duyệt' : '👤 Quản lý duyệt'
+    const lvl = r.approver_level || getApproverLevel(r.user_id, r.days||1)
+    if (lvl === 'admin_only')     return '👤 GĐ/Admin duyệt'
+    if (lvl === 'mgr_then_admin') return '👥 QM → GĐ/Admin (2 bước)'
+    return '👤 Quản lý duyệt'
   }
 
   return (
@@ -2252,9 +2347,11 @@ function Leave({ user, allUsers, leaveRequests, setLeaveRequests, mobile }: any)
         {form.start_date && form.end_date && (
           <div style={{ padding:'8px 12px', background:T.goldBg, borderRadius:8, fontSize:12, color:T.goldText, marginBottom:13, fontWeight:600 }}>
             📅 Tổng {daysBetween(form.start_date, form.end_date)} ngày — {
-              getApprover(user.id, daysBetween(form.start_date, form.end_date)) === 'admin'
-                ? '📌 Sẽ đẩy lên Admin duyệt'
-                : '📌 Sẽ đẩy lên Quản lý phòng duyệt'
+              getApproverLevel(user.id, daysBetween(form.start_date, form.end_date)) === 'admin_only'
+                ? '📌 GĐ/Admin duyệt'
+                : getApproverLevel(user.id, daysBetween(form.start_date, form.end_date)) === 'mgr_then_admin'
+                ? '📌 Quản lý duyệt → GĐ/Admin duyệt (2 bước)'
+                : '📌 Quản lý phòng duyệt'
             }
           </div>
         )}
@@ -3721,8 +3818,9 @@ export default function App() {
   const dids = allUsers.filter((u: any) => u.dept_id===user.dept_id).map((u: any) => u.id)
   const pendingLeave = leaveRequests.filter((r: any) => {
     if (r.status !== 'pending') return false
-    const approver = r.approver_level || 'mgr'
-    return approver==='admin' ? getPerm(user).viewAllDashboard : (getPerm(user).approveLeave && dids.includes(r.user_id))
+    const step = r.status || 'pending_mgr'
+    if (getPerm(user).viewAllDashboard) return ['pending_mgr','pending_admin'].includes(step)
+    return getPerm(user).approveLeave && dids.includes(r.user_id) && step === 'pending_mgr'
   }).length
   const pendingOT = 0 // will be updated from Overtime component
 
