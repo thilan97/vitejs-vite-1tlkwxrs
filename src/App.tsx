@@ -851,6 +851,8 @@ function Checklist({ user, checklist, setChecklist, addLog, allUsers, mobile }: 
   const [filterDept, setFilterDept]     = useState('all')
   const [filterPerson, setFilterPerson] = useState('all')
   const [filterFreq, setFilterFreq]     = useState('all')
+  const [showAdd, setShowAdd]           = useState(false)
+  const [addForm, setAddForm]           = useState({ title:'', time_start:'', time_end:'', freq:'Hàng ngày', priority:'mid' })
   const p = mobile ? '16px' : '24px'
   const perm = getPerm(user)
   const dids = allUsers.filter((u: any) => u.dept_id === user.dept_id).map((u: any) => u.id)
@@ -881,8 +883,38 @@ function Checklist({ user, checklist, setChecklist, addLog, allUsers, mobile }: 
     await db.from('checklist').upsert({...item, status:newStatus, done_at})
   }
 
+  const deleteItem = async (id: string) => {
+    if (!confirm('Xóa công việc này?')) return
+    setChecklist((prev: any) => prev.filter((c: any) => c.id !== id))
+    await db.from('checklist').delete().eq('id', id)
+  }
+
+  const addSelfItem = async () => {
+    if (!addForm.title.trim()) return
+    const newItem = {
+      id: `cl_self_${user.id}_${Date.now()}`,
+      template_id: '', title: addForm.title.trim(),
+      description: addForm.time_start && addForm.time_end ? `${addForm.time_start} → ${addForm.time_end}` : '',
+      time_start: addForm.time_start, time_end: addForm.time_end,
+      assignee_id: user.id, priority: addForm.priority, freq: addForm.freq,
+      deadline: addForm.time_end || '', status: 'notyet', done_at: '',
+      date: todayStr(), dept_id: user.dept_id || '', self_created: true
+    }
+    setChecklist((prev: any) => [...prev, newItem])
+    const { error } = await db.from('checklist').insert(newItem)
+    if (error) {
+      setChecklist((prev: any) => prev.filter((c: any) => c.id !== newItem.id))
+      alert('❌ Lỗi: ' + error.message); return
+    }
+    setShowAdd(false)
+    setAddForm({ title:'', time_start:'', time_end:'', freq:'Hàng ngày', priority:'mid' })
+  }
+
   const canEditItem = (item: any) =>
     perm.viewAllChecklist || item.assignee_id === user.id || (perm.viewDeptChecklist && dids.includes(item.assignee_id))
+
+  const canDeleteItem = (item: any) =>
+    item.self_created && item.assignee_id === user.id || perm.viewAllDashboard
 
   // Nhóm item theo assignee
   const groups = useMemo(() => {
@@ -910,7 +942,8 @@ function Checklist({ user, checklist, setChecklist, addLog, allUsers, mobile }: 
   return (
     <div style={{ padding:`0 ${p} ${mobile?'80px':p}` }}>
       <Topbar mobile={mobile} title="Checklist hàng ngày"
-        subtitle={`${todayStr()} — ${totalDone}/${totalItems} hoàn thành`}/>
+        subtitle={`${todayStr()} — ${totalDone}/${totalItems} hoàn thành`}
+        action={<GoldBtn small outline onClick={() => setShowAdd(true)}>+ Tự thêm</GoldBtn>}/>
 
       {/* ── Filter bar ── */}
       <div style={{ display:'flex', gap:8, marginBottom:16, flexWrap:'wrap', alignItems:'center' }}>
@@ -1100,6 +1133,13 @@ function Checklist({ user, checklist, setChecklist, addLog, allUsers, mobile }: 
                             <td style={{ padding:'10px 13px', fontSize:11, color:item.done_at?T.green:T.light }}>
                               {item.done_at||'—'}
                             </td>
+                            <td style={{ padding:'9px 8px' }}>
+                              {canDeleteItem(item) && (
+                                <button onClick={() => deleteItem(item.id)}
+                                  style={{ padding:'3px 8px', borderRadius:6, border:`1px solid ${T.redBg}`,
+                                    background:T.redBg, cursor:'pointer', fontSize:11, fontFamily:'inherit', color:T.red }}>🗑️</button>
+                              )}
+                            </td>
                           </tr>
                         )
                       })}
@@ -1111,6 +1151,32 @@ function Checklist({ user, checklist, setChecklist, addLog, allUsers, mobile }: 
           })}
         </div>
       )}
+      {/* Modal tự thêm checklist */}
+      <Modal open={showAdd} onClose={() => setShowAdd(false)} title="Tự thêm việc hôm nay">
+        <div style={{ padding:'8px 12px', background:T.goldBg, borderRadius:8, marginBottom:14, fontSize:12, color:T.goldText }}>
+          💡 Việc tự thêm chỉ áp dụng cho hôm nay, không lặp lại tự động. Dùng để ghi nhận công việc phát sinh.
+        </div>
+        <Inp label="Tên công việc *" value={addForm.title}
+          onChange={(v: string) => setAddForm(f => ({...f, title:v}))} placeholder="VD: Gọi điện khách hàng X..."/>
+        <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:12 }}>
+          <Inp label="🕐 Giờ bắt đầu" type="time" value={addForm.time_start}
+            onChange={(v: string) => setAddForm(f => ({...f, time_start:v}))}/>
+          <Inp label="🏁 Giờ kết thúc" type="time" value={addForm.time_end}
+            onChange={(v: string) => setAddForm(f => ({...f, time_end:v}))}/>
+        </div>
+        <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:12 }}>
+          <Sel label="Tần suất" value={addForm.freq}
+            onChange={(v: string) => setAddForm(f => ({...f, freq:v}))}
+            options={['Hàng ngày','Hàng tuần','Hàng tháng'].map(v => ({value:v, label:v}))}/>
+          <Sel label="Ưu tiên" value={addForm.priority}
+            onChange={(v: string) => setAddForm(f => ({...f, priority:v}))}
+            options={[{value:'high',label:'🔴 Cao'},{value:'mid',label:'🟡 Trung bình'},{value:'low',label:'🟢 Thấp'}]}/>
+        </div>
+        <div style={{ display:'flex', justifyContent:'flex-end', gap:10, marginTop:8 }}>
+          <GoldBtn outline small onClick={() => setShowAdd(false)}>Hủy</GoldBtn>
+          <GoldBtn small onClick={addSelfItem} disabled={!addForm.title.trim()}>Thêm vào checklist</GoldBtn>
+        </div>
+      </Modal>
     </div>
   )
 }
@@ -2930,6 +2996,30 @@ function ShortageItems({ user, allUsers, mobile }: any) {
                           ✅ Xác nhận hàng đã về
                         </button>
                       )}
+                      {/* Nút xóa — chỉ người báo hoặc admin */}
+                      {(() => {
+                        const isMine = (item.reporters||[]).some((r: any) => r.user_id === user.id)
+                        const canDel = isMine || getPerm(user).viewAllDashboard
+                        if (!canDel) return null
+                        return (
+                          <button onClick={async e => {
+                            e.stopPropagation()
+                            if (!confirm('Xóa mã này khỏi danh sách?')) return
+                            // Nếu chỉ mình báo → xóa item. Nếu nhiều người → chỉ xóa tên mình
+                            const reporters = (item.reporters||[]).filter((r: any) => r.user_id !== user.id)
+                            if (reporters.length === 0 || getPerm(user).viewAllDashboard) {
+                              setItems(prev => prev.filter(i => i.id !== item.id))
+                              await db.from('shortage_items').delete().eq('id', item.id)
+                            } else {
+                              await updateItem(item.id, { reporters })
+                            }
+                          }}
+                          style={{ padding:'4px 10px', borderRadius:7, border:`1px solid ${T.redBg}`,
+                            background:T.redBg, cursor:'pointer', fontSize:11, fontFamily:'inherit', color:T.red }}>
+                            🗑️ Xóa
+                          </button>
+                        )
+                      })()}
                       <div style={{ fontSize:10, color:T.light, marginTop:5 }}>
                         Báo lúc: {(item.reporters||[])[0]?.reported_at ? new Date((item.reporters||[])[0].reported_at).toLocaleString('vi-VN') : '—'}
                       </div>
@@ -3406,21 +3496,22 @@ function UserManagement({ user, allUsers, setAllUsers, departments, positions, m
 
   const save = async () => {
     if (!form.name) return
-    const deptName = departments.find((d: any) => d.id===form.dept_id)?.name||''
     const pos = positions.find((p: any) => p.id===form.position_id)
     const posName = pos?.name||''
-    // Xác định role từ position
+    // Vị trí 'all' (GĐ/Admin) → dept_id = 'all'
+    const finalDeptId = (pos?.dept_id === 'all' || pos?.perm_view_all_dashboard) ? 'all' : form.dept_id
+    const deptName = departments.find((d: any) => d.id===finalDeptId)?.name || (finalDeptId==='all'?'Toàn công ty':'')
     const role = pos?.perm_view_all_dashboard ? 'admin' : pos?.perm_manage_users ? 'mgr' : pos?.perm_mark_attendance ? 'mgr' : 'staff'
 
     if (edit) {
-      const updated = {...edit, ...form, dept_name:deptName, position_name:posName, role}
+      const updated = {...edit, ...form, dept_id:finalDeptId, dept_name:deptName, position_name:posName, role}
       setAllUsers((prev: any) => prev.map((u: any) => u.id===edit.id ? updated : u))
-      await db.from('users').update({ name:form.name, dept_id:form.dept_id, position_id:form.position_id, ini:form.ini, active:form.active, role }).eq('id', edit.id)
+      await db.from('users').update({ name:form.name, dept_id:finalDeptId, position_id:form.position_id, ini:form.ini, active:form.active, role }).eq('id', edit.id)
     } else {
       const newId = form.name.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g,'').replace(/\s/g,'_')+'_'+Date.now().toString().slice(-4)
-      const newUser = { id:newId, ...form, dept_name:deptName, position_name:posName, role, must_change_password:true }
+      const newUser = { id:newId, ...form, dept_id:finalDeptId, dept_name:deptName, position_name:posName, role, must_change_password:true }
       setAllUsers((prev: any) => [...prev, newUser])
-      await db.from('users').insert({ id:newId, ...form, role, must_change_password:true })
+      await db.from('users').insert({ id:newId, ...form, dept_id:finalDeptId, role, must_change_password:true })
     }
     setShow(false)
   }
@@ -3503,10 +3594,26 @@ function UserManagement({ user, allUsers, setAllUsers, departments, positions, m
             </div>
           )}
         </div>
-        <Sel label="Phòng ban" value={form.dept_id} onChange={(v: string) => setForm(f => ({...f, dept_id:v}))}
-          options={departments.filter((d: any) => d.id!=='all').map((d: any) => ({value:d.id,label:d.name}))}/>
-        <Sel label="Vị trí *" value={form.position_id} onChange={(v: string) => setForm(f => ({...f, position_id:v}))}
-          options={[{value:'',label:'— Chọn vị trí —'},...positions.map((pos: any) => ({value:pos.id,label:pos.name}))]}/>
+        {/* Vị trí — chọn trước để auto-fill phòng ban */}
+        <Sel label="Vị trí *" value={form.position_id} onChange={(v: string) => {
+          const pos = positions.find((p: any) => p.id === v)
+          const autoDept = pos?.dept_id || ''
+          setForm(f => ({...f, position_id:v, dept_id: autoDept || f.dept_id}))
+        }} options={[{value:'',label:'— Chọn vị trí —'},...positions.map((pos: any) => ({value:pos.id,label:`${pos.name}${pos.dept_id&&pos.dept_id!=='all'?' — '+DEPT_NAME[pos.dept_id]:' — Toàn cty'}`}))]}/>
+        {/* Phòng ban — ẩn nếu vị trí là "all" (GĐ/Admin) */}
+        {(() => {
+          const selPos = positions.find((p: any) => p.id === form.position_id)
+          const isAllDept = selPos?.dept_id === 'all' || selPos?.perm_view_all_dashboard
+          if (isAllDept) return (
+            <div style={{ padding:'8px 12px', background:T.goldBg, borderRadius:8, marginBottom:13, fontSize:12, color:T.goldText }}>
+              🏢 Vị trí này có quyền toàn công ty — không cần chọn phòng ban
+            </div>
+          )
+          return (
+            <Sel label="Phòng ban" value={form.dept_id} onChange={(v: string) => setForm(f => ({...f, dept_id:v}))}
+              options={departments.filter((d: any) => d.id!=='all').map((d: any) => ({value:d.id,label:d.name}))}/>
+          )
+        })()}
         <div style={{ padding:'10px 12px', background:T.goldBg, borderRadius:8, marginBottom:13, fontSize:12, color:T.goldText }}>
           💡 Mật khẩu mặc định khi tạo mới: <b>1234</b> — nhân viên sẽ được yêu cầu đổi khi đăng nhập lần đầu.
         </div>
