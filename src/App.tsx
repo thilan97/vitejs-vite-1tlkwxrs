@@ -2842,34 +2842,140 @@ function ShortageItems({ user, allUsers, mobile }: any) {
           ) : tabData[mgrTab].map((item: any) => <ItemCard key={item.id} item={item} canManage={true}/>)}
         </div>
       ) : (
-        /* ══ SALE VIEW ══ */
+        /* ══ SALE VIEW — compact list ══ */
         <div style={{ display:'grid', gridTemplateColumns:mobile?'1fr':'1fr 1fr', gap:16 }}>
-          {/* Mã tôi báo */}
-          <div>
-            <div style={{ display:'flex', alignItems:'center', gap:8, marginBottom:10 }}>
-              <div style={{ fontSize:13, fontWeight:700, color:T.dark }}>📋 Mã tôi báo</div>
-              <span style={{ fontSize:11, background:T.goldBg, color:T.goldText, padding:'2px 8px', borderRadius:20, fontWeight:600 }}>{myItems.length}</span>
-            </div>
-            {myItems.length===0
-              ? <div style={{ padding:'32px', textAlign:'center', color:T.light, background:T.card, borderRadius:12, border:`1px solid ${T.border}` }}>
-                  <div style={{ fontSize:28, marginBottom:8 }}>📦</div><div style={{ fontSize:13 }}>Chưa báo mã nào</div>
+          {/* ── Helper: compact row ── */}
+          {(() => {
+            const CompactRow = ({ item }: any) => {
+              const [expanded, setExpanded] = useState(false)
+              const days = daysRemaining(item)
+              const prod = products.find((p: any) =>
+                p.code === item.product_code || norm(p.name) === norm(item.product_name)
+              )
+              const stock = prod?.stock
+
+              // Status badge
+              const statusBadge = () => {
+                if (item.status==='arrived')  return { label:'✅ Đã về',       color:T.green,  bg:T.greenBg  }
+                if (item.status==='burned')   return { label:'🔥 Hàng cháy',  color:T.red,    bg:T.redBg    }
+                if (item.status==='pending')  return { label:'⏳ Chờ xử lý',  color:T.amber,  bg:T.amberBg  }
+                if (item.status==='incoming' && days!==null) {
+                  if (days>0)  return { label:`📅 Còn ${days} ngày`, color:T.blue,  bg:T.blueBg  }
+                  if (days===0) return { label:'⏰ Hôm nay về!',      color:T.amber, bg:T.amberBg }
+                  return { label:`⚠️ Quá ${Math.abs(days)} ngày`,   color:T.red,   bg:T.redBg   }
+                }
+                return { label:'⏳ Chờ xử lý', color:T.amber, bg:T.amberBg }
+              }
+              const sb = statusBadge()
+              const stockColor = stock===undefined||stock===null||stock===''?T.light
+                : Number(stock)===0?T.red:Number(stock)<=5?T.amber:T.green
+              const stockBg = stock===undefined||stock===null||stock===''?'transparent'
+                : Number(stock)===0?T.redBg:Number(stock)<=5?T.amberBg:T.greenBg
+
+              return (
+                <div style={{ borderBottom:`1px solid ${T.border}` }}>
+                  {/* ── Main row ── */}
+                  <div onClick={() => setExpanded(v => !v)}
+                    style={{ display:'flex', alignItems:'center', gap:8, padding:'8px 12px',
+                      cursor:'pointer', background:expanded?T.goldBg:'transparent',
+                      transition:'background .15s' }}
+                    onMouseEnter={e => { if(!expanded) (e.currentTarget as any).style.background=T.bg }}
+                    onMouseLeave={e => { if(!expanded) (e.currentTarget as any).style.background='transparent' }}>
+                    {/* Tên SP — tối đa 2 dòng */}
+                    <div style={{ flex:1, fontSize:12, fontWeight:500, color:T.dark,
+                      display:'-webkit-box', WebkitLineClamp:2, WebkitBoxOrient:'vertical',
+                      overflow:'hidden', lineHeight:1.4 }}>
+                      {item.product_name}
+                    </div>
+                    {/* Tồn kho badge nhỏ */}
+                    {stock!==undefined && stock!==null && stock!=='' && (
+                      <span style={{ fontSize:10, fontWeight:700, padding:'2px 6px', borderRadius:20, flexShrink:0,
+                        color:stockColor, background:stockBg, whiteSpace:'nowrap' }}>
+                        {stock}
+                      </span>
+                    )}
+                    {/* Trạng thái */}
+                    <span style={{ fontSize:10, fontWeight:700, padding:'2px 8px', borderRadius:20,
+                      color:sb.color, background:sb.bg, flexShrink:0, whiteSpace:'nowrap' }}>
+                      {sb.label}
+                    </span>
+                    {/* Expand arrow */}
+                    <span style={{ fontSize:10, color:T.light, flexShrink:0 }}>{expanded?'▲':'▼'}</span>
+                  </div>
+                  {/* ── Expanded detail ── */}
+                  {expanded && (
+                    <div style={{ padding:'8px 12px 12px', background:T.bg, borderTop:`1px solid ${T.border}` }}>
+                      {item.product_code && <div style={{ fontSize:11, color:T.light, marginBottom:5 }}>#{item.product_code}</div>}
+                      <div style={{ display:'flex', gap:5, flexWrap:'wrap', marginBottom:6 }}>
+                        {(item.reporters||[]).map((r: any, i: number) => (
+                          <span key={i} style={{ fontSize:11, padding:'2px 8px', borderRadius:20,
+                            background:T.goldBg, color:T.goldText, fontWeight:600 }}>
+                            {r.name}{r.note ? ` · ${r.note}` : ''}
+                          </span>
+                        ))}
+                      </div>
+                      {item.manager_note && (
+                        <div style={{ fontSize:11, color:T.blue, padding:'5px 9px', background:T.blueBg,
+                          borderRadius:7, marginBottom:6 }}>
+                          💬 QM: {item.manager_note}
+                          {item.arrival_date && <b> · Ngày về: {fmtDate(item.arrival_date)}</b>}
+                          {item.arrival_qty ? <b> · SL: {item.arrival_qty}</b> : ''}
+                        </div>
+                      )}
+                      {/* Xác nhận đã về */}
+                      {item.status==='incoming' && days!==null && days<=0 && (
+                        <button onClick={async e => { e.stopPropagation(); await updateItem(item.id, { status:'arrived', arrived_at:new Date().toISOString() }) }}
+                          style={{ padding:'4px 12px', borderRadius:7, border:`1.5px solid ${T.green}`,
+                            background:T.greenBg, cursor:'pointer', fontSize:11, fontFamily:'inherit', color:T.green, fontWeight:600 }}>
+                          ✅ Xác nhận hàng đã về
+                        </button>
+                      )}
+                      <div style={{ fontSize:10, color:T.light, marginTop:5 }}>
+                        Báo lúc: {(item.reporters||[])[0]?.reported_at ? new Date((item.reporters||[])[0].reported_at).toLocaleString('vi-VN') : '—'}
+                      </div>
+                    </div>
+                  )}
                 </div>
-              : myItems.map(item => <ItemCard key={item.id} item={item} canManage={false}/>)
+              )
             }
-          </div>
-          {/* Mã sale khác báo */}
-          <div>
-            <div style={{ display:'flex', alignItems:'center', gap:8, marginBottom:10 }}>
-              <div style={{ fontSize:13, fontWeight:700, color:T.dark }}>👥 Mã sale khác báo</div>
-              <span style={{ fontSize:11, background:T.grayBg, color:T.gray, padding:'2px 8px', borderRadius:20, fontWeight:600 }}>{otherItems.length}</span>
-            </div>
-            {otherItems.length===0
-              ? <div style={{ padding:'32px', textAlign:'center', color:T.light, background:T.card, borderRadius:12, border:`1px solid ${T.border}` }}>
-                  <div style={{ fontSize:28, marginBottom:8 }}>👥</div><div style={{ fontSize:13 }}>Không có mã nào</div>
+
+            const ListPanel = ({ items, emptyIcon, emptyText, headerLabel, headerCount, headerBg, headerColor }: any) => (
+              <div>
+                <div style={{ display:'flex', alignItems:'center', gap:8, marginBottom:8 }}>
+                  <div style={{ fontSize:13, fontWeight:700, color:T.dark }}>{headerLabel}</div>
+                  <span style={{ fontSize:11, background:headerBg, color:headerColor,
+                    padding:'2px 8px', borderRadius:20, fontWeight:600 }}>{headerCount}</span>
                 </div>
-              : otherItems.map(item => <ItemCard key={item.id} item={item} canManage={false}/>)
-            }
-          </div>
+                {items.length===0
+                  ? <div style={{ padding:'24px', textAlign:'center', color:T.light,
+                      background:T.card, borderRadius:12, border:`1px solid ${T.border}` }}>
+                      <div style={{ fontSize:24, marginBottom:6 }}>{emptyIcon}</div>
+                      <div style={{ fontSize:12 }}>{emptyText}</div>
+                    </div>
+                  : <div style={{ background:T.card, borderRadius:12, border:`1px solid ${T.border}`, overflow:'hidden' }}>
+                      {/* Sort: pending → incoming → burned → arrived */}
+                      {[...items].sort((a: any, b: any) => {
+                        const order: any = { pending:0, incoming:1, burned:2, arrived:3 }
+                        return (order[a.status]??1)-(order[b.status]??1)
+                      }).map((item: any) => <CompactRow key={item.id} item={item}/>)}
+                    </div>
+                }
+              </div>
+            )
+
+            return (
+              <>
+                <ListPanel
+                  items={myItems} emptyIcon="📦" emptyText="Chưa báo mã nào"
+                  headerLabel="📋 Mã tôi báo" headerCount={myItems.length}
+                  headerBg={T.goldBg} headerColor={T.goldText}/>
+                <ListPanel
+                  items={otherItems} emptyIcon="👥" emptyText="Không có mã nào"
+                  headerLabel="👥 Mã sale khác báo" headerCount={otherItems.length}
+                  headerBg={T.grayBg} headerColor={T.gray}/>
+              </>
+            )
+          })()}
         </div>
       )}
 
