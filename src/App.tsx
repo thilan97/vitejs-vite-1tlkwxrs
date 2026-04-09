@@ -2756,16 +2756,40 @@ function ShortageItems({ user, allUsers, mobile }: any) {
               const prod = products.find((p: any) =>
                 p.code === item.product_code || norm(p.name) === norm(item.product_name)
               )
-              const stock = prod?.stock
-              return stock !== undefined && stock !== null && stock !== '' ? (
-                <span style={{ fontSize:11, fontWeight:700, padding:'2px 8px', borderRadius:20,
-                  color:Number(stock)===0?T.red:Number(stock)<=5?T.amber:T.green,
-                  background:Number(stock)===0?T.redBg:Number(stock)<=5?T.amberBg:T.greenBg }}>
-                  📦 Tồn: {stock}
-                </span>
-              ) : (
-                <div style={{ fontSize:10, color:T.light, padding:'2px 8px', borderRadius:20,
+              if (!prod || (prod.stock === null && prod.stock === undefined)) {
+                return <div style={{ fontSize:10, color:T.light, padding:'2px 8px', borderRadius:20,
                   border:`1px solid ${T.border}`, background:T.bg }}>🔗 KV: —</div>
+              }
+              const stock    = prod.stock ?? 0
+              const ordered  = prod.ordered_qty ?? 0
+              const shortage = prod.shortage_qty ?? Math.max(0, ordered - stock)
+              const hasOrder = ordered > 0
+              return (
+                <div style={{ display:'flex', gap:6, flexWrap:'wrap', alignItems:'center' }}>
+                  <span style={{ fontSize:11, fontWeight:700, padding:'2px 8px', borderRadius:20,
+                    color:stock===0?T.red:stock<=5?T.amber:T.green,
+                    background:stock===0?T.redBg:stock<=5?T.amberBg:T.greenBg }}>
+                    📦 Tồn: {stock}
+                  </span>
+                  {hasOrder && <>
+                    <span style={{ fontSize:11, fontWeight:700, padding:'2px 8px', borderRadius:20,
+                      color:T.blue, background:T.blueBg }}>
+                      🛒 KH đặt: {ordered}
+                    </span>
+                    {shortage > 0 && (
+                      <span style={{ fontSize:11, fontWeight:700, padding:'2px 8px', borderRadius:20,
+                        color:'#fff', background:T.red }}>
+                        ⚠️ Thiếu: {shortage}
+                      </span>
+                    )}
+                    {shortage === 0 && (
+                      <span style={{ fontSize:11, fontWeight:600, padding:'2px 8px', borderRadius:20,
+                        color:T.green, background:T.greenBg }}>
+                        ✅ Đủ hàng
+                      </span>
+                    )}
+                  </>}
+                </div>
               )
             })()}
             {item.status==='arrived'  && <span style={{ fontSize:11, fontWeight:700, color:T.green,  background:T.greenBg,  padding:'3px 10px', borderRadius:20 }}>✅ Đã về</span>}
@@ -2953,12 +2977,26 @@ function ShortageItems({ user, allUsers, mobile }: any) {
                       overflow:'hidden', lineHeight:1.4 }}>
                       {item.product_name}
                     </div>
-                    {/* Tồn kho badge nhỏ */}
+                    {/* Tồn kho + đặt hàng compact */}
                     {stock!==undefined && stock!==null && stock!=='' && (
-                      <span style={{ fontSize:10, fontWeight:700, padding:'2px 6px', borderRadius:20, flexShrink:0,
-                        color:stockColor, background:stockBg, whiteSpace:'nowrap' }}>
-                        {stock}
-                      </span>
+                      <div style={{ display:'flex', gap:4, alignItems:'center', flexShrink:0 }}>
+                        <span style={{ fontSize:10, fontWeight:700, padding:'2px 6px', borderRadius:20,
+                          color:stockColor, background:stockBg, whiteSpace:'nowrap' }}>
+                          {stock}
+                        </span>
+                        {prod?.ordered_qty>0 && (
+                          <span style={{ fontSize:10, fontWeight:700, padding:'2px 6px', borderRadius:20,
+                            color:T.blue, background:T.blueBg, whiteSpace:'nowrap' }}>
+                            🛒{prod.ordered_qty}
+                          </span>
+                        )}
+                        {prod?.shortage_qty>0 && (
+                          <span style={{ fontSize:10, fontWeight:700, padding:'2px 6px', borderRadius:20,
+                            color:'#fff', background:T.red, whiteSpace:'nowrap' }}>
+                            -{prod.shortage_qty}
+                          </span>
+                        )}
+                      </div>
                     )}
                     {/* Trạng thái */}
                     <span style={{ fontSize:10, fontWeight:700, padding:'2px 8px', borderRadius:20,
@@ -3173,7 +3211,7 @@ function ShortageItems({ user, allUsers, mobile }: any) {
               })
               const data = await res.json()
               if (data.success) {
-                setSyncMsg(`✅ Đã sync ${data.synced} sản phẩm từ KiotViet`)
+                setSyncMsg(`✅ Sync ${data.synced} SP${data.shortage>0?' — ⚠️ '+data.shortage+' mã thiếu hàng':''}`)
                 // Reload products
                 const { data: pr } = await db.from('products').select('*').eq('active', true).order('name')
                 if (pr) setProducts(pr)
