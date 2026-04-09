@@ -3160,6 +3160,49 @@ function ShortageItems({ user, allUsers, mobile }: any) {
 
       {/* ══ Modal: Quản lý sản phẩm (Admin) ══ */}
       <Modal open={showProdMgmt} onClose={() => setShowProdMgmt(false)} title="📋 Danh sách sản phẩm" wide>
+        {/* KiotViet Sync button */}
+        {(() => {
+          const [syncing, setSyncing] = useState(false)
+          const [syncMsg, setSyncMsg] = useState('')
+          const syncKV = async () => {
+            setSyncing(true); setSyncMsg('')
+            try {
+              const res = await fetch('https://uzloxzrqtzuucxlokqfm.supabase.co/functions/v1/kiotviet-sync', {
+                method:'POST',
+                headers:{ 'Authorization': 'Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InV6bG94enJxdHp1dWN4bG9rcWZtIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzU0ODAwOTYsImV4cCI6MjA5MTA1NjA5Nn0.INA68j0bmDb7kFtn4H3TiQmPzEqs67sKMsBhc--mvvo' }
+              })
+              const data = await res.json()
+              if (data.success) {
+                setSyncMsg(`✅ Đã sync ${data.synced} sản phẩm từ KiotViet`)
+                // Reload products
+                const { data: pr } = await db.from('products').select('*').eq('active', true).order('name')
+                if (pr) setProducts(pr)
+              } else {
+                setSyncMsg('❌ Lỗi: ' + (data.error || 'Không xác định'))
+              }
+            } catch(e: any) {
+              setSyncMsg('❌ Lỗi kết nối: ' + e.message)
+            }
+            setSyncing(false)
+          }
+          return (
+            <div style={{ display:'flex', alignItems:'center', gap:10, marginBottom:14,
+              padding:'10px 14px', background:T.goldBg, borderRadius:10, border:`1px solid ${T.goldBorder}` }}>
+              <div style={{ flex:1 }}>
+                <div style={{ fontSize:12, fontWeight:600, color:T.goldText }}>🔗 Đồng bộ từ KiotViet</div>
+                {syncMsg && <div style={{ fontSize:11, marginTop:3, color:syncMsg.startsWith('✅')?T.green:T.red }}>{syncMsg}</div>}
+                {!syncMsg && <div style={{ fontSize:11, color:T.med, marginTop:2 }}>Cập nhật tên SP + tồn kho mới nhất</div>}
+              </div>
+              <button onClick={syncKV} disabled={syncing}
+                style={{ padding:'8px 16px', borderRadius:8, border:'none',
+                  background:syncing?T.border:T.gold, color:'#fff',
+                  cursor:syncing?'not-allowed':'pointer', fontFamily:'inherit',
+                  fontWeight:600, fontSize:13, flexShrink:0 }}>
+                {syncing ? '⏳ Đang sync...' : '🔄 Sync KiotViet'}
+              </button>
+            </div>
+          )
+        })()}
         <div style={{ display:'flex', gap:8, marginBottom:14 }}>
           <input value={prodForm.name} onChange={e => setProdForm(f => ({...f, name:e.target.value}))}
             placeholder="Tên sản phẩm *" style={{ flex:3, padding:'8px 11px', border:`1px solid ${T.border}`, borderRadius:8, fontSize:13, fontFamily:'inherit', outline:'none' }}/>
