@@ -1513,7 +1513,9 @@ function Templates({ templates, setTemplates, allUsers, mobile }: any) {
                       <span style={{ fontSize:10, fontWeight:600, padding:'2px 7px', borderRadius:20,
                         color:FREQ_COLOR[tp.freq]?.color, background:FREQ_COLOR[tp.freq]?.bg }}>{tp.freq}</span>
                       {tp.freq==='Hàng tháng' && tp.day_of_month && (
-                        <div style={{ fontSize:10, color:T.light, marginTop:2 }}>Ngày {tp.day_of_month}</div>
+                        <div style={{ fontSize:10, color:T.light, marginTop:2 }}>
+                          {Number(tp.day_of_month)===99 ? '📅 Cuối tháng' : `📅 Ngày ${tp.day_of_month}`}
+                        </div>
                       )}
                     </td>
                     <td style={{ padding:'9px 13px' }}><Badge cfg={PRI_CFG[tp.priority]} small/></td>
@@ -1560,15 +1562,49 @@ function Templates({ templates, setTemplates, allUsers, mobile }: any) {
           <Inp label="🕐 Giờ bắt đầu" type="time" value={form.time_start} onChange={(v: string) => setForm((f: any) => ({...f, time_start:v}))}/>
           <Inp label="🏁 Giờ kết thúc" type="time" value={form.time_end} onChange={(v: string) => setForm((f: any) => ({...f, time_end:v}))}/>
           {form.freq === 'Hàng tháng' && (
-            <Inp label="📅 Ngày trong tháng (1-28)" type="number" min="1" max="28"
-              value={form.day_of_month} onChange={(v: string) => setForm((f: any) => ({...f, day_of_month:v}))}/>
+            <div style={{ marginBottom:13 }}>
+              <div style={{ fontSize:12, fontWeight:500, color:T.med, marginBottom:6 }}>📅 Ngày thực hiện hàng tháng</div>
+              <div style={{ display:'flex', gap:6, flexWrap:'wrap' }}>
+                {[
+                  {val:'1',  label:'Ngày 1'},  {val:'3',  label:'Ngày 3'},
+                  {val:'5',  label:'Ngày 5'},  {val:'10', label:'Ngày 10'},
+                  {val:'15', label:'Ngày 15'}, {val:'20', label:'Ngày 20'},
+                  {val:'25', label:'Ngày 25'}, {val:'99', label:'Cuối tháng'},
+                ].map(opt => (
+                  <button key={opt.val} type="button"
+                    onClick={() => setForm((f: any) => ({...f, day_of_month:opt.val}))}
+                    style={{ padding:'6px 12px', borderRadius:8, cursor:'pointer',
+                      fontFamily:'inherit', fontSize:12, border:'none',
+                      background: form.day_of_month===opt.val ? T.gold : T.bg,
+                      color: form.day_of_month===opt.val ? '#fff' : T.dark,
+                      fontWeight: form.day_of_month===opt.val ? 700 : 400,
+                      border: `1.5px solid ${form.day_of_month===opt.val ? T.gold : T.border}` }}>
+                    {opt.label}
+                  </button>
+                ))}
+                <div style={{ display:'flex', alignItems:'center', gap:6, marginLeft:4 }}>
+                  <span style={{ fontSize:12, color:T.med }}>Ngày khác:</span>
+                  <input type="number" min="1" max="28"
+                    value={['1','3','5','10','15','20','25','99'].includes(form.day_of_month)?'':form.day_of_month}
+                    onChange={e => setForm((f: any) => ({...f, day_of_month:e.target.value}))}
+                    placeholder="1-28"
+                    style={{ width:60, padding:'5px 8px', border:`1.5px solid ${T.border}`, borderRadius:8,
+                      fontSize:12, fontFamily:'inherit', color:T.dark, background:T.bg, outline:'none' }}/>
+                </div>
+              </div>
+              <div style={{ fontSize:11, color:T.light, marginTop:5 }}>
+                {form.day_of_month==='99'
+                  ? '⚡ Sẽ tạo vào ngày cuối cùng của mỗi tháng (28/29/30/31)'
+                  : `⚡ Sẽ tạo vào ngày ${form.day_of_month} mỗi tháng`}
+              </div>
+            </div>
           )}
           <Inp label="Thời lượng (phút)" type="number" value={form.mins} onChange={(v: string) => setForm((f: any) => ({...f, mins:v}))}/>
         </div>
         {form.time_start && form.time_end && (
           <div style={{ padding:'8px 12px', background:T.goldBg, borderRadius:8, fontSize:12, color:T.goldText, margin:'8px 0 13px', fontWeight:600 }}>
             🕐 Khung giờ: <b>{form.time_start} → {form.time_end}</b>
-            {form.freq==='Hàng tháng' && ` — Ngày ${form.day_of_month} hàng tháng`}
+            {form.freq==='Hàng tháng' && ` — ${Number(form.day_of_month)===99?'Cuối tháng':`Ngày ${form.day_of_month}`} hàng tháng`}
           </div>
         )}
         <div style={{ display:'flex', alignItems:'center', gap:10, marginBottom:16 }}>
@@ -2889,13 +2925,24 @@ function ShortageItems({ user, allUsers, mobile }: any) {
         )}
 
         {/* Arrived button for sale when deadline passed */}
-        {!canManage && item.status==='incoming' && days!==null && days<=0 && (
-          <button onClick={markArrived}
+        {/* Sale có thể tự đánh "Đã về" bất kỳ lúc nào */}
+        {!canManage && item.status!=='arrived' && item.status!=='burned' && (
+          <button onClick={() => { if(confirm('Xác nhận hàng đã về kho?')) markArrived() }}
             style={{ padding:'5px 13px', borderRadius:7, border:`1.5px solid ${T.green}`,
               background:T.greenBg, cursor:'pointer', fontSize:12, fontFamily:'inherit', color:T.green, fontWeight:600, marginBottom:8 }}>
-            ✅ Xác nhận hàng đã về
+            ✅ Hàng đã về
           </button>
         )}
+        {/* Đã về: đếm ngược tự xóa */}
+        {item.status==='arrived' && !canManage && (() => {
+          const arrivedMs = item.arrived_at ? Date.now() - new Date(item.arrived_at).getTime() : 0
+          const daysLeft  = Math.max(0, 3 - Math.floor(arrivedMs / 86400000))
+          return (
+            <div style={{ fontSize:11, color:T.green, fontStyle:'italic', marginBottom:8 }}>
+              🕐 Mã này sẽ tự ẩn sau {daysLeft} ngày nữa
+            </div>
+          )
+        })()}
 
         {/* Manager actions */}
         {canManage && item.status!=='arrived' && !editMode && (
@@ -2905,7 +2952,7 @@ function ShortageItems({ user, allUsers, mobile }: any) {
                 background:T.goldBg, cursor:'pointer', fontSize:12, fontFamily:'inherit', color:T.goldText, fontWeight:600 }}>
               ✏️ Cập nhật
             </button>
-            {item.status==='incoming' && days!==null && days<=0 && (
+            {item.status==='incoming' && (
               <button onClick={markArrived}
                 style={{ padding:'5px 12px', borderRadius:7, border:`1.5px solid ${T.green}`,
                   background:T.greenBg, cursor:'pointer', fontSize:12, fontFamily:'inherit', color:T.green, fontWeight:600 }}>
@@ -3006,7 +3053,37 @@ function ShortageItems({ user, allUsers, mobile }: any) {
               <div style={{ fontSize:32, marginBottom:8 }}>📦</div>
               <div>Không có mục nào</div>
             </Card>
-          ) : tabData[mgrTab].map((item: any) => <ItemCard key={item.id} item={item} canManage={true}/>)}
+          ) : mgrTab === 'arrived'
+            ? tabData['arrived'].map((item: any) => {
+                const arrivedMs = item.arrived_at ? Date.now() - new Date(item.arrived_at).getTime() : 0
+                const daysLeft  = Math.max(0, 3 - Math.floor(arrivedMs / 86400000))
+                return (
+                  <div key={item.id} style={{ background:T.card, borderRadius:12,
+                    border:`1.5px solid ${T.green}`, padding:'12px 16px', marginBottom:10,
+                    display:'flex', alignItems:'center', justifyContent:'space-between', gap:12 }}>
+                    <div style={{ flex:1 }}>
+                      <div style={{ fontSize:13, fontWeight:600, color:T.dark, marginBottom:4 }}>{item.product_name}</div>
+                      {item.product_code && <div style={{ fontSize:11, color:T.light }}>#{item.product_code}</div>}
+                      <div style={{ display:'flex', gap:6, marginTop:6, flexWrap:'wrap' }}>
+                        <span style={{ fontSize:11, fontWeight:700, color:T.green, background:T.greenBg, padding:'2px 9px', borderRadius:20 }}>✅ Đã về</span>
+                        {item.arrival_qty>0 && <span style={{ fontSize:11, color:T.med }}>SL: {item.arrival_qty}</span>}
+                        {item.arrived_at && <span style={{ fontSize:11, color:T.light }}>Lúc: {new Date(item.arrived_at).toLocaleString('vi-VN')}</span>}
+                        <span style={{ fontSize:11, color:T.light, fontStyle:'italic' }}>🕐 Tự xóa sau {daysLeft} ngày</span>
+                      </div>
+                    </div>
+                    <button onClick={async () => {
+                      if (!confirm('Xóa mã này khỏi danh sách?')) return
+                      setItems(prev => prev.filter(i => i.id !== item.id))
+                      await db.from('shortage_items').delete().eq('id', item.id)
+                    }}
+                      style={{ padding:'5px 12px', borderRadius:8, border:`1px solid ${T.redBg}`,
+                        background:T.redBg, cursor:'pointer', fontSize:12, fontFamily:'inherit', color:T.red, flexShrink:0 }}>
+                      🗑️ Xóa
+                    </button>
+                  </div>
+                )
+              })
+            : tabData[mgrTab].map((item: any) => <ItemCard key={item.id} item={item} canManage={true}/>)}
         </div>
       ) : (
         /* ══ SALE VIEW — compact list ══ */
@@ -3103,16 +3180,42 @@ function ShortageItems({ user, allUsers, mobile }: any) {
                           {item.arrival_qty ? <b> · SL: {item.arrival_qty}</b> : ''}
                         </div>
                       )}
-                      {/* Xác nhận đã về */}
-                      {item.status==='incoming' && days!==null && days<=0 && (
-                        <button onClick={async e => { e.stopPropagation(); await updateItem(item.id, { status:'arrived', arrived_at:new Date().toISOString() }) }}
+                      {/* Xác nhận đã về — sale tự đánh bất kỳ lúc nào (không cần đợi QM) */}
+                      {item.status !== 'arrived' && item.status !== 'burned' && (
+                        <button onClick={async e => {
+                          e.stopPropagation()
+                          if (!confirm('Xác nhận hàng đã về kho?')) return
+                          await updateItem(item.id, { status:'arrived', arrived_at:new Date().toISOString() })
+                        }}
                           style={{ padding:'4px 12px', borderRadius:7, border:`1.5px solid ${T.green}`,
                             background:T.greenBg, cursor:'pointer', fontSize:11, fontFamily:'inherit', color:T.green, fontWeight:600 }}>
-                          ✅ Xác nhận hàng đã về
+                          ✅ Hàng đã về
                         </button>
                       )}
-                      {/* Nút xóa — chỉ người báo hoặc admin */}
-                      {(() => {
+                      {/* Đã về: hiện thời gian tự clear + nút xóa thủ công */}
+                      {item.status === 'arrived' && (() => {
+                        const arrivedMs = item.arrived_at ? Date.now() - new Date(item.arrived_at).getTime() : 0
+                        const daysLeft  = Math.max(0, 3 - Math.floor(arrivedMs / 86400000))
+                        return (
+                          <div style={{ display:'flex', alignItems:'center', gap:8, flexWrap:'wrap' }}>
+                            <span style={{ fontSize:10, color:T.green, fontStyle:'italic' }}>
+                              🕐 Tự xóa sau {daysLeft} ngày nữa
+                            </span>
+                            <button onClick={async e => {
+                              e.stopPropagation()
+                              if (!confirm('Xóa mã này khỏi danh sách?')) return
+                              setItems(prev => prev.filter(i => i.id !== item.id))
+                              await db.from('shortage_items').delete().eq('id', item.id)
+                            }}
+                              style={{ padding:'3px 9px', borderRadius:6, border:`1px solid ${T.redBg}`,
+                                background:T.redBg, cursor:'pointer', fontSize:11, fontFamily:'inherit', color:T.red }}>
+                              🗑️ Xóa ngay
+                            </button>
+                          </div>
+                        )
+                      })()}
+                      {/* Nút xóa thông thường — chỉ người báo hoặc admin, chưa arrived */}
+                      {item.status !== 'arrived' && (() => {
                         const isMine = (item.reporters||[]).some((r: any) => r.user_id === user.id)
                         const canDel = isMine || getPerm(user).viewAllDashboard
                         if (!canDel) return null
@@ -3120,7 +3223,6 @@ function ShortageItems({ user, allUsers, mobile }: any) {
                           <button onClick={async e => {
                             e.stopPropagation()
                             if (!confirm('Xóa mã này khỏi danh sách?')) return
-                            // Nếu chỉ mình báo → xóa item. Nếu nhiều người → chỉ xóa tên mình
                             const reporters = (item.reporters||[]).filter((r: any) => r.user_id !== user.id)
                             if (reporters.length === 0 || getPerm(user).viewAllDashboard) {
                               setItems(prev => prev.filter(i => i.id !== item.id))
@@ -4052,23 +4154,48 @@ export default function App() {
 
   const performReset = useCallback(async (curCl: any[], tmpl: any[], st: any, manual = false) => {
     const today = todayStr(); const s = st || {}
-    const r_daily  = manual || s.last_daily_reset !== today
-    const wDiff = s.last_weekly_reset ? (() => { try { const p=s.last_weekly_reset.split('/'); return Math.floor((Date.now()-new Date(`${p[2]}-${p[1]}-${p[0]}`).getTime())/86400000) } catch { return 999 } })() : 999
+    const now   = new Date()
+    const dom   = now.getDate()
+    // Số ngày cuối tháng (28/29/30/31 tùy tháng)
+    const lastDomOfMonth = new Date(now.getFullYear(), now.getMonth()+1, 0).getDate()
+
+    // ── Daily reset ───────────────────────────────────────
+    const r_daily = manual || s.last_daily_reset !== today
+
+    // ── Weekly reset ──────────────────────────────────────
+    const wDiff = s.last_weekly_reset ? (() => {
+      try { const p=s.last_weekly_reset.split('/'); return Math.floor((Date.now()-new Date(`${p[2]}-${p[1]}-${p[0]}`).getTime())/86400000) }
+      catch { return 999 }
+    })() : 999
     const r_weekly = manual || wDiff >= (s.weekly_reset_interval || 7)
-    const dom = new Date().getDate()
-    const thisMonth = `${new Date().getMonth()}-${new Date().getFullYear()}`
-    const lastMM = s.last_monthly_reset ? (() => { try { const d=s.last_monthly_reset.split('/'); return `${Number(d[1])-1}-${d[2]}` } catch { return '' } })() : ''
-    const r_monthly = manual || (dom === (s.monthly_reset_day || 1) && lastMM !== thisMonth)
+
+    // ── Monthly reset — per-template day_of_month ─────────
+    // Mỗi template hàng tháng có ngày riêng (day_of_month)
+    // Hỗ trợ: ngày cụ thể (1-28) hoặc "cuối tháng" (99 = ngày cuối tháng)
+    const monthKey = `${now.getMonth()}-${now.getFullYear()}`
+    const monthlyDone: Record<string, boolean> = (() => {
+      try { return JSON.parse(s.monthly_done || '{}') } catch { return {} }
+    })()
+
+    // Tìm các template hàng tháng chưa được tạo tháng này
+    const monthlyTmplDue = tmpl.filter(t => {
+      if (t.freq !== 'Hàng tháng' || !t.active) return false
+      const tmplKey  = `${t.id}_${monthKey}`
+      if (monthlyDone[tmplKey]) return false  // đã tạo tháng này rồi
+      const targetDay = Number(t.day_of_month) || 1
+      const actualDay = targetDay >= 99 ? lastDomOfMonth : targetDay  // 99 = cuối tháng
+      return manual || dom >= actualDay  // đến ngày hoặc qua ngày rồi thì tạo
+    })
+
+    const r_monthly = monthlyTmplDue.length > 0
+
     if (!r_daily && !r_weekly && !r_monthly) return false
 
-    const freqs: string[] = []
-    if (r_daily)   freqs.push('Hàng ngày')
-    if (r_weekly)  freqs.push('Hàng tuần')
-    if (r_monthly) freqs.push('Hàng tháng')
-
+    // ── Archive history ───────────────────────────────────
     if (curCl.length > 0) {
       const archDate = s.last_daily_reset || today
-      const hist = curCl.filter(c => freqs.includes(c.freq)).map(c => ({
+      const freqsToArch = ['Hàng ngày', 'Hàng tuần', ...(r_monthly ? ['Hàng tháng'] : [])]
+      const hist = curCl.filter(c => freqsToArch.includes(c.freq)).map(c => ({
         id:`hist_${c.id}_${Date.now()}_${Math.random().toString(36).slice(2,5)}`,
         date:archDate, assignee_id:c.assignee_id, title:c.title,
         freq:c.freq, status:c.status, done_at:c.done_at, dept_id:c.dept_id||''
@@ -4076,20 +4203,53 @@ export default function App() {
       if (hist.length > 0) { await db.from('history').insert(hist); setHistory(prev => [...prev, ...hist]) }
     }
 
+    // ── Xóa checklist cũ ─────────────────────────────────
+    const freqs: string[] = []
+    if (r_daily)   freqs.push('Hàng ngày')
+    if (r_weekly)  freqs.push('Hàng tuần')
+    // Monthly: chỉ xóa item cũ của các template sắp tạo lại
+    if (r_monthly) {
+      const dueIds = monthlyTmplDue.map(t => t.id)
+      const oldMonthly = curCl.filter(c => c.freq==='Hàng tháng' && dueIds.includes(c.template_id))
+      for (const old of oldMonthly) await db.from('checklist').delete().eq('id', old.id)
+    }
     for (const freq of freqs) await db.from('checklist').delete().eq('freq', freq)
-    const newItems = tmpl.filter(t => t.active && freqs.includes(t.freq)).map(t => ({
+
+    // ── Tạo checklist mới ─────────────────────────────────
+    const dailyWeeklyTmpl = tmpl.filter(t => t.active && freqs.includes(t.freq))
+    const allNewTmpl = [...dailyWeeklyTmpl, ...monthlyTmplDue]
+
+    const newItems = allNewTmpl.map(t => ({
       id:`cl_${t.id}_${Date.now()}_${Math.random().toString(36).slice(2,5)}`,
       template_id:t.id, title:t.title, description:t.description||`~${t.mins} phút`,
       assignee_id:t.assignee_id, priority:t.priority, freq:t.freq,
-      deadline:t.deadline_suggest, status:'notyet', done_at:'', date:today
+      time_start:t.time_start||'', time_end:t.time_end||'',
+      deadline:t.time_end||t.deadline_suggest||'', status:'notyet', done_at:'', date:today,
+      dept_id: ''
     }))
     if (newItems.length > 0) await db.from('checklist').insert(newItems)
-    setChecklist(prev => [...prev.filter(c => !freqs.includes(c.freq)), ...newItems])
+    setChecklist(prev => {
+      const removeFreqs = new Set(freqs)
+      const removeTmplIds = new Set(monthlyTmplDue.map(t => t.id))
+      return [
+        ...prev.filter(c => !removeFreqs.has(c.freq) && !(c.freq==='Hàng tháng' && removeTmplIds.has(c.template_id))),
+        ...newItems
+      ]
+    })
+
+    // ── Ghi nhận monthly templates đã tạo ────────────────
+    const updatedMonthlyDone = { ...monthlyDone }
+    for (const t of monthlyTmplDue) {
+      updatedMonthlyDone[`${t.id}_${monthKey}`] = true
+    }
+    // Dọn key cũ (> 2 tháng) để tránh phình to
+    const cutoff = `${new Date(now.getFullYear(), now.getMonth()-1, 1).getMonth()}-${new Date(now.getFullYear(), now.getMonth()-1, 1).getFullYear()}`
+    Object.keys(updatedMonthlyDone).forEach(k => { if (k.endsWith(cutoff)) delete updatedMonthlyDone[k] })
 
     const newSt = { ...s, id:'main',
-      last_daily_reset:  r_daily   ? today : s.last_daily_reset||'',
-      last_weekly_reset: r_weekly  ? today : s.last_weekly_reset||'',
-      last_monthly_reset:r_monthly ? today : s.last_monthly_reset||'',
+      last_daily_reset:  r_daily  ? today : s.last_daily_reset||'',
+      last_weekly_reset: r_weekly ? today : s.last_weekly_reset||'',
+      monthly_done: JSON.stringify(updatedMonthlyDone),
     }
     await db.from('settings').upsert(newSt); setSettings(newSt)
     return true
@@ -4175,7 +4335,9 @@ export default function App() {
 
   const manualReset = useCallback(async () => {
     const { data:cl } = await db.from('checklist').select('*')
-    await performReset(cl||[], templates, settings, true)
+    // Reset monthly_done để force tạo lại tất cả template hàng tháng
+    const clearedSettings = { ...settings, monthly_done: '{}' }
+    await performReset(cl||[], templates, clearedSettings, true)
   }, [settings, templates, performReset])
 
   // Login
