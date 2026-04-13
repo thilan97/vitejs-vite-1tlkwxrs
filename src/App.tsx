@@ -2671,10 +2671,24 @@ function ShortageItems({ user, allUsers, mobile }: any) {
   const isSale    = user.dept_id === 'sale'
 
   useEffect(() => {
-    Promise.all([
-      db.from('shortage_items').select('*').order('created_at', { ascending:false }),
-      db.from('products').select('*').eq('active', true).order('name'),
-    ]).then(([si, pr]) => { setItems(si.data||[]); setProducts(pr.data||[]) })
+    // Fetch shortage items
+    db.from('shortage_items').select('*').order('created_at', { ascending:false })
+      .then(({ data }) => { if (data) setItems(data) })
+    // Fetch ALL products (vượt giới hạn 1000 của Supabase bằng cách dùng range)
+    ;(async () => {
+      const all: any[] = []
+      const PAGE = 1000
+      let from = 0
+      while (true) {
+        const { data, error } = await db.from('products').select('*').eq('active', true)
+          .order('name').range(from, from + PAGE - 1)
+        if (error || !data || data.length === 0) break
+        all.push(...data)
+        if (data.length < PAGE) break
+        from += PAGE
+      }
+      setProducts(all)
+    })()
   }, [])
 
   // Auto-filter: ẩn hàng đã về > 3 ngày
@@ -3275,9 +3289,18 @@ function ShortageItems({ user, allUsers, mobile }: any) {
               const data = await res.json()
               if (data.success) {
                 setSyncMsg(`✅ Sync ${data.synced} SP${data.shortage>0?' — ⚠️ '+data.shortage+' mã thiếu hàng':''}`)
-                // Reload products
-                const { data: pr } = await db.from('products').select('*').eq('active', true).order('name')
-                if (pr) setProducts(pr)
+                // Reload ALL products after sync
+                const allPr: any[] = []
+                let fromIdx = 0
+                while (true) {
+                  const { data: prPage } = await db.from('products').select('*').eq('active', true)
+                    .order('name').range(fromIdx, fromIdx + 999)
+                  if (!prPage || prPage.length === 0) break
+                  allPr.push(...prPage)
+                  if (prPage.length < 1000) break
+                  fromIdx += 1000
+                }
+                if (allPr.length > 0) setProducts(allPr)
               } else {
                 setSyncMsg('❌ Lỗi: ' + (data.error || 'Không xác định'))
               }
@@ -3321,7 +3344,7 @@ function ShortageItems({ user, allUsers, mobile }: any) {
             setProdForm({ name:'', code:'', unit:'', stock:'' })
           }} style={{ padding:'8px 16px', borderRadius:8, border:'none', background:T.gold, color:'#fff', cursor:'pointer', fontFamily:'inherit', fontWeight:600, fontSize:13, flexShrink:0 }}>+ Thêm</button>
         </div>
-        <div style={{ fontSize:11, color:T.light, marginBottom:8 }}>{products.length} sản phẩm · 🔍 Fuzzy search theo tên/mã</div>
+        <div style={{ fontSize:11, color:T.light, marginBottom:8 }}>{products.length.toLocaleString('vi-VN')} sản phẩm · 🔍 Fuzzy search theo tên/mã</div>
         <div style={{ maxHeight:360, overflowY:'auto', border:`1px solid ${T.border}`, borderRadius:8 }}>
           {products.map((pr, i) => (
             <div key={pr.id} style={{ display:'flex', alignItems:'center', gap:10, padding:'9px 12px',
