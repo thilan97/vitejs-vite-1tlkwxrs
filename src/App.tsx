@@ -257,8 +257,9 @@ const Topbar = ({ title, subtitle, action, mobile }: any) => (
     display:'flex', alignItems:'flex-start', justifyContent:'space-between',
     marginBottom:18, flexWrap:'wrap', gap:10 }}>
     <div>
-      <h1 style={{ margin:0, fontSize:mobile?18:20, fontWeight:700, color:T.dark }}>{title}</h1>
-      {subtitle && <div style={{ color:T.light, fontSize:12, marginTop:3 }}>{subtitle}</div>}
+      <h1 style={{ margin:0, fontSize:mobile?18:21, fontWeight:700, color:T.dark,
+        letterSpacing:.3, lineHeight:1.2 }}>{title}</h1>
+      {subtitle && <div style={{ color:T.light, fontSize:12, marginTop:4, letterSpacing:.1 }}>{subtitle}</div>}
     </div>
     {action}
   </div>
@@ -575,10 +576,10 @@ function Sidebar({ user, page, setPage, onLogout, pendingLeave, pendingOT }: any
           return (
             <div key={group.id} style={{ marginBottom:4 }}>
               {/* Group header */}
-              <div style={{ display:'flex', alignItems:'center', gap:7, padding:'6px 8px 4px',
-                fontSize:10, fontWeight:700,
+              <div style={{ display:'flex', alignItems:'center', gap:7, padding:'8px 10px 4px',
+                fontSize:9, fontWeight:700,
                 color:isActiveGroup?T.gold:T.sidebarMuted,
-                textTransform:'uppercase', letterSpacing:.8 }}>
+                textTransform:'uppercase', letterSpacing:1.2 }}>
                 <span>{group.icon}</span>
                 <span style={{ flex:1 }}>{group.label}</span>
                 {groupBadge>0 && <span style={{ background:T.red, color:'#fff', borderRadius:10,
@@ -2288,7 +2289,8 @@ function Leave({ user, allUsers, leaveRequests, setLeaveRequests, mobile }: any)
     if (!form.start_date || !form.end_date || !form.reason) return
     setSubmitting(true); setSubmitError('')
     const isHalf = form.half_day === 'yes'
-    const days = isHalf ? 0.5 : daysBetween(form.start_date, form.end_date)
+    // Lưu days=1 cho nửa ngày để tránh lỗi integer DB, dùng half_day='yes' để phân biệt
+    const days = isHalf ? 1 : daysBetween(form.start_date, form.end_date)
     const approver = getApproverLevel(user.id, days)
     const initStatus = approver === 'admin_only' ? 'pending_admin' : 'pending_mgr'
     const now = new Date().toISOString()
@@ -3120,7 +3122,7 @@ function ShortageItems({ user, allUsers, mobile, products, setProducts }: any) {
       <Topbar mobile={mobile} title="📦 Hàng thiếu" subtitle="Theo dõi tình trạng hàng hóa phòng Sale"
         action={
           <div style={{ display:'flex', gap:8 }}>
-            {perm.manageUsers && <GoldBtn outline small onClick={() => setShowProdMgmt(true)}>📋 DS Sản phẩm</GoldBtn>}
+            {(perm.manageUsers || isManager) && <GoldBtn outline small onClick={() => setShowProdMgmt(true)}>📋 DS Sản phẩm</GoldBtn>}
             {isSale && <GoldBtn small onClick={() => { setShowAdd(true); setSearch(''); setSelectedProd(null); setNote('') }}>+ Báo thiếu</GoldBtn>}
           </div>
         }/>
@@ -3537,10 +3539,7 @@ function ShortageItems({ user, allUsers, mobile, products, setProducts }: any) {
                   Tồn: {pr.stock}
                 </div>
               )}
-              <button onClick={async () => {
-                setProducts(prev => prev.filter(p => p.id!==pr.id))
-                await db.from('products').delete().eq('id', pr.id)
-              }} style={{ padding:'3px 8px', borderRadius:6, border:`1px solid ${T.redBg}`, background:T.redBg, cursor:'pointer', fontSize:11, fontFamily:'inherit', color:T.red }}>✕</button>
+
             </div>
           ))}
           {products.length===0 && <div style={{ padding:'24px', textAlign:'center', color:T.light, fontSize:13 }}>Chưa có sản phẩm nào. Thêm ở trên.</div>}
