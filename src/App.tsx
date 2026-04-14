@@ -11,7 +11,8 @@ const db = createClient(SUPABASE_URL, SUPABASE_KEY)
 // ── THEME ────────────────────────────────────────
 const T: any = {
   gold:'#C4973A', goldBg:'#FFFAEE', goldText:'#7A5A10', goldBorder:'#E5CFA0',
-  sidebar:'#16120E', bg:'#FDFCF8', card:'#FFFFFF',
+  sidebar:'#FDF6E9', sidebarBorder:'#E8D5A3', sidebarText:'#5A4010', sidebarMuted:'#A08040',
+  bg:'#F7F5F2', card:'#FFFFFF',
   dark:'#1A1614', med:'#6B5F50', light:'#A09080', border:'#EDE8DF',
   green:'#15803D', greenBg:'#DCFCE7',
   amber:'#B45309', amberBg:'#FEF9C3',
@@ -78,6 +79,7 @@ const getPerm = (user: any) => {
     viewAllDashboard:   isAdmin,
     resetChecklist:     isAdmin || (pos.perm_reset_checklist      ?? false),
     viewBirthday:       isAdmin || (pos.perm_approve_leave ?? false) || (pos.perm_view_birthday ?? false),
+    enterKiot:          isAdmin || (pos.perm_mark_attendance ?? false) || (pos.perm_enter_kiot ?? false),
   }
 }
 
@@ -110,6 +112,7 @@ const ALL_PERMS = [
   { key:'perm_view_all_dashboard',   label:'Xem dashboard toàn công ty',     group:'Quản trị'  },
   { key:'perm_reset_checklist',      label:'Reset checklist',                 group:'Quản trị'  },
   { key:'perm_view_birthday',        label:'Xem ngày sinh nhật nhân viên',    group:'Nhân sự'   },
+  { key:'perm_enter_kiot',           label:'Tích đã nhập KiotViet (hàng hoàn)', group:'Kho'      },
 ]
 // ── UTILITIES ────────────────────────────────────
 const fmtNow   = () => new Date().toLocaleString('vi-VN',{hour:'2-digit',minute:'2-digit',day:'2-digit',month:'2-digit',year:'numeric'})
@@ -361,33 +364,34 @@ onLogin(userObj)
     }}/>
   )
   return (
-    <div style={{ minHeight:'100vh', background:'#16120E', display:'flex',
+    <div style={{ minHeight:'100vh', background:T.sidebar, display:'flex',
       flexDirection:'column', alignItems:'center', justifyContent:'center', padding:24 }}>
       <div style={{ textAlign:'center', marginBottom:40 }}>
         <LALogo size={72}/>
         <div style={{ color:T.gold, fontSize:22, fontFamily:'Georgia,serif', marginTop:14, letterSpacing:2 }}>LA Global Beauty</div>
-        <div style={{ color:'rgba(255,255,255,0.4)', fontSize:12, marginTop:6 }}>Hệ thống quản lý nội bộ</div>
+        <div style={{ color:T.sidebarMuted, fontSize:12, marginTop:6 }}>Hệ thống quản lý nội bộ</div>
       </div>
 
-      <div style={{ width:'100%', maxWidth:360, background:'rgba(255,255,255,0.05)',
-        border:'1px solid rgba(196,151,58,0.25)', borderRadius:16, padding:'28px 28px' }}>
+      <div style={{ width:'100%', maxWidth:360, background:T.card,
+        border:`1px solid ${T.sidebarBorder}`, borderRadius:16, padding:'28px 28px',
+        boxShadow:'0 4px 24px rgba(196,151,58,0.12)' }}>
         <div style={{ marginBottom:16 }}>
-          <div style={{ fontSize:12, fontWeight:500, color:'rgba(255,255,255,0.5)', marginBottom:6 }}>Tên đăng nhập</div>
+          <div style={{ fontSize:12, fontWeight:500, color:T.med, marginBottom:6 }}>Tên đăng nhập</div>
           <input value={username} onChange={e => setUsername(e.target.value)}
             placeholder="Nhập username..."
             onKeyDown={e => e.key === 'Enter' && handleLogin()}
-            style={{ width:'100%', padding:'10px 13px', borderRadius:8, border:'1px solid rgba(255,255,255,0.15)',
-              background:'rgba(255,255,255,0.08)', color:'#fff', fontSize:14, fontFamily:'inherit',
+            style={{ width:'100%', padding:'10px 13px', borderRadius:8, border:`1px solid ${T.border}`,
+              background:T.bg, color:T.dark, fontSize:14, fontFamily:'inherit',
               outline:'none', boxSizing:'border-box' }}/>
         </div>
 
         <div style={{ marginBottom:20 }}>
-          <div style={{ fontSize:12, fontWeight:500, color:'rgba(255,255,255,0.5)', marginBottom:6 }}>Mật khẩu</div>
+          <div style={{ fontSize:12, fontWeight:500, color:T.med, marginBottom:6 }}>Mật khẩu</div>
           <input type="password" value={password} onChange={e => setPassword(e.target.value)}
             placeholder="Nhập mật khẩu..."
             onKeyDown={e => e.key === 'Enter' && handleLogin()}
-            style={{ width:'100%', padding:'10px 13px', borderRadius:8, border:'1px solid rgba(255,255,255,0.15)',
-              background:'rgba(255,255,255,0.08)', color:'#fff', fontSize:14, fontFamily:'inherit',
+            style={{ width:'100%', padding:'10px 13px', borderRadius:8, border:`1px solid ${T.border}`,
+              background:T.bg, color:T.dark, fontSize:14, fontFamily:'inherit',
               outline:'none', boxSizing:'border-box' }}/>
         </div>
 
@@ -400,7 +404,7 @@ onLogin(userObj)
           {loading ? 'Đang đăng nhập...' : 'Đăng nhập'}
         </button>
 
-        <div style={{ textAlign:'center', marginTop:14, fontSize:11, color:'rgba(255,255,255,0.25)' }}>
+        <div style={{ textAlign:'center', marginTop:14, fontSize:11, color:T.sidebarMuted }}>
           Lần đầu đăng nhập: dùng mật khẩu mặc định <span style={{ color:T.gold }}>1234</span>
         </div>
       </div>
@@ -427,34 +431,35 @@ onDone(newPw)
   }
 
   return (
-    <div style={{ minHeight:'100vh', background:'#16120E', display:'flex',
+    <div style={{ minHeight:'100vh', background:T.sidebar, display:'flex',
       flexDirection:'column', alignItems:'center', justifyContent:'center', padding:24 }}>
       <div style={{ textAlign:'center', marginBottom:32 }}>
         <LALogo size={56}/>
         <div style={{ color:T.gold, fontSize:18, fontFamily:'Georgia,serif', marginTop:12 }}>LA Global Beauty</div>
       </div>
-      <div style={{ width:'100%', maxWidth:360, background:'rgba(255,255,255,0.05)',
+      <div style={{ width:'100%', maxWidth:360, background:T.card,
+        boxShadow:'0 4px 24px rgba(196,151,58,0.12)',
         border:`1px solid ${T.gold}55`, borderRadius:16, padding:'28px' }}>
         <div style={{ color:T.gold, fontSize:15, fontWeight:700, marginBottom:6 }}>🔐 Đổi mật khẩu lần đầu</div>
-        <div style={{ color:'rgba(255,255,255,0.5)', fontSize:12, marginBottom:20, lineHeight:1.6 }}>
+        <div style={{ color:T.med, fontSize:12, marginBottom:20, lineHeight:1.6 }}>
           Xin chào <span style={{ color:'#fff', fontWeight:600 }}>{user.name}</span>!<br/>
           Vui lòng đổi mật khẩu trước khi sử dụng.
         </div>
         <div style={{ marginBottom:14 }}>
-          <div style={{ fontSize:12, color:'rgba(255,255,255,0.5)', marginBottom:6 }}>Mật khẩu mới (tối thiểu 6 ký tự)</div>
+          <div style={{ fontSize:12, color:T.med, marginBottom:6 }}>Mật khẩu mới (tối thiểu 6 ký tự)</div>
           <input type="password" value={newPw} onChange={e => setNewPw(e.target.value)}
             placeholder="Nhập mật khẩu mới..."
-            style={{ width:'100%', padding:'10px 13px', borderRadius:8, border:'1px solid rgba(255,255,255,0.15)',
-              background:'rgba(255,255,255,0.08)', color:'#fff', fontSize:14, fontFamily:'inherit',
+            style={{ width:'100%', padding:'10px 13px', borderRadius:8, border:`1px solid ${T.border}`,
+              background:T.bg, color:T.dark, fontSize:14, fontFamily:'inherit',
               outline:'none', boxSizing:'border-box' }}/>
         </div>
         <div style={{ marginBottom:16 }}>
-          <div style={{ fontSize:12, color:'rgba(255,255,255,0.5)', marginBottom:6 }}>Xác nhận mật khẩu</div>
+          <div style={{ fontSize:12, color:T.med, marginBottom:6 }}>Xác nhận mật khẩu</div>
           <input type="password" value={confirmPw} onChange={e => setConfirmPw(e.target.value)}
             placeholder="Nhập lại mật khẩu..."
             onKeyDown={e => e.key === 'Enter' && handleChange()}
-            style={{ width:'100%', padding:'10px 13px', borderRadius:8, border:'1px solid rgba(255,255,255,0.15)',
-              background:'rgba(255,255,255,0.08)', color:'#fff', fontSize:14, fontFamily:'inherit',
+            style={{ width:'100%', padding:'10px 13px', borderRadius:8, border:`1px solid ${T.border}`,
+              background:T.bg, color:T.dark, fontSize:14, fontFamily:'inherit',
               outline:'none', boxSizing:'border-box' }}/>
         </div>
         {error && <div style={{ color:'#F87171', fontSize:12, marginBottom:12 }}>{error}</div>}
@@ -548,12 +553,13 @@ function Sidebar({ user, page, setPage, onLogout, pendingLeave, pendingOT }: any
 
   return (
     <div style={{ width:220, background:T.sidebar, display:'flex', flexDirection:'column',
-      flexShrink:0, height:'100vh', position:'sticky', top:0 }}>
+      flexShrink:0, height:'100vh', position:'sticky', top:0,
+      borderRight:`1px solid ${T.sidebarBorder}` }}>
       {/* Logo */}
-      <div style={{ padding:'16px 14px 12px', borderBottom:'1px solid rgba(255,255,255,0.07)' }}>
+      <div style={{ padding:'16px 14px 12px', borderBottom:`1px solid ${T.sidebarBorder}` }}>
         <div style={{ display:'flex', alignItems:'center', gap:10 }}>
           <LALogo size={30}/>
-          <div style={{ color:T.gold, fontSize:11, fontFamily:'Georgia,serif', lineHeight:1.4, letterSpacing:.5 }}>
+          <div style={{ color:T.goldText, fontSize:11, fontFamily:'Georgia,serif', lineHeight:1.4, letterSpacing:.5 }}>
             LA Global<br/>Beauty
           </div>
         </div>
@@ -567,7 +573,8 @@ function Sidebar({ user, page, setPage, onLogout, pendingLeave, pendingOT }: any
             <div key={group.id} style={{ marginBottom:4 }}>
               {/* Group header */}
               <div style={{ display:'flex', alignItems:'center', gap:7, padding:'6px 8px 4px',
-                fontSize:10, fontWeight:700, color:isActiveGroup?T.gold:'rgba(255,255,255,0.3)',
+                fontSize:10, fontWeight:700,
+                color:isActiveGroup?T.gold:T.sidebarMuted,
                 textTransform:'uppercase', letterSpacing:.8 }}>
                 <span>{group.icon}</span>
                 <span style={{ flex:1 }}>{group.label}</span>
@@ -583,10 +590,10 @@ function Sidebar({ user, page, setPage, onLogout, pendingLeave, pendingOT }: any
                     style={{ width:'100%', display:'flex', alignItems:'center', gap:8,
                       padding:'7px 10px 7px 20px', borderRadius:7, marginBottom:1, border:'none',
                       cursor:'pointer', fontFamily:'inherit', fontSize:12, textAlign:'left',
-                      background:active?'rgba(196,151,58,0.2)':'transparent',
-                      color:active?T.gold:'rgba(255,255,255,0.5)',
-                      fontWeight:active?600:400 }}
-                    onMouseEnter={e => { if (!active) (e.currentTarget as any).style.background='rgba(255,255,255,0.05)' }}
+                      background:active?T.goldBg:'transparent',
+                      color:active?T.goldText:T.sidebarText,
+                      fontWeight:active?700:400 }}
+                    onMouseEnter={e => { if (!active) (e.currentTarget as any).style.background=T.goldBg }}
                     onMouseLeave={e => { if (!active) (e.currentTarget as any).style.background='transparent' }}>
                     <span style={{ fontSize:12 }}>{item.icon}</span>
                     <span style={{ flex:1 }}>{item.label}</span>
@@ -600,20 +607,20 @@ function Sidebar({ user, page, setPage, onLogout, pendingLeave, pendingOT }: any
         })}
       </nav>
       {/* User info + logout */}
-      <div style={{ padding:'10px', borderTop:'1px solid rgba(255,255,255,0.07)' }}>
+      <div style={{ padding:'10px', borderTop:`1px solid ${T.sidebarBorder}` }}>
         <div style={{ display:'flex', alignItems:'center', gap:8, marginBottom:8 }}>
           <div style={{ width:30, height:30, borderRadius:'50%', background:DEPT_COLOR[user.dept_id]||T.gold,
             flexShrink:0, display:'flex', alignItems:'center', justifyContent:'center',
             color:'#fff', fontSize:9, fontWeight:700 }}>{user.ini}</div>
           <div style={{ flex:1, minWidth:0 }}>
-            <div style={{ color:'rgba(255,255,255,0.85)', fontSize:11, fontWeight:600,
+            <div style={{ color:T.dark, fontSize:11, fontWeight:600,
               overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap' }}>{user.name}</div>
             <div style={{ color:T.gold, fontSize:9 }}>{user.position_name||user.dept_name}</div>
           </div>
         </div>
         <button onClick={onLogout}
-          style={{ width:'100%', padding:'6px', borderRadius:7, border:'1px solid rgba(255,255,255,0.1)',
-            background:'transparent', color:'rgba(255,255,255,0.4)', fontSize:11,
+          style={{ width:'100%', padding:'6px', borderRadius:7, border:`1px solid ${T.sidebarBorder}`,
+            background:'transparent', color:T.sidebarMuted, fontSize:11,
             cursor:'pointer', fontFamily:'inherit' }}>🚪 Đăng xuất</button>
       </div>
     </div>
@@ -641,21 +648,21 @@ function BottomNav({ page, setPage, user, pendingLeave, pendingOT, onLogout }: a
       {/* Sub-tab strip — hiện khi tap vào group đang active */}
       {showSubTabs && activeGroup && activeGroup.pages.length > 1 && (
         <div style={{ position:'fixed', bottom:60, left:0, right:0, background:T.sidebar,
-          borderTop:'1px solid rgba(255,255,255,0.12)', zIndex:99 }}>
+          borderTop:`1px solid ${T.sidebarBorder}`, zIndex:99 }}>
           {/* User info */}
           <div style={{ display:'flex', alignItems:'center', justifyContent:'space-between',
-            padding:'8px 14px', borderBottom:'1px solid rgba(255,255,255,0.06)' }}>
+            padding:'8px 14px', borderBottom:`1px solid ${T.sidebarBorder}` }}>
             <div style={{ display:'flex', alignItems:'center', gap:8 }}>
               <div style={{ width:26, height:26, borderRadius:'50%', background:DEPT_COLOR[user.dept_id]||T.gold,
                 display:'flex', alignItems:'center', justifyContent:'center', color:'#fff', fontSize:8, fontWeight:700 }}>{user.ini}</div>
               <div>
-                <div style={{ color:'rgba(255,255,255,0.85)', fontSize:11, fontWeight:600 }}>{user.name}</div>
+                <div style={{ color:T.dark, fontSize:11, fontWeight:600 }}>{user.name}</div>
                 <div style={{ color:T.gold, fontSize:9 }}>{user.position_name||user.dept_name}</div>
               </div>
             </div>
             <button onClick={() => { if(confirm('Đăng xuất?')) onLogout() }}
-              style={{ padding:'4px 10px', borderRadius:6, border:'1px solid rgba(255,100,100,0.4)',
-                background:'transparent', color:'#F87171', fontSize:11, cursor:'pointer', fontFamily:'inherit' }}>
+              style={{ padding:'4px 10px', borderRadius:6, border:`1px solid ${T.redBg}`,
+                background:T.redBg, color:T.red, fontSize:11, cursor:'pointer', fontFamily:'inherit' }}>
               🚪 Đăng xuất
             </button>
           </div>
@@ -668,8 +675,8 @@ function BottomNav({ page, setPage, user, pendingLeave, pendingOT, onLogout }: a
                 <button key={item.id} onClick={() => { setPage(item.id); setShowSubTabs(false) }}
                   style={{ flex:'1 1 auto', display:'flex', alignItems:'center', justifyContent:'center',
                     gap:6, padding:'8px 10px', borderRadius:8, border:'none',
-                    background:active?'rgba(196,151,58,0.22)':'rgba(255,255,255,0.06)',
-                    color:active?T.gold:'rgba(255,255,255,0.65)',
+                    background:active?T.goldBg:'rgba(0,0,0,0.03)',
+                    color:active?T.goldText:T.sidebarText,
                     cursor:'pointer', fontFamily:'inherit', fontSize:12,
                     fontWeight:active?600:400, position:'relative' }}>
                   <span>{item.icon}</span>
@@ -685,7 +692,7 @@ function BottomNav({ page, setPage, user, pendingLeave, pendingOT, onLogout }: a
 
       {/* Main bottom bar — 5 group icons */}
       <div style={{ position:'fixed', bottom:0, left:0, right:0, background:T.sidebar,
-        display:'flex', borderTop:'1px solid rgba(255,255,255,0.1)', zIndex:100,
+        display:'flex', borderTop:`1px solid ${T.sidebarBorder}`, zIndex:100,
         paddingBottom:'env(safe-area-inset-bottom,0px)' }}>
         {groups.map((group: any) => {
           const isActive = activeGroup?.id === group.id
@@ -697,7 +704,7 @@ function BottomNav({ page, setPage, user, pendingLeave, pendingOT, onLogout }: a
                 justifyContent:'center', padding:'10px 2px', border:'none',
                 background: isActive && showSubTabs ? 'rgba(196,151,58,0.15)' : 'transparent',
                 cursor:'pointer', position:'relative',
-                color:isActive?T.gold:'rgba(255,255,255,0.4)' }}>
+                color:isActive?T.gold:T.sidebarMuted }}>
               <span style={{ fontSize:19, marginBottom:2 }}>{group.icon}</span>
               <span style={{ fontSize:9, fontWeight:isActive?700:400, fontFamily:'inherit',
                 letterSpacing:.2 }}>{group.label}</span>
@@ -3650,7 +3657,7 @@ function ReturnSaleForm({ item, allUsers, saleUsers, onSave, onClose }: any) {
 }
 
 // ── RETURN ITEMS (Báo cáo hàng hoàn) ─────────────────
-function ReturnItems({ user, allUsers, mobile }: any) {
+function ReturnItems({ user, allUsers, products, mobile }: any) {
   const [items,      setItems]     = React.useState<any[]>([])
   const [showAdd,    setShowAdd]   = React.useState(false)
   const [showEdit,   setShowEdit]  = React.useState<any>(null)
@@ -3663,7 +3670,8 @@ function ReturnItems({ user, allUsers, mobile }: any) {
   const perm = getPerm(user)
   const isKho  = user.dept_id === 'kho'
   const isSale = user.dept_id === 'sale'
-  const canAdd = isKho || perm.viewAllDashboard
+  const canAdd    = isKho || perm.viewAllDashboard
+  const canKiot   = isKho || perm.viewAllDashboard || (perm as any).enterKiot
 
   const norm = (s: string) => (s||'').toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g,'').replace(/đ/g,'d')
   const fuzzy = (item: any, q: string) => !q.trim() || norm(q).split(/\s+/).every((t: string) =>
@@ -3673,11 +3681,20 @@ function ReturnItems({ user, allUsers, mobile }: any) {
   const emptyForm = {
     date: new Date().toISOString().split('T')[0],
     product_name:'', quantity:1, condition:'Bình thường',
-    ship_fee:0, entered_kiot:false, return_order_code:'',
+    ship_fee:0, return_order_code:'',
     customer_name:'', original_order_code:'', sale_id:'',
     violator_id:'', reason:'', sale_note:''
   }
-  const [form, setForm] = React.useState<any>(emptyForm)
+  const [form, setForm]         = React.useState<any>(emptyForm)
+  const [prodSearch, setProdSearch] = React.useState('')
+  const normStr = (s: string) => (s||'').toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g,'').replace(/đ/g,'d')
+  const prodResults = React.useMemo(() => {
+    if (!prodSearch.trim() || !products) return []
+    return products.filter((p: any) => {
+      const hay = normStr((p.name||'')+' '+(p.code||''))
+      return normStr(prodSearch).split(/\s+/).every((t: string) => hay.includes(t))
+    }).slice(0,8)
+  }, [prodSearch, products])
 
   useEffect(() => {
     db.from('return_items').select('*').order('date', { ascending:false })
@@ -3696,12 +3713,13 @@ function ReturnItems({ user, allUsers, mobile }: any) {
   const submit = async () => {
     if (!form.product_name || !form.date) return
     const newItem = { id:'ret'+Date.now(), ...form,
+      entered_kiot:false, entered_kiot_by:'', entered_kiot_at:'',
       created_by:user.id, created_at:new Date().toISOString(),
       quantity:Number(form.quantity)||1, ship_fee:Number(form.ship_fee)||0 }
     setItems(prev => [newItem, ...prev])
     const { error } = await db.from('return_items').insert(newItem)
     if (error) { setItems(prev => prev.filter(i => i.id!==newItem.id)); alert('❌ '+error.message); return }
-    setShowAdd(false); setForm(emptyForm)
+    setShowAdd(false); setForm(emptyForm); setProdSearch('')
   }
 
   const updateSale = async (id: string, saleData: any) => {
@@ -3824,8 +3842,9 @@ function ReturnItems({ user, allUsers, mobile }: any) {
               const saleUser     = allUsers.find((u: any) => u.id===r.sale_id)
               const violatorUser = allUsers.find((u: any) => u.id===r.violator_id)
               const hasSaleInfo  = r.customer_name || r.original_order_code
-              const canEdit      = perm.viewAllDashboard || (isKho && r.created_by===user.id)
-              const canFillSale  = isSale || perm.viewAllDashboard
+              // Kho chỉ sửa cột kho, Sale chỉ sửa cột sale, Admin sửa tất cả
+              const canEdit     = perm.viewAllDashboard || (isKho && r.created_by===user.id)
+              const canFillSale = (isSale || perm.viewAllDashboard)
 
               return (
                 <div key={r.id} style={{
@@ -3859,7 +3878,24 @@ function ReturnItems({ user, allUsers, mobile }: any) {
                       <span style={{ fontSize:11, color:T.gold }}>{saleUser?.name||'—'}</span>
                     </>}
                     <div style={{ display:'flex', gap:4, justifyContent:'flex-end' }}>
-                      {r.entered_kiot && <span style={{ fontSize:9, fontWeight:700, color:T.green, background:T.greenBg, padding:'2px 5px', borderRadius:10 }}>KV✓</span>}
+                      {r.entered_kiot
+                      ? <span title={`Nhập bởi: ${allUsers.find((u: any)=>u.id===r.entered_kiot_by)?.name||'?'} lúc ${r.entered_kiot_at?new Date(r.entered_kiot_at).toLocaleString('vi-VN',''):'?'}`}
+                          style={{ fontSize:9, fontWeight:700, color:T.green, background:T.greenBg, padding:'2px 6px', borderRadius:10, cursor:'help' }}>
+                          ✅ KV
+                        </span>
+                      : canKiot && (
+                          <button onClick={async e => { e.stopPropagation()
+                            const now = new Date().toISOString()
+                            const upd = { entered_kiot:true, entered_kiot_by:user.id, entered_kiot_at:now }
+                            setItems(prev => prev.map((i: any) => i.id===r.id ? {...i,...upd} : i))
+                            await db.from('return_items').update(upd).eq('id', r.id)
+                          }}
+                            style={{ fontSize:9, padding:'2px 6px', borderRadius:10, border:`1px solid ${T.border}`,
+                              background:T.bg, cursor:'pointer', fontFamily:'inherit', color:T.light }}>
+                            KV?
+                          </button>
+                        )
+                    }
                       {!hasSaleInfo && canFillSale && (
                         <button onClick={() => setShowEdit(r)}
                           style={{ padding:'3px 8px', borderRadius:6, border:`1.5px solid ${T.gold}`,
@@ -3895,17 +3931,41 @@ function ReturnItems({ user, allUsers, mobile }: any) {
           <Sel label="Tình trạng" value={form.condition} onChange={(v: string) => setForm((f: any) => ({...f,condition:v}))}
             options={CONDITIONS.map(c => ({value:c,label:c}))}/>
         </div>
-        <Inp label="Tên sản phẩm *" value={form.product_name} onChange={(v: string) => setForm((f: any) => ({...f,product_name:v}))} placeholder="Nhập tên SP..."/>
+        {/* Fuzzy search sản phẩm */}
+        <div style={{ marginBottom:13 }}>
+          <div style={{ fontSize:12, fontWeight:500, color:T.med, marginBottom:5 }}>Tên sản phẩm *</div>
+          <input value={prodSearch} onChange={e => { setProdSearch(e.target.value); setForm((f: any) => ({...f,product_name:e.target.value})) }}
+            placeholder="Tìm tên SP hoặc mã SP..."
+            style={{ width:'100%', padding:'8px 11px', border:`1px solid ${T.border}`, borderRadius:8,
+              fontSize:13, fontFamily:'inherit', color:T.dark, background:'#fff', boxSizing:'border-box' as any, outline:'none' }}/>
+          {prodResults.length>0 && (
+            <div style={{ border:`1px solid ${T.border}`, borderRadius:8, overflow:'hidden', maxHeight:180, overflowY:'auto', marginTop:4 }}>
+              {prodResults.map((p: any) => (
+                <div key={p.id} onClick={() => { setForm((f: any) => ({...f,product_name:p.name})); setProdSearch(p.name) }}
+                  style={{ padding:'8px 12px', cursor:'pointer', fontSize:12, borderBottom:`1px solid ${T.border}`,
+                    display:'flex', justifyContent:'space-between', alignItems:'center' }}
+                  onMouseEnter={e => (e.currentTarget as any).style.background=T.goldBg}
+                  onMouseLeave={e => (e.currentTarget as any).style.background='#fff'}>
+                  <div>
+                    <span style={{ fontWeight:500, color:T.dark }}>{p.name}</span>
+                    {p.code && <span style={{ fontSize:10, color:T.light, marginLeft:8 }}>#{p.code}</span>}
+                  </div>
+                  {p.stock!=null && <span style={{ fontSize:11, fontWeight:700,
+                    color:p.stock===0?T.red:p.stock<=5?T.amber:T.green }}>Tồn: {p.stock}</span>}
+                </div>
+              ))}
+            </div>
+          )}
+          {form.product_name && !prodResults.length && (
+            <div style={{ fontSize:11, color:T.green, marginTop:4 }}>✅ {form.product_name}</div>
+          )}
+        </div>
         <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:12 }}>
           <Inp label="Số lượng" type="number" value={String(form.quantity)} onChange={(v: string) => setForm((f: any) => ({...f,quantity:v}))}/>
           <Inp label="Phí ship (đ)" type="number" value={String(form.ship_fee)} onChange={(v: string) => setForm((f: any) => ({...f,ship_fee:v}))}/>
         </div>
         <Inp label="Mã đơn hoàn (tự nhập)" value={form.return_order_code} onChange={(v: string) => setForm((f: any) => ({...f,return_order_code:v}))} placeholder="VD: HV001234"/>
-        <div style={{ display:'flex', alignItems:'center', gap:10, marginBottom:13 }}>
-          <input type="checkbox" id="kiot" checked={form.entered_kiot}
-            onChange={e => setForm((f: any) => ({...f,entered_kiot:e.target.checked}))}/>
-          <label htmlFor="kiot" style={{ fontSize:13, color:T.dark, cursor:'pointer' }}>✅ Đã nhập KiotViet</label>
-        </div>
+
         <div style={{ display:'flex', justifyContent:'flex-end', gap:10 }}>
           <GoldBtn outline small onClick={() => setShowAdd(false)}>Hủy</GoldBtn>
           <GoldBtn small onClick={submit} disabled={!form.product_name||!form.date}>Lưu</GoldBtn>
@@ -4802,7 +4862,7 @@ export default function App() {
   }}/>
 
   if (loading) return (
-    <div style={{ minHeight:'100vh', background:'#16120E', display:'flex', alignItems:'center', justifyContent:'center', flexDirection:'column', gap:16 }}>
+    <div style={{ minHeight:'100vh', background:T.sidebar, display:'flex', alignItems:'center', justifyContent:'center', flexDirection:'column', gap:16 }}>
       <LALogo size={60}/>
       <div style={{ color:T.gold, fontSize:14 }}>Đang tải dữ liệu...</div>
     </div>
@@ -4842,7 +4902,7 @@ export default function App() {
           {validPage==='users'      && <UserManagement {...pp} setAllUsers={setAllUsers} departments={departments} positions={positions}/>}
           {validPage==='positions'  && <PositionsManagement positions={positions} setPositions={setPositions} mobile={mobile}/>}
           {validPage==='shortage'   && <ShortageItems {...pp}/>}
-          {validPage==='returns'    && <ReturnItems {...pp}/>}
+          {validPage==='returns'    && <ReturnItems {...pp} products={products}/>}
           {validPage==='settings'   && <Settings {...pp} setUser={setUser} settings={settings} setSettings={setSettings} onManualReset={manualReset}/>}
         </main>
         {mobile && <BottomNav user={user} page={validPage} setPage={setPage} pendingLeave={pendingLeave} pendingOT={pendingOT} onLogout={() => { localStorage.removeItem('la_user'); setUser(null); setAllUsers([]); setChecklist([]) }}/>}
