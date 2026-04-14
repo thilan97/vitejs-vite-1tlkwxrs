@@ -79,7 +79,7 @@ const getPerm = (user: any) => {
     viewAllDashboard:   isAdmin,
     resetChecklist:     isAdmin || (pos.perm_reset_checklist      ?? false),
     viewBirthday:       isAdmin || (pos.perm_approve_leave ?? false) || (pos.perm_view_birthday ?? false),
-    enterKiot:          isAdmin || (pos.perm_mark_attendance ?? false) || (pos.perm_enter_kiot ?? false),
+    enterKiot:          isAdmin || (pos.perm_enter_kiot ?? false),
   }
 }
 
@@ -3732,7 +3732,7 @@ function ReturnItems({ user, allUsers, products, mobile }: any) {
   const isKho  = user.dept_id === 'kho'
   const isSale = user.dept_id === 'sale'
   const canAdd    = isKho || perm.viewAllDashboard
-  const canKiot   = isKho || perm.viewAllDashboard || (perm as any).enterKiot
+  const canKiot   = perm.viewAllDashboard || perm.enterKiot
 
   const norm = (s: string) => (s||'').toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g,'').replace(/đ/g,'d')
   const fuzzy = (item: any, q: string) => !q.trim() || norm(q).split(/\s+/).every((t: string) =>
