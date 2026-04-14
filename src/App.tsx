@@ -4174,13 +4174,14 @@ function ReturnItems({ user, allUsers, products, mobile }: any) {
           {/* ── Sticky table header ── */}
           {!mobile && (
             <div style={{ display:'grid',
-              gridTemplateColumns:'44px 72px 90px 50px 80px 100px 100px 1fr 110px',
+              gridTemplateColumns:'44px 72px 90px 1fr 48px 80px 95px 95px 150px 110px',
               padding:'8px 12px', background:T.bg, borderBottom:`2px solid ${T.border}`,
               fontSize:10, fontWeight:700, color:T.light, textTransform:'uppercase',
               letterSpacing:.6, gap:8, alignItems:'center', position:'sticky', top:0, zIndex:2 }}>
               <span style={{ textAlign:'center', color:T.green }}>KV</span>
               <span>Ngày</span>
               <span>Mã hoàn</span>
+              <span>Sản phẩm</span>
               <span style={{ textAlign:'center' }}>SL</span>
               <span style={{ textAlign:'right' }}>Ship</span>
               <span>Sale PT</span>
@@ -4247,8 +4248,8 @@ function ReturnItems({ user, allUsers, products, mobile }: any) {
                 ) : (
                   /* Desktop: full table row */
                   <div style={{ display:'grid',
-                    gridTemplateColumns:'44px 72px 90px 50px 80px 100px 100px 1fr 110px',
-                    padding:'9px 12px', gap:8, alignItems:'center',
+                    gridTemplateColumns:'44px 72px 90px 1fr 48px 80px 95px 95px 150px 110px',
+                    padding:'9px 12px', gap:8, alignItems:'start',
                     cursor:'pointer' }}
                     onClick={() => setExpandedSlip(isOpen?null:slip.slip_id)}>
 
@@ -4281,6 +4282,18 @@ function ReturnItems({ user, allUsers, products, mobile }: any) {
                       overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap' }}>
                       {slip.return_order_code?'#'+slip.return_order_code:'—'}
                     </span>
+
+                    {/* Sản phẩm */}
+                    <div style={{ lineHeight:1.4 }}>
+                      {slip.lines.slice(0,2).map((l: any, li: number) => (
+                        <div key={li} style={{ fontSize:11, color:T.dark, fontWeight:li===0?500:400 }}>
+                          {l.product_name}
+                        </div>
+                      ))}
+                      {slip.lines.length>2 && (
+                        <span style={{ fontSize:10, color:T.light }}>+{slip.lines.length-2} SP nữa</span>
+                      )}
+                    </div>
 
                     {/* SL */}
                     <div style={{ textAlign:'center' }}>
@@ -5575,6 +5588,7 @@ function WrongOrders({ user, allUsers, wrongOrders, setWrongOrders, mobile }: an
     const n = new Date(); return `${n.getFullYear()}-${String(n.getMonth()+1).padStart(2,'0')}`
   })
   const [searchQ, setSearchQ] = useState('')
+  const [expandedSlip, setExpandedSlip] = useState<any>(null)
   const p = mobile ? '16px' : '24px'
   const perm = getPerm(user)
   const isKho   = user.dept_id === 'kho'
@@ -5762,53 +5776,169 @@ function WrongOrders({ user, allUsers, wrongOrders, setWrongOrders, mobile }: an
             <div style={{ fontSize:32, marginBottom:8 }}>⚠️</div>
             <div style={{ fontSize:13 }}>Không có đơn sai nào trong tháng này</div>
           </Card>
-        : <div style={{ background:T.card, borderRadius:12, border:`1px solid ${T.border}`, overflow:'hidden' }}>
-            {/* Header */}
-            <div style={{ display:'grid', gridTemplateColumns:mobile?'80px 1fr auto':'90px 100px 110px 1fr 100px 100px auto',
-              padding:'8px 12px', background:T.bg, borderBottom:`1px solid ${T.border}`,
-              fontSize:10, fontWeight:700, color:T.light, textTransform:'uppercase', gap:8 }}>
-              <span>Ngày tạo</span>
-              {!mobile && <span>Ngày sai</span>}
-              {!mobile && <span>Mã đơn</span>}
-              <span>Khách hàng / Chi tiết</span>
-              {!mobile && <><span>Sale</span><span>Vi phạm</span></>}
-              <span>Tình trạng</span>
-            </div>
+        : <div style={{ background:T.card, borderRadius:12, border:`1px solid ${T.border}`,
+            boxShadow:'0 1px 4px rgba(0,0,0,0.06)', overflow:'hidden' }}>
+
+            {/* ── Header ── */}
+            {!mobile && (
+              <div style={{ display:'grid',
+                gridTemplateColumns:'68px 68px 95px 120px 1fr 160px 90px 90px 110px 95px',
+                padding:'8px 12px', background:T.bg, borderBottom:`2px solid ${T.border}`,
+                fontSize:10, fontWeight:700, color:T.light, textTransform:'uppercase',
+                letterSpacing:.6, gap:8, alignItems:'center', position:'sticky', top:0, zIndex:2 }}>
+                <span>Ngày tạo</span>
+                <span>Ngày sai</span>
+                <span>Mã đơn</span>
+                <span>Khách hàng</span>
+                <span>Chi tiết đơn sai</span>
+                <span>Ghi chú xử lý</span>
+                <span>Sale PT</span>
+                <span>Vi phạm</span>
+                <span>Tình trạng</span>
+                <span style={{ textAlign:'right' }}>Thao tác</span>
+              </div>
+            )}
+
             {filtered.map((r: any, i: number) => {
-              const sc = STATUS_CFG_WO[r.status]||STATUS_CFG_WO.pending
-              const saleUser     = allUsers.find((u: any) => u.id===r.sale_id)
-              const violUser     = allUsers.find((u: any) => u.id===r.violator_id)
+              const sc          = STATUS_CFG_WO[r.status]||STATUS_CFG_WO.pending
+              const saleUser    = allUsers.find((u: any) => u.id===r.sale_id)
+              const violUser    = allUsers.find((u: any) => u.id===r.violator_id)
               const resolvedUser = allUsers.find((u: any) => u.id===r.resolved_by)
-              const canSaleFill  = (isSale || perm.viewAllDashboard) && (r.status==='pending' || perm.viewAllDashboard)
-              const canRes       = canResolve && r.status==='sale_filled'
-              const canDel       = (canAdd && r.status==='pending') || perm.viewAllDashboard
+              const canSaleFill = (isSale || perm.viewAllDashboard) && (r.status==='pending' || perm.viewAllDashboard)
+              const canRes      = canResolve && r.status==='sale_filled'
+              const canDel      = (canAdd && r.status==='pending') || perm.viewAllDashboard
+              const detailLong  = (r.detail||'').length > 100
+              const isOpen      = expandedSlip === r.id
+              const rowBg       = i%2===0 ? '#fff' : T.rowAlt
+
               return (
-                <div key={r.id} style={{ borderBottom:i<filtered.length-1?`1px solid ${T.border}`:'none',
-                  background:i%2===0?'#fff':T.rowAlt }}>
-                  <div style={{ display:'grid', gridTemplateColumns:mobile?'80px 1fr auto':'90px 100px 110px 1fr 100px 100px auto',
-                    padding:'9px 12px', alignItems:'center', gap:8 }}>
-                    <span style={{ fontSize:11, color:T.light }}>
-                      {r.created_at?new Date(r.created_at).toLocaleDateString('vi-VN',{day:'2-digit',month:'2-digit'}):'—'}
-                    </span>
-                    {!mobile && <span style={{ fontSize:11, color:T.med }}>
-                      {r.date?new Date(r.date).toLocaleDateString('vi-VN',{day:'2-digit',month:'2-digit'}):'—'}
-                    </span>}
-                    {!mobile && <span style={{ fontSize:12, fontWeight:600, color:T.gold }}>{r.order_code||'—'}</span>}
-                    <div>
-                      <div style={{ fontSize:12, fontWeight:500, color:T.dark }}>{r.customer_name||'—'}</div>
-                      {mobile && <div style={{ fontSize:10, color:T.gold }}>{r.order_code}</div>}
-                      {r.detail && <div style={{ fontSize:11, color:T.med, marginTop:2, lineHeight:1.3 }}>{r.detail}</div>}
-                      {r.resolution_note && (
-                        <div style={{ fontSize:11, color:T.blue, marginTop:3 }}>
-                          📝 {r.resolution_note}
-                          {resolvedUser && <span style={{ color:T.green }}> · ✅ {resolvedUser.name}</span>}
+                <div key={r.id} style={{ borderBottom:`1px solid ${T.border}`,
+                  background: isOpen ? T.goldBg : rowBg }}>
+
+                  {mobile ? (
+                    /* ── Mobile card ── */
+                    <div style={{ padding:'10px 14px' }}>
+                      <div style={{ display:'flex', justifyContent:'space-between', alignItems:'flex-start', gap:8 }}>
+                        <div style={{ flex:1 }}>
+                          <div style={{ fontSize:12, fontWeight:700, color:T.gold }}>
+                            {r.order_code||'—'}
+                            <span style={{ fontSize:10, color:T.light, marginLeft:8, fontWeight:400 }}>
+                              {r.date?new Date(r.date).toLocaleDateString('vi-VN',{day:'2-digit',month:'2-digit'}):''} 
+                            </span>
+                          </div>
+                          {r.customer_name && <div style={{ fontSize:11, color:T.dark, marginTop:2 }}>{r.customer_name}</div>}
+                          {r.detail && <div style={{ fontSize:11, color:T.med, marginTop:3, lineHeight:1.4 }}>{r.detail}</div>}
+                          {r.resolution_note && <div style={{ fontSize:11, color:T.blue, marginTop:3 }}>📝 {r.resolution_note}</div>}
                         </div>
-                      )}
+                        <span style={{ fontSize:10, fontWeight:700, padding:'2px 7px', borderRadius:20,
+                          color:sc.color, background:sc.bg, whiteSpace:'nowrap', flexShrink:0 }}>{sc.label}</span>
+                      </div>
+                      <div style={{ display:'flex', gap:6, marginTop:8, flexWrap:'wrap' }}>
+                        {canSaleFill && <button onClick={() => setShowEdit(r)}
+                          style={{ padding:'4px 10px', borderRadius:20, border:`1.5px solid ${T.gold}`,
+                            background:T.goldBg, cursor:'pointer', fontSize:10, fontFamily:'inherit', color:T.goldText, fontWeight:700 }}>Điền xử lý</button>}
+                        {canRes && <button onClick={() => resolve(r.id)}
+                          style={{ padding:'4px 10px', borderRadius:20, border:`1.5px solid ${T.green}`,
+                            background:T.greenBg, cursor:'pointer', fontSize:10, fontFamily:'inherit', color:T.green, fontWeight:700 }}>✅ Xác nhận</button>}
+                      </div>
                     </div>
-                    {!mobile && <>
-                      <span style={{ fontSize:11, color:T.dark }}>{saleUser?.name||'—'}</span>
-                      <span style={{ fontSize:11, color:T.red }}>{violUser?.name||'—'}</span>
-                    </>}
+                  ) : (
+                    /* ── Desktop table row ── */
+                    <div style={{ display:'grid',
+                      gridTemplateColumns:'68px 68px 95px 120px 1fr 160px 90px 90px 110px 95px',
+                      padding:'9px 12px', gap:8, alignItems:'start' }}
+                      onClick={() => detailLong && setExpandedSlip((prev: any) => prev===r.id?null:r.id)}>
+
+                      {/* Ngày tạo */}
+                      <span style={{ fontSize:11, color:T.light }}>
+                        {r.created_at?new Date(r.created_at).toLocaleDateString('vi-VN',{day:'2-digit',month:'2-digit'}):'—'}
+                      </span>
+
+                      {/* Ngày sai */}
+                      <span style={{ fontSize:11, color:T.med, fontWeight:500 }}>
+                        {r.date?new Date(r.date).toLocaleDateString('vi-VN',{day:'2-digit',month:'2-digit'}):'—'}
+                      </span>
+
+                      {/* Mã đơn */}
+                      <span style={{ fontSize:12, fontWeight:700, color:T.gold,
+                        overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap' }}>
+                        {r.order_code||'—'}
+                      </span>
+
+                      {/* Khách hàng */}
+                      <span style={{ fontSize:11, color:T.dark, lineHeight:1.4 }}>
+                        {r.customer_name||'—'}
+                      </span>
+
+                      {/* Chi tiết — wrap, truncate nếu dài */}
+                      <div style={{ fontSize:11, color:T.med, lineHeight:1.4 }}>
+                        {detailLong && !isOpen
+                          ? <>{r.detail.slice(0,100)}<span style={{ color:T.light, cursor:'pointer' }}
+                              onClick={e => { e.stopPropagation(); setExpandedSlip((p: any) => p===r.id?null:r.id) }}>
+                              ... <span style={{ color:T.blue, textDecoration:'underline' }}>xem thêm</span>
+                            </span></>
+                          : r.detail||'—'
+                        }
+                        {isOpen && detailLong && (
+                          <span style={{ color:T.blue, cursor:'pointer', marginLeft:6, fontSize:10 }}
+                            onClick={e => { e.stopPropagation(); setExpandedSlip(null) }}>thu gọn ▲</span>
+                        )}
+                      </div>
+
+                      {/* Ghi chú xử lý */}
+                      <div style={{ fontSize:11, lineHeight:1.4 }}>
+                        {r.resolution_note
+                          ? <><span style={{ color:T.blue }}>{r.resolution_note}</span>
+                              {resolvedUser && <div style={{ fontSize:10, color:T.green, marginTop:2 }}>✅ {resolvedUser.name}</div>}</>
+                          : <span style={{ color:T.light, fontStyle:'italic' }}>Chưa có</span>
+                        }
+                      </div>
+
+                      {/* Sale PT */}
+                      <span style={{ fontSize:11, color:saleUser?T.gold:T.light,
+                        overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap' }}>
+                        {saleUser?.name||'—'}
+                      </span>
+
+                      {/* Vi phạm */}
+                      <span style={{ fontSize:11, color:violUser?T.red:T.light,
+                        overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap' }}>
+                        {violUser?'⚠️ '+violUser.name:'—'}
+                      </span>
+
+                      {/* Tình trạng */}
+                      <span style={{ fontSize:10, fontWeight:700, padding:'2px 8px', borderRadius:20,
+                        color:sc.color, background:sc.bg, whiteSpace:'nowrap',
+                        display:'inline-block', textAlign:'center' }}>{sc.label}</span>
+
+                      {/* Thao tác */}
+                      <div style={{ display:'flex', gap:5, justifyContent:'flex-end', flexWrap:'wrap' }}
+                        onClick={e => e.stopPropagation()}>
+                        {canSaleFill && (
+                          <button onClick={() => setShowEdit(r)}
+                            style={{ padding:'3px 9px', borderRadius:20, border:`1.5px solid ${T.gold}`,
+                              background:T.goldBg, cursor:'pointer', fontSize:10, fontFamily:'inherit',
+                              color:T.goldText, fontWeight:700, whiteSpace:'nowrap' }}>Điền</button>
+                        )}
+                        {canRes && (
+                          <button onClick={() => resolve(r.id)}
+                            style={{ padding:'3px 9px', borderRadius:20, border:`1.5px solid ${T.green}`,
+                              background:T.greenBg, cursor:'pointer', fontSize:10, fontFamily:'inherit',
+                              color:T.green, fontWeight:700 }}>✅</button>
+                        )}
+                        {canDel && (
+                          <button onClick={() => del(r.id)}
+                            style={{ padding:'3px 7px', borderRadius:20, border:`1px solid ${T.redBg}`,
+                              background:T.redBg, cursor:'pointer', fontSize:10, fontFamily:'inherit', color:T.red }}>✕</button>
+                        )}
+                      </div>
+                    </div>
+                  )}
+                </div>
+              )
+            })}
+          </div>
+      }</>}
                     <div style={{ display:'flex', flexDirection:'column', gap:4, alignItems:'flex-start' }}>
                       <span style={{ fontSize:10, fontWeight:700, padding:'2px 7px', borderRadius:20,
                         color:sc.color, background:sc.bg, whiteSpace:'nowrap' }}>{sc.label}</span>
