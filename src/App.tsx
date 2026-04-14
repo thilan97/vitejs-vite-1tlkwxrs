@@ -4168,14 +4168,34 @@ function ReturnItems({ user, allUsers, products, mobile }: any) {
           </Card>
         </div>
       ) : (
-        /* ── LIST — slip-grouped ── */
-        <div style={{ display:'flex', flexDirection:'column', gap:6 }}>
+        /* ── LIST — desktop table with fixed headers ── */
+        <div style={{ background:T.card, borderRadius:12, border:`1px solid ${T.border}`,
+          boxShadow:'0 1px 4px rgba(0,0,0,0.06)', overflow:'hidden' }}>
+          {/* ── Sticky table header ── */}
+          {!mobile && (
+            <div style={{ display:'grid',
+              gridTemplateColumns:'44px 72px 90px 50px 80px 100px 100px 1fr 110px',
+              padding:'8px 12px', background:T.bg, borderBottom:`2px solid ${T.border}`,
+              fontSize:10, fontWeight:700, color:T.light, textTransform:'uppercase',
+              letterSpacing:.6, gap:8, alignItems:'center', position:'sticky', top:0, zIndex:2 }}>
+              <span style={{ textAlign:'center', color:T.green }}>KV</span>
+              <span>Ngày</span>
+              <span>Mã hoàn</span>
+              <span style={{ textAlign:'center' }}>SL</span>
+              <span style={{ textAlign:'right' }}>Ship</span>
+              <span>Sale PT</span>
+              <span>Vi phạm</span>
+              <span>Lý do hoàn</span>
+              <span style={{ textAlign:'right' }}>Thao tác</span>
+            </div>
+          )}
+
           {slips.length===0 ? (
-            <Card style={{ textAlign:'center', padding:'40px', color:T.light }}>
-              <div style={{ fontSize:32, marginBottom:8 }}>🔄</div>
+            <div style={{ padding:'40px', textAlign:'center', color:T.light }}>
+              <div style={{ fontSize:28, marginBottom:8 }}>🔄</div>
               <div style={{ fontSize:13 }}>Không có phiếu hoàn nào trong tháng này</div>
-            </Card>
-          ) : slips.map((slip: any) => {
+            </div>
+          ) : slips.map((slip: any, si: number) => {
             const saleUser     = allUsers.find((u: any) => u.id===slip.sale_id)
             const violatorUser = allUsers.find((u: any) => u.id===slip.violator_id)
             const canEdit      = perm.viewAllDashboard || (isKho && slip.created_by===user.id)
@@ -4183,138 +4203,177 @@ function ReturnItems({ user, allUsers, products, mobile }: any) {
             const hasSaleInfo  = slip.customer_name || slip.original_order_code
             const isOpen       = expandedSlip === slip.slip_id
             const kvUser       = allUsers.find((u: any) => u.id===slip.entered_kiot_by)
+            const rowBg        = si%2===0 ? '#fff' : T.rowAlt
 
             return (
-              <div key={slip.slip_id} style={{ background:T.card, borderRadius:12,
-                border:`1.5px solid ${isOpen?T.gold:T.border}`,
-                boxShadow:isOpen?`0 2px 12px rgba(196,151,58,0.12)`:`0 1px 3px rgba(0,0,0,0.04)` }}>
+              <div key={slip.slip_id}
+                style={{ borderBottom:`1px solid ${T.border}`,
+                  background: isOpen ? T.goldBg : rowBg }}>
 
-                {/* ── Slip header row ── */}
-                <div style={{ display:'flex', alignItems:'center', gap:10,
-                  padding:'10px 14px', cursor:'pointer' }}
-                  onClick={() => setExpandedSlip(isOpen?null:slip.slip_id)}>
-
-                  {/* KV toggle */}
-                  <div onClick={e => e.stopPropagation()}>
-                    {slip.entered_kiot ? (
-                      canKiot ? (
-                        <button title={`${kvUser?.name||'?'} · ${slip.entered_kiot_at?new Date(slip.entered_kiot_at).toLocaleString('vi-VN'):''}`}
-                          onClick={() => toggleKiot(slip)}
-                          style={{ width:30, height:30, borderRadius:'50%', border:'none',
-                            background:T.green, color:'#fff', cursor:'pointer', fontSize:15,
-                            display:'flex', alignItems:'center', justifyContent:'center' }}>✓</button>
-                      ) : (
-                        <span style={{ width:30, height:30, borderRadius:'50%', background:T.green,
-                          display:'flex', alignItems:'center', justifyContent:'center',
-                          color:'#fff', fontSize:15 }}>✓</span>
-                      )
-                    ) : (
-                      canKiot ? (
-                        <button title="Tích đã nhập KiotViet"
-                          onClick={() => toggleKiot(slip)}
-                          style={{ width:30, height:30, borderRadius:'50%',
-                            border:`2px dashed ${T.border}`, background:'transparent',
-                            cursor:'pointer', color:T.light, fontSize:15,
-                            display:'flex', alignItems:'center', justifyContent:'center' }}>○</button>
-                      ) : (
-                        <span style={{ width:30, height:30, borderRadius:'50%',
-                          border:`2px dashed ${T.border}`, display:'flex',
-                          alignItems:'center', justifyContent:'center', color:T.light, fontSize:12 }}>○</span>
-                      )
-                    )}
-                  </div>
-
-                  {/* Date + code */}
-                  <div style={{ flexShrink:0 }}>
-                    <div style={{ fontSize:12, fontWeight:700, color:T.dark }}>
-                      {slip.date?new Date(slip.date).toLocaleDateString('vi-VN',{day:'2-digit',month:'2-digit'}):'—'}
+                {/* ── Main table row ── */}
+                {mobile ? (
+                  /* Mobile: card style */
+                  <div style={{ padding:'10px 14px', cursor:'pointer' }}
+                    onClick={() => setExpandedSlip(isOpen?null:slip.slip_id)}>
+                    <div style={{ display:'flex', alignItems:'center', gap:10 }}>
+                      <div onClick={e => e.stopPropagation()}>
+                        {slip.entered_kiot ? (
+                          <button onClick={() => toggleKiot(slip)}
+                            style={{ width:28,height:28,borderRadius:'50%',border:'none',
+                              background:T.green,color:'#fff',cursor:canKiot?'pointer':'default',fontSize:14,
+                              display:'flex',alignItems:'center',justifyContent:'center' }}>✓</button>
+                        ) : (
+                          <button onClick={() => canKiot&&toggleKiot(slip)}
+                            style={{ width:28,height:28,borderRadius:'50%',
+                              border:`2px dashed ${T.border}`,background:'transparent',
+                              cursor:canKiot?'pointer':'default',color:T.light,fontSize:12,
+                              display:'flex',alignItems:'center',justifyContent:'center' }}>○</button>
+                        )}
+                      </div>
+                      <div style={{ flex:1 }}>
+                        <div style={{ fontSize:12,fontWeight:700,color:T.dark }}>
+                          {slip.date?new Date(slip.date).toLocaleDateString('vi-VN',{day:'2-digit',month:'2-digit'}):'—'}
+                          {slip.return_order_code&&<span style={{ fontSize:10,color:T.gold,marginLeft:8 }}>#{slip.return_order_code}</span>}
+                          <span style={{ fontSize:11,color:T.blue,marginLeft:8 }}>SL: {slip.total_qty}</span>
+                        </div>
+                        <div style={{ fontSize:11,color:T.med,marginTop:2 }}>
+                          {slip.lines.slice(0,1).map((l: any) => l.product_name).join('')}
+                          {slip.lines.length>1&&<span style={{ color:T.light }}> +{slip.lines.length-1} SP</span>}
+                        </div>
+                      </div>
+                      <span style={{ color:T.light }}>{isOpen?'▲':'▼'}</span>
                     </div>
-                    {slip.return_order_code && (
-                      <div style={{ fontSize:10, color:T.gold }}>#{slip.return_order_code}</div>
-                    )}
                   </div>
+                ) : (
+                  /* Desktop: full table row */
+                  <div style={{ display:'grid',
+                    gridTemplateColumns:'44px 72px 90px 50px 80px 100px 100px 1fr 110px',
+                    padding:'9px 12px', gap:8, alignItems:'center',
+                    cursor:'pointer' }}
+                    onClick={() => setExpandedSlip(isOpen?null:slip.slip_id)}>
 
-                  {/* Summary */}
-                  <div style={{ flex:1, minWidth:0 }}>
-                    <div style={{ display:'flex', gap:6, alignItems:'center', flexWrap:'wrap' }}>
-                      <span style={{ fontSize:12, fontWeight:600, color:T.dark }}>
-                        {slip.lines.length} sản phẩm
-                      </span>
-                      <span style={{ fontSize:11, color:T.blue }}>SL: {slip.total_qty}</span>
-                      {slip.total_ship>0 && (
-                        <span style={{ fontSize:11, color:T.amber }}>Ship: {slip.total_ship.toLocaleString()}đ</span>
+                    {/* KV */}
+                    <div style={{ display:'flex', justifyContent:'center' }}
+                      onClick={e => e.stopPropagation()}>
+                      {slip.entered_kiot ? (
+                        <button
+                          title={`${kvUser?.name||'?'} · ${slip.entered_kiot_at?new Date(slip.entered_kiot_at).toLocaleString('vi-VN'):''}`}
+                          onClick={() => canKiot&&toggleKiot(slip)}
+                          style={{ width:26,height:26,borderRadius:'50%',border:'none',
+                            background:T.green,color:'#fff',cursor:canKiot?'pointer':'default',
+                            fontSize:13,display:'flex',alignItems:'center',justifyContent:'center' }}>✓</button>
+                      ) : (
+                        <button onClick={() => canKiot&&toggleKiot(slip)}
+                          style={{ width:26,height:26,borderRadius:'50%',
+                            border:`2px dashed ${T.border}`,background:'transparent',
+                            cursor:canKiot?'pointer':'default',color:T.light,
+                            fontSize:12,display:'flex',alignItems:'center',justifyContent:'center' }}>○</button>
                       )}
                     </div>
-                    {/* First 2 product names as preview */}
-                    <div style={{ fontSize:11, color:T.med, marginTop:2,
-                      overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap' }}>
-                      {slip.lines.slice(0,2).map((l: any) => l.product_name).join(' · ')}
-                      {slip.lines.length>2 && <span style={{ color:T.light }}> +{slip.lines.length-2} nữa</span>}
+
+                    {/* Ngày */}
+                    <span style={{ fontSize:12,fontWeight:600,color:T.dark }}>
+                      {slip.date?new Date(slip.date).toLocaleDateString('vi-VN',{day:'2-digit',month:'2-digit'}):'—'}
+                    </span>
+
+                    {/* Mã hoàn */}
+                    <span style={{ fontSize:11,color:T.gold,
+                      overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap' }}>
+                      {slip.return_order_code?'#'+slip.return_order_code:'—'}
+                    </span>
+
+                    {/* SL */}
+                    <div style={{ textAlign:'center' }}>
+                      <span style={{ fontSize:12,fontWeight:700,color:T.blue }}>{slip.total_qty}</span>
+                      {slip.lines.length>1&&<div style={{ fontSize:9,color:T.light }}>{slip.lines.length} SP</div>}
                     </div>
-                    {/* Sale info */}
-                    {hasSaleInfo && (
-                      <div style={{ fontSize:10, color:T.blue, marginTop:2 }}>
-                        👤 {slip.customer_name}{slip.original_order_code&&` · #${slip.original_order_code}`}
-                        {saleUser && <span style={{ color:T.gold }}> · {saleUser.name}</span>}
-                        {violatorUser && <span style={{ color:T.red }}> · ⚠️{violatorUser.name}</span>}
-                      </div>
-                    )}
-                  </div>
 
-                  {/* Actions */}
-                  <div style={{ display:'flex', gap:6, flexShrink:0, alignItems:'center' }}>
-                    {!hasSaleInfo && canFillSale && (
-                      <button onClick={e => { e.stopPropagation(); setShowEdit(slip) }}
-                        style={{ padding:'4px 10px', borderRadius:20, border:`1.5px solid ${T.gold}`,
-                          background:T.goldBg, cursor:'pointer', fontSize:11, fontFamily:'inherit',
-                          color:T.goldText, fontWeight:700 }}>Sale điền</button>
-                    )}
-                    {hasSaleInfo && (canFillSale||canEdit) && (
-                      <button onClick={e => { e.stopPropagation(); setShowEdit(slip) }}
-                        style={{ padding:'4px 10px', borderRadius:20, border:`1px solid ${T.border}`,
-                          background:'transparent', cursor:'pointer', fontSize:11, fontFamily:'inherit', color:T.med }}>Sửa</button>
-                    )}
-                    {canEdit && (
-                      <button onClick={e => { e.stopPropagation(); delSlip(slip.slip_id) }}
-                        style={{ padding:'4px 8px', borderRadius:20, border:`1px solid ${T.redBg}`,
-                          background:T.redBg, cursor:'pointer', fontSize:11, fontFamily:'inherit', color:T.red }}>✕</button>
-                    )}
-                    <span style={{ fontSize:12, color:T.light }}>{isOpen?'▲':'▼'}</span>
-                  </div>
-                </div>
+                    {/* Ship */}
+                    <span style={{ fontSize:11,textAlign:'right',
+                      color:slip.total_ship>0?T.amber:T.light,fontWeight:slip.total_ship>0?700:400 }}>
+                      {slip.total_ship>0?slip.total_ship.toLocaleString()+'đ':'—'}
+                    </span>
 
-                {/* ── Expanded: product lines ── */}
+                    {/* Sale PT */}
+                    <span style={{ fontSize:11,color:saleUser?T.gold:T.light,
+                      overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap' }}>
+                      {saleUser?.name||'—'}
+                    </span>
+
+                    {/* Vi phạm */}
+                    <span style={{ fontSize:11,color:violatorUser?T.red:T.light,
+                      overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap' }}>
+                      {violatorUser?'⚠️ '+violatorUser.name:'—'}
+                    </span>
+
+                    {/* Lý do hoàn */}
+                    <span style={{ fontSize:11,color:slip.reason?T.dark:T.light,
+                      lineHeight:1.4 }}>
+                      {slip.reason||'—'}
+                    </span>
+
+                    {/* Thao tác */}
+                    <div style={{ display:'flex',gap:5,justifyContent:'flex-end',alignItems:'center' }}
+                      onClick={e => e.stopPropagation()}>
+                      {!hasSaleInfo && canFillSale && (
+                        <button onClick={() => setShowEdit(slip)}
+                          style={{ padding:'3px 9px',borderRadius:20,border:`1.5px solid ${T.gold}`,
+                            background:T.goldBg,cursor:'pointer',fontSize:10,fontFamily:'inherit',
+                            color:T.goldText,fontWeight:700,whiteSpace:'nowrap' }}>Sale điền</button>
+                      )}
+                      {hasSaleInfo && (canFillSale||canEdit) && (
+                        <button onClick={() => setShowEdit(slip)}
+                          style={{ padding:'3px 9px',borderRadius:20,border:`1px solid ${T.border}`,
+                            background:'transparent',cursor:'pointer',fontSize:10,fontFamily:'inherit',color:T.med }}>Sửa</button>
+                      )}
+                      {canEdit && (
+                        <button onClick={() => delSlip(slip.slip_id)}
+                          style={{ padding:'3px 7px',borderRadius:20,border:`1px solid ${T.redBg}`,
+                            background:T.redBg,cursor:'pointer',fontSize:10,fontFamily:'inherit',color:T.red }}>✕</button>
+                      )}
+                      <span style={{ fontSize:10,color:T.light }}>{isOpen?'▲':'▼'}</span>
+                    </div>
+                  </div>
+                )}
+
+                {/* ── Expanded: product lines sub-table ── */}
                 {isOpen && (
-                  <div style={{ borderTop:`1px solid ${T.border}`, background:T.bg, borderRadius:'0 0 10px 10px' }}>
-                    {/* Lines header */}
+                  <div style={{ borderTop:`1px dashed ${T.border}`,
+                    background:'rgba(196,151,58,0.04)', padding:'0 0 8px 0' }}>
+                    {/* Sub-header */}
                     <div style={{ display:'grid', gridTemplateColumns:'1fr 50px 110px 70px',
-                      padding:'7px 14px', fontSize:10, fontWeight:700, color:T.light,
+                      padding:'6px 12px 6px 56px', fontSize:9, fontWeight:700, color:T.light,
                       textTransform:'uppercase', letterSpacing:.5, borderBottom:`1px solid ${T.border}` }}>
-                      <span>Sản phẩm</span>
+                      <span>Tên sản phẩm</span>
                       <span style={{ textAlign:'center' }}>SL</span>
                       <span>Tình trạng</span>
                       <span style={{ textAlign:'right' }}>Ship</span>
                     </div>
                     {slip.lines.map((line: any, li: number) => (
-                      <div key={line.id} style={{ display:'grid', gridTemplateColumns:'1fr 50px 110px 70px',
-                        padding:'8px 14px', fontSize:12, alignItems:'center',
-                        borderBottom:li<slip.lines.length-1?`1px solid ${T.border}`:'none',
-                        background:li%2===0?'#fff':T.bg }}>
-                        <span style={{ color:T.dark, fontWeight:500 }}>{line.product_name}</span>
-                        <span style={{ textAlign:'center', color:T.dark }}>{line.quantity}</span>
+                      <div key={line.id} style={{ display:'grid',
+                        gridTemplateColumns:'1fr 50px 110px 70px',
+                        padding:'7px 12px 7px 56px', fontSize:12, alignItems:'start', gap:8,
+                        borderBottom:li<slip.lines.length-1?`1px solid ${T.border}`:'none' }}>
+                        {/* Wrap text for long product names */}
+                        <span style={{ color:T.dark, fontWeight:500, lineHeight:1.4 }}>
+                          {line.product_name}
+                        </span>
+                        <span style={{ textAlign:'center',color:T.dark,fontWeight:700 }}>{line.quantity}</span>
                         <span style={{ color:line.condition==='Bình thường'?T.green:line.condition==='Hỏng'?T.red:T.amber }}>
                           {line.condition}
                         </span>
-                        <span style={{ textAlign:'right', color:line.ship_fee>0?T.amber:T.light }}>
+                        <span style={{ textAlign:'right',color:line.ship_fee>0?T.amber:T.light }}>
                           {line.ship_fee>0?line.ship_fee.toLocaleString()+'đ':'—'}
                         </span>
                       </div>
                     ))}
-                    {/* Sale note if any */}
-                    {(slip.reason||slip.sale_note) && (
-                      <div style={{ padding:'8px 14px', fontSize:11, color:T.med, borderTop:`1px solid ${T.border}` }}>
-                        {slip.reason && <span>📝 {slip.reason}</span>}
-                        {slip.sale_note && <span style={{ marginLeft:8, color:T.light, fontStyle:'italic' }}>{slip.sale_note}</span>}
+                    {/* KH + Sale note */}
+                    {(slip.customer_name||slip.original_order_code||slip.sale_note) && (
+                      <div style={{ padding:'7px 12px 4px 56px', display:'flex', gap:16, flexWrap:'wrap',
+                        borderTop:`1px solid ${T.border}`, marginTop:2 }}>
+                        {slip.customer_name && <span style={{ fontSize:11,color:T.blue }}>👤 {slip.customer_name}</span>}
+                        {slip.original_order_code && <span style={{ fontSize:11,color:T.light }}>#ĐH gốc: {slip.original_order_code}</span>}
+                        {slip.sale_note && <span style={{ fontSize:11,color:T.med,fontStyle:'italic' }}>💬 {slip.sale_note}</span>}
                       </div>
                     )}
                   </div>
