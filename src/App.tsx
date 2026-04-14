@@ -6296,16 +6296,31 @@ function InventoryModule({ user, allUsers, products, invSessions, setInvSessions
 
   const openSession = invSessions.find((s: any) => s.status === 'open')
 
+  const [lastSync, setLastSync] = useState<Date|null>(null)
+  const [syncing, setSyncing] = useState(false)
+
+  const fetchData = async (quiet=false) => {
+    if (!quiet) setSyncing(true)
+    const [{data:s},{data:c}] = await Promise.all([
+      db.from('inventory_sessions').select('*').order('date',{ascending:false}).limit(100),
+      db.from('inventory_checks').select('*').order('created_at',{ascending:false}).limit(5000)
+    ])
+    setInvSessions(s||[])
+    setChecks(c||[])
+    setLastSync(new Date())
+    if (!quiet) { setSyncing(false); setLoading(false) }
+    else setLoading(false)
+  }
+
   useEffect(() => {
-    Promise.all([
-      db.from('inventory_sessions').select('*').order('date', {ascending:false}).limit(100),
-      db.from('inventory_checks').select('*').order('created_at', {ascending:false}).limit(5000)
-    ]).then(([{data:s}, {data:c}]) => {
-      setInvSessions(s||[])
-      setChecks(c||[])
-      setLoading(false)
-    })
-  }, [])
+    fetchData()
+    // Poll mỗi 10 giây khi có phiên đang mở
+    const interval = setInterval(() => {
+      const hasOpen = invSessions.some((s: any) => s.status==='open')
+      if (hasOpen || tab==='check') fetchData(true)
+    }, 10000)
+    return () => clearInterval(interval)
+  }, [invSessions.length, tab])
 
   const updateCheck = (id: string, upd: any) =>
     setChecks(prev => prev.map((c: any) => c.id===id ? {...c,...upd} : c))
@@ -6448,7 +6463,21 @@ function InventoryModule({ user, allUsers, products, invSessions, setInvSessions
     <div style={{padding:`0 ${p} ${mobile?'80px':p}`}}>
       <Topbar mobile={mobile} title="📦 Kiểm kê kho"
         subtitle={openSession ? `📂 Phiên ${openSession.date} đang mở` : 'Quản lý kiểm kê hàng hóa'}
-        action={canManage ? <GoldBtn small onClick={() => setShowCreate(true)}>+ Tạo phiên KK</GoldBtn> : undefined}/>
+        action={
+          <div style={{display:'flex',gap:8,alignItems:'center'}}>
+            {lastSync && (
+              <span style={{fontSize:10,color:T.light}}>
+                {syncing?'🔄 Đang sync...':'✓ '+lastSync.toLocaleTimeString('vi-VN',{hour:'2-digit',minute:'2-digit',second:'2-digit'})}
+              </span>
+            )}
+            <button onClick={() => fetchData()}
+              style={{padding:'5px 12px',borderRadius:20,border:`1px solid ${T.border}`,
+                background:'transparent',cursor:'pointer',fontSize:11,fontFamily:'inherit',color:T.med}}>
+              🔄 Refresh
+            </button>
+            {canManage && <GoldBtn small onClick={() => setShowCreate(true)}>+ Tạo phiên KK</GoldBtn>}
+          </div>
+        }/>
 
       {/* Tabs */}
       <div style={{display:'flex',gap:6,marginBottom:14,flexWrap:'wrap'}}>
@@ -6703,20 +6732,46 @@ function InventoryModule({ user, allUsers, products, invSessions, setInvSessions
       {tab==='discrepancy' && (
         <div style={{display:'flex',flexDirection:'column',gap:12}}>
           {/* Filter bar */}
-          <div style={{display:'flex',gap:8,alignItems:'center',flexWrap:'wrap'}}>
-            <input type="month" value={monthFilter} onChange={e => setMonthFilter(e.target.value)}
-              style={{padding:'6px 10px',border:`1px solid ${T.border}`,borderRadius:8,
-                fontSize:12,fontFamily:'inherit',color:T.dark,background:T.bg}}/>
-            {(['all','neg','pos'] as const).map(f => (
-              <button key={f} onClick={() => setDiffFilter(f)}
-                style={{padding:'5px 12px',borderRadius:20,cursor:'pointer',fontFamily:'inherit',fontSize:11,
-                  border:`1.5px solid ${diffFilter===f?T.gold:T.border}`,
-                  background:diffFilter===f?T.goldBg:'transparent',
-                  color:diffFilter===f?T.goldText:T.med}}>
-                {f==='all'?'Tất cả':f==='neg'?'Lệch âm':'Lệch dương'}
-              </button>
-            ))}
-          </div>
+          {/* Time range filter */}
+          {(() => {
+            const now = new Date()
+            const thisMonth = `${now.getFullYear()}-${String(now.getMonth()+1).padStart(2,'0')}`
+            const lastMonthDate = new Date(now.getFullYear(), now.getMonth()-1, 1)
+            const lastMonth = `${lastMonthDate.getFullYear()}-${String(lastMonthDate.getMonth()+1).padStart(2,'0')}`
+            return (
+              <div style={{display:'flex',gap:8,alignItems:'center',flexWrap:'wrap'}}>
+                {[
+                  {label:'Tháng này', val:thisMonth},
+                  {label:'Tháng trước', val:lastMonth},
+                ].map(opt => (
+                  <button key={opt.val} onClick={() => setMonthFilter(opt.val)}
+                    style={{padding:'6px 14px',borderRadius:20,cursor:'pointer',fontFamily:'inherit',fontSize:12,
+                      border:`1.5px solid ${monthFilter===opt.val?T.gold:T.border}`,
+                      background:monthFilter===opt.val?T.goldBg:'transparent',
+                      color:monthFilter===opt.val?T.goldText:T.med,fontWeight:monthFilter===opt.val?700:400}}>
+                    {opt.label}
+                  </button>
+                ))}
+                <div style={{display:'flex',alignItems:'center',gap:6}}>
+                  <span style={{fontSize:11,color:T.light}}>Tùy chọn:</span>
+                  <input type="month" value={monthFilter} onChange={e => setMonthFilter(e.target.value)}
+                    style={{padding:'5px 9px',border:`1px solid ${T.border}`,borderRadius:8,
+                      fontSize:12,fontFamily:'inherit',color:T.dark,background:T.bg}}/>
+                </div>
+                <div style={{marginLeft:'auto',display:'flex',gap:6}}>
+                  {(['all','neg','pos'] as const).map(f => (
+                    <button key={f} onClick={() => setDiffFilter(f)}
+                      style={{padding:'5px 12px',borderRadius:20,cursor:'pointer',fontFamily:'inherit',fontSize:11,
+                        border:`1.5px solid ${diffFilter===f?T.gold:T.border}`,
+                        background:diffFilter===f?T.goldBg:'transparent',
+                        color:diffFilter===f?T.goldText:T.med}}>
+                      {f==='all'?'Tất cả':f==='neg'?'Lệch âm':'Lệch dương'}
+                    </button>
+                  ))}
+                </div>
+              </div>
+            )
+          })()}
 
           {/* Discrepancy table */}
           <div style={{background:T.card,borderRadius:12,border:`1px solid ${T.border}`,overflow:'hidden',boxShadow:'0 1px 4px rgba(0,0,0,0.06)'}}>
