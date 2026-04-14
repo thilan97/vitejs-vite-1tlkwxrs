@@ -4796,6 +4796,14 @@ function NotifBanner({ user, wrongOrders, setPage }: any) {
 }
 
 export default function App() {
+  // Reset body để tránh khoảng đen/trắng thừa
+  useEffect(() => {
+    const s = document.body.style
+    s.margin = '0'; s.padding = '0'
+    document.documentElement.style.height = '100%'
+    s.height = '100%'
+  }, [])
+
   const [user, setUser] = useState<any>(() => {
   try {
     const saved = localStorage.getItem('la_user')
@@ -5045,14 +5053,14 @@ export default function App() {
   const pendingOT = 0 // will be updated from Overtime component
 
   return (
-    <div style={{ display:'flex', minHeight:'100vh', width:'100vw', maxWidth:'100vw',
-      fontFamily:"'Segoe UI',system-ui,sans-serif", background:T.bg, overflow:'hidden' }}>
+    <div style={{ display:'flex', minHeight:'100vh',
+      fontFamily:"'Segoe UI',system-ui,sans-serif", background:T.bg }}>
         {!mobile && (
           <Sidebar user={user} page={validPage} setPage={setPage}
             pendingLeave={pendingLeave} pendingOT={pendingOT}
             onLogout={() => { localStorage.removeItem('la_user'); setUser(null); setAllUsers([]); setChecklist([]) }}/>
         )}
-        <main style={{ flex:1, overflowY:'auto', paddingTop:4, minWidth:0, width:'100%' }}>
+        <main style={{ flex:1, overflowY:'auto', paddingTop:4, minWidth:0 }}>
           {validPage==='dashboard' && <Dashboard {...pp} checklist={checklist} tasks={tasks} attendance={attendance} leaveRequests={leaveRequests} otRequests={[]}/>}
           {validPage==='checklist'  && <Checklist {...pp} checklist={checklist} setChecklist={setChecklist} addLog={addLog}/>}
           {validPage==='tasks'      && <Tasks {...pp} tasks={tasks} setTasks={setTasks} addLog={addLog}/>}
