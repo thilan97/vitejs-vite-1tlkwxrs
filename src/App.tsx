@@ -77,6 +77,7 @@ const getPerm = (user: any) => {
     announceAll:        isAdmin || (pos.perm_announce_all         ?? false),
     viewAllDashboard:   isAdmin,
     resetChecklist:     isAdmin || (pos.perm_reset_checklist      ?? false),
+    viewBirthday:       isAdmin || (pos.perm_approve_leave ?? false) || (pos.perm_view_birthday ?? false),
   }
 }
 
@@ -108,6 +109,7 @@ const ALL_PERMS = [
   { key:'perm_announce_all',         label:'Đăng thông báo toàn công ty',    group:'Quản trị'  },
   { key:'perm_view_all_dashboard',   label:'Xem dashboard toàn công ty',     group:'Quản trị'  },
   { key:'perm_reset_checklist',      label:'Reset checklist',                 group:'Quản trị'  },
+  { key:'perm_view_birthday',        label:'Xem ngày sinh nhật nhân viên',    group:'Nhân sự'   },
 ]
 // ── UTILITIES ────────────────────────────────────
 const fmtNow   = () => new Date().toLocaleString('vi-VN',{hour:'2-digit',minute:'2-digit',day:'2-digit',month:'2-digit',year:'numeric'})
@@ -508,6 +510,10 @@ const NAV_GROUPS = (perm: any, deptId = '') => {
     hasShortage && {
       id:'shortage', icon:'📦', label:'Hàng thiếu',
       pages:[{ id:'shortage', icon:'📦', label:'Hàng thiếu' }]
+    },
+    {
+      id:'returns', icon:'🔄', label:'Hàng hoàn',
+      pages:[{ id:'returns', icon:'🔄', label:'Hàng hoàn' }]
     },
     {
       id:'manage', icon:'⚙️', label:'Quản lý',
@@ -3473,6 +3479,442 @@ function ShortageItems({ user, allUsers, mobile }: any) {
   )
 }
 
+// ── STICKY NOTE ──────────────────────────────────────
+function StickyNote({ user }: any) {
+  const key      = `la_note_${user.id}`
+  const settKey  = `la_note_popup_${user.id}`
+  const [text,    setText]    = React.useState(() => { try { return localStorage.getItem(key)||'' } catch { return '' } })
+  const [open,    setOpen]    = React.useState(false)
+  const [saving,  setSaving]  = React.useState(false)
+  const [popupOn, setPopupOn] = React.useState(() => { try { return localStorage.getItem(settKey) !== 'off' } catch { return true } })
+  const ref = useRef<any>(null)
+
+  useEffect(() => {
+    // Load note từ Supabase khi mount
+    db.from('user_notes').select('content,popup_enabled').eq('user_id', user.id).single()
+      .then(({ data }) => {
+        if (data) {
+          setText(data.content || '')
+          const pop = data.popup_enabled !== false
+          setPopupOn(pop)
+          if (pop && data.content?.trim()) setOpen(true)
+        }
+      })
+  }, [user.id])
+
+  const save = async (newText: string, newPopup?: boolean) => {
+    const popup = newPopup ?? popupOn
+    setSaving(true)
+    try { localStorage.setItem(key, newText) } catch {}
+    try { localStorage.setItem(settKey, popup ? 'on' : 'off') } catch {}
+    await db.from('user_notes').upsert({ user_id:user.id, content:newText, popup_enabled:popup, updated_at:new Date().toISOString() })
+    setSaving(false)
+  }
+
+  const togglePopup = async () => {
+    const next = !popupOn
+    setPopupOn(next)
+    await save(text, next)
+  }
+
+  if (!open) {
+    return (
+      <button onClick={() => setOpen(true)}
+        style={{ position:'fixed', bottom:mobile_?72:20, right:20, zIndex:998,
+          width:44, height:44, borderRadius:'50%', background:T.gold, border:'none',
+          boxShadow:'0 4px 12px rgba(196,151,58,0.4)', cursor:'pointer',
+          display:'flex', alignItems:'center', justifyContent:'center', fontSize:20 }}>
+        📝
+      </button>
+    )
+  }
+  const mobile_ = window.innerWidth < 768
+  return (
+    <div style={{ position:'fixed', bottom:mobile_?70:20, right:20, zIndex:999,
+      width: mobile_?'calc(100vw - 40px)':340, background:T.card,
+      border:`2px solid ${T.gold}`, borderRadius:16,
+      boxShadow:'0 8px 32px rgba(0,0,0,0.18)', display:'flex', flexDirection:'column' }}>
+      {/* Header */}
+      <div style={{ display:'flex', alignItems:'center', justifyContent:'space-between',
+        padding:'10px 14px', borderBottom:`1px solid ${T.border}`,
+        background:T.goldBg, borderRadius:'14px 14px 0 0' }}>
+        <div style={{ display:'flex', alignItems:'center', gap:8 }}>
+          <span style={{ fontSize:16 }}>📝</span>
+          <span style={{ fontSize:13, fontWeight:700, color:T.goldText }}>Ghi chú của tôi</span>
+          {saving && <span style={{ fontSize:10, color:T.light }}>Đang lưu...</span>}
+        </div>
+        <div style={{ display:'flex', alignItems:'center', gap:8 }}>
+          {/* Toggle popup */}
+          <button onClick={togglePopup}
+            style={{ fontSize:10, padding:'2px 8px', borderRadius:20, border:`1px solid ${T.goldBorder}`,
+              background:popupOn?T.gold:'transparent', color:popupOn?'#fff':T.goldText,
+              cursor:'pointer', fontFamily:'inherit', fontWeight:600 }}>
+            {popupOn ? '🔔 Tự bật' : '🔕 Tắt'}
+          </button>
+          <button onClick={() => setOpen(false)}
+            style={{ background:'none', border:'none', cursor:'pointer', fontSize:18, color:T.light, padding:0 }}>✕</button>
+        </div>
+      </div>
+      {/* Textarea */}
+      <textarea ref={ref} value={text}
+        onChange={e => { setText(e.target.value) }}
+        onBlur={e => save(e.target.value)}
+        placeholder="Ghi chú nhanh cho bản thân... (tự lưu)"
+        style={{ flex:1, minHeight:160, padding:'12px 14px', border:'none', outline:'none',
+          fontSize:13, fontFamily:'inherit', color:T.dark, background:'#fff',
+          resize:'vertical', lineHeight:1.6 }}/>
+      <div style={{ padding:'8px 14px', borderTop:`1px solid ${T.border}`,
+        display:'flex', justifyContent:'space-between', alignItems:'center',
+        background:T.bg, borderRadius:'0 0 14px 14px' }}>
+        <span style={{ fontSize:10, color:T.light }}>{text.length} ký tự</span>
+        <button onClick={() => { if(confirm('Xóa hết ghi chú?')) { setText(''); save('') } }}
+          style={{ fontSize:11, color:T.red, background:'transparent', border:'none', cursor:'pointer', fontFamily:'inherit' }}>
+          🗑️ Xóa hết
+        </button>
+      </div>
+    </div>
+  )
+}
+
+// ── RETURN ITEMS (Báo cáo hàng hoàn) ─────────────────
+function ReturnItems({ user, allUsers, mobile }: any) {
+  const [items,      setItems]     = React.useState<any[]>([])
+  const [showAdd,    setShowAdd]   = React.useState(false)
+  const [showEdit,   setShowEdit]  = React.useState<any>(null)
+  const [tab,        setTab]       = React.useState<'list'|'stats'>('list')
+  const [monthFilter, setMonthFilter] = React.useState(() => {
+    const n = new Date(); return `${n.getFullYear()}-${String(n.getMonth()+1).padStart(2,'0')}`
+  })
+  const [searchQ, setSearchQ] = React.useState('')
+  const p = mobile ? '16px' : '24px'
+  const perm = getPerm(user)
+  const isKho  = user.dept_id === 'kho'
+  const isSale = user.dept_id === 'sale'
+  const canAdd = isKho || perm.viewAllDashboard
+
+  const norm = (s: string) => (s||'').toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g,'').replace(/đ/g,'d')
+  const fuzzy = (item: any, q: string) => !q.trim() || norm(q).split(/\s+/).every((t: string) =>
+    norm(item.product_name+' '+(item.customer_name||'')+' '+(item.sale_name||'')+' '+(item.violator_name||'')).includes(t)
+  )
+
+  const emptyForm = {
+    date: new Date().toISOString().split('T')[0],
+    product_name:'', quantity:1, condition:'Bình thường',
+    ship_fee:0, entered_kiot:false, return_order_code:'',
+    customer_name:'', original_order_code:'', sale_id:'',
+    violator_id:'', reason:'', sale_note:''
+  }
+  const [form, setForm] = React.useState<any>(emptyForm)
+
+  useEffect(() => {
+    db.from('return_items').select('*').order('date', { ascending:false })
+      .then(({ data }) => setItems(data||[]))
+  }, [])
+
+  // Filter theo tháng
+  const [fy, fm] = monthFilter.split('-').map(Number)
+  const filtered = items.filter(r => {
+    if (!fuzzy(r, searchQ)) return false
+    if (!r.date) return true
+    const d = new Date(r.date)
+    return d.getFullYear()===fy && d.getMonth()+1===fm
+  })
+
+  const submit = async () => {
+    if (!form.product_name || !form.date) return
+    const newItem = { id:'ret'+Date.now(), ...form,
+      created_by:user.id, created_at:new Date().toISOString(),
+      quantity:Number(form.quantity)||1, ship_fee:Number(form.ship_fee)||0 }
+    setItems(prev => [newItem, ...prev])
+    const { error } = await db.from('return_items').insert(newItem)
+    if (error) { setItems(prev => prev.filter(i => i.id!==newItem.id)); alert('❌ '+error.message); return }
+    setShowAdd(false); setForm(emptyForm)
+  }
+
+  const updateSale = async (id: string, saleData: any) => {
+    const updated = { ...items.find(i => i.id===id), ...saleData }
+    setItems(prev => prev.map(i => i.id===id ? updated : i))
+    await db.from('return_items').update(saleData).eq('id', id)
+    setShowEdit(null)
+  }
+
+  const del = async (id: string) => {
+    if (!confirm('Xóa dòng hàng hoàn này?')) return
+    setItems(prev => prev.filter(i => i.id!==id))
+    await db.from('return_items').delete().eq('id', id)
+  }
+
+  const CONDITIONS = ['Bình thường', 'Móp', 'Rách', 'Hỏng', 'Khác']
+  const saleUsers = allUsers.filter((u: any) => u.dept_id==='sale' || u.dept_id==='all' || perm.viewAllDashboard)
+
+  // Stats
+  const stats = {
+    total: filtered.length,
+    qty:   filtered.reduce((s, r) => s+(r.quantity||0), 0),
+    ship:  filtered.reduce((s, r) => s+(r.ship_fee||0), 0),
+    byCondition: CONDITIONS.map(c => ({ label:c, count:filtered.filter(r=>r.condition===c).length })).filter(x=>x.count>0),
+    bySale: allUsers.filter(u => filtered.some(r=>r.sale_id===u.id)).map(u => ({
+      name:u.name, count:filtered.filter(r=>r.sale_id===u.id).length,
+      violations: filtered.filter(r=>r.violator_id===u.id).length,
+    })).sort((a,b)=>b.count-a.count)
+  }
+
+  return (
+    <div style={{ padding:`0 ${p} ${mobile?'80px':p}` }}>
+      <Topbar mobile={mobile} title="🔄 Báo cáo hàng hoàn"
+        subtitle={`Tháng ${fm}/${fy} — ${filtered.length} đơn`}
+        action={
+          <div style={{ display:'flex', gap:8, alignItems:'center' }}>
+            <input type="month" value={monthFilter} onChange={e => setMonthFilter(e.target.value)}
+              style={{ padding:'6px 10px', border:`1px solid ${T.border}`, borderRadius:8,
+                fontSize:12, fontFamily:'inherit', color:T.dark, background:T.bg, cursor:'pointer' }}/>
+            {canAdd && <GoldBtn small onClick={() => { setForm(emptyForm); setShowAdd(true) }}>+ Nhập hoàn</GoldBtn>}
+          </div>
+        }/>
+
+      {/* Tab + Search */}
+      <div style={{ display:'flex', gap:8, marginBottom:14, flexWrap:'wrap', alignItems:'center' }}>
+        {([['list','📋 Danh sách'],['stats','📊 Thống kê']] as [string,string][]).map(([id,label]) => (
+          <button key={id} onClick={() => setTab(id as any)}
+            style={{ padding:'6px 14px', borderRadius:8, cursor:'pointer', fontFamily:'inherit', fontSize:12,
+              border:`1.5px solid ${tab===id?T.gold:T.border}`,
+              background:tab===id?T.goldBg:'transparent',
+              color:tab===id?T.goldText:T.med, fontWeight:tab===id?700:400 }}>{label}</button>
+        ))}
+        <input value={searchQ} onChange={e => setSearchQ(e.target.value)}
+          placeholder="🔍 Tìm sản phẩm, KH, sale..."
+          style={{ flex:1, minWidth:160, padding:'6px 10px', border:`1px solid ${T.border}`, borderRadius:8,
+            fontSize:12, fontFamily:'inherit', color:T.dark, background:T.bg, outline:'none' }}/>
+      </div>
+
+      {tab==='stats' ? (
+        /* ── STATS ── */
+        <div style={{ display:'grid', gridTemplateColumns:mobile?'1fr':'1fr 1fr', gap:14 }}>
+          <Card>
+            <div style={{ fontSize:13, fontWeight:700, color:T.dark, marginBottom:12 }}>Tổng quan tháng {fm}/{fy}</div>
+            {[
+              ['📦 Tổng đơn hoàn', stats.total, T.dark],
+              ['🔢 Tổng SL', stats.qty, T.blue],
+              ['💸 Phí ship', stats.ship.toLocaleString('vi-VN')+'đ', T.amber],
+            ].map(([label,val,color]) => (
+              <div key={label as string} style={{ display:'flex', justifyContent:'space-between', padding:'8px 0',
+                borderBottom:`1px solid ${T.border}`, fontSize:13 }}>
+                <span style={{ color:T.med }}>{label}</span>
+                <span style={{ fontWeight:700, color:color as string }}>{val}</span>
+              </div>
+            ))}
+            <div style={{ marginTop:12 }}>
+              <div style={{ fontSize:12, fontWeight:600, color:T.dark, marginBottom:8 }}>Theo tình trạng</div>
+              {stats.byCondition.map(c => (
+                <div key={c.label} style={{ display:'flex', justifyContent:'space-between', fontSize:12, marginBottom:4 }}>
+                  <span style={{ color:T.med }}>{c.label}</span>
+                  <span style={{ fontWeight:600, color:T.dark }}>{c.count}</span>
+                </div>
+              ))}
+            </div>
+          </Card>
+          <Card>
+            <div style={{ fontSize:13, fontWeight:700, color:T.dark, marginBottom:12 }}>Sale phụ trách / Vi phạm</div>
+            {stats.bySale.length===0
+              ? <div style={{ color:T.light, fontSize:12 }}>Chưa có dữ liệu</div>
+              : stats.bySale.map(s => (
+                <div key={s.name} style={{ display:'flex', justifyContent:'space-between', padding:'7px 0',
+                  borderBottom:`1px solid ${T.border}`, fontSize:12 }}>
+                  <span style={{ color:T.dark, fontWeight:500 }}>{s.name}</span>
+                  <div style={{ display:'flex', gap:10 }}>
+                    <span style={{ color:T.blue }}>📦 {s.count}</span>
+                    {s.violations>0 && <span style={{ color:T.red }}>⚠️ {s.violations}</span>}
+                  </div>
+                </div>
+              ))}
+          </Card>
+        </div>
+      ) : (
+        /* ── LIST — compact ── */
+        <div style={{ background:T.card, border:`1px solid ${T.border}`, borderRadius:12, overflow:'hidden' }}>
+          {/* Table header */}
+          <div style={{ display:'grid',
+            gridTemplateColumns: mobile?'60px 1fr auto':'80px 1fr 50px 90px 60px 80px auto',
+            gap:0, background:T.bg, padding:'8px 12px',
+            borderBottom:`1px solid ${T.border}`, fontSize:10, fontWeight:700, color:T.light, textTransform:'uppercase' }}>
+            <span>Ngày</span>
+            <span>Sản phẩm</span>
+            {!mobile && <><span style={{textAlign:'center'}}>SL</span><span>Tình trạng</span><span style={{textAlign:'right'}}>Ship</span><span>Sale</span></>}
+            <span style={{textAlign:'right'}}>Thao tác</span>
+          </div>
+          {filtered.length===0
+            ? <div style={{ padding:'32px', textAlign:'center', color:T.light }}>
+                <div style={{ fontSize:28, marginBottom:8 }}>🔄</div>
+                <div style={{ fontSize:13 }}>Không có đơn hoàn nào trong tháng này</div>
+              </div>
+            : filtered.map((r, i) => {
+              const saleUser     = allUsers.find((u: any) => u.id===r.sale_id)
+              const violatorUser = allUsers.find((u: any) => u.id===r.violator_id)
+              const hasSaleInfo  = r.customer_name || r.original_order_code
+              const canEdit      = perm.viewAllDashboard || (isKho && r.created_by===user.id)
+              const canFillSale  = isSale || perm.viewAllDashboard
+
+              return (
+                <div key={r.id} style={{
+                  borderBottom: i<filtered.length-1?`1px solid ${T.border}`:'none',
+                  background: i%2===0?'#fff':T.bg }}>
+                  {/* Main compact row */}
+                  <div style={{ display:'grid',
+                    gridTemplateColumns: mobile?'60px 1fr auto':'80px 1fr 50px 90px 60px 80px auto',
+                    gap:4, padding:'8px 12px', alignItems:'center' }}>
+                    <span style={{ fontSize:11, color:T.light }}>
+                      {r.date ? new Date(r.date).toLocaleDateString('vi-VN',{day:'2-digit',month:'2-digit'}) : '—'}
+                    </span>
+                    <div>
+                      <div style={{ fontSize:12, fontWeight:600, color:T.dark, lineHeight:1.3 }}>{r.product_name}</div>
+                      {mobile && <div style={{ fontSize:10, color:T.light }}>{r.condition} · {r.quantity} cái{r.ship_fee>0?` · Ship: ${r.ship_fee.toLocaleString()}đ`:''}</div>}
+                      {hasSaleInfo && <div style={{ fontSize:10, color:T.blue, marginTop:2 }}>
+                        {r.customer_name}{r.original_order_code?` · #${r.original_order_code}`:''}
+                        {violatorUser && <span style={{ color:T.red }}> · ⚠️{violatorUser.name}</span>}
+                      </div>}
+                      {r.reason && <div style={{ fontSize:10, color:T.med, marginTop:1 }}>📝 {r.reason}</div>}
+                    </div>
+                    {!mobile && <>
+                      <span style={{ fontSize:12, textAlign:'center', color:T.dark, fontWeight:600 }}>{r.quantity}</span>
+                      <span style={{ fontSize:11,
+                        color:r.condition==='Bình thường'?T.green:r.condition==='Hỏng'?T.red:T.amber }}>
+                        {r.condition}
+                      </span>
+                      <span style={{ fontSize:11, textAlign:'right', color:r.ship_fee>0?T.amber:T.light }}>
+                        {r.ship_fee>0?r.ship_fee.toLocaleString()+'đ':'—'}
+                      </span>
+                      <span style={{ fontSize:11, color:T.gold }}>{saleUser?.name||'—'}</span>
+                    </>}
+                    <div style={{ display:'flex', gap:4, justifyContent:'flex-end' }}>
+                      {r.entered_kiot && <span style={{ fontSize:9, fontWeight:700, color:T.green, background:T.greenBg, padding:'2px 5px', borderRadius:10 }}>KV✓</span>}
+                      {!hasSaleInfo && canFillSale && (
+                        <button onClick={() => setShowEdit(r)}
+                          style={{ padding:'3px 8px', borderRadius:6, border:`1.5px solid ${T.gold}`,
+                            background:T.goldBg, cursor:'pointer', fontSize:10, fontFamily:'inherit', color:T.goldText, fontWeight:600 }}>
+                          Sale điền
+                        </button>
+                      )}
+                      {hasSaleInfo && (canFillSale || canEdit) && (
+                        <button onClick={() => setShowEdit(r)}
+                          style={{ padding:'3px 8px', borderRadius:6, border:`1px solid ${T.border}`,
+                            background:'transparent', cursor:'pointer', fontSize:10, fontFamily:'inherit', color:T.med }}>
+                          Sửa
+                        </button>
+                      )}
+                      {canEdit && (
+                        <button onClick={() => del(r.id)}
+                          style={{ padding:'3px 7px', borderRadius:6, border:`1px solid ${T.redBg}`,
+                            background:T.redBg, cursor:'pointer', fontSize:10, fontFamily:'inherit', color:T.red }}>✕</button>
+                      )}
+                    </div>
+                  </div>
+                </div>
+              )
+            })
+          }
+        </div>
+      )}
+
+      {/* Modal nhập kho */}
+      <Modal open={showAdd} onClose={() => setShowAdd(false)} title="📦 Nhập hàng hoàn" wide>
+        <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:12 }}>
+          <Inp label="Ngày hoàn *" type="date" value={form.date} onChange={(v: string) => setForm((f: any) => ({...f,date:v}))}/>
+          <Sel label="Tình trạng" value={form.condition} onChange={(v: string) => setForm((f: any) => ({...f,condition:v}))}
+            options={CONDITIONS.map(c => ({value:c,label:c}))}/>
+        </div>
+        <Inp label="Tên sản phẩm *" value={form.product_name} onChange={(v: string) => setForm((f: any) => ({...f,product_name:v}))} placeholder="Nhập tên SP..."/>
+        <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:12 }}>
+          <Inp label="Số lượng" type="number" value={String(form.quantity)} onChange={(v: string) => setForm((f: any) => ({...f,quantity:v}))}/>
+          <Inp label="Phí ship (đ)" type="number" value={String(form.ship_fee)} onChange={(v: string) => setForm((f: any) => ({...f,ship_fee:v}))}/>
+        </div>
+        <Inp label="Mã đơn hoàn (tự nhập)" value={form.return_order_code} onChange={(v: string) => setForm((f: any) => ({...f,return_order_code:v}))} placeholder="VD: HV001234"/>
+        <div style={{ display:'flex', alignItems:'center', gap:10, marginBottom:13 }}>
+          <input type="checkbox" id="kiot" checked={form.entered_kiot}
+            onChange={e => setForm((f: any) => ({...f,entered_kiot:e.target.checked}))}/>
+          <label htmlFor="kiot" style={{ fontSize:13, color:T.dark, cursor:'pointer' }}>✅ Đã nhập KiotViet</label>
+        </div>
+        <div style={{ display:'flex', justifyContent:'flex-end', gap:10 }}>
+          <GoldBtn outline small onClick={() => setShowAdd(false)}>Hủy</GoldBtn>
+          <GoldBtn small onClick={submit} disabled={!form.product_name||!form.date}>Lưu</GoldBtn>
+        </div>
+      </Modal>
+
+      {/* Modal sale điền thông tin */}
+      <Modal open={!!showEdit} onClose={() => setShowEdit(null)} title={showEdit?.customer_name?'Sửa thông tin sale':'💼 Sale điền thông tin'}>
+        {showEdit && (() => {
+          const [ef, setEf] = React.useState({
+            customer_name:    showEdit.customer_name    || '',
+            original_order_code: showEdit.original_order_code || '',
+            sale_id:          showEdit.sale_id          || '',
+            violator_id:      showEdit.violator_id      || '',
+            reason:           showEdit.reason           || '',
+            sale_note:        showEdit.sale_note        || '',
+            entered_kiot:     showEdit.entered_kiot     || false,
+          })
+          const [userSearch, setUserSearch] = React.useState('')
+          const userResults = allUsers.filter((u: any) => {
+            const q = userSearch.toLowerCase()
+            return !q || u.name.toLowerCase().includes(q) || (u.ini||'').toLowerCase().includes(q)
+          }).slice(0,8)
+          return (
+            <div>
+              <div style={{ padding:'8px 12px', background:T.goldBg, borderRadius:8, marginBottom:14, fontSize:12, color:T.goldText }}>
+                📦 {showEdit.product_name} · {showEdit.quantity} cái · {showEdit.condition}
+                {showEdit.ship_fee>0 && ` · Ship: ${showEdit.ship_fee.toLocaleString()}đ`}
+              </div>
+              <Inp label="Tên khách hàng" value={ef.customer_name}
+                onChange={(v: string) => setEf(f => ({...f,customer_name:v}))} placeholder="Tên KH..."/>
+              <Inp label="Mã đơn gốc bị sai" value={ef.original_order_code}
+                onChange={(v: string) => setEf(f => ({...f,original_order_code:v}))} placeholder="VD: DH000842"/>
+              <Sel label="Sale phụ trách" value={ef.sale_id}
+                onChange={(v: string) => setEf(f => ({...f,sale_id:v}))}
+                options={[{value:'',label:'— Chọn sale —'},...saleUsers.map((u: any) => ({value:u.id,label:u.name}))]}/>
+              <div style={{ marginBottom:13 }}>
+                <div style={{ fontSize:12, fontWeight:500, color:T.med, marginBottom:5 }}>Nhân viên vi phạm</div>
+                <input value={userSearch} onChange={e => setUserSearch(e.target.value)} placeholder="Tìm tên NV..."
+                  style={{ width:'100%', padding:'8px 11px', border:`1px solid ${T.border}`, borderRadius:8,
+                    fontSize:13, fontFamily:'inherit', color:T.dark, background:'#fff', boxSizing:'border-box' as any, outline:'none', marginBottom:6 }}/>
+                {userSearch && (
+                  <div style={{ border:`1px solid ${T.border}`, borderRadius:8, overflow:'hidden', maxHeight:160, overflowY:'auto' }}>
+                    {userResults.map((u: any) => (
+                      <div key={u.id} onClick={() => { setEf(f => ({...f,violator_id:u.id})); setUserSearch(u.name) }}
+                        style={{ padding:'8px 12px', cursor:'pointer', fontSize:13, borderBottom:`1px solid ${T.border}`,
+                          background:ef.violator_id===u.id?T.goldBg:'#fff',
+                          color:ef.violator_id===u.id?T.goldText:T.dark }}>
+                        {u.name} <span style={{ fontSize:11, color:T.light }}>· {u.position_name||u.dept_name}</span>
+                      </div>
+                    ))}
+                  </div>
+                )}
+                {ef.violator_id && !userSearch && (
+                  <div style={{ fontSize:12, color:T.red }}>
+                    ⚠️ {allUsers.find((u: any)=>u.id===ef.violator_id)?.name}
+                    <button onClick={() => setEf(f => ({...f,violator_id:''}))}
+                      style={{ marginLeft:8, fontSize:11, color:T.light, background:'none', border:'none', cursor:'pointer' }}>✕</button>
+                  </div>
+                )}
+              </div>
+              <Inp label="Lý do hoàn" value={ef.reason}
+                onChange={(v: string) => setEf(f => ({...f,reason:v}))} placeholder="Lý do..."/>
+              <Inp label="Ghi chú sale" value={ef.sale_note}
+                onChange={(v: string) => setEf(f => ({...f,sale_note:v}))} placeholder="Ghi chú thêm..."/>
+              <div style={{ display:'flex', alignItems:'center', gap:10, marginBottom:14 }}>
+                <input type="checkbox" id="kiot2" checked={ef.entered_kiot}
+                  onChange={e => setEf(f => ({...f,entered_kiot:e.target.checked}))}/>
+                <label htmlFor="kiot2" style={{ fontSize:13, color:T.dark, cursor:'pointer' }}>✅ Đã nhập KiotViet</label>
+              </div>
+              <div style={{ display:'flex', justifyContent:'flex-end', gap:10 }}>
+                <GoldBtn outline small onClick={() => setShowEdit(null)}>Hủy</GoldBtn>
+                <GoldBtn small onClick={() => updateSale(showEdit.id, ef)}>Lưu</GoldBtn>
+              </div>
+            </div>
+          )
+        })()}
+      </Modal>
+    </div>
+  )
+}
+
 // ── ORG CHART ─────────────────────────────────────
 function OrgChart({ user, allUsers, positions, mobile }: any) {
   const p = mobile ? '16px' : '24px'
@@ -3741,7 +4183,7 @@ function UserManagement({ user, allUsers, setAllUsers, departments, positions, m
   const isAdmin = getPerm(user).viewAllDashboard  // admin: được sửa ini
   const [show, setShow]   = useState(false)
   const [edit, setEdit]   = useState<any>(null)
-  const [form, setForm]   = useState({ name:'', dept_id:'kho', position_id:'', ini:'', pin:'1234', active:true })
+  const [form, setForm]   = useState({ name:'', dept_id:'kho', position_id:'', ini:'', pin:'1234', active:true, birthday:'' })
   const [deptF, setDeptF] = useState('all')
   const [showPwModal, setShowPwModal] = useState<any>(null)
   const [newPw, setNewPw] = useState('')
@@ -3754,12 +4196,12 @@ function UserManagement({ user, allUsers, setAllUsers, departments, positions, m
 
   const openCreate = () => {
     setEdit(null)
-    setForm({ name:'', dept_id:'kho', position_id:'', ini:'', pin:'1234', active:true })
+    setForm({ name:'', dept_id:'kho', position_id:'', ini:'', pin:'1234', active:true, birthday:'' })
     setShow(true)
   }
   const openEdit = (u: any) => {
     setEdit(u)
-    setForm({ name:u.name, dept_id:u.dept_id, position_id:u.position_id||'', ini:u.ini, pin:u.pin, active:u.active })
+    setForm({ name:u.name, dept_id:u.dept_id, position_id:u.position_id||'', ini:u.ini, pin:u.pin, active:u.active, birthday:u.birthday||'' })
     setShow(true)
   }
 
@@ -3775,12 +4217,12 @@ function UserManagement({ user, allUsers, setAllUsers, departments, positions, m
     if (edit) {
       const updated = {...edit, ...form, dept_id:finalDeptId, dept_name:deptName, position_name:posName, role}
       setAllUsers((prev: any) => prev.map((u: any) => u.id===edit.id ? updated : u))
-      await db.from('users').update({ name:form.name, dept_id:finalDeptId, position_id:form.position_id, ini:form.ini, active:form.active, role }).eq('id', edit.id)
+      await db.from('users').update({ name:form.name, dept_id:finalDeptId, position_id:form.position_id, ini:form.ini, active:form.active, role, birthday:form.birthday||'' }).eq('id', edit.id)
     } else {
       const newId = form.name.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g,'').replace(/\s/g,'_')+'_'+Date.now().toString().slice(-4)
       const newUser = { id:newId, ...form, dept_id:finalDeptId, dept_name:deptName, position_name:posName, role, must_change_password:true }
       setAllUsers((prev: any) => [...prev, newUser])
-      await db.from('users').insert({ id:newId, ...form, dept_id:finalDeptId, role, must_change_password:true })
+      await db.from('users').insert({ id:newId, ...form, dept_id:finalDeptId, role, birthday:form.birthday||'', must_change_password:true })
     }
     setShow(false)
   }
@@ -3829,9 +4271,12 @@ function UserManagement({ user, allUsers, setAllUsers, departments, positions, m
                 <div style={{ flex:1 }}>
                   <div style={{ fontSize:13, fontWeight:600, color:T.dark }}>{u.name}</div>
                   <div style={{ fontSize:11, color:T.gold, fontWeight:500 }}>{u.position_name||'Chưa có vị trí'}</div>
-                  <div style={{ display:'flex', gap:6, marginTop:3 }}>
+                  <div style={{ display:'flex', gap:6, marginTop:3, flexWrap:'wrap' }}>
                     {!u.active && <span style={{ fontSize:10, color:T.red }}>Đã khóa</span>}
                     {u.must_change_password && <span style={{ fontSize:10, color:T.amber }}>⚠️ Chưa đổi mật khẩu</span>}
+                    {getPerm(user).viewBirthday && u.birthday && (
+                      <span style={{ fontSize:10, color:T.blue }}>🎂 {u.birthday}</span>
+                    )}
                   </div>
                 </div>
                 <div style={{ display:'flex', flexDirection:'column', gap:4 }}>
@@ -3886,6 +4331,8 @@ function UserManagement({ user, allUsers, setAllUsers, departments, positions, m
         <div style={{ padding:'10px 12px', background:T.goldBg, borderRadius:8, marginBottom:13, fontSize:12, color:T.goldText }}>
           💡 Mật khẩu mặc định khi tạo mới: <b>1234</b> — nhân viên sẽ được yêu cầu đổi khi đăng nhập lần đầu.
         </div>
+        <Inp label="🎂 Ngày sinh (DD/MM/YYYY)" value={form.birthday}
+          onChange={(v: string) => setForm(f => ({...f, birthday:v}))} placeholder="VD: 15/08/1995"/>
         <div style={{ display:'flex', alignItems:'center', gap:10, marginBottom:16 }}>
           <input type="checkbox" id="uact" checked={form.active} onChange={e => setForm(f => ({...f, active:e.target.checked}))}/>
           <label htmlFor="uact" style={{ fontSize:13, color:T.dark, cursor:'pointer' }}>Tài khoản đang hoạt động</label>
@@ -4387,9 +4834,12 @@ export default function App() {
           {validPage==='users'      && <UserManagement {...pp} setAllUsers={setAllUsers} departments={departments} positions={positions}/>}
           {validPage==='positions'  && <PositionsManagement positions={positions} setPositions={setPositions} mobile={mobile}/>}
           {validPage==='shortage'   && <ShortageItems {...pp}/>}
+          {validPage==='returns'    && <ReturnItems {...pp}/>}
           {validPage==='settings'   && <Settings {...pp} setUser={setUser} settings={settings} setSettings={setSettings} onManualReset={manualReset}/>}
         </main>
         {mobile && <BottomNav user={user} page={validPage} setPage={setPage} pendingLeave={pendingLeave} pendingOT={pendingOT} onLogout={() => { localStorage.removeItem('la_user'); setUser(null); setAllUsers([]); setChecklist([]) }}/>}
+        {/* Sticky Note — floating for all users */}
+        {user && <StickyNote user={user}/>}
       </div>
      )
 }
