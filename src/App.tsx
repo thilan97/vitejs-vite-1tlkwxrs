@@ -3673,7 +3673,7 @@ function ReturnItems({ user, allUsers, products, mobile }: any) {
   const canAdd    = isKho || perm.viewAllDashboard
   const canKiot   = isKho || perm.viewAllDashboard || (perm as any).enterKiot
 
-  const norm = (s: string) => (s||'').toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g,'').replace(/đ/g,'d')
+  const norm = (s: string) => (s||'').toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g,'').replace(/đ/g,'d')
   const fuzzy = (item: any, q: string) => !q.trim() || norm(q).split(/\s+/).every((t: string) =>
     norm(item.product_name+' '+(item.customer_name||'')+' '+(item.sale_name||'')+' '+(item.violator_name||'')).includes(t)
   )
@@ -3687,7 +3687,7 @@ function ReturnItems({ user, allUsers, products, mobile }: any) {
   }
   const [form, setForm]         = React.useState<any>(emptyForm)
   const [prodSearch, setProdSearch] = React.useState('')
-  const normStr = (s: string) => (s||'').toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g,'').replace(/đ/g,'d')
+  const normStr = (s: string) => (s||'').toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g,'').replace(/đ/g,'d')
   const prodResults = React.useMemo(() => {
     if (!prodSearch.trim() || !products) return []
     return products.filter((p: any) => {
