@@ -556,53 +556,90 @@ function Sidebar({ user, page, setPage, onLogout, pendingLeave, pendingOT }: any
   const activeGroup = getGroupForPage(page, perm, user?.dept_id||'')
 
   return (
-    <div style={{ width:220, background:T.sidebar, display:'flex', flexDirection:'column',
+    <div style={{ width:230, background:T.sidebar, display:'flex', flexDirection:'column',
       flexShrink:0, height:'100vh', position:'sticky', top:0,
       borderRight:`1px solid ${T.sidebarBorder}` }}>
-      {/* Logo */}
-      <div style={{ padding:'16px 14px 12px', borderBottom:`1px solid ${T.sidebarBorder}` }}>
+
+      {/* ── Logo ── */}
+      <div style={{ padding:'20px 16px 16px' }}>
         <div style={{ display:'flex', alignItems:'center', gap:10 }}>
-          <LALogo size={30}/>
-          <div style={{ color:T.goldText, fontSize:11, fontFamily:'Georgia,serif', lineHeight:1.4, letterSpacing:.5 }}>
-            LA Global<br/>Beauty
+          <LALogo size={34}/>
+          <div>
+            <div style={{ color:T.goldText, fontSize:13, fontFamily:'Georgia,serif',
+              fontWeight:700, letterSpacing:.3, lineHeight:1.2 }}>LA Global</div>
+            <div style={{ color:T.sidebarMuted, fontSize:10, letterSpacing:.5 }}>Beauty</div>
           </div>
         </div>
       </div>
-      {/* Groups */}
-      <nav style={{ flex:1, padding:'6px', overflowY:'auto' }}>
+
+      {/* ── Nav ── */}
+      <nav style={{ flex:1, padding:'4px 10px 8px', overflowY:'auto' }}>
         {groups.map((group: any) => {
           const isActiveGroup = activeGroup?.id === group.id
           const groupBadge = group.id==='hr' ? pendingLeave+pendingOT : 0
           return (
-            <div key={group.id} style={{ marginBottom:4 }}>
-              {/* Group header */}
-              <div style={{ display:'flex', alignItems:'center', gap:7, padding:'8px 10px 4px',
-                fontSize:9, fontWeight:700,
-                color:isActiveGroup?T.gold:T.sidebarMuted,
-                textTransform:'uppercase', letterSpacing:1.2 }}>
-                <span>{group.icon}</span>
+            <div key={group.id} style={{ marginBottom:6 }}>
+              {/* Section label */}
+              <div style={{ display:'flex', alignItems:'center', gap:6,
+                padding:'6px 8px 3px',
+                fontSize:9, fontWeight:800, letterSpacing:1.4,
+                textTransform:'uppercase',
+                color:isActiveGroup ? T.gold : T.sidebarMuted }}>
+                <span style={{ fontSize:10 }}>{group.icon}</span>
                 <span style={{ flex:1 }}>{group.label}</span>
-                {groupBadge>0 && <span style={{ background:T.red, color:'#fff', borderRadius:10,
-                  fontSize:9, fontWeight:700, padding:'1px 5px' }}>{groupBadge}</span>}
+                {groupBadge>0 && (
+                  <span style={{ background:T.red, color:'#fff', borderRadius:20,
+                    fontSize:9, fontWeight:700, padding:'1px 6px', lineHeight:'16px' }}>
+                    {groupBadge}
+                  </span>
+                )}
               </div>
-              {/* Sub-pages */}
+
+              {/* Items */}
               {group.pages.map((item: any) => {
                 const active = page === item.id
-                const badge = item.id==='leave' ? pendingLeave : item.id==='overtime' ? pendingOT : 0
+                const badge  = item.id==='leave' ? pendingLeave : item.id==='overtime' ? pendingOT : 0
                 return (
                   <button key={item.id} onClick={() => setPage(item.id)}
-                    style={{ width:'100%', display:'flex', alignItems:'center', gap:8,
-                      padding:'7px 10px 7px 20px', borderRadius:7, marginBottom:1, border:'none',
-                      cursor:'pointer', fontFamily:'inherit', fontSize:12, textAlign:'left',
-                      background:active?T.goldBg:'transparent',
-                      color:active?T.goldText:T.sidebarText,
-                      fontWeight:active?700:400 }}
-                    onMouseEnter={e => { if (!active) (e.currentTarget as any).style.background=T.goldBg }}
-                    onMouseLeave={e => { if (!active) (e.currentTarget as any).style.background='transparent' }}>
-                    <span style={{ fontSize:12 }}>{item.icon}</span>
-                    <span style={{ flex:1 }}>{item.label}</span>
-                    {badge>0 && <span style={{ background:T.red, color:'#fff', borderRadius:10,
-                      fontSize:9, fontWeight:700, padding:'1px 5px' }}>{badge}</span>}
+                    style={{
+                      width:'100%', display:'flex', alignItems:'center', gap:9,
+                      padding:'8px 12px', marginBottom:1, border:'none',
+                      borderRadius:10, cursor:'pointer', fontFamily:'inherit',
+                      fontSize:12.5, textAlign:'left', transition:'all .12s',
+                      // Active: solid gold background with shadow
+                      background: active
+                        ? 'linear-gradient(135deg, #C4973A 0%, #A07828 100%)'
+                        : 'transparent',
+                      color: active ? '#fff' : T.sidebarText,
+                      fontWeight: active ? 700 : 400,
+                      boxShadow: active
+                        ? '0 2px 8px rgba(196,151,58,0.35)'
+                        : 'none',
+                    }}
+                    onMouseEnter={e => {
+                      if (!active) {
+                        (e.currentTarget as any).style.background = 'rgba(196,151,58,0.1)'
+                        ;(e.currentTarget as any).style.color = T.goldText
+                      }
+                    }}
+                    onMouseLeave={e => {
+                      if (!active) {
+                        (e.currentTarget as any).style.background = 'transparent'
+                        ;(e.currentTarget as any).style.color = T.sidebarText
+                      }
+                    }}>
+                    <span style={{ fontSize:14, width:18, textAlign:'center', flexShrink:0 }}>
+                      {item.icon}
+                    </span>
+                    <span style={{ flex:1, letterSpacing:.1 }}>{item.label}</span>
+                    {badge>0 && (
+                      <span style={{
+                        background: active ? 'rgba(255,255,255,0.3)' : T.red,
+                        color:'#fff', borderRadius:20,
+                        fontSize:9, fontWeight:700, padding:'1px 6px', lineHeight:'16px',
+                        flexShrink:0
+                      }}>{badge}</span>
+                    )}
                   </button>
                 )
               })}
@@ -610,22 +647,33 @@ function Sidebar({ user, page, setPage, onLogout, pendingLeave, pendingOT }: any
           )
         })}
       </nav>
-      {/* User info + logout */}
-      <div style={{ padding:'10px', borderTop:`1px solid ${T.sidebarBorder}` }}>
-        <div style={{ display:'flex', alignItems:'center', gap:8, marginBottom:8 }}>
-          <div style={{ width:30, height:30, borderRadius:'50%', background:DEPT_COLOR[user.dept_id]||T.gold,
+
+      {/* ── User card ── */}
+      <div style={{ padding:'10px 12px 14px', borderTop:`1px solid ${T.sidebarBorder}` }}>
+        <div style={{ display:'flex', alignItems:'center', gap:10, padding:'8px 10px',
+          background:'rgba(196,151,58,0.08)', borderRadius:10, marginBottom:8 }}>
+          <div style={{ width:32, height:32, borderRadius:'50%',
+            background:`linear-gradient(135deg, ${DEPT_COLOR[user.dept_id]||T.gold} 0%, ${DEPT_COLOR[user.dept_id]||'#9A7010'} 100%)`,
             flexShrink:0, display:'flex', alignItems:'center', justifyContent:'center',
-            color:'#fff', fontSize:9, fontWeight:700 }}>{user.ini}</div>
+            color:'#fff', fontSize:10, fontWeight:700,
+            boxShadow:'0 2px 6px rgba(0,0,0,0.12)' }}>
+            {user.ini}
+          </div>
           <div style={{ flex:1, minWidth:0 }}>
-            <div style={{ color:T.dark, fontSize:11, fontWeight:600,
+            <div style={{ color:T.dark, fontSize:12, fontWeight:700,
               overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap' }}>{user.name}</div>
-            <div style={{ color:T.gold, fontSize:9 }}>{user.position_name||user.dept_name}</div>
+            <div style={{ color:T.gold, fontSize:10, fontWeight:500 }}>
+              {user.position_name||user.dept_name}
+            </div>
           </div>
         </div>
         <button onClick={onLogout}
-          style={{ width:'100%', padding:'6px', borderRadius:7, border:`1px solid ${T.sidebarBorder}`,
-            background:'transparent', color:T.sidebarMuted, fontSize:11,
-            cursor:'pointer', fontFamily:'inherit' }}>🚪 Đăng xuất</button>
+          style={{ width:'100%', padding:'7px', borderRadius:8,
+            border:`1px solid ${T.sidebarBorder}`, background:'transparent',
+            color:T.sidebarMuted, fontSize:11, cursor:'pointer', fontFamily:'inherit',
+            display:'flex', alignItems:'center', justifyContent:'center', gap:6 }}>
+          <span>🚪</span> Đăng xuất
+        </button>
       </div>
     </div>
   )
@@ -2709,7 +2757,13 @@ function Announcements({ user, allUsers, mobile }: any) {
 // ── SHORTAGE ITEMS ───────────────────────────────
 // ── MANAGER SHORTAGE ROW ─────────────────────────────
 function MgrShortageRow({ item, idx, total, products, norm, setItems }: any) {
-  const [open, setOpen] = useState(false)
+  const [open, setOpen]       = useState(false)
+  const [editMode, setEditMode] = useState(false)
+  const [arrDate, setArrDate]  = useState(item.arrival_date||'')
+  const [arrQty,  setArrQty]   = useState(String(item.arrival_qty||''))
+  const [mgrNote, setMgrNote]  = useState(item.manager_note||'')
+  const [selStatus, setSelStatus] = useState(item.status||'pending')
+
   const hot = (item.reporters||[]).length
   const days = (() => {
     if (!item.arrival_date) return null
@@ -2725,14 +2779,23 @@ function MgrShortageRow({ item, idx, total, products, norm, setItems }: any) {
     if (item.status==='arrived')  return { label:'✅ Đã về',       color:T.green, bg:T.greenBg }
     if (item.status==='burned')   return { label:'🔥 Cháy hàng',  color:T.red,   bg:T.redBg   }
     if (item.status==='pending')  return { label:'⏳ Chờ xử lý',  color:T.amber, bg:T.amberBg }
-    if (item.status==='incoming' && days!==null) {
-      if (days>0)  return { label:`📅 Còn ${days}N`,          color:T.blue,  bg:T.blueBg }
-      if (days===0) return { label:'⏰ Hôm nay',               color:T.amber, bg:T.amberBg }
-      return        { label:`⚠️ Trễ ${Math.abs(days)}N`,     color:T.red,   bg:T.redBg }
+    if (item.status==='incoming') {
+      if (days===null) return { label:'📅 Sắp về',                  color:T.blue,  bg:T.blueBg }
+      if (days>0)      return { label:`📅 Còn ${days} ngày`,       color:T.blue,  bg:T.blueBg }
+      if (days===0)    return { label:'⏰ Hôm nay về!',             color:T.amber, bg:T.amberBg }
+      return           { label:`⚠️ Trễ ${Math.abs(days)} ngày`,   color:T.red,   bg:T.redBg }
     }
     return { label:'⏳ Chờ xử lý', color:T.amber, bg:T.amberBg }
   })()
 
+  const saveEdit = async () => {
+    let newStatus = selStatus
+    let upd: any = { manager_note:mgrNote, arrival_date:arrDate, arrival_qty:Number(arrQty)||0, status:newStatus }
+    if (newStatus === 'arrived' && !item.arrived_at) upd.arrived_at = new Date().toISOString()
+    setItems((prev: any) => prev.map((i: any) => i.id===item.id ? {...i,...upd} : i))
+    await db.from('shortage_items').update(upd).eq('id', item.id)
+    setEditMode(false)
+  }
   const markArrived = async () => {
     const upd = { status:'arrived', arrived_at:new Date().toISOString() }
     setItems((prev: any) => prev.map((i: any) => i.id===item.id ? {...i,...upd} : i))
@@ -2770,36 +2833,99 @@ function MgrShortageRow({ item, idx, total, products, norm, setItems }: any) {
       </div>
 
       {open && (
-        <div style={{ padding:'8px 12px 12px', background:T.bg, borderTop:`1px solid ${T.border}` }}>
-          <div style={{ display:'flex', gap:5, flexWrap:'wrap', marginBottom:6 }}>
+        <div style={{ padding:'10px 14px 14px', background:T.bg, borderTop:`1px solid ${T.border}` }}>
+          {/* Reporters */}
+          <div style={{ display:'flex', gap:5, flexWrap:'wrap', marginBottom:8 }}>
             {(item.reporters||[]).map((r: any, i: number) => (
               <span key={i} style={{ fontSize:11, padding:'2px 8px', borderRadius:20, background:T.goldBg, color:T.goldText, fontWeight:600 }}>
                 {r.name}{r.note?` · ${r.note}`:''}
               </span>
             ))}
           </div>
-          {item.manager_note && (
-            <div style={{ fontSize:11, color:T.blue, padding:'5px 9px', background:T.blueBg, borderRadius:7, marginBottom:6 }}>
-              💬 QM: {item.manager_note}
-              {item.arrival_date && <b> · Ngày về: {item.arrival_date}</b>}
-              {item.arrival_qty>0 && <b> · SL: {item.arrival_qty}</b>}
-            </div>
+
+          {!editMode ? (
+            <>
+              {/* Summary view */}
+              {(item.manager_note || item.arrival_date) && (
+                <div style={{ fontSize:11, color:T.blue, padding:'6px 10px', background:T.blueBg, borderRadius:7, marginBottom:8 }}>
+                  {item.arrival_date && <span>📅 Ngày về dự kiến: <b>{fmtDate(item.arrival_date)}</b>
+                    {item.arrival_qty>0 && ` · SL: ${item.arrival_qty}`}</span>}
+                  {item.manager_note && <div style={{marginTop:2}}>💬 {item.manager_note}</div>}
+                </div>
+              )}
+              {item.status==='arrived' && (
+                <div style={{ fontSize:11, color:T.green, marginBottom:8, fontStyle:'italic' }}>🕐 Tự xóa sau {daysLeft} ngày</div>
+              )}
+              <div style={{ display:'flex', gap:6, flexWrap:'wrap' }}>
+                {item.status!=='arrived' && item.status!=='burned' && (
+                  <button onClick={() => { setEditMode(true); setSelStatus(item.status) }}
+                    style={{ padding:'4px 11px', borderRadius:7, border:`1.5px solid ${T.gold}`,
+                      background:T.goldBg, cursor:'pointer', fontSize:11, fontFamily:'inherit', color:T.goldText, fontWeight:600 }}>
+                    ✏️ Cập nhật
+                  </button>
+                )}
+                {item.status!=='arrived' && item.status!=='burned' && (
+                  <button onClick={markArrived}
+                    style={{ padding:'4px 11px', borderRadius:7, border:`1.5px solid ${T.green}`,
+                      background:T.greenBg, cursor:'pointer', fontSize:11, fontFamily:'inherit', color:T.green, fontWeight:600 }}>
+                    ✅ Xác nhận đã về
+                  </button>
+                )}
+                <button onClick={remove}
+                  style={{ padding:'4px 10px', borderRadius:7, border:`1px solid ${T.redBg}`,
+                    background:T.redBg, cursor:'pointer', fontSize:11, fontFamily:'inherit', color:T.red }}>
+                  🗑️ Xóa
+                </button>
+              </div>
+            </>
+          ) : (
+            <>
+              {/* Edit form */}
+              <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:10, marginBottom:10 }}>
+                <div>
+                  <div style={{ fontSize:11, color:T.med, marginBottom:4 }}>📅 Trạng thái</div>
+                  <select value={selStatus} onChange={e => setSelStatus(e.target.value)}
+                    style={{ width:'100%', padding:'7px 9px', border:`1px solid ${T.border}`, borderRadius:7,
+                      fontSize:12, fontFamily:'inherit', color:T.dark, background:'#fff', outline:'none' }}>
+                    <option value="pending">⏳ Chờ xử lý</option>
+                    <option value="incoming">📅 Sắp về</option>
+                    <option value="burned">🔥 Hàng cháy</option>
+                    <option value="arrived">✅ Đã về</option>
+                  </select>
+                </div>
+                {selStatus==='incoming' && (
+                  <div>
+                    <div style={{ fontSize:11, color:T.med, marginBottom:4 }}>📅 Ngày về dự kiến</div>
+                    <input type="date" value={arrDate} onChange={e => setArrDate(e.target.value)}
+                      style={{ width:'100%', padding:'7px 9px', border:`1px solid ${T.border}`, borderRadius:7,
+                        fontSize:12, fontFamily:'inherit', color:T.dark, background:'#fff' }}/>
+                  </div>
+                )}
+                {selStatus==='incoming' && (
+                  <div>
+                    <div style={{ fontSize:11, color:T.med, marginBottom:4 }}>📦 Số lượng về</div>
+                    <input type="number" value={arrQty} onChange={e => setArrQty(e.target.value)}
+                      style={{ width:'100%', padding:'7px 9px', border:`1px solid ${T.border}`, borderRadius:7,
+                        fontSize:12, fontFamily:'inherit', color:T.dark, background:'#fff' }}/>
+                  </div>
+                )}
+              </div>
+              <div style={{ marginBottom:10 }}>
+                <div style={{ fontSize:11, color:T.med, marginBottom:4 }}>💬 Ghi chú QM</div>
+                <input value={mgrNote} onChange={e => setMgrNote(e.target.value)} placeholder="Ghi chú..."
+                  style={{ width:'100%', padding:'7px 9px', border:`1px solid ${T.border}`, borderRadius:7,
+                    fontSize:12, fontFamily:'inherit', color:T.dark, background:'#fff', boxSizing:'border-box' as any }}/>
+              </div>
+              <div style={{ display:'flex', gap:8 }}>
+                <button onClick={saveEdit}
+                  style={{ padding:'5px 14px', borderRadius:7, border:'none', background:T.gold,
+                    color:'#fff', cursor:'pointer', fontSize:12, fontFamily:'inherit', fontWeight:600 }}>Lưu</button>
+                <button onClick={() => setEditMode(false)}
+                  style={{ padding:'5px 12px', borderRadius:7, border:`1px solid ${T.border}`,
+                    background:'transparent', cursor:'pointer', fontSize:12, fontFamily:'inherit', color:T.med }}>Hủy</button>
+              </div>
+            </>
           )}
-          {item.status==='arrived' && <div style={{ fontSize:11, color:T.green, marginBottom:6, fontStyle:'italic' }}>🕐 Tự xóa sau {daysLeft} ngày</div>}
-          <div style={{ display:'flex', gap:7, flexWrap:'wrap' }}>
-            {item.status!=='arrived' && item.status!=='burned' && (
-              <button onClick={markArrived}
-                style={{ padding:'4px 11px', borderRadius:7, border:`1.5px solid ${T.green}`,
-                  background:T.greenBg, cursor:'pointer', fontSize:11, fontFamily:'inherit', color:T.green, fontWeight:600 }}>
-                ✅ Xác nhận đã về
-              </button>
-            )}
-            <button onClick={remove}
-              style={{ padding:'4px 10px', borderRadius:7, border:`1px solid ${T.redBg}`,
-                background:T.redBg, cursor:'pointer', fontSize:11, fontFamily:'inherit', color:T.red }}>
-              🗑️ Xóa
-            </button>
-          </div>
         </div>
       )}
     </div>
@@ -3892,10 +4018,11 @@ function ReturnItems({ user, allUsers, products, mobile }: any) {
         <div style={{ background:T.card, border:`1px solid ${T.border}`, borderRadius:12, overflow:'hidden' }}>
           {/* Table header */}
           <div style={{ display:'grid',
-            gridTemplateColumns: mobile?'56px 1fr auto':"80px 1fr 44px 110px 70px 100px 160px",
+            gridTemplateColumns: mobile?'56px 1fr auto':"48px 80px 1fr 44px 110px 70px 100px 130px",
             background:T.bg, padding:'8px 14px',
             borderBottom:`1px solid ${T.border}`, fontSize:10, fontWeight:700,
             color:T.light, textTransform:'uppercase', letterSpacing:.5, gap:8, alignItems:'center' }}>
+            {!mobile && <span style={{textAlign:'center', color:T.green}}>KV</span>}
             <span>Ngày</span>
             <span>Sản phẩm</span>
             {!mobile && <><span style={{textAlign:'center'}}>SL</span>
@@ -3923,8 +4050,45 @@ function ReturnItems({ user, allUsers, products, mobile }: any) {
                   background: i%2===0?'#fff':T.bg }}>
                   {/* Main compact row */}
                   <div style={{ display:'grid',
-                    gridTemplateColumns: mobile?'56px 1fr auto':"80px 1fr 44px 110px 70px 100px 160px",
+                    gridTemplateColumns: mobile?'56px 1fr auto':"48px 80px 1fr 44px 110px 70px 100px 130px",
                     gap:8, padding:'9px 14px', alignItems:'center' }}>
+                    {/* KV column — first cell, desktop only */}
+                    {!mobile && (
+                      <div style={{ display:'flex', justifyContent:'center' }}>
+                        {r.entered_kiot ? (
+                          canKiot ? (
+                            <button title={`${allUsers.find((u: any)=>u.id===r.entered_kiot_by)?.name||'?'} · ${r.entered_kiot_at?new Date(r.entered_kiot_at).toLocaleString('vi-VN'):''}`}
+                              onClick={async () => {
+                                if (!confirm('Bỏ tích KiotViet?')) return
+                                const upd = { entered_kiot:false, entered_kiot_by:'', entered_kiot_at:'' }
+                                setItems((prev: any) => prev.map((i: any) => i.id===r.id ? {...i,...upd} : i))
+                                await db.from('return_items').update(upd).eq('id', r.id)
+                              }}
+                              style={{ width:28, height:28, borderRadius:'50%', border:'none',
+                                background:T.green, color:'#fff', cursor:'pointer', fontSize:14,
+                                display:'flex', alignItems:'center', justifyContent:'center' }}>✓</button>
+                          ) : (
+                            <span title={`${allUsers.find((u: any)=>u.id===r.entered_kiot_by)?.name||'?'}`}
+                              style={{ width:28, height:28, borderRadius:'50%', background:T.green,
+                                display:'flex', alignItems:'center', justifyContent:'center',
+                                color:'#fff', fontSize:14 }}>✓</span>
+                          )
+                        ) : canKiot ? (
+                          <button onClick={async () => {
+                              const now = new Date().toISOString()
+                              const upd = { entered_kiot:true, entered_kiot_by:user.id, entered_kiot_at:now }
+                              setItems((prev: any) => prev.map((i: any) => i.id===r.id ? {...i,...upd} : i))
+                              await db.from('return_items').update(upd).eq('id', r.id)
+                            }}
+                            style={{ width:28, height:28, borderRadius:'50%', border:`2px dashed ${T.border}`,
+                              background:'transparent', cursor:'pointer', color:T.light, fontSize:14,
+                              display:'flex', alignItems:'center', justifyContent:'center' }}>○</button>
+                        ) : (
+                          <span style={{ width:28, height:28, borderRadius:'50%', border:`2px dashed ${T.border}`,
+                            display:'flex', alignItems:'center', justifyContent:'center', color:T.light, fontSize:12 }}>○</span>
+                        )}
+                      </div>
+                    )}
                     <span style={{ fontSize:11, color:T.light }}>
                       {r.date ? new Date(r.date).toLocaleDateString('vi-VN',{day:'2-digit',month:'2-digit'}) : '—'}
                     </span>
@@ -3949,26 +4113,6 @@ function ReturnItems({ user, allUsers, products, mobile }: any) {
                       <span style={{ fontSize:11, color:T.gold }}>{saleUser?.name||'—'}</span>
                     </>}
                     <div style={{ display:'flex', gap:5, justifyContent:'flex-end', alignItems:'center' }}>
-                      {/* KV — chỉ người có quyền mới thấy */}
-                      {r.entered_kiot ? (
-                        <span title={`${allUsers.find((u: any)=>u.id===r.entered_kiot_by)?.name||'?'} · ${r.entered_kiot_at?new Date(r.entered_kiot_at).toLocaleString('vi-VN'):'?'}`}
-                          style={{ fontSize:10, fontWeight:700, color:'#fff', background:T.green,
-                            padding:'3px 8px', borderRadius:20, cursor:'help', whiteSpace:'nowrap', flexShrink:0 }}>
-                          ✅ KV
-                        </span>
-                      ) : canKiot ? (
-                        <button onClick={async () => {
-                          const now = new Date().toISOString()
-                          const upd = { entered_kiot:true, entered_kiot_by:user.id, entered_kiot_at:now }
-                          setItems((prev: any) => prev.map((i: any) => i.id===r.id ? {...i,...upd} : i))
-                          await db.from('return_items').update(upd).eq('id', r.id)
-                        }}
-                          style={{ fontSize:10, padding:'3px 9px', borderRadius:20, border:`1.5px solid ${T.border}`,
-                            background:'transparent', cursor:'pointer', fontFamily:'inherit',
-                            color:T.light, whiteSpace:'nowrap', flexShrink:0 }}>
-                          KV?
-                        </button>
-                      ) : null}
                       {/* Sale điền / Sửa */}
                       {!hasSaleInfo && canFillSale && (
                         <button onClick={() => setShowEdit(r)}
