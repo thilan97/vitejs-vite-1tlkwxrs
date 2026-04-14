@@ -10,12 +10,12 @@ const db = createClient(SUPABASE_URL, SUPABASE_KEY)
 
 // ── THEME ────────────────────────────────────────
 const T: any = {
-  gold:'#C4973A', goldBg:'#FFFAEE', goldText:'#7A5A10', goldBorder:'#E5CFA0',
+  gold:'#C4973A', goldBg:'#FFF8E8', goldText:'#7A5A10', goldBorder:'#E5CFA0',
   sidebar:'#FDF6E9', sidebarBorder:'#E8D5A3', sidebarText:'#5A4010', sidebarMuted:'#A08040',
-  bg:'#F7F5F2', card:'#FFFFFF',
-  dark:'#1A1614', med:'#6B5F50', light:'#A09080', border:'#EDE8DF',
+  bg:'#F4F2EE', card:'#FFFFFF', rowAlt:'#FAFAF8', divider:'#E4DFD7',
+  dark:'#1A1614', med:'#6B5F50', light:'#A09080', border:'#DDD8CF',
   green:'#15803D', greenBg:'#DCFCE7',
-  amber:'#B45309', amberBg:'#FEF9C3',
+  amber:'#B45309', amberBg:'#FEF3C7',
   red:'#B91C1C', redBg:'#FEE2E2',
   blue:'#1D4ED8', blueBg:'#DBEAFE',
   purple:'#7C3AED', purpleBg:'#EDE9FE',
@@ -184,7 +184,8 @@ const Av = ({ u, size = 32, showDept = false, showTitle = false }: any) => (
 )
 
 const Card = ({ children, style }: any) => (
-  <div style={{ background:T.card, border:`1px solid ${T.border}`, borderRadius:12, padding:'18px 22px', ...style }}>
+  <div style={{ background:T.card, border:`1px solid ${T.border}`, borderRadius:12, padding:'18px 22px',
+    boxShadow:'0 1px 4px rgba(0,0,0,0.06)', ...style }}>
     {children}
   </div>
 )
@@ -3655,7 +3656,7 @@ function ShortageItems({ user, allUsers, mobile, products, setProducts }: any) {
         <div style={{ maxHeight:360, overflowY:'auto', border:`1px solid ${T.border}`, borderRadius:8 }}>
           {products.map((pr, i) => (
             <div key={pr.id} style={{ display:'flex', alignItems:'center', gap:10, padding:'9px 12px',
-              borderBottom:i<products.length-1?`1px solid ${T.border}`:'none', background:i%2===0?'#fff':T.bg }}>
+              borderBottom:i<products.length-1?`1px solid ${T.border}`:'none', background:i%2===0?'#fff':T.rowAlt }}>
               <div style={{ flex:1, fontSize:13, color:T.dark, fontWeight:500 }}>{pr.name}</div>
               {pr.code && <div style={{ fontSize:11, color:T.light }}>#{pr.code}</div>}
               {pr.unit && <div style={{ fontSize:11, color:T.med }}>{pr.unit}</div>}
@@ -4002,6 +4003,13 @@ function ReturnItems({ user, allUsers, products, mobile }: any) {
       setItems(prev => prev.filter(i => !newItems.find((n: any) => n.id===i.id)))
       alert('❌ '+error.message); return
     }
+    // Notify sale dept
+    await db.from('announcements').insert({
+      id:'ann_ret_'+Date.now(),
+      title:'🔄 Phiếu hoàn mới cần điền thông tin (' + slipForm.date + ')',
+      content:'Kho vừa tạo phiếu hoàn ' + (slipForm.return_order_code||'') + ' với ' + validLines.length + ' sản phẩm. Sale cần vào điền thông tin KH.',
+      dept_id:'sale', created_by:user.id, created_at:now, priority:'normal'
+    })
     setShowAdd(false)
   }
 
@@ -5114,54 +5122,83 @@ function Settings({ user, setUser, settings, setSettings, onManualReset, mobile 
 
 // ── MAIN APP ──────────────────────────────────────
 // ── NOTIFICATION BANNER ─────────────────────────────
-function NotifBanner({ user, wrongOrders, setPage }: any) {
+function NotifBanner({ user, wrongOrders, returnSlips, setPage }: any) {
   const [dismissed, setDismissed] = useState(false)
-  const perm   = getPerm(user)
-  const isSale = user.dept_id === 'sale'
+  const perm    = getPerm(user)
+  const isSale  = user.dept_id === 'sale'
+  const isAdmin = perm.viewAllDashboard
 
-  // Đơn sai chưa xử lý mà sale liên quan
-  const myPending = wrongOrders.filter((r: any) => {
-    if (r.status !== 'pending') return false
-    if (perm.viewAllDashboard) return true
-    if (isSale) return r.sale_id === user.id || !r.sale_id
-    return false
-  })
+  // Chỉ hiện cho sale — không hiện cho admin/giám đốc
+  const pendingWO  = (isSale && !isAdmin) ? wrongOrders.filter((r: any) =>
+    r.status==='pending' && (r.sale_id===user.id || !r.sale_id)
+  ) : []
+  const pendingRet = (isSale && !isAdmin) ? (returnSlips||[]).filter((r: any) => !r.sale_id) : []
+  const totalPending = pendingWO.length + pendingRet.length
 
-  if (dismissed || myPending.length === 0) return null
+  if (dismissed || totalPending === 0) return null
+
+  const hasWO = pendingWO.length > 0
+  const hasRet = pendingRet.length > 0
+  const accent = hasWO ? T.red : T.amber
 
   return (
     <div style={{ position:'fixed', top:16, left:'50%', transform:'translateX(-50%)',
-      zIndex:9999, background:'#fff', border:`2px solid ${T.red}`,
-      borderRadius:14, boxShadow:'0 8px 32px rgba(185,28,28,0.18)',
-      padding:'14px 18px', maxWidth:420, width:'calc(100vw - 32px)',
-      display:'flex', alignItems:'flex-start', gap:12 }}>
-      <span style={{ fontSize:24, flexShrink:0 }}>⚠️</span>
-      <div style={{ flex:1 }}>
-        <div style={{ fontSize:13, fontWeight:700, color:T.red, marginBottom:4 }}>
-          {myPending.length} đơn sai cần xử lý
+      zIndex:9999, background:'#fff', border:`2px solid ${accent}`,
+      borderRadius:14, boxShadow:`0 8px 32px rgba(0,0,0,0.14)`,
+      padding:'14px 18px', maxWidth:440, width:'calc(100vw - 32px)' }}>
+      <div style={{ display:'flex', alignItems:'flex-start', gap:12 }}>
+        <span style={{ fontSize:22, flexShrink:0 }}>{hasWO?'⚠️':'🔄'}</span>
+        <div style={{ flex:1 }}>
+          <div style={{ fontSize:13, fontWeight:700, color:accent, marginBottom:8 }}>
+            {totalPending} việc cần xử lý
+          </div>
+          {hasWO && (
+            <div style={{ marginBottom:hasRet?10:0 }}>
+              <div style={{ fontSize:11, fontWeight:700, color:T.red, marginBottom:4 }}>
+                ⚠️ {pendingWO.length} đơn sai chờ bạn điền
+              </div>
+              {pendingWO.slice(0,2).map((r: any) => (
+                <div key={r.id} style={{ fontSize:11, color:T.med }}>• {r.order_code} — {r.customer_name||'?'}</div>
+              ))}
+              {pendingWO.length>2 && <div style={{ fontSize:11, color:T.light }}>...+{pendingWO.length-2} đơn nữa</div>}
+            </div>
+          )}
+          {hasRet && (
+            <div style={{ paddingTop:hasWO?8:0, borderTop:hasWO?`1px solid ${T.border}`:'' }}>
+              <div style={{ fontSize:11, fontWeight:700, color:T.amber, marginBottom:3 }}>
+                🔄 {pendingRet.length} phiếu hoàn chờ điền thông tin
+              </div>
+              <div style={{ fontSize:11, color:T.light, fontStyle:'italic' }}>
+                Vào Báo cáo → Hàng hoàn để điền KH và lý do
+              </div>
+            </div>
+          )}
+          <div style={{ display:'flex', gap:8, marginTop:12, flexWrap:'wrap' }}>
+            {hasWO && (
+              <button onClick={() => { setPage('wrongord'); setDismissed(true) }}
+                style={{ padding:'5px 13px', borderRadius:20, border:'none', background:T.red,
+                  color:'#fff', cursor:'pointer', fontFamily:'inherit', fontSize:11, fontWeight:700 }}>
+                Xem đơn sai →
+              </button>
+            )}
+            {hasRet && (
+              <button onClick={() => { setPage('returns'); setDismissed(true) }}
+                style={{ padding:'5px 13px', borderRadius:20, border:'none', background:T.amber,
+                  color:'#fff', cursor:'pointer', fontFamily:'inherit', fontSize:11, fontWeight:700 }}>
+                Xem phiếu hoàn →
+              </button>
+            )}
+            <button onClick={() => setDismissed(true)}
+              style={{ padding:'5px 12px', borderRadius:20, border:`1px solid ${T.border}`,
+                background:'transparent', color:T.light, cursor:'pointer', fontFamily:'inherit', fontSize:11 }}>
+              Bỏ qua
+            </button>
+          </div>
         </div>
-        <div style={{ fontSize:11, color:T.med, marginBottom:10, lineHeight:1.4 }}>
-          {myPending.slice(0,2).map((r: any) => (
-            <div key={r.id}>• {r.order_code} — {r.customer_name||'?'}</div>
-          ))}
-          {myPending.length>2 && <div>• ...và {myPending.length-2} đơn khác</div>}
-        </div>
-        <div style={{ display:'flex', gap:8 }}>
-          <button onClick={() => { setPage('wrongord'); setDismissed(true) }}
-            style={{ padding:'6px 14px', borderRadius:8, border:'none', background:T.red,
-              color:'#fff', cursor:'pointer', fontFamily:'inherit', fontSize:12, fontWeight:700 }}>
-            Xem ngay →
-          </button>
-          <button onClick={() => setDismissed(true)}
-            style={{ padding:'6px 12px', borderRadius:8, border:`1px solid ${T.border}`,
-              background:'transparent', color:T.light, cursor:'pointer', fontFamily:'inherit', fontSize:12 }}>
-            Bỏ qua
-          </button>
-        </div>
+        <button onClick={() => setDismissed(true)}
+          style={{ background:'none', border:'none', cursor:'pointer', color:T.light,
+            fontSize:18, padding:0, lineHeight:1, flexShrink:0 }}>✕</button>
       </div>
-      <button onClick={() => setDismissed(true)}
-        style={{ background:'none', border:'none', cursor:'pointer', color:T.light,
-          fontSize:18, padding:0, lineHeight:1, flexShrink:0 }}>✕</button>
     </div>
   )
 }
@@ -5199,6 +5236,7 @@ export default function App() {
   const [positions, setPositions]   = useState<any[]>([])
   const [products, setProducts]     = useState<any[]>([])
   const [wrongOrders, setWrongOrders] = useState<any[]>([])
+  const [returnSlips, setReturnSlips] = useState<any[]>([])
   const [loading, setLoading]       = useState(false)
   const width   = useWindowWidth()
   const mobile  = width < 768
@@ -5353,6 +5391,18 @@ export default function App() {
       })()
       db.from('wrong_orders').select('*').order('created_at',{ascending:false})
         .then(({data}) => { if (data) setWrongOrders(data) })
+      // Fetch return slips for notifications (last 30 days)
+      const thirtyAgo = new Date(Date.now()-30*86400000).toISOString().split('T')[0]
+      db.from('return_items').select('id,slip_id,sale_id,created_at,created_by,date')
+        .gte('date', thirtyAgo).order('created_at',{ascending:false})
+        .then(({data}) => {
+          if (!data) return
+          const seen = new Set<string>()
+          const slips = data.filter((r: any) => {
+            const sid = r.slip_id||r.id; if (seen.has(sid)) return false; seen.add(sid); return true
+          }).map((r: any) => ({ slip_id:r.slip_id||r.id, sale_id:r.sale_id, created_at:r.created_at, created_by:r.created_by }))
+          setReturnSlips(slips)
+        })
 
       // Merge DB data với localStorage backup để tránh mất đơn khi Supabase RLS chặn SELECT
       const dbLeave = lr.data || []
@@ -5458,7 +5508,7 @@ export default function App() {
         {/* Sticky Note — floating for all users */}
         {user && <StickyNote user={user}/>}
         {/* Notification Banner — wrong orders pending */}
-        {user && <NotifBanner user={user} wrongOrders={wrongOrders} setPage={setPage}/>}
+        {user && <NotifBanner user={user} wrongOrders={wrongOrders} returnSlips={returnSlips} setPage={setPage}/>}
       </div>
      )
 }
@@ -5683,7 +5733,7 @@ function WrongOrders({ user, allUsers, wrongOrders, setWrongOrders, mobile }: an
               const canDel       = (canAdd && r.status==='pending') || perm.viewAllDashboard
               return (
                 <div key={r.id} style={{ borderBottom:i<filtered.length-1?`1px solid ${T.border}`:'none',
-                  background:i%2===0?'#fff':T.bg }}>
+                  background:i%2===0?'#fff':T.rowAlt }}>
                   <div style={{ display:'grid', gridTemplateColumns:mobile?'80px 1fr auto':'90px 100px 110px 1fr 100px 100px auto',
                     padding:'9px 12px', alignItems:'center', gap:8 }}>
                     <span style={{ fontSize:11, color:T.light }}>
