@@ -80,6 +80,7 @@ const getPerm = (user: any) => {
     resetChecklist:     isAdmin || (pos.perm_reset_checklist      ?? false),
     viewBirthday:       isAdmin || (pos.perm_approve_leave ?? false) || (pos.perm_view_birthday ?? false),
     enterKiot:          isAdmin || (pos.perm_enter_kiot ?? false),
+    manageInventory:    isAdmin || (pos.perm_approve_leave ?? false) || (pos.perm_manage_inventory ?? false),
     resolveWrongOrder:  isAdmin || (pos.perm_approve_leave ?? false) || (pos.perm_resolve_wrong_order ?? false),
   }
 }
@@ -115,6 +116,7 @@ const ALL_PERMS = [
   { key:'perm_view_birthday',        label:'Xem ngày sinh nhật nhân viên',    group:'Nhân sự'   },
   { key:'perm_enter_kiot',           label:'Tích đã nhập KiotViet (hàng hoàn)', group:'Kho'      },
   { key:'perm_resolve_wrong_order',  label:'Xác nhận đã xử lý đơn sai',        group:'Kho'      },
+  { key:'perm_manage_inventory',     label:'Xử lý kiểm kê (QM Kho)',            group:'Kho'      },
 ]
 // ── UTILITIES ────────────────────────────────────
 const fmtNow   = () => new Date().toLocaleString('vi-VN',{hour:'2-digit',minute:'2-digit',day:'2-digit',month:'2-digit',year:'numeric'})
@@ -3712,17 +3714,17 @@ function StickyNote({ user }: any) {
   if (!open) {
     return (
       <button onClick={() => setOpen(true)}
-        style={{ position:'fixed', bottom:mobile_?72:20, right:20, zIndex:998,
-          width:44, height:44, borderRadius:'50%', background:T.gold, border:'none',
+        style={{ position:'fixed', bottom:mobile_?140:20, right:mobile_?12:20, zIndex:998,
+          width:40, height:40, borderRadius:'50%', background:T.gold, border:'none',
           boxShadow:'0 4px 12px rgba(196,151,58,0.4)', cursor:'pointer',
-          display:'flex', alignItems:'center', justifyContent:'center', fontSize:20 }}>
+          display:'flex', alignItems:'center', justifyContent:'center', fontSize:18 }}>
         📝
       </button>
     )
   }
   return (
-    <div style={{ position:'fixed', bottom:mobile_?70:20, right:20, zIndex:999,
-      width: mobile_?'calc(100vw - 40px)':340, background:T.card,
+    <div style={{ position:'fixed', bottom:mobile_?140:20, right:mobile_?8:20, zIndex:999,
+      width: mobile_?'calc(100vw - 16px)':340, background:T.card,
       border:`2px solid ${T.gold}`, borderRadius:16,
       boxShadow:'0 8px 32px rgba(0,0,0,0.18)', display:'flex', flexDirection:'column' }}>
       {/* Header */}
@@ -6380,7 +6382,8 @@ function InventoryModule({ user, allUsers, products, invSessions, setInvSessions
   })
   const p = mobile ? '16px' : '24px'
   const perm = getPerm(user)
-  const canManage = perm.viewAllDashboard || perm.approveLeave
+  const canManage = perm.viewAllDashboard || (perm as any).manageInventory
+  const isKhoNV   = user.dept_id === 'kho' && !canManage  // NV kho thường
   const canCheck  = user.dept_id === 'kho' || canManage
 
   const openSession = invSessions.find((s: any) => s.status === 'open')
@@ -6551,6 +6554,11 @@ function InventoryModule({ user, allUsers, products, invSessions, setInvSessions
     } catch(e: any) { alert('❌ Lỗi export: ' + e.message) }
   }
 
+  // NV kho mặc định vào tab Nhập liệu
+  useEffect(() => {
+    if (!canManage && tab === 'overview') setTab('check')
+  }, [canManage])
+
   if (loading) return <div style={{padding:p,textAlign:'center',color:T.light,paddingTop:40}}>⏳ Đang tải dữ liệu...</div>
 
   // Mobile check mode
@@ -6561,11 +6569,13 @@ function InventoryModule({ user, allUsers, products, invSessions, setInvSessions
   )
 
   const TABS = [
-    {id:'overview',     label:'📊 Tổng quan'},
-    {id:'sessions',     label:'📋 Phiên KK'},
-    {id:'check',        label:`✅ Nhập liệu${openSession?` (${myChecks.filter((c: any)=>c.actual_qty==null).length})`:''}`},
-    {id:'discrepancy',  label:`⚠️ Lệch kho${discrepancies.length?` (${discrepancies.length})`:''}`},
-    {id:'monthly',      label:'📈 Cuối tháng'},
+    ...(canManage ? [
+      {id:'overview',    label:'📊 Tổng quan'},
+      {id:'sessions',    label:'📋 Phiên KK'},
+    ] : []),
+    {id:'check',         label:`✅ Nhập liệu${openSession?` (${myChecks.filter((c: any)=>c.actual_qty==null).length})`:''}`},
+    {id:'discrepancy',   label:`⚠️ Lệch kho${discrepancies.length?` (${discrepancies.length})`:''}`},
+    {id:'monthly',       label:'📈 Cuối tháng'},
   ]
 
   return (
