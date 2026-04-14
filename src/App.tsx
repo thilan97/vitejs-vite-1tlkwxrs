@@ -6280,6 +6280,7 @@ function InventoryModule({ user, allUsers, products, invSessions, setInvSessions
   const [checks, setChecks] = useState<any[]>([])
   const [loading, setLoading] = useState(true)
   const [showCreate, setShowCreate] = useState(false)
+  const [showAssign, setShowAssign] = useState(false)
   const [mobileCheck, setMobileCheck] = useState(false)
   const [newDate, setNewDate] = useState(new Date().toISOString().split('T')[0])
   const [newNote, setNewNote] = useState('')
@@ -6411,6 +6412,21 @@ function InventoryModule({ user, allUsers, products, invSessions, setInvSessions
     return d.getFullYear()===fy && d.getMonth()+1===fm
   })
 
+  const exportKKForm = async (items: any[]) => {
+    try {
+      const xlsx = await import('https://cdn.jsdelivr.net/npm/xlsx@0.18.5/+esm' as any)
+      const wb = xlsx.utils.book_new()
+      const rows = [
+        ['STT','Mã SP','Tên Sản Phẩm','ĐVT','Tồn Hệ Thống','Tồn Thực Tế','Chênh Lệch','Người Kiểm Kê','Ghi Chú'],
+        ...items.map((p: any, i: number) => [i+1, p.code, p.name, p.unit||'', p.stock, '', '', '', ''])
+      ]
+      const ws = xlsx.utils.aoa_to_sheet(rows)
+      ws['!cols'] = [{wch:5},{wch:14},{wch:50},{wch:8},{wch:14},{wch:14},{wch:12},{wch:16},{wch:20}]
+      xlsx.utils.book_append_sheet(wb, ws, 'Phieu_KiemKe')
+      xlsx.writeFile(wb, `PhieuKiemKe_${new Date().toISOString().split('T')[0]}.xlsx`)
+    } catch(e: any) { alert('❌ Lỗi export: ' + e.message) }
+  }
+
   if (loading) return <div style={{padding:p,textAlign:'center',color:T.light,paddingTop:40}}>⏳ Đang tải dữ liệu...</div>
 
   // Mobile check mode
@@ -6425,6 +6441,7 @@ function InventoryModule({ user, allUsers, products, invSessions, setInvSessions
     {id:'sessions',     label:'📋 Phiên KK'},
     {id:'check',        label:`✅ Nhập liệu${openSession?` (${myChecks.filter((c: any)=>c.actual_qty==null).length})`:''}`},
     {id:'discrepancy',  label:`⚠️ Lệch kho${discrepancies.length?` (${discrepancies.length})`:''}`},
+    {id:'monthly',      label:'📈 Cuối tháng'},
   ]
 
   return (
@@ -6520,6 +6537,29 @@ function InventoryModule({ user, allUsers, products, invSessions, setInvSessions
       {/* ── TAB: PHIÊN KK ── */}
       {tab==='sessions' && (
         <div style={{display:'flex',flexDirection:'column',gap:12}}>
+          {/* Gợi ý + Export + Assign */}
+          {canManage && openSession && (
+            <Card style={{display:'flex',alignItems:'center',justifyContent:'space-between',flexWrap:'wrap',gap:12}}>
+              <div>
+                <div style={{fontSize:13,fontWeight:700,color:T.dark}}>Phiên đang mở: {openSession.date}</div>
+                <div style={{fontSize:11,color:T.light}}>
+                  {checks.filter((c: any)=>c.session_id===openSession.id).length} mã đã được phân · Bấm để phân chia thêm
+                </div>
+              </div>
+              <div style={{display:'flex',gap:8}}>
+                <button onClick={async () => {
+                  const toExport = products.filter((p: any) => p.stock>0).slice(0,150)
+                  exportKKForm(toExport)
+                }}
+                  style={{padding:'7px 14px',borderRadius:20,border:`1.5px solid ${T.border}`,
+                    background:'transparent',cursor:'pointer',fontSize:12,fontFamily:'inherit',color:T.med}}>
+                  📄 Xuất phiếu KK
+                </button>
+                <GoldBtn small onClick={() => setShowAssign(true)}>👥 Phân chia mã</GoldBtn>
+              </div>
+            </Card>
+          )}
+
           {/* Import Excel */}
           <Card>
             <div style={{fontSize:13,fontWeight:700,color:T.dark,marginBottom:8}}>📥 Import từ Excel</div>
@@ -6759,6 +6799,138 @@ function InventoryModule({ user, allUsers, products, invSessions, setInvSessions
         </div>
       )}
 
+      {/* ── TAB: CUỐI THÁNG ── */}
+      {tab==='monthly' && (
+        <div style={{display:'flex',flexDirection:'column',gap:12}}>
+          <div style={{display:'flex',gap:8,alignItems:'center',flexWrap:'wrap',marginBottom:4}}>
+            <input type="month" value={monthFilter} onChange={e => setMonthFilter(e.target.value)}
+              style={{padding:'6px 10px',border:`1px solid ${T.border}`,borderRadius:8,
+                fontSize:12,fontFamily:'inherit',color:T.dark,background:T.bg}}/>
+            <span style={{fontSize:12,color:T.light}}>Chỉ tính mã có trạng thái "Không tìm được nguyên nhân"</span>
+          </div>
+          {(() => {
+            const noReason = monthChecks.filter((c: any) => c.diff_status==='no_reason' && c.diff!=null && c.diff!==0)
+            const totalCost = noReason.reduce((s: number, c: any) => {
+              const price = c.price_override ?? c.base_price ?? 0
+              return s + Math.abs(c.diff||0) * price
+            }, 0)
+            return (
+              <>
+                {/* Summary cards */}
+                <div style={{display:'grid',gridTemplateColumns:mobile?'1fr 1fr':'repeat(3,1fr)',gap:12}}>
+                  {[
+                    ['📦 SP không tìm được NN', noReason.length, T.red],
+                    ['💰 Tổng tiền mất ước tính', totalCost.toLocaleString('vi-VN')+'đ', T.amber],
+                    ['👥 Số NV phòng Kho', allUsers.filter((u: any)=>u.dept_id==='kho').length, T.blue],
+                  ].map(([label,val,color]) => (
+                    <Card key={label as string} style={{textAlign:'center',padding:'14px 12px'}}>
+                      <div style={{fontSize:20,fontWeight:800,color:color as string}}>{val}</div>
+                      <div style={{fontSize:11,color:T.light,marginTop:4}}>{label}</div>
+                    </Card>
+                  ))}
+                </div>
+                {/* Per-person cost */}
+                {noReason.length>0 && (
+                  <Card style={{padding:'12px 16px'}}>
+                    <div style={{fontSize:12,fontWeight:700,color:T.dark,marginBottom:6}}>
+                      💸 Mỗi NV Kho chịu trách nhiệm (chia đều):
+                    </div>
+                    <div style={{fontSize:22,fontWeight:800,color:T.red}}>
+                      {allUsers.filter((u: any)=>u.dept_id==='kho').length>0
+                        ? Math.round(totalCost/allUsers.filter((u: any)=>u.dept_id==='kho').length).toLocaleString('vi-VN')+'đ'
+                        : '—'}
+                    </div>
+                  </Card>
+                )}
+                {/* Detail table */}
+                <div style={{background:T.card,borderRadius:12,border:`1px solid ${T.border}`,overflow:'hidden',boxShadow:'0 1px 4px rgba(0,0,0,0.06)'}}>
+                  {!mobile && (
+                    <div style={{display:'grid',gridTemplateColumns:'100px 1fr 90px 60px 60px 80px 110px 120px',
+                      padding:'8px 12px',background:T.bg,borderBottom:`2px solid ${T.border}`,
+                      fontSize:10,fontWeight:700,color:T.light,textTransform:'uppercase',letterSpacing:.5,gap:8}}>
+                      <span>Ngày KK</span><span>Sản phẩm</span><span>Mã SP</span>
+                      <span style={{textAlign:'center'}}>Lệch</span>
+                      <span style={{textAlign:'center'}}>Giá vốn</span>
+                      <span style={{textAlign:'right'}}>Tiền mất</span>
+                      <span>Override giá</span>
+                      <span style={{textAlign:'center'}}>Người KK</span>
+                    </div>
+                  )}
+                  {noReason.length===0
+                    ? <div style={{padding:'32px',textAlign:'center',color:T.green,fontSize:13}}>
+                        ✅ Không có mã nào ở trạng thái "Không tìm được nguyên nhân"
+                      </div>
+                    : noReason.map((c: any, i: number) => {
+                        const sess     = invSessions.find((s: any) => s.id===c.session_id)
+                        const price    = c.price_override ?? c.base_price ?? 0
+                        const lostVal  = Math.abs(c.diff||0) * price
+                        const checker  = allUsers.find((u: any) => u.id===c.assigned_to)
+                        return (
+                          <div key={c.id} style={{display:mobile?'block':'grid',
+                            gridTemplateColumns:'100px 1fr 90px 60px 60px 80px 110px 120px',
+                            padding:'9px 12px',gap:8,alignItems:'center',
+                            borderBottom:i<noReason.length-1?`1px solid ${T.border}`:'none',
+                            background:i%2===0?'#fff':T.rowAlt}}>
+                            <span style={{fontSize:11,color:T.light}}>{sess?.date||'—'}</span>
+                            <span style={{fontSize:12,fontWeight:500,color:T.dark}}>{c.product_name}</span>
+                            <span style={{fontSize:10,color:T.light}}>{c.product_code}</span>
+                            <span style={{fontSize:13,fontWeight:800,textAlign:'center',
+                              color:c.diff>0?T.blue:T.red}}>{c.diff>0?'+':''}{c.diff}</span>
+                            <span style={{fontSize:11,textAlign:'center',color:T.med}}>
+                              {(c.base_price||0).toLocaleString()}đ
+                            </span>
+                            <span style={{fontSize:12,fontWeight:700,textAlign:'right',color:T.red}}>
+                              {lostVal>0?lostVal.toLocaleString('vi-VN')+'đ':'—'}
+                            </span>
+                            {/* Override giá — admin only */}
+                            <div>
+                              {perm.viewAllDashboard ? (
+                                <input type="number" defaultValue={c.price_override||''}
+                                  placeholder={String(c.base_price||0)}
+                                  onBlur={async e => {
+                                    const v = e.target.value ? Number(e.target.value) : null
+                                    await db.from('inventory_checks').update({price_override:v}).eq('id',c.id)
+                                    updateCheck(c.id, {price_override:v})
+                                  }}
+                                  style={{width:'100%',padding:'4px 7px',border:`1px solid ${T.border}`,
+                                    borderRadius:7,fontSize:11,fontFamily:'inherit',color:T.dark,background:'#fff'}}/>
+                              ) : (
+                                <span style={{fontSize:11,color:c.price_override?T.blue:T.light}}>
+                                  {c.price_override?c.price_override.toLocaleString()+'đ':'—'}
+                                </span>
+                              )}
+                            </div>
+                            <span style={{fontSize:11,textAlign:'center',color:T.med}}>{checker?.name||'—'}</span>
+                          </div>
+                        )
+                      })
+                  }
+                  {noReason.length>0 && (
+                    <div style={{padding:'10px 12px',background:T.redBg,borderTop:`2px solid ${T.red}`,
+                      display:'flex',justifyContent:'space-between',alignItems:'center'}}>
+                      <span style={{fontSize:13,fontWeight:700,color:T.red}}>TỔNG TIỀN MẤT THÁNG {fm}/{fy}</span>
+                      <span style={{fontSize:16,fontWeight:800,color:T.red}}>
+                        {totalCost.toLocaleString('vi-VN')}đ
+                      </span>
+                    </div>
+                  )}
+                </div>
+              </>
+            )
+          })()}
+        </div>
+      )}
+
+      {/* ── Modal phân chia mã ── */}
+      {showAssign && openSession && (
+        <AssignModal session={openSession} products={products} allUsers={allUsers}
+          user={user} checks={checks} onAssigned={(newChecks: any[]) => {
+            setChecks(prev => [...prev, ...newChecks])
+            setInvSessions(prev => prev.map((s: any) => s.id===openSession.id
+              ? {...s, total_assigned:(s.total_assigned||0)+newChecks.length} : s))
+          }} onClose={() => setShowAssign(false)}/>
+      )}
+
       {/* ── Modal tạo phiên ── */}
       <Modal open={showCreate} onClose={() => setShowCreate(false)} title="📋 Tạo phiên kiểm kê mới">
         <Inp label="Ngày kiểm kê *" type="date" value={newDate} onChange={(v) => setNewDate(v)}/>
@@ -6772,6 +6944,198 @@ function InventoryModule({ user, allUsers, products, invSessions, setInvSessions
           <GoldBtn small onClick={createSession} disabled={!newDate}>Tạo phiên</GoldBtn>
         </div>
       </Modal>
+    </div>
+  )
+}
+
+// ── AssignModal — phân chia mã KK cho NV ────────────────
+function AssignModal({ session, products, allUsers, user, checks, onAssigned, onClose }: any) {
+  const khoUsers = allUsers.filter((u: any) => u.dept_id==='kho')
+  const [selectedNVs, setSelectedNVs] = useState<string[]>([])
+  const [targetCount, setTargetCount] = useState(150)
+  const [step, setStep] = useState<'select_nv'|'preview'>('select_nv')
+
+  const existingCodes = new Set(
+    checks.filter((c: any) => c.session_id===session.id).map((c: any) => c.product_code)
+  )
+  const checkedHistory = new Set(checks.map((c: any) => c.product_code))
+
+  // Generate suggested product list: ưu tiên chưa KK, chia 3 nhóm tồn
+  const available = products.filter((p: any) =>
+    p.stock > 0 && p.active && !existingCodes.has(p.code)
+  ).sort((a: any, b: any) => {
+    const aNew = !checkedHistory.has(a.code)
+    const bNew = !checkedHistory.has(b.code)
+    if (aNew && !bNew) return -1
+    if (!aNew && bNew) return 1
+    return 0
+  })
+
+  const highStock = available.filter((p: any) => p.stock >= 100)
+  const midStock  = available.filter((p: any) => p.stock >= 20 && p.stock < 100)
+  const lowStock  = available.filter((p: any) => p.stock > 0 && p.stock < 20)
+
+  const each = Math.floor(targetCount / 3)
+  const selected3 = [
+    ...highStock.slice(0, each).map((p: any) => ({...p, _group:'Tồn nhiều (≥100)'})),
+    ...midStock.slice(0,  each).map((p: any) => ({...p, _group:'Tồn vừa (20-99)'})),
+    ...lowStock.slice(0, targetCount - each*2).map((p: any) => ({...p, _group:'Tồn ít (<20)'})),
+  ]
+
+  // Assign algorithm: interleave across NVs
+  const buildAssignment = () => {
+    if (selectedNVs.length === 0) return []
+    const shuffled = [...selected3]
+    // Distribute round-robin across NVs
+    return shuffled.map((prod, idx) => {
+      const nvId = selectedNVs[idx % selectedNVs.length]
+      return {
+        id: `chk_${session.id}_${prod.code}_${Date.now()}_${idx}`,
+        session_id: session.id, product_code: prod.code,
+        product_name: prod.name, system_qty: prod.stock,
+        actual_qty: null, diff: null,
+        base_price: prod.base_price || 0,
+        assigned_to: nvId, status:'pending',
+        diff_status:'', diff_note:'',
+        checked_at:'', created_at: new Date().toISOString()
+      }
+    })
+  }
+
+  const preview = step==='preview' ? buildAssignment() : []
+  const perNV   = selectedNVs.map(id => ({
+    nv: allUsers.find((u: any) => u.id===id),
+    count: preview.filter((c: any) => c.assigned_to===id).length,
+    high: preview.filter((c: any) => c.assigned_to===id && (products.find((p: any)=>p.code===c.product_code)?.stock||0)>=100).length,
+    mid:  preview.filter((c: any) => c.assigned_to===id && (products.find((p: any)=>p.code===c.product_code)?.stock||0)>=20 && (products.find((p: any)=>p.code===c.product_code)?.stock||0)<100).length,
+    low:  preview.filter((c: any) => c.assigned_to===id && (products.find((p: any)=>p.code===c.product_code)?.stock||0)<20).length,
+  }))
+
+  const doAssign = async () => {
+    const newChecks = buildAssignment()
+    await db.from('inventory_checks').insert(newChecks)
+    onAssigned(newChecks)
+    onClose()
+  }
+
+  return (
+    <Modal open={true} onClose={onClose} title="👥 Phân chia mã kiểm kê" wide>
+      {step==='select_nv' ? (
+        <>
+          {/* Target count */}
+          <div style={{display:'grid',gridTemplateColumns:'1fr auto',gap:12,alignItems:'end',marginBottom:16}}>
+            <Inp label="Số mã kiểm kê (chia theo 3 nhóm tồn)"
+              type="number" value={String(targetCount)}
+              onChange={(v) => setTargetCount(Math.min(Number(v)||150, available.length))}/>
+            <div style={{fontSize:11,color:T.light,paddingBottom:12}}>
+              Còn: {available.length} SP hợp lệ
+            </div>
+          </div>
+
+          {/* Preview 3 groups */}
+          <div style={{display:'grid',gridTemplateColumns:'repeat(3,1fr)',gap:8,marginBottom:16}}>
+            {[
+              {label:'🔴 Tồn nhiều (≥100)',   count:Math.min(each, highStock.length),   total:highStock.length,  color:T.red},
+              {label:'🟡 Tồn vừa (20-99)',    count:Math.min(each, midStock.length),    total:midStock.length,   color:T.amber},
+              {label:'🟢 Tồn ít (<20)',       count:Math.min(targetCount-each*2, lowStock.length), total:lowStock.length, color:T.green},
+            ].map(g => (
+              <div key={g.label} style={{padding:'10px',background:T.bg,borderRadius:10,
+                border:`1px solid ${T.border}`,textAlign:'center'}}>
+                <div style={{fontSize:11,color:T.med,marginBottom:4}}>{g.label}</div>
+                <div style={{fontSize:18,fontWeight:800,color:g.color}}>{g.count}</div>
+                <div style={{fontSize:10,color:T.light}}>/ {g.total} có thể</div>
+              </div>
+            ))}
+          </div>
+
+          {/* Select NVs */}
+          <div style={{marginBottom:14}}>
+            <div style={{fontSize:12,fontWeight:600,color:T.dark,marginBottom:8}}>Chọn nhân viên kiểm kê:</div>
+            <div style={{display:'flex',flexDirection:'column',gap:6}}>
+              {khoUsers.map((u: any) => {
+                const sel = selectedNVs.includes(u.id)
+                return (
+                  <label key={u.id} style={{display:'flex',alignItems:'center',gap:10,
+                    padding:'8px 12px',borderRadius:10,cursor:'pointer',
+                    background:sel?T.goldBg:T.bg,border:`1px solid ${sel?T.gold:T.border}`}}>
+                    <input type="checkbox" checked={sel}
+                      onChange={() => setSelectedNVs(prev =>
+                        sel ? prev.filter(id => id!==u.id) : [...prev,u.id]
+                      )}/>
+                    <span style={{fontSize:13,fontWeight:sel?700:400,color:sel?T.goldText:T.dark}}>
+                      {u.name}
+                    </span>
+                    <span style={{fontSize:11,color:T.light}}>{u.position_name||''}</span>
+                  </label>
+                )
+              })}
+            </div>
+          </div>
+
+          {selectedNVs.length>0 && (
+            <div style={{padding:'8px 12px',background:T.blueBg,borderRadius:8,
+              fontSize:12,color:T.blue,marginBottom:14}}>
+              💡 {selected3.length} mã sẽ chia cho {selectedNVs.length} NV — mỗi người ~{Math.ceil(selected3.length/selectedNVs.length)} mã (mix đều 3 nhóm)
+            </div>
+          )}
+
+          <div style={{display:'flex',justifyContent:'flex-end',gap:10}}>
+            <GoldBtn outline small onClick={onClose}>Hủy</GoldBtn>
+            <GoldBtn small disabled={selectedNVs.length===0||selected3.length===0}
+              onClick={() => setStep('preview')}>Xem trước →</GoldBtn>
+          </div>
+        </>
+      ) : (
+        <>
+          {/* Preview assignment */}
+          <div style={{marginBottom:14}}>
+            <div style={{fontSize:13,fontWeight:700,color:T.dark,marginBottom:10}}>
+              Phân chia {selected3.length} mã cho {selectedNVs.length} nhân viên:
+            </div>
+            <div style={{display:'flex',flexDirection:'column',gap:8}}>
+              {perNV.map(({nv,count,high,mid,low}) => (
+                <div key={nv?.id} style={{display:'flex',alignItems:'center',gap:12,
+                  padding:'10px 14px',background:T.bg,borderRadius:10,border:`1px solid ${T.border}`}}>
+                  <div style={{width:32,height:32,borderRadius:'50%',background:T.gold,
+                    display:'flex',alignItems:'center',justifyContent:'center',
+                    color:'#fff',fontSize:11,fontWeight:700,flexShrink:0}}>{nv?.ini||'?'}</div>
+                  <div style={{flex:1}}>
+                    <div style={{fontSize:13,fontWeight:700,color:T.dark}}>{nv?.name||'?'}</div>
+                    <div style={{fontSize:11,color:T.light}}>
+                      🔴 {high} mã tồn nhiều · 🟡 {mid} mã tồn vừa · 🟢 {low} mã tồn ít
+                    </div>
+                  </div>
+                  <div style={{fontSize:18,fontWeight:800,color:T.blue}}>{count}</div>
+                </div>
+              ))}
+            </div>
+          </div>
+
+          <div style={{display:'flex',justifyContent:'space-between',gap:10}}>
+            <GoldBtn outline small onClick={() => setStep('select_nv')}>← Quay lại</GoldBtn>
+            <GoldBtn small onClick={doAssign}>✅ Xác nhận phân chia</GoldBtn>
+          </div>
+        </>
+      )}
+    </Modal>
+  )
+}
+
+// ── DoubleCheckBanner — hiện trong MobileCheckInput khi có mã cần double-check ──
+function DoubleCheckNotice({ checks, sessionId, userId }: any) {
+  const mine = checks.filter((c: any) =>
+    c.session_id===sessionId && c.double_check_by===userId && c.double_actual_qty==null
+  )
+  if (mine.length===0) return null
+  return (
+    <div style={{padding:'10px 14px',background:T.amberBg,borderRadius:10,
+      border:`1.5px solid ${T.amber}`,marginBottom:12}}>
+      <div style={{fontSize:12,fontWeight:700,color:T.amber,marginBottom:4}}>
+        ⚡ Bạn có {mine.length} mã cần kiểm kê lại (double-check)
+      </div>
+      <div style={{fontSize:11,color:T.med}}>
+        Các mã này đã được người khác kiểm kê nhưng phát hiện lệch — cần bạn xác nhận lại.
+      </div>
     </div>
   )
 }
