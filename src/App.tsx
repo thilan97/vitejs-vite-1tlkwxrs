@@ -3663,6 +3663,15 @@ function ReturnSaleForm({ item, allUsers, saleUsers, onSave, onClose }: any) {
     return !q || u.name.toLowerCase().includes(q) || (u.ini||'').toLowerCase().includes(q)
   }).slice(0,8)
 
+  // Chỉ lấy nhân viên phòng sale
+  const saleOnlyUsers = allUsers.filter((u: any) => u.dept_id === 'sale')
+  // Nhân viên vi phạm: kho + sale
+  const violatorUsers = allUsers.filter((u: any) => u.dept_id === 'kho' || u.dept_id === 'sale')
+  const violatorResults = violatorUsers.filter((u: any) => {
+    const q = userSearch.toLowerCase()
+    return !q || u.name.toLowerCase().includes(q) || (u.ini||'').toLowerCase().includes(q)
+  }).slice(0,8)
+
   return (
     <div>
       <div style={{ padding:'8px 12px', background:T.goldBg, borderRadius:8, marginBottom:14, fontSize:12, color:T.goldText }}>
@@ -3675,20 +3684,20 @@ function ReturnSaleForm({ item, allUsers, saleUsers, onSave, onClose }: any) {
         onChange={(v: string) => setEf(f => ({...f,original_order_code:v}))} placeholder="VD: DH000842"/>
       <Sel label="Sale phụ trách" value={ef.sale_id}
         onChange={(v: string) => setEf(f => ({...f,sale_id:v}))}
-        options={[{value:'',label:'— Chọn sale —'},...saleUsers.map((u: any) => ({value:u.id,label:u.name}))]}/>
+        options={[{value:'',label:'— Chọn sale —'},...saleOnlyUsers.map((u: any) => ({value:u.id,label:u.name}))]}/>
       <div style={{ marginBottom:13 }}>
-        <div style={{ fontSize:12, fontWeight:500, color:T.med, marginBottom:5 }}>Nhân viên vi phạm</div>
+        <div style={{ fontSize:12, fontWeight:500, color:T.med, marginBottom:5 }}>Nhân viên vi phạm (Kho/Sale)</div>
         <input value={userSearch} onChange={e => setUserSearch(e.target.value)} placeholder="Tìm tên NV..."
           style={{ width:'100%', padding:'8px 11px', border:`1px solid ${T.border}`, borderRadius:8,
             fontSize:13, fontFamily:'inherit', color:T.dark, background:'#fff', boxSizing:'border-box' as any, outline:'none', marginBottom:6 }}/>
         {userSearch && (
           <div style={{ border:`1px solid ${T.border}`, borderRadius:8, overflow:'hidden', maxHeight:160, overflowY:'auto' }}>
-            {userResults.map((u: any) => (
+            {violatorResults.map((u: any) => (
               <div key={u.id} onClick={() => { setEf(f => ({...f,violator_id:u.id})); setUserSearch(u.name) }}
                 style={{ padding:'8px 12px', cursor:'pointer', fontSize:13, borderBottom:`1px solid ${T.border}`,
                   background:ef.violator_id===u.id?T.goldBg:'#fff',
                   color:ef.violator_id===u.id?T.goldText:T.dark }}>
-                {u.name} <span style={{ fontSize:11, color:T.light }}>· {u.position_name||u.dept_name}</span>
+                {u.name} <span style={{ fontSize:11, color:T.light }}>· {u.dept_name||u.dept_id}</span>
               </div>
             ))}
           </div>
@@ -3794,7 +3803,7 @@ function ReturnItems({ user, allUsers, products, mobile }: any) {
   }
 
   const CONDITIONS = ['Bình thường', 'Móp', 'Rách', 'Hỏng', 'Khác']
-  const saleUsers = allUsers.filter((u: any) => u.dept_id==='sale' || u.dept_id==='all' || perm.viewAllDashboard)
+  const saleUsers = allUsers.filter((u: any) => u.dept_id === 'sale')
 
   // Stats
   const stats = {
@@ -4796,12 +4805,17 @@ function NotifBanner({ user, wrongOrders, setPage }: any) {
 }
 
 export default function App() {
-  // Reset body để tránh khoảng đen/trắng thừa
+  // Inject global CSS để đảm bảo full màn hình
   useEffect(() => {
-    const s = document.body.style
-    s.margin = '0'; s.padding = '0'
-    document.documentElement.style.height = '100%'
-    s.height = '100%'
+    const style = document.createElement('style')
+    style.id = 'la-global'
+    style.textContent = `
+      *, *::before, *::after { box-sizing: border-box; }
+      html, body { margin: 0; padding: 0; width: 100%; height: 100%; background: #F7F5F2; }
+      #root { width: 100%; height: 100%; display: flex; flex-direction: column; }
+    `
+    if (!document.getElementById('la-global')) document.head.appendChild(style)
+    return () => { const el = document.getElementById('la-global'); if (el) el.remove() }
   }, [])
 
   const [user, setUser] = useState<any>(() => {
@@ -5284,9 +5298,9 @@ function WrongOrders({ user, allUsers, wrongOrders, setWrongOrders, mobile }: an
         </div>
         <Inp label="Tên khách hàng" value={form.customer_name} onChange={(v: string) => setForm((f: any) => ({...f,customer_name:v}))} placeholder="Tên KH..."/>
         <Sel label="Sale phụ trách" value={form.sale_id} onChange={(v: string) => setForm((f: any) => ({...f,sale_id:v}))}
-          options={[{value:'',label:'— Chọn sale —'},...allUsers.filter((u: any)=>u.dept_id==='sale'||perm.viewAllDashboard).map((u: any)=>({value:u.id,label:u.name}))]}/>
-        <Sel label="Nhân viên vi phạm" value={form.violator_id} onChange={(v: string) => setForm((f: any) => ({...f,violator_id:v}))}
-          options={[{value:'',label:'— Chọn NV —'},...allUsers.map((u: any)=>({value:u.id,label:`${u.name} (${u.dept_name||u.dept_id})`}))]}/>
+          options={[{value:'',label:'— Chọn sale —'},...allUsers.filter((u: any)=>u.dept_id==='sale').map((u: any)=>({value:u.id,label:u.name}))]}/>
+        <Sel label="Nhân viên vi phạm (Kho/Sale)" value={form.violator_id} onChange={(v: string) => setForm((f: any) => ({...f,violator_id:v}))}
+          options={[{value:'',label:'— Chọn NV —'},...allUsers.filter((u: any)=>u.dept_id==='kho'||u.dept_id==='sale').map((u: any)=>({value:u.id,label:`${u.name} (${u.dept_name||u.dept_id})`}))]}/>
         <div style={{ marginBottom:13 }}>
           <div style={{ fontSize:12, fontWeight:500, color:T.med, marginBottom:5 }}>Chi tiết đơn sai *</div>
           <textarea value={form.detail} onChange={e => setForm((f: any) => ({...f,detail:e.target.value}))}
