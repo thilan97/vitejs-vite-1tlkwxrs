@@ -3487,7 +3487,7 @@ function StickyNote({ user }: any) {
   const [open,    setOpen]    = React.useState(false)
   const [saving,  setSaving]  = React.useState(false)
   const [popupOn, setPopupOn] = React.useState(() => { try { return localStorage.getItem(settKey) !== 'off' } catch { return true } })
-  const ref = useRef<any>(null)
+  const ref = React.useRef<any>(null)
 
   useEffect(() => {
     // Load note từ Supabase khi mount
@@ -3517,6 +3517,8 @@ function StickyNote({ user }: any) {
     await save(text, next)
   }
 
+  const mobile_ = window.innerWidth < 768
+
   if (!open) {
     return (
       <button onClick={() => setOpen(true)}
@@ -3528,7 +3530,6 @@ function StickyNote({ user }: any) {
       </button>
     )
   }
-  const mobile_ = window.innerWidth < 768
   return (
     <div style={{ position:'fixed', bottom:mobile_?70:20, right:20, zIndex:999,
       width: mobile_?'calc(100vw - 40px)':340, background:T.card,
@@ -3571,6 +3572,78 @@ function StickyNote({ user }: any) {
           style={{ fontSize:11, color:T.red, background:'transparent', border:'none', cursor:'pointer', fontFamily:'inherit' }}>
           🗑️ Xóa hết
         </button>
+      </div>
+    </div>
+  )
+}
+
+// ── RETURN SALE FORM (sub-component để tránh hooks violation) ────
+function ReturnSaleForm({ item, allUsers, saleUsers, onSave, onClose }: any) {
+  const [ef, setEf] = useState({
+    customer_name:       item.customer_name       || '',
+    original_order_code: item.original_order_code || '',
+    sale_id:             item.sale_id             || '',
+    violator_id:         item.violator_id         || '',
+    reason:              item.reason              || '',
+    sale_note:           item.sale_note           || '',
+    entered_kiot:        item.entered_kiot        || false,
+  })
+  const [userSearch, setUserSearch] = useState('')
+  const userResults = allUsers.filter((u: any) => {
+    const q = userSearch.toLowerCase()
+    return !q || u.name.toLowerCase().includes(q) || (u.ini||'').toLowerCase().includes(q)
+  }).slice(0,8)
+
+  return (
+    <div>
+      <div style={{ padding:'8px 12px', background:T.goldBg, borderRadius:8, marginBottom:14, fontSize:12, color:T.goldText }}>
+        📦 {item.product_name} · {item.quantity} cái · {item.condition}
+        {item.ship_fee>0 && ` · Ship: ${item.ship_fee.toLocaleString()}đ`}
+      </div>
+      <Inp label="Tên khách hàng" value={ef.customer_name}
+        onChange={(v: string) => setEf(f => ({...f,customer_name:v}))} placeholder="Tên KH..."/>
+      <Inp label="Mã đơn gốc bị sai" value={ef.original_order_code}
+        onChange={(v: string) => setEf(f => ({...f,original_order_code:v}))} placeholder="VD: DH000842"/>
+      <Sel label="Sale phụ trách" value={ef.sale_id}
+        onChange={(v: string) => setEf(f => ({...f,sale_id:v}))}
+        options={[{value:'',label:'— Chọn sale —'},...saleUsers.map((u: any) => ({value:u.id,label:u.name}))]}/>
+      <div style={{ marginBottom:13 }}>
+        <div style={{ fontSize:12, fontWeight:500, color:T.med, marginBottom:5 }}>Nhân viên vi phạm</div>
+        <input value={userSearch} onChange={e => setUserSearch(e.target.value)} placeholder="Tìm tên NV..."
+          style={{ width:'100%', padding:'8px 11px', border:`1px solid ${T.border}`, borderRadius:8,
+            fontSize:13, fontFamily:'inherit', color:T.dark, background:'#fff', boxSizing:'border-box' as any, outline:'none', marginBottom:6 }}/>
+        {userSearch && (
+          <div style={{ border:`1px solid ${T.border}`, borderRadius:8, overflow:'hidden', maxHeight:160, overflowY:'auto' }}>
+            {userResults.map((u: any) => (
+              <div key={u.id} onClick={() => { setEf(f => ({...f,violator_id:u.id})); setUserSearch(u.name) }}
+                style={{ padding:'8px 12px', cursor:'pointer', fontSize:13, borderBottom:`1px solid ${T.border}`,
+                  background:ef.violator_id===u.id?T.goldBg:'#fff',
+                  color:ef.violator_id===u.id?T.goldText:T.dark }}>
+                {u.name} <span style={{ fontSize:11, color:T.light }}>· {u.position_name||u.dept_name}</span>
+              </div>
+            ))}
+          </div>
+        )}
+        {ef.violator_id && !userSearch && (
+          <div style={{ fontSize:12, color:T.red }}>
+            ⚠️ {allUsers.find((u: any) => u.id===ef.violator_id)?.name}
+            <button onClick={() => setEf(f => ({...f,violator_id:''}))}
+              style={{ marginLeft:8, fontSize:11, color:T.light, background:'none', border:'none', cursor:'pointer' }}>✕</button>
+          </div>
+        )}
+      </div>
+      <Inp label="Lý do hoàn" value={ef.reason}
+        onChange={(v: string) => setEf(f => ({...f,reason:v}))} placeholder="Lý do..."/>
+      <Inp label="Ghi chú sale" value={ef.sale_note}
+        onChange={(v: string) => setEf(f => ({...f,sale_note:v}))} placeholder="Ghi chú thêm..."/>
+      <div style={{ display:'flex', alignItems:'center', gap:10, marginBottom:14 }}>
+        <input type="checkbox" id="kiot2" checked={ef.entered_kiot}
+          onChange={e => setEf(f => ({...f,entered_kiot:e.target.checked}))}/>
+        <label htmlFor="kiot2" style={{ fontSize:13, color:T.dark, cursor:'pointer' }}>✅ Đã nhập KiotViet</label>
+      </div>
+      <div style={{ display:'flex', justifyContent:'flex-end', gap:10 }}>
+        <GoldBtn outline small onClick={onClose}>Hủy</GoldBtn>
+        <GoldBtn small onClick={() => onSave(ef)}>Lưu</GoldBtn>
       </div>
     </div>
   )
@@ -3839,77 +3912,12 @@ function ReturnItems({ user, allUsers, mobile }: any) {
         </div>
       </Modal>
 
-      {/* Modal sale điền thông tin */}
+      {/* Modal sale điền thông tin — dùng state ở level ReturnItems */}
       <Modal open={!!showEdit} onClose={() => setShowEdit(null)} title={showEdit?.customer_name?'Sửa thông tin sale':'💼 Sale điền thông tin'}>
-        {showEdit && (() => {
-          const [ef, setEf] = React.useState({
-            customer_name:    showEdit.customer_name    || '',
-            original_order_code: showEdit.original_order_code || '',
-            sale_id:          showEdit.sale_id          || '',
-            violator_id:      showEdit.violator_id      || '',
-            reason:           showEdit.reason           || '',
-            sale_note:        showEdit.sale_note        || '',
-            entered_kiot:     showEdit.entered_kiot     || false,
-          })
-          const [userSearch, setUserSearch] = React.useState('')
-          const userResults = allUsers.filter((u: any) => {
-            const q = userSearch.toLowerCase()
-            return !q || u.name.toLowerCase().includes(q) || (u.ini||'').toLowerCase().includes(q)
-          }).slice(0,8)
-          return (
-            <div>
-              <div style={{ padding:'8px 12px', background:T.goldBg, borderRadius:8, marginBottom:14, fontSize:12, color:T.goldText }}>
-                📦 {showEdit.product_name} · {showEdit.quantity} cái · {showEdit.condition}
-                {showEdit.ship_fee>0 && ` · Ship: ${showEdit.ship_fee.toLocaleString()}đ`}
-              </div>
-              <Inp label="Tên khách hàng" value={ef.customer_name}
-                onChange={(v: string) => setEf(f => ({...f,customer_name:v}))} placeholder="Tên KH..."/>
-              <Inp label="Mã đơn gốc bị sai" value={ef.original_order_code}
-                onChange={(v: string) => setEf(f => ({...f,original_order_code:v}))} placeholder="VD: DH000842"/>
-              <Sel label="Sale phụ trách" value={ef.sale_id}
-                onChange={(v: string) => setEf(f => ({...f,sale_id:v}))}
-                options={[{value:'',label:'— Chọn sale —'},...saleUsers.map((u: any) => ({value:u.id,label:u.name}))]}/>
-              <div style={{ marginBottom:13 }}>
-                <div style={{ fontSize:12, fontWeight:500, color:T.med, marginBottom:5 }}>Nhân viên vi phạm</div>
-                <input value={userSearch} onChange={e => setUserSearch(e.target.value)} placeholder="Tìm tên NV..."
-                  style={{ width:'100%', padding:'8px 11px', border:`1px solid ${T.border}`, borderRadius:8,
-                    fontSize:13, fontFamily:'inherit', color:T.dark, background:'#fff', boxSizing:'border-box' as any, outline:'none', marginBottom:6 }}/>
-                {userSearch && (
-                  <div style={{ border:`1px solid ${T.border}`, borderRadius:8, overflow:'hidden', maxHeight:160, overflowY:'auto' }}>
-                    {userResults.map((u: any) => (
-                      <div key={u.id} onClick={() => { setEf(f => ({...f,violator_id:u.id})); setUserSearch(u.name) }}
-                        style={{ padding:'8px 12px', cursor:'pointer', fontSize:13, borderBottom:`1px solid ${T.border}`,
-                          background:ef.violator_id===u.id?T.goldBg:'#fff',
-                          color:ef.violator_id===u.id?T.goldText:T.dark }}>
-                        {u.name} <span style={{ fontSize:11, color:T.light }}>· {u.position_name||u.dept_name}</span>
-                      </div>
-                    ))}
-                  </div>
-                )}
-                {ef.violator_id && !userSearch && (
-                  <div style={{ fontSize:12, color:T.red }}>
-                    ⚠️ {allUsers.find((u: any)=>u.id===ef.violator_id)?.name}
-                    <button onClick={() => setEf(f => ({...f,violator_id:''}))}
-                      style={{ marginLeft:8, fontSize:11, color:T.light, background:'none', border:'none', cursor:'pointer' }}>✕</button>
-                  </div>
-                )}
-              </div>
-              <Inp label="Lý do hoàn" value={ef.reason}
-                onChange={(v: string) => setEf(f => ({...f,reason:v}))} placeholder="Lý do..."/>
-              <Inp label="Ghi chú sale" value={ef.sale_note}
-                onChange={(v: string) => setEf(f => ({...f,sale_note:v}))} placeholder="Ghi chú thêm..."/>
-              <div style={{ display:'flex', alignItems:'center', gap:10, marginBottom:14 }}>
-                <input type="checkbox" id="kiot2" checked={ef.entered_kiot}
-                  onChange={e => setEf(f => ({...f,entered_kiot:e.target.checked}))}/>
-                <label htmlFor="kiot2" style={{ fontSize:13, color:T.dark, cursor:'pointer' }}>✅ Đã nhập KiotViet</label>
-              </div>
-              <div style={{ display:'flex', justifyContent:'flex-end', gap:10 }}>
-                <GoldBtn outline small onClick={() => setShowEdit(null)}>Hủy</GoldBtn>
-                <GoldBtn small onClick={() => updateSale(showEdit.id, ef)}>Lưu</GoldBtn>
-              </div>
-            </div>
-          )
-        })()}
+        {showEdit && <ReturnSaleForm
+          item={showEdit} allUsers={allUsers} saleUsers={saleUsers}
+          onSave={(data: any) => updateSale(showEdit.id, data)}
+          onClose={() => setShowEdit(null)}/>}
       </Modal>
     </div>
   )
