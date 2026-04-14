@@ -3901,7 +3901,7 @@ function ReturnItems({ user, allUsers, products, mobile }: any) {
     if (!r.date) return true
     const d = new Date(r.date)
     return d.getFullYear()===fy && d.getMonth()+1===fm
-  })
+  }).sort((a: any, b: any) => (a.date||'').localeCompare(b.date||''))  // cũ → mới
 
   const submit = async () => {
     if (!form.product_name || !form.date) return
@@ -3934,13 +3934,23 @@ function ReturnItems({ user, allUsers, products, mobile }: any) {
   // Stats
   const stats = {
     total: filtered.length,
-    qty:   filtered.reduce((s, r) => s+(r.quantity||0), 0),
-    ship:  filtered.reduce((s, r) => s+(r.ship_fee||0), 0),
-    byCondition: CONDITIONS.map(c => ({ label:c, count:filtered.filter(r=>r.condition===c).length })).filter(x=>x.count>0),
-    bySale: allUsers.filter(u => filtered.some(r=>r.sale_id===u.id)).map(u => ({
-      name:u.name, count:filtered.filter(r=>r.sale_id===u.id).length,
-      violations: filtered.filter(r=>r.violator_id===u.id).length,
-    })).sort((a,b)=>b.count-a.count)
+    qty:   filtered.reduce((s: number, r: any) => s+(r.quantity||0), 0),
+    ship:  filtered.reduce((s: number, r: any) => s+(r.ship_fee||0), 0),
+    byCondition: CONDITIONS.map(c => ({ label:c, count:filtered.filter((r: any) => r.condition===c).length })).filter(x=>x.count>0),
+    bySale: allUsers.filter((u: any) => filtered.some((r: any) => r.sale_id===u.id || r.violator_id===u.id)).map((u: any) => ({
+      id: u.id, name: u.name,
+      count:      filtered.filter((r: any) => r.sale_id===u.id).length,
+      violations: filtered.filter((r: any) => r.violator_id===u.id).length,
+      ship:       filtered.filter((r: any) => r.sale_id===u.id).reduce((s: number, r: any) => s+(r.ship_fee||0), 0),
+      byCondition: CONDITIONS.map(c => ({
+        label:c, count:filtered.filter((r: any) => r.sale_id===u.id && r.condition===c).length
+      })).filter(x=>x.count>0),
+    })).sort((a: any, b: any) => b.count-a.count),
+    byViolator: allUsers.filter((u: any) => filtered.some((r: any) => r.violator_id===u.id)).map((u: any) => ({
+      id:u.id, name:u.name,
+      count:  filtered.filter((r: any) => r.violator_id===u.id).length,
+      ship:   filtered.filter((r: any) => r.violator_id===u.id).reduce((s: number, r: any) => s+(r.ship_fee||0), 0),
+    })).sort((a: any, b: any) => b.ship-a.ship),
   }
 
   return (
@@ -3972,45 +3982,117 @@ function ReturnItems({ user, allUsers, products, mobile }: any) {
       </div>
 
       {tab==='stats' ? (
-        /* ── STATS ── */
-        <div style={{ display:'grid', gridTemplateColumns:mobile?'1fr':'1fr 1fr', gap:14 }}>
-          <Card>
-            <div style={{ fontSize:13, fontWeight:700, color:T.dark, marginBottom:12 }}>Tổng quan tháng {fm}/{fy}</div>
-            {[
-              ['📦 Tổng đơn hoàn', stats.total, T.dark],
-              ['🔢 Tổng SL', stats.qty, T.blue],
-              ['💸 Phí ship', stats.ship.toLocaleString('vi-VN')+'đ', T.amber],
-            ].map(([label,val,color]) => (
-              <div key={label as string} style={{ display:'flex', justifyContent:'space-between', padding:'8px 0',
-                borderBottom:`1px solid ${T.border}`, fontSize:13 }}>
-                <span style={{ color:T.med }}>{label}</span>
-                <span style={{ fontWeight:700, color:color as string }}>{val}</span>
-              </div>
-            ))}
-            <div style={{ marginTop:12 }}>
-              <div style={{ fontSize:12, fontWeight:600, color:T.dark, marginBottom:8 }}>Theo tình trạng</div>
-              {stats.byCondition.map(c => (
-                <div key={c.label} style={{ display:'flex', justifyContent:'space-between', fontSize:12, marginBottom:4 }}>
-                  <span style={{ color:T.med }}>{c.label}</span>
-                  <span style={{ fontWeight:600, color:T.dark }}>{c.count}</span>
+        <div style={{ display:'flex', flexDirection:'column', gap:14 }}>
+          {/* Row 1: Tổng quan + Tình trạng */}
+          <div style={{ display:'grid', gridTemplateColumns:mobile?'1fr':'1fr 1fr', gap:14 }}>
+            <Card>
+              <div style={{ fontSize:13, fontWeight:700, color:T.dark, marginBottom:12 }}>📊 Tổng quan tháng {fm}/{fy}</div>
+              {[
+                ['📦 Tổng đơn hoàn', stats.total, T.dark],
+                ['🔢 Tổng số lượng', stats.qty, T.blue],
+                ['💸 Tổng phí ship', stats.ship.toLocaleString('vi-VN')+'đ', T.amber],
+              ].map(([label,val,color]) => (
+                <div key={label as string} style={{ display:'flex', justifyContent:'space-between', padding:'8px 0',
+                  borderBottom:`1px solid ${T.border}`, fontSize:13 }}>
+                  <span style={{ color:T.med }}>{label}</span>
+                  <span style={{ fontWeight:700, color:color as string }}>{val}</span>
                 </div>
               ))}
+            </Card>
+            <Card>
+              <div style={{ fontSize:13, fontWeight:700, color:T.dark, marginBottom:12 }}>🏷️ Theo tình trạng hàng</div>
+              {stats.byCondition.length===0
+                ? <div style={{ color:T.light, fontSize:12 }}>Chưa có dữ liệu</div>
+                : stats.byCondition.map((c: any) => (
+                  <div key={c.label} style={{ display:'flex', justifyContent:'space-between', alignItems:'center',
+                    padding:'8px 0', borderBottom:`1px solid ${T.border}`, fontSize:12 }}>
+                    <span style={{ color:T.med }}>{c.label}</span>
+                    <span style={{ fontWeight:700, color:T.dark, background:T.bg,
+                      padding:'2px 10px', borderRadius:20 }}>{c.count} đơn</span>
+                  </div>
+                ))
+              }
+            </Card>
+          </div>
+
+          {/* Row 2: Sale table */}
+          <Card style={{ padding:0, overflow:'hidden' }}>
+            <div style={{ padding:'12px 16px', background:T.goldBg, borderBottom:`1px solid ${T.goldBorder}`,
+              fontSize:13, fontWeight:700, color:T.goldText }}>👤 Thống kê theo Sale phụ trách</div>
+            <div style={{ overflowX:'auto' }}>
+              <table style={{ width:'100%', borderCollapse:'collapse', fontSize:12 }}>
+                <thead>
+                  <tr style={{ background:T.bg }}>
+                    {['Sale', 'Số đơn', 'Tình trạng', 'Ship phải trả', 'Vi phạm'].map(h => (
+                      <th key={h} style={{ padding:'8px 12px', textAlign:'left', fontWeight:700,
+                        color:T.light, fontSize:10, textTransform:'uppercase', letterSpacing:.5,
+                        borderBottom:`1px solid ${T.border}` }}>{h}</th>
+                    ))}
+                  </tr>
+                </thead>
+                <tbody>
+                  {stats.bySale.length===0
+                    ? <tr><td colSpan={5} style={{ padding:'20px', textAlign:'center', color:T.light }}>Chưa có dữ liệu</td></tr>
+                    : stats.bySale.map((s: any, i: number) => (
+                      <tr key={s.id} style={{ background:i%2===0?'#fff':T.bg, borderBottom:`1px solid ${T.border}` }}>
+                        <td style={{ padding:'9px 12px', fontWeight:600, color:T.dark }}>{s.name}</td>
+                        <td style={{ padding:'9px 12px', color:T.blue, fontWeight:700 }}>{s.count}</td>
+                        <td style={{ padding:'9px 12px' }}>
+                          <div style={{ display:'flex', gap:4, flexWrap:'wrap' }}>
+                            {s.byCondition.map((c: any) => (
+                              <span key={c.label} style={{ fontSize:10, padding:'1px 7px', borderRadius:20,
+                                background:c.label==='Bình thường'?T.greenBg:c.label==='Hỏng'?T.redBg:T.amberBg,
+                                color:c.label==='Bình thường'?T.green:c.label==='Hỏng'?T.red:T.amber }}>
+                                {c.label}: {c.count}
+                              </span>
+                            ))}
+                          </div>
+                        </td>
+                        <td style={{ padding:'9px 12px', color:s.ship>0?T.amber:T.light, fontWeight:s.ship>0?700:400 }}>
+                          {s.ship>0?s.ship.toLocaleString('vi-VN')+'đ':'—'}
+                        </td>
+                        <td style={{ padding:'9px 12px', color:s.violations>0?T.red:T.light, fontWeight:s.violations>0?700:400 }}>
+                          {s.violations>0?`⚠️ ${s.violations}`:'—'}
+                        </td>
+                      </tr>
+                    ))
+                  }
+                </tbody>
+              </table>
             </div>
           </Card>
-          <Card>
-            <div style={{ fontSize:13, fontWeight:700, color:T.dark, marginBottom:12 }}>Sale phụ trách / Vi phạm</div>
-            {stats.bySale.length===0
-              ? <div style={{ color:T.light, fontSize:12 }}>Chưa có dữ liệu</div>
-              : stats.bySale.map(s => (
-                <div key={s.name} style={{ display:'flex', justifyContent:'space-between', padding:'7px 0',
-                  borderBottom:`1px solid ${T.border}`, fontSize:12 }}>
-                  <span style={{ color:T.dark, fontWeight:500 }}>{s.name}</span>
-                  <div style={{ display:'flex', gap:10 }}>
-                    <span style={{ color:T.blue }}>📦 {s.count}</span>
-                    {s.violations>0 && <span style={{ color:T.red }}>⚠️ {s.violations}</span>}
-                  </div>
-                </div>
-              ))}
+
+          {/* Row 3: Ship fee by violator */}
+          <Card style={{ padding:0, overflow:'hidden' }}>
+            <div style={{ padding:'12px 16px', background:T.redBg, borderBottom:`1px solid #fca5a5`,
+              fontSize:13, fontWeight:700, color:T.red }}>💸 Phí ship theo nhân viên vi phạm</div>
+            <div style={{ overflowX:'auto' }}>
+              <table style={{ width:'100%', borderCollapse:'collapse', fontSize:12 }}>
+                <thead>
+                  <tr style={{ background:T.bg }}>
+                    {['Nhân viên vi phạm', 'Số đơn', 'Tổng phí ship'].map(h => (
+                      <th key={h} style={{ padding:'8px 12px', textAlign:'left', fontWeight:700,
+                        color:T.light, fontSize:10, textTransform:'uppercase', letterSpacing:.5,
+                        borderBottom:`1px solid ${T.border}` }}>{h}</th>
+                    ))}
+                  </tr>
+                </thead>
+                <tbody>
+                  {stats.byViolator.length===0
+                    ? <tr><td colSpan={3} style={{ padding:'20px', textAlign:'center', color:T.light }}>Không có vi phạm nào</td></tr>
+                    : stats.byViolator.map((v: any, i: number) => (
+                      <tr key={v.id} style={{ background:i%2===0?'#fff':T.bg, borderBottom:`1px solid ${T.border}` }}>
+                        <td style={{ padding:'9px 12px', fontWeight:600, color:T.dark }}>{v.name}</td>
+                        <td style={{ padding:'9px 12px', color:T.red, fontWeight:700 }}>{v.count}</td>
+                        <td style={{ padding:'9px 12px', color:T.amber, fontWeight:700 }}>
+                          {v.ship>0?v.ship.toLocaleString('vi-VN')+'đ':'—'}
+                        </td>
+                      </tr>
+                    ))
+                  }
+                </tbody>
+              </table>
+            </div>
           </Card>
         </div>
       ) : (
@@ -4018,7 +4100,7 @@ function ReturnItems({ user, allUsers, products, mobile }: any) {
         <div style={{ background:T.card, border:`1px solid ${T.border}`, borderRadius:12, overflow:'hidden' }}>
           {/* Table header */}
           <div style={{ display:'grid',
-            gridTemplateColumns: mobile?'56px 1fr auto':"48px 80px 1fr 44px 110px 70px 100px 130px",
+            gridTemplateColumns: mobile?'56px 1fr auto':"48px 80px 1fr 44px 110px 70px 90px 90px 120px",
             background:T.bg, padding:'8px 14px',
             borderBottom:`1px solid ${T.border}`, fontSize:10, fontWeight:700,
             color:T.light, textTransform:'uppercase', letterSpacing:.5, gap:8, alignItems:'center' }}>
@@ -4028,7 +4110,8 @@ function ReturnItems({ user, allUsers, products, mobile }: any) {
             {!mobile && <><span style={{textAlign:'center'}}>SL</span>
               <span>Tình trạng</span>
               <span style={{textAlign:'right'}}>Ship</span>
-              <span>Sale</span></>}
+              <span>Sale</span>
+              <span style={{color:T.red}}>Vi phạm</span></>}
             <span style={{textAlign:'right'}}>Thao tác</span>
           </div>
           {filtered.length===0
@@ -4042,7 +4125,7 @@ function ReturnItems({ user, allUsers, products, mobile }: any) {
               const hasSaleInfo  = r.customer_name || r.original_order_code
               // Kho chỉ sửa cột kho, Sale chỉ sửa cột sale, Admin sửa tất cả
               const canEdit     = perm.viewAllDashboard || (isKho && r.created_by===user.id)
-              const canFillSale = (isSale || perm.viewAllDashboard)
+              const canFillSale = isSale || perm.viewAllDashboard
 
               return (
                 <div key={r.id} style={{
@@ -4050,7 +4133,7 @@ function ReturnItems({ user, allUsers, products, mobile }: any) {
                   background: i%2===0?'#fff':T.bg }}>
                   {/* Main compact row */}
                   <div style={{ display:'grid',
-                    gridTemplateColumns: mobile?'56px 1fr auto':"48px 80px 1fr 44px 110px 70px 100px 130px",
+                    gridTemplateColumns: mobile?'56px 1fr auto':"48px 80px 1fr 44px 110px 70px 90px 90px 120px",
                     gap:8, padding:'9px 14px', alignItems:'center' }}>
                     {/* KV column — first cell, desktop only */}
                     {!mobile && (
@@ -4111,6 +4194,9 @@ function ReturnItems({ user, allUsers, products, mobile }: any) {
                         {r.ship_fee>0?r.ship_fee.toLocaleString()+'đ':'—'}
                       </span>
                       <span style={{ fontSize:11, color:T.gold }}>{saleUser?.name||'—'}</span>
+                      <span style={{ fontSize:11, color:violatorUser?T.red:T.light }}>
+                        {violatorUser?.name||'—'}
+                      </span>
                     </>}
                     <div style={{ display:'flex', gap:5, justifyContent:'flex-end', alignItems:'center' }}>
                       {/* Sale điền / Sửa */}
@@ -5250,6 +5336,8 @@ export default function App() {
 function WrongOrders({ user, allUsers, wrongOrders, setWrongOrders, mobile }: any) {
   const [showAdd,  setShowAdd]  = useState(false)
   const [showEdit, setShowEdit] = useState<any>(null)
+  const [tab,      setTab]      = useState<'list'|'stats'>('list')
+  const [sortBy,   setSortBy]   = useState<'created_at'|'date'>('created_at')
   const [monthFilter, setMonthFilter] = useState(() => {
     const n = new Date(); return `${n.getFullYear()}-${String(n.getMonth()+1).padStart(2,'0')}`
   })
@@ -5272,10 +5360,29 @@ function WrongOrders({ user, allUsers, wrongOrders, setWrongOrders, mobile }: an
   const [fy, fm] = monthFilter.split('-').map(Number)
   const filtered = wrongOrders.filter((r: any) => {
     if (!fuzzy(r, searchQ)) return false
-    if (!r.date) return true
-    const d = new Date(r.date)
+    // Filter by created_at month primarily
+    const ref = r.created_at || r.date || ''
+    if (!ref) return true
+    const d = new Date(ref)
     return d.getFullYear()===fy && d.getMonth()+1===fm
+  }).sort((a: any, b: any) => {
+    const aVal = sortBy==='date' ? (a.date||'') : (a.created_at||'')
+    const bVal = sortBy==='date' ? (b.date||'') : (b.created_at||'')
+    return bVal.localeCompare(aVal)  // mới nhất trước
   })
+
+  // Stats
+  const woStats = {
+    total: filtered.length,
+    pending:     filtered.filter((r: any) => r.status==='pending').length,
+    sale_filled: filtered.filter((r: any) => r.status==='sale_filled').length,
+    resolved:    filtered.filter((r: any) => r.status==='resolved').length,
+    bySale: allUsers.filter((u: any) => filtered.some((r: any) => r.sale_id===u.id || r.violator_id===u.id)).map((u: any) => ({
+      id:u.id, name:u.name,
+      asResponsible: filtered.filter((r: any) => r.sale_id===u.id).length,
+      asViolator:    filtered.filter((r: any) => r.violator_id===u.id).length,
+    })).sort((a: any, b: any) => (b.asResponsible+b.asViolator)-(a.asResponsible+a.asViolator))
+  }
 
   const STATUS_CFG_WO: any = {
     pending:     { label:'⏳ Chưa xử lý',    color:T.red,   bg:T.redBg   },
@@ -5345,14 +5452,80 @@ function WrongOrders({ user, allUsers, wrongOrders, setWrongOrders, mobile }: an
           </div>
         }/>
 
-      {/* Search */}
-      <input value={searchQ} onChange={e => setSearchQ(e.target.value)}
-        placeholder="🔍 Tìm mã đơn, khách hàng, chi tiết..."
-        style={{ width:'100%', marginBottom:12, padding:'8px 12px', border:`1px solid ${T.border}`,
-          borderRadius:8, fontSize:12, fontFamily:'inherit', color:T.dark, background:T.bg,
-          outline:'none', boxSizing:'border-box' as any }}/>
+      {/* Tabs + Sort + Search */}
+      <div style={{ display:'flex', gap:8, marginBottom:12, flexWrap:'wrap', alignItems:'center' }}>
+        {([['list','📋 Danh sách'],['stats','📊 Thống kê']] as [string,string][]).map(([id,label]) => (
+          <button key={id} onClick={() => setTab(id as any)}
+            style={{ padding:'6px 14px', borderRadius:8, cursor:'pointer', fontFamily:'inherit', fontSize:12,
+              border:`1.5px solid ${tab===id?T.gold:T.border}`,
+              background:tab===id?T.goldBg:'transparent',
+              color:tab===id?T.goldText:T.med, fontWeight:tab===id?700:400 }}>{label}</button>
+        ))}
+        {tab==='list' && (
+          <select value={sortBy} onChange={e => setSortBy(e.target.value as any)}
+            style={{ padding:'6px 10px', borderRadius:8, border:`1px solid ${T.border}`,
+              fontSize:12, fontFamily:'inherit', color:T.dark, background:T.bg, cursor:'pointer' }}>
+            <option value="created_at">📅 Sắp xếp: Ngày tạo phiếu</option>
+            <option value="date">⚠️ Sắp xếp: Ngày sai</option>
+          </select>
+        )}
+        <input value={searchQ} onChange={e => setSearchQ(e.target.value)}
+          placeholder="🔍 Tìm mã đơn, khách hàng, chi tiết..."
+          style={{ flex:1, minWidth:160, padding:'6px 10px', border:`1px solid ${T.border}`,
+            borderRadius:8, fontSize:12, fontFamily:'inherit', color:T.dark, background:T.bg,
+            outline:'none' }}/>
+      </div>
 
-      {/* List */}
+      {tab==='stats' ? (
+        <div style={{ display:'flex', flexDirection:'column', gap:14 }}>
+          <div style={{ display:'grid', gridTemplateColumns:mobile?'1fr':'repeat(4,1fr)', gap:12 }}>
+            {[
+              ['📋 Tổng đơn sai', woStats.total, T.dark],
+              ['⏳ Chờ xử lý', woStats.pending, T.red],
+              ['📝 Chờ QM xác nhận', woStats.sale_filled, T.amber],
+              ['✅ Đã xử lý', woStats.resolved, T.green],
+            ].map(([label,val,color]) => (
+              <Card key={label as string} style={{ textAlign:'center', padding:'14px 12px' }}>
+                <div style={{ fontSize:22, fontWeight:800, color:color as string }}>{val}</div>
+                <div style={{ fontSize:11, color:T.light, marginTop:4 }}>{label}</div>
+              </Card>
+            ))}
+          </div>
+          <Card style={{ padding:0, overflow:'hidden' }}>
+            <div style={{ padding:'12px 16px', background:T.amberBg, borderBottom:`1px solid #fcd34d`,
+              fontSize:13, fontWeight:700, color:T.amber }}>👤 Thống kê theo nhân viên</div>
+            <table style={{ width:'100%', borderCollapse:'collapse', fontSize:12 }}>
+              <thead>
+                <tr style={{ background:T.bg }}>
+                  {['Nhân viên','Sale phụ trách','Vi phạm'].map(h => (
+                    <th key={h} style={{ padding:'8px 12px', textAlign:'left', fontWeight:700,
+                      color:T.light, fontSize:10, textTransform:'uppercase', letterSpacing:.5,
+                      borderBottom:`1px solid ${T.border}` }}>{h}</th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody>
+                {woStats.bySale.length===0
+                  ? <tr><td colSpan={3} style={{ padding:'20px', textAlign:'center', color:T.light }}>Chưa có dữ liệu</td></tr>
+                  : woStats.bySale.map((s: any, i: number) => (
+                    <tr key={s.id} style={{ background:i%2===0?'#fff':T.bg, borderBottom:`1px solid ${T.border}` }}>
+                      <td style={{ padding:'9px 12px', fontWeight:600, color:T.dark }}>{s.name}</td>
+                      <td style={{ padding:'9px 12px', color:T.blue, fontWeight:s.asResponsible>0?700:400 }}>
+                        {s.asResponsible>0?s.asResponsible:'—'}
+                      </td>
+                      <td style={{ padding:'9px 12px', color:T.red, fontWeight:s.asViolator>0?700:400 }}>
+                        {s.asViolator>0?`⚠️ ${s.asViolator}`:'—'}
+                      </td>
+                    </tr>
+                  ))
+                }
+              </tbody>
+            </table>
+          </Card>
+        </div>
+      ) : (
+
+      /* List */
       {filtered.length===0
         ? <Card style={{ textAlign:'center', padding:'40px', color:T.light }}>
             <div style={{ fontSize:32, marginBottom:8 }}>⚠️</div>
@@ -5360,10 +5533,11 @@ function WrongOrders({ user, allUsers, wrongOrders, setWrongOrders, mobile }: an
           </Card>
         : <div style={{ background:T.card, borderRadius:12, border:`1px solid ${T.border}`, overflow:'hidden' }}>
             {/* Header */}
-            <div style={{ display:'grid', gridTemplateColumns:mobile?'80px 1fr auto':'100px 120px 1fr 100px 100px auto',
+            <div style={{ display:'grid', gridTemplateColumns:mobile?'80px 1fr auto':'90px 100px 110px 1fr 100px 100px auto',
               padding:'8px 12px', background:T.bg, borderBottom:`1px solid ${T.border}`,
               fontSize:10, fontWeight:700, color:T.light, textTransform:'uppercase', gap:8 }}>
-              <span>Ngày sai</span>
+              <span>Ngày tạo</span>
+              {!mobile && <span>Ngày sai</span>}
               {!mobile && <span>Mã đơn</span>}
               <span>Khách hàng / Chi tiết</span>
               {!mobile && <><span>Sale</span><span>Vi phạm</span></>}
@@ -5374,17 +5548,20 @@ function WrongOrders({ user, allUsers, wrongOrders, setWrongOrders, mobile }: an
               const saleUser     = allUsers.find((u: any) => u.id===r.sale_id)
               const violUser     = allUsers.find((u: any) => u.id===r.violator_id)
               const resolvedUser = allUsers.find((u: any) => u.id===r.resolved_by)
-              const canSaleFill  = (isSale || perm.viewAllDashboard) && r.status==='pending'
+              const canSaleFill  = (isSale || perm.viewAllDashboard) && (r.status==='pending' || perm.viewAllDashboard)
               const canRes       = canResolve && r.status==='sale_filled'
               const canDel       = (canAdd && r.status==='pending') || perm.viewAllDashboard
               return (
                 <div key={r.id} style={{ borderBottom:i<filtered.length-1?`1px solid ${T.border}`:'none',
                   background:i%2===0?'#fff':T.bg }}>
-                  <div style={{ display:'grid', gridTemplateColumns:mobile?'80px 1fr auto':'100px 120px 1fr 100px 100px auto',
+                  <div style={{ display:'grid', gridTemplateColumns:mobile?'80px 1fr auto':'90px 100px 110px 1fr 100px 100px auto',
                     padding:'9px 12px', alignItems:'center', gap:8 }}>
                     <span style={{ fontSize:11, color:T.light }}>
-                      {r.date?new Date(r.date).toLocaleDateString('vi-VN',{day:'2-digit',month:'2-digit'}):'—'}
+                      {r.created_at?new Date(r.created_at).toLocaleDateString('vi-VN',{day:'2-digit',month:'2-digit'}):'—'}
                     </span>
+                    {!mobile && <span style={{ fontSize:11, color:T.med }}>
+                      {r.date?new Date(r.date).toLocaleDateString('vi-VN',{day:'2-digit',month:'2-digit'}):'—'}
+                    </span>}
                     {!mobile && <span style={{ fontSize:12, fontWeight:600, color:T.gold }}>{r.order_code||'—'}</span>}
                     <div>
                       <div style={{ fontSize:12, fontWeight:500, color:T.dark }}>{r.customer_name||'—'}</div>
@@ -5433,6 +5610,8 @@ function WrongOrders({ user, allUsers, wrongOrders, setWrongOrders, mobile }: an
             })}
           </div>
       }
+
+      )} {/* end stats/list ternary */}
 
       {/* Modal tạo đơn sai */}
       <Modal open={showAdd} onClose={() => setShowAdd(false)} title="⚠️ Tạo đơn sai mới" wide>
