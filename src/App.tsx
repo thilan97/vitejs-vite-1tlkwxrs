@@ -296,7 +296,7 @@ const AlertBanner = ({ user, checklist, leaveRequests, otRequests, allUsers }: a
   if (alerts.length === 0) return null
   return (
     <div style={{ margin:'0 0 14px', display:'flex', flexDirection:'column', gap:6 }}>
-            {alerts.slice(0,3).map((a, i) => (
+      {alerts.slice(0,3).map((a, i) => (
         <div key={i} style={{ padding:'8px 14px', borderRadius:8, fontSize:12, fontWeight:500,
           color:a.color, background:a.bg }}>{a.msg}</div>
       ))}
@@ -5527,8 +5527,6 @@ function WrongOrders({ user, allUsers, wrongOrders, setWrongOrders, mobile }: an
           </Card>
         </div>
       ) : (
-
-      /* List */
       <>{filtered.length===0
         ? <Card style={{ textAlign:'center', padding:'40px', color:T.light }}>
             <div style={{ fontSize:32, marginBottom:8 }}>⚠️</div>
@@ -5612,7 +5610,7 @@ function WrongOrders({ user, allUsers, wrongOrders, setWrongOrders, mobile }: an
               )
             })}
           </div>
-      }</> {/* end stats/list ternary */}
+      }</>
 
       {/* Modal tạo đơn sai */}
       <Modal open={showAdd} onClose={() => setShowAdd(false)} title="⚠️ Tạo đơn sai mới" wide>
@@ -5668,4 +5666,3 @@ function SaleFillModal({ item, onSave, onClose }: any) {
     </Modal>
   )
 }
-
