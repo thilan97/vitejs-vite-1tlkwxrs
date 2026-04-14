@@ -80,6 +80,7 @@ const getPerm = (user: any) => {
     resetChecklist:     isAdmin || (pos.perm_reset_checklist      ?? false),
     viewBirthday:       isAdmin || (pos.perm_approve_leave ?? false) || (pos.perm_view_birthday ?? false),
     enterKiot:          isAdmin || (pos.perm_enter_kiot ?? false),
+    resolveWrongOrder:  isAdmin || (pos.perm_approve_leave ?? false) || (pos.perm_resolve_wrong_order ?? false),
   }
 }
 
@@ -113,6 +114,7 @@ const ALL_PERMS = [
   { key:'perm_reset_checklist',      label:'Reset checklist',                 group:'Quản trị'  },
   { key:'perm_view_birthday',        label:'Xem ngày sinh nhật nhân viên',    group:'Nhân sự'   },
   { key:'perm_enter_kiot',           label:'Tích đã nhập KiotViet (hàng hoàn)', group:'Kho'      },
+  { key:'perm_resolve_wrong_order',  label:'Xác nhận đã xử lý đơn sai',        group:'Kho'      },
 ]
 // ── UTILITIES ────────────────────────────────────
 const fmtNow   = () => new Date().toLocaleString('vi-VN',{hour:'2-digit',minute:'2-digit',day:'2-digit',month:'2-digit',year:'numeric'})
@@ -512,13 +514,14 @@ const NAV_GROUPS = (perm: any, deptId = '') => {
         { id:'leave',      icon:'🏖️', label:'Nghỉ phép' },
       ]
     },
-    hasShortage && {
-      id:'shortage', icon:'📦', label:'Hàng thiếu',
-      pages:[{ id:'shortage', icon:'📦', label:'Hàng thiếu' }]
-    },
+
     {
-      id:'returns', icon:'🔄', label:'Hàng hoàn',
-      pages:[{ id:'returns', icon:'🔄', label:'Hàng hoàn' }]
+      id:'reports', icon:'📋', label:'Báo cáo',
+      pages:[
+        { id:'shortage', icon:'📦', label:'Hàng thiếu'  },
+        { id:'returns',  icon:'🔄', label:'Hàng hoàn'   },
+        { id:'wrongord', icon:'⚠️', label:'Đơn sai'     },
+      ].filter(p => p.id!=='shortage' || deptId==='sale' || perm.viewAllDashboard)
     },
     {
       id:'manage', icon:'⚙️', label:'Quản lý',
@@ -4542,49 +4545,80 @@ function PositionsManagement({ positions, setPositions, mobile }: any) {
         subtitle="Thiết lập quyền hạn cho từng vị trí trong công ty"
         action={<GoldBtn small onClick={openCreate}>+ Thêm vị trí</GoldBtn>}/>
 
-      <div style={{ display:'flex', flexDirection:'column', gap:10 }}>
-        {positions.map((pos: any) => {
-          const parentPos = positions.find((p: any) => p.id===pos.reports_to)
-          const activePerms = ALL_PERMS.filter(p => pos[p.key]).length
-          return (
-            <Card key={pos.id} style={{ padding:'14px 18px' }}>
-              <div style={{ display:'flex', alignItems:'center', justifyContent:'space-between', flexWrap:'wrap', gap:10 }}>
-                <div style={{ flex:1 }}>
-                  <div style={{ display:'flex', alignItems:'center', gap:10, marginBottom:6, flexWrap:'wrap' }}>
-                    <div style={{ fontSize:14, fontWeight:700, color:T.dark }}>{pos.name}</div>
-                    <span style={{ fontSize:11, padding:'2px 8px', borderRadius:20, fontWeight:600,
-                      color:DEPT_COLOR[pos.dept_id]||T.gold, background:T.goldBg }}>
-                      {DEPT_NAME[pos.dept_id]||pos.dept_id}
-                    </span>
-                    {parentPos && (
-                      <span style={{ fontSize:11, color:T.light }}>Báo cáo cho: {parentPos.name}</span>
-                    )}
-                  </div>
-                  <div style={{ display:'flex', gap:5, flexWrap:'wrap' }}>
-                    {ALL_PERMS.filter(p => pos[p.key]).slice(0,5).map(p => (
-                      <span key={p.key} style={{ fontSize:10, padding:'2px 7px', borderRadius:20,
-                        background:T.greenBg, color:T.green, fontWeight:600 }}>{p.label}</span>
-                    ))}
-                    {activePerms > 5 && (
-                      <span style={{ fontSize:10, padding:'2px 7px', borderRadius:20, background:T.grayBg, color:T.gray }}>
-                        +{activePerms-5} quyền nữa
-                      </span>
-                    )}
-                  </div>
-                </div>
-                <div style={{ display:'flex', gap:6 }}>
-                  <button onClick={() => openEdit(pos)}
-                    style={{ padding:'6px 13px', borderRadius:7, border:`1px solid ${T.border}`,
-                      background:'transparent', cursor:'pointer', fontSize:12, fontFamily:'inherit', color:T.med }}>Sửa</button>
-                  <button onClick={() => remove(pos.id)}
-                    style={{ padding:'6px 13px', borderRadius:7, border:`1px solid ${T.redBg}`,
-                      background:T.redBg, cursor:'pointer', fontSize:12, fontFamily:'inherit', color:T.red }}>Xóa</button>
-                </div>
+      {/* Hierarchical view — group by dept, sort by level */}
+      {['all','kho','sale','vp'].map(dept => {
+        const deptPos = positions.filter((p: any) => p.dept_id === dept)
+        if (deptPos.length === 0) return null
+
+        // Sort by hierarchy: no reports_to first (top), then children
+        const sorted: any[] = []
+        const addLevel = (parentId: string, level: number) => {
+          const children = deptPos.filter((p: any) => (p.reports_to||'') === parentId)
+          children.sort((a: any, b: any) => a.name.localeCompare(b.name))
+          children.forEach((p: any) => { sorted.push({...p, _level:level}); addLevel(p.id, level+1) })
+        }
+        // Top-level: no reports_to or reports_to is outside this dept
+        deptPos.filter((p: any) => !p.reports_to || !deptPos.find((x: any) => x.id===p.reports_to))
+          .sort((a: any, b: any) => a.name.localeCompare(b.name))
+          .forEach((p: any) => { sorted.push({...p, _level:0}); addLevel(p.id, 1) })
+
+        return (
+          <Card key={dept} style={{ padding:0, overflow:'hidden', marginBottom:14 }}>
+            {/* Dept header */}
+            <div style={{ padding:'10px 16px', background:DEPT_COLOR[dept]||T.gold,
+              display:'flex', alignItems:'center', justifyContent:'space-between' }}>
+              <div style={{ color:'#fff', fontWeight:700, fontSize:13 }}>
+                {dept==='all'?'🏢 Toàn công ty':dept==='kho'?'📦 Kho':dept==='sale'?'💰 Sale':'🖥️ Văn phòng'}
+                <span style={{ fontSize:11, fontWeight:400, marginLeft:8, opacity:.8 }}>{deptPos.length} vị trí</span>
               </div>
-            </Card>
-          )
-        })}
-      </div>
+            </div>
+            {/* Positions rows */}
+            {sorted.map((pos: any, idx: number) => {
+              const activePerms = ALL_PERMS.filter(p => pos[p.key]).length
+              const isAdmin = pos.perm_view_all_dashboard
+              return (
+                <div key={pos.id} style={{ display:'flex', alignItems:'center', gap:12,
+                  padding:'10px 16px', borderBottom:idx<sorted.length-1?`1px solid ${T.border}`:'none',
+                  paddingLeft: `${16 + pos._level*24}px`,
+                  background:idx%2===0?'#fff':T.bg }}>
+                  {/* Level indicator */}
+                  {pos._level>0 && (
+                    <span style={{ color:T.border, fontSize:14, marginLeft:-12, flexShrink:0 }}>└</span>
+                  )}
+                  <div style={{ flex:1, minWidth:0 }}>
+                    <div style={{ display:'flex', alignItems:'center', gap:8, flexWrap:'wrap', marginBottom:4 }}>
+                      <span style={{ fontSize:13, fontWeight:700, color:T.dark }}>{pos.name}</span>
+                      {isAdmin && <span style={{ fontSize:10, fontWeight:700, color:'#fff', background:T.gold, padding:'1px 7px', borderRadius:20 }}>Admin</span>}
+                      {activePerms>0 && !isAdmin && (
+                        <span style={{ fontSize:10, color:T.green, background:T.greenBg, padding:'1px 7px', borderRadius:20, fontWeight:600 }}>
+                          {activePerms} quyền
+                        </span>
+                      )}
+                    </div>
+                    <div style={{ display:'flex', gap:4, flexWrap:'wrap' }}>
+                      {ALL_PERMS.filter(p => pos[p.key] && !pos.perm_view_all_dashboard).slice(0,4).map(p => (
+                        <span key={p.key} style={{ fontSize:10, padding:'1px 6px', borderRadius:20,
+                          background:T.greenBg, color:T.green }}>{p.label}</span>
+                      ))}
+                      {activePerms>4 && !isAdmin && (
+                        <span style={{ fontSize:10, color:T.light }}>+{activePerms-4}...</span>
+                      )}
+                    </div>
+                  </div>
+                  <div style={{ display:'flex', gap:6, flexShrink:0 }}>
+                    <button onClick={() => openEdit(pos)}
+                      style={{ padding:'5px 11px', borderRadius:7, border:`1px solid ${T.border}`,
+                        background:'transparent', cursor:'pointer', fontSize:11, fontFamily:'inherit', color:T.med }}>Sửa</button>
+                    <button onClick={() => remove(pos.id)}
+                      style={{ padding:'5px 10px', borderRadius:7, border:`1px solid ${T.redBg}`,
+                        background:T.redBg, cursor:'pointer', fontSize:11, fontFamily:'inherit', color:T.red }}>✕</button>
+                  </div>
+                </div>
+              )
+            })}
+          </Card>
+        )
+      })}
 
       <Modal open={show} onClose={() => setShow(false)} title={edit?'Sửa vị trí':'Thêm vị trí mới'} wide>
         <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:12 }}>
@@ -4706,6 +4740,59 @@ function Settings({ user, setUser, settings, setSettings, onManualReset, mobile 
 }
 
 // ── MAIN APP ──────────────────────────────────────
+// ── NOTIFICATION BANNER ─────────────────────────────
+function NotifBanner({ user, wrongOrders, setPage }: any) {
+  const [dismissed, setDismissed] = useState(false)
+  const perm   = getPerm(user)
+  const isSale = user.dept_id === 'sale'
+
+  // Đơn sai chưa xử lý mà sale liên quan
+  const myPending = wrongOrders.filter((r: any) => {
+    if (r.status !== 'pending') return false
+    if (perm.viewAllDashboard) return true
+    if (isSale) return r.sale_id === user.id || !r.sale_id
+    return false
+  })
+
+  if (dismissed || myPending.length === 0) return null
+
+  return (
+    <div style={{ position:'fixed', top:16, left:'50%', transform:'translateX(-50%)',
+      zIndex:9999, background:'#fff', border:`2px solid ${T.red}`,
+      borderRadius:14, boxShadow:'0 8px 32px rgba(185,28,28,0.18)',
+      padding:'14px 18px', maxWidth:420, width:'calc(100vw - 32px)',
+      display:'flex', alignItems:'flex-start', gap:12 }}>
+      <span style={{ fontSize:24, flexShrink:0 }}>⚠️</span>
+      <div style={{ flex:1 }}>
+        <div style={{ fontSize:13, fontWeight:700, color:T.red, marginBottom:4 }}>
+          {myPending.length} đơn sai cần xử lý
+        </div>
+        <div style={{ fontSize:11, color:T.med, marginBottom:10, lineHeight:1.4 }}>
+          {myPending.slice(0,2).map((r: any) => (
+            <div key={r.id}>• {r.order_code} — {r.customer_name||'?'}</div>
+          ))}
+          {myPending.length>2 && <div>• ...và {myPending.length-2} đơn khác</div>}
+        </div>
+        <div style={{ display:'flex', gap:8 }}>
+          <button onClick={() => { setPage('wrongord'); setDismissed(true) }}
+            style={{ padding:'6px 14px', borderRadius:8, border:'none', background:T.red,
+              color:'#fff', cursor:'pointer', fontFamily:'inherit', fontSize:12, fontWeight:700 }}>
+            Xem ngay →
+          </button>
+          <button onClick={() => setDismissed(true)}
+            style={{ padding:'6px 12px', borderRadius:8, border:`1px solid ${T.border}`,
+              background:'transparent', color:T.light, cursor:'pointer', fontFamily:'inherit', fontSize:12 }}>
+            Bỏ qua
+          </button>
+        </div>
+      </div>
+      <button onClick={() => setDismissed(true)}
+        style={{ background:'none', border:'none', cursor:'pointer', color:T.light,
+          fontSize:18, padding:0, lineHeight:1, flexShrink:0 }}>✕</button>
+    </div>
+  )
+}
+
 export default function App() {
   const [user, setUser] = useState<any>(() => {
   try {
@@ -4725,6 +4812,7 @@ export default function App() {
   const [leaveRequests, setLeaveReqs] = useState<any[]>([])
   const [positions, setPositions]   = useState<any[]>([])
   const [products, setProducts]     = useState<any[]>([])
+  const [wrongOrders, setWrongOrders] = useState<any[]>([])
   const [loading, setLoading]       = useState(false)
   const width   = useWindowWidth()
   const mobile  = width < 768
@@ -4877,6 +4965,8 @@ export default function App() {
         }
         setProducts(all)
       })()
+      db.from('wrong_orders').select('*').order('created_at',{ascending:false})
+        .then(({data}) => { if (data) setWrongOrders(data) })
 
       // Merge DB data với localStorage backup để tránh mất đơn khi Supabase RLS chặn SELECT
       const dbLeave = lr.data || []
@@ -4974,13 +5064,258 @@ export default function App() {
           {validPage==='positions'  && <PositionsManagement positions={positions} setPositions={setPositions} mobile={mobile}/>}
           {validPage==='shortage'   && <ShortageItems {...pp} products={products} setProducts={setProducts}/>}
           {validPage==='returns'    && <ReturnItems {...pp} products={products}/>}
+          {validPage==='wrongord'   && <WrongOrders {...pp} wrongOrders={wrongOrders} setWrongOrders={setWrongOrders} allUsers={allUsers}/>}
           {validPage==='settings'   && <Settings {...pp} setUser={setUser} settings={settings} setSettings={setSettings} onManualReset={manualReset}/>}
         </main>
         {mobile && <BottomNav user={user} page={validPage} setPage={setPage} pendingLeave={pendingLeave} pendingOT={pendingOT} onLogout={() => { localStorage.removeItem('la_user'); setUser(null); setAllUsers([]); setChecklist([]) }}/>}
         {/* Sticky Note — floating for all users */}
         {user && <StickyNote user={user}/>}
+        {/* Notification Banner — wrong orders pending */}
+        {user && <NotifBanner user={user} wrongOrders={wrongOrders} setPage={setPage}/>}
       </div>
      )
 }
 
 // ══ KẾT THÚC PHẦN 6 — HOÀN THÀNH! ══
+// ══ WRONG ORDERS (Đơn sai) ════════════════════════════
+function WrongOrders({ user, allUsers, wrongOrders, setWrongOrders, mobile }: any) {
+  const [showAdd,  setShowAdd]  = useState(false)
+  const [showEdit, setShowEdit] = useState<any>(null)
+  const [monthFilter, setMonthFilter] = useState(() => {
+    const n = new Date(); return `${n.getFullYear()}-${String(n.getMonth()+1).padStart(2,'0')}`
+  })
+  const [searchQ, setSearchQ] = useState('')
+  const p = mobile ? '16px' : '24px'
+  const perm = getPerm(user)
+  const isKho   = user.dept_id === 'kho'
+  const isSale  = user.dept_id === 'sale'
+  const canAdd  = isKho || perm.viewAllDashboard
+  const canResolve = perm.resolveWrongOrder
+
+  const norm = (s: string) => (s||'').toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g,'').replace(/đ/g,'d')
+  const fuzzy = (r: any, q: string) => !q.trim() || norm(q).split(/\s+/).every((t: string) =>
+    norm([r.order_code,r.customer_name,r.detail,r.sale_name,r.violator_name].join(' ')).includes(t)
+  )
+
+  const emptyForm = { date:'', order_code:'', customer_name:'', sale_id:'', violator_id:'', detail:'' }
+  const [form, setForm] = useState<any>(emptyForm)
+
+  const [fy, fm] = monthFilter.split('-').map(Number)
+  const filtered = wrongOrders.filter((r: any) => {
+    if (!fuzzy(r, searchQ)) return false
+    if (!r.date) return true
+    const d = new Date(r.date)
+    return d.getFullYear()===fy && d.getMonth()+1===fm
+  })
+
+  const STATUS_CFG_WO: any = {
+    pending:     { label:'⏳ Chưa xử lý',    color:T.red,   bg:T.redBg   },
+    sale_filled: { label:'📝 Chờ QM xác nhận', color:T.amber, bg:T.amberBg },
+    resolved:    { label:'✅ Đã xử lý',       color:T.green, bg:T.greenBg  },
+  }
+
+  const submit = async () => {
+    if (!form.order_code || !form.date) return
+    const now = new Date().toISOString()
+    const newItem = { id:'wo'+Date.now(), ...form, status:'pending',
+      resolution_note:'', resolved_by:'', resolved_at:'',
+      sale_filled_at:'', created_by:user.id, created_at:now }
+    setWrongOrders((prev: any) => [newItem, ...prev])
+    const { error } = await db.from('wrong_orders').insert(newItem)
+    if (error) { setWrongOrders((prev: any) => prev.filter((i: any) => i.id!==newItem.id)); alert('❌ '+error.message); return }
+    setShowAdd(false); setForm(emptyForm)
+    // Auto-notify: create announcement for sale dept
+    const saleUser = allUsers.find((u: any) => u.id===form.sale_id)
+    if (saleUser) {
+      await db.from('announcements').insert({
+        id:'ann_wo_'+Date.now(), title:`⚠️ Đơn sai mới: ${form.order_code}`,
+        content:`Đơn ${form.order_code} - KH: ${form.customer_name||'?'} có sai sót. Sale ${saleUser.name} cần vào điền thông tin xử lý.`,
+        dept_id:'sale', created_by:user.id, created_at:now, priority:'high'
+      })
+    }
+  }
+
+  const saleFill = async (id: string, note: string) => {
+    const upd = { status:'sale_filled', resolution_note:note, sale_filled_at:new Date().toISOString() }
+    setWrongOrders((prev: any) => prev.map((r: any) => r.id===id ? {...r,...upd} : r))
+    await db.from('wrong_orders').update(upd).eq('id', id)
+    setShowEdit(null)
+  }
+
+  const resolve = async (id: string) => {
+    if (!confirm('Xác nhận đơn này đã được xử lý xong?')) return
+    const upd = { status:'resolved', resolved_by:user.id, resolved_at:new Date().toISOString() }
+    setWrongOrders((prev: any) => prev.map((r: any) => r.id===id ? {...r,...upd} : r))
+    await db.from('wrong_orders').update(upd).eq('id', id)
+  }
+
+  const del = async (id: string) => {
+    if (!confirm('Xóa đơn sai này?')) return
+    setWrongOrders((prev: any) => prev.filter((r: any) => r.id!==id))
+    await db.from('wrong_orders').delete().eq('id', id)
+  }
+
+  const pendingMine = wrongOrders.filter((r: any) =>
+    r.status==='pending' && (r.sale_id===user.id || isSale || perm.viewAllDashboard)
+  ).length
+
+  return (
+    <div style={{ padding:`0 ${p} ${mobile?'80px':p}` }}>
+      <Topbar mobile={mobile} title="⚠️ Báo cáo đơn sai"
+        subtitle={`Tháng ${fm}/${fy} — ${filtered.length} đơn`}
+        action={
+          <div style={{ display:'flex', gap:8, alignItems:'center' }}>
+            {pendingMine>0 && (
+              <span style={{ fontSize:12, fontWeight:700, color:T.red, background:T.redBg,
+                padding:'4px 10px', borderRadius:20 }}>⚠️ {pendingMine} chờ xử lý</span>
+            )}
+            <input type="month" value={monthFilter} onChange={e => setMonthFilter(e.target.value)}
+              style={{ padding:'6px 10px', border:`1px solid ${T.border}`, borderRadius:8,
+                fontSize:12, fontFamily:'inherit', color:T.dark, background:T.bg }}/>
+            {canAdd && <GoldBtn small onClick={() => { setForm({...emptyForm, date:new Date().toISOString().split('T')[0]}); setShowAdd(true) }}>+ Tạo đơn sai</GoldBtn>}
+          </div>
+        }/>
+
+      {/* Search */}
+      <input value={searchQ} onChange={e => setSearchQ(e.target.value)}
+        placeholder="🔍 Tìm mã đơn, khách hàng, chi tiết..."
+        style={{ width:'100%', marginBottom:12, padding:'8px 12px', border:`1px solid ${T.border}`,
+          borderRadius:8, fontSize:12, fontFamily:'inherit', color:T.dark, background:T.bg,
+          outline:'none', boxSizing:'border-box' as any }}/>
+
+      {/* List */}
+      {filtered.length===0
+        ? <Card style={{ textAlign:'center', padding:'40px', color:T.light }}>
+            <div style={{ fontSize:32, marginBottom:8 }}>⚠️</div>
+            <div style={{ fontSize:13 }}>Không có đơn sai nào trong tháng này</div>
+          </Card>
+        : <div style={{ background:T.card, borderRadius:12, border:`1px solid ${T.border}`, overflow:'hidden' }}>
+            {/* Header */}
+            <div style={{ display:'grid', gridTemplateColumns:mobile?'80px 1fr auto':'100px 120px 1fr 100px 100px auto',
+              padding:'8px 12px', background:T.bg, borderBottom:`1px solid ${T.border}`,
+              fontSize:10, fontWeight:700, color:T.light, textTransform:'uppercase', gap:8 }}>
+              <span>Ngày sai</span>
+              {!mobile && <span>Mã đơn</span>}
+              <span>Khách hàng / Chi tiết</span>
+              {!mobile && <><span>Sale</span><span>Vi phạm</span></>}
+              <span>Tình trạng</span>
+            </div>
+            {filtered.map((r: any, i: number) => {
+              const sc = STATUS_CFG_WO[r.status]||STATUS_CFG_WO.pending
+              const saleUser     = allUsers.find((u: any) => u.id===r.sale_id)
+              const violUser     = allUsers.find((u: any) => u.id===r.violator_id)
+              const resolvedUser = allUsers.find((u: any) => u.id===r.resolved_by)
+              const canSaleFill  = (isSale || perm.viewAllDashboard) && r.status==='pending'
+              const canRes       = canResolve && r.status==='sale_filled'
+              const canDel       = (canAdd && r.status==='pending') || perm.viewAllDashboard
+              return (
+                <div key={r.id} style={{ borderBottom:i<filtered.length-1?`1px solid ${T.border}`:'none',
+                  background:i%2===0?'#fff':T.bg }}>
+                  <div style={{ display:'grid', gridTemplateColumns:mobile?'80px 1fr auto':'100px 120px 1fr 100px 100px auto',
+                    padding:'9px 12px', alignItems:'center', gap:8 }}>
+                    <span style={{ fontSize:11, color:T.light }}>
+                      {r.date?new Date(r.date).toLocaleDateString('vi-VN',{day:'2-digit',month:'2-digit'}):'—'}
+                    </span>
+                    {!mobile && <span style={{ fontSize:12, fontWeight:600, color:T.gold }}>{r.order_code||'—'}</span>}
+                    <div>
+                      <div style={{ fontSize:12, fontWeight:500, color:T.dark }}>{r.customer_name||'—'}</div>
+                      {mobile && <div style={{ fontSize:10, color:T.gold }}>{r.order_code}</div>}
+                      {r.detail && <div style={{ fontSize:11, color:T.med, marginTop:2, lineHeight:1.3 }}>{r.detail}</div>}
+                      {r.resolution_note && (
+                        <div style={{ fontSize:11, color:T.blue, marginTop:3 }}>
+                          📝 {r.resolution_note}
+                          {resolvedUser && <span style={{ color:T.green }}> · ✅ {resolvedUser.name}</span>}
+                        </div>
+                      )}
+                    </div>
+                    {!mobile && <>
+                      <span style={{ fontSize:11, color:T.dark }}>{saleUser?.name||'—'}</span>
+                      <span style={{ fontSize:11, color:T.red }}>{violUser?.name||'—'}</span>
+                    </>}
+                    <div style={{ display:'flex', flexDirection:'column', gap:4, alignItems:'flex-start' }}>
+                      <span style={{ fontSize:10, fontWeight:700, padding:'2px 7px', borderRadius:20,
+                        color:sc.color, background:sc.bg, whiteSpace:'nowrap' }}>{sc.label}</span>
+                      <div style={{ display:'flex', gap:4, flexWrap:'wrap' }}>
+                        {canSaleFill && (
+                          <button onClick={() => setShowEdit(r)}
+                            style={{ fontSize:10, padding:'2px 8px', borderRadius:6, border:`1.5px solid ${T.gold}`,
+                              background:T.goldBg, cursor:'pointer', fontFamily:'inherit', color:T.goldText, fontWeight:600 }}>
+                            Điền xử lý
+                          </button>
+                        )}
+                        {canRes && (
+                          <button onClick={() => resolve(r.id)}
+                            style={{ fontSize:10, padding:'2px 8px', borderRadius:6, border:`1.5px solid ${T.green}`,
+                              background:T.greenBg, cursor:'pointer', fontFamily:'inherit', color:T.green, fontWeight:600 }}>
+                            ✅ Xác nhận
+                          </button>
+                        )}
+                        {r.status==='pending' && canSaleFill && !canSaleFill && null}
+                        {canDel && (
+                          <button onClick={() => del(r.id)}
+                            style={{ fontSize:10, padding:'2px 6px', borderRadius:6, border:`1px solid ${T.redBg}`,
+                              background:T.redBg, cursor:'pointer', fontFamily:'inherit', color:T.red }}>✕</button>
+                        )}
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              )
+            })}
+          </div>
+      }
+
+      {/* Modal tạo đơn sai */}
+      <Modal open={showAdd} onClose={() => setShowAdd(false)} title="⚠️ Tạo đơn sai mới" wide>
+        <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:12 }}>
+          <Inp label="Ngày sai *" type="date" value={form.date} onChange={(v: string) => setForm((f: any) => ({...f,date:v}))}/>
+          <Inp label="Mã đơn hàng *" value={form.order_code} onChange={(v: string) => setForm((f: any) => ({...f,order_code:v}))} placeholder="VD: DH006994"/>
+        </div>
+        <Inp label="Tên khách hàng" value={form.customer_name} onChange={(v: string) => setForm((f: any) => ({...f,customer_name:v}))} placeholder="Tên KH..."/>
+        <Sel label="Sale phụ trách" value={form.sale_id} onChange={(v: string) => setForm((f: any) => ({...f,sale_id:v}))}
+          options={[{value:'',label:'— Chọn sale —'},...allUsers.filter((u: any)=>u.dept_id==='sale'||perm.viewAllDashboard).map((u: any)=>({value:u.id,label:u.name}))]}/>
+        <Sel label="Nhân viên vi phạm" value={form.violator_id} onChange={(v: string) => setForm((f: any) => ({...f,violator_id:v}))}
+          options={[{value:'',label:'— Chọn NV —'},...allUsers.map((u: any)=>({value:u.id,label:`${u.name} (${u.dept_name||u.dept_id})`}))]}/>
+        <div style={{ marginBottom:13 }}>
+          <div style={{ fontSize:12, fontWeight:500, color:T.med, marginBottom:5 }}>Chi tiết đơn sai *</div>
+          <textarea value={form.detail} onChange={e => setForm((f: any) => ({...f,detail:e.target.value}))}
+            placeholder="VD: Đóng 2 JA serum folic acid b9 55ml => 2 serum vicderma folic acid b9..."
+            rows={3} style={{ width:'100%', padding:'8px 11px', border:`1px solid ${T.border}`, borderRadius:8,
+              fontSize:13, fontFamily:'inherit', color:T.dark, background:'#fff',
+              resize:'vertical', boxSizing:'border-box' as any, outline:'none' }}/>
+        </div>
+        <div style={{ display:'flex', justifyContent:'flex-end', gap:10 }}>
+          <GoldBtn outline small onClick={() => setShowAdd(false)}>Hủy</GoldBtn>
+          <GoldBtn small onClick={submit} disabled={!form.order_code||!form.date||!form.detail}>Tạo đơn sai</GoldBtn>
+        </div>
+      </Modal>
+
+      {/* Modal sale điền tình trạng */}
+      {showEdit && <SaleFillModal item={showEdit} onSave={saleFill} onClose={() => setShowEdit(null)}/>}
+    </div>
+  )
+}
+
+function SaleFillModal({ item, onSave, onClose }: any) {
+  const [note, setNote] = useState(item.resolution_note||'')
+  return (
+    <Modal open={true} onClose={onClose} title="📝 Điền ghi chú tình trạng xử lý">
+      <div style={{ padding:'8px 12px', background:T.amberBg, borderRadius:8, marginBottom:14, fontSize:12, color:T.amber }}>
+        ⚠️ Đơn {item.order_code} — {item.customer_name||'?'}<br/>
+        <span style={{ fontSize:11, marginTop:4, display:'block' }}>{item.detail}</span>
+      </div>
+      <div style={{ marginBottom:13 }}>
+        <div style={{ fontSize:12, fontWeight:500, color:T.med, marginBottom:5 }}>Ghi chú tình trạng xử lý *</div>
+        <textarea value={note} onChange={e => setNote(e.target.value)}
+          placeholder="VD: Đã liên hệ KH đổi hàng, dự kiến xử lý ngày 15/04..."
+          rows={4} style={{ width:'100%', padding:'8px 11px', border:`1px solid ${T.border}`, borderRadius:8,
+            fontSize:13, fontFamily:'inherit', color:T.dark, background:'#fff',
+            resize:'vertical', boxSizing:'border-box' as any, outline:'none' }}/>
+      </div>
+      <div style={{ display:'flex', justifyContent:'flex-end', gap:10 }}>
+        <GoldBtn outline small onClick={onClose}>Hủy</GoldBtn>
+        <GoldBtn small onClick={() => onSave(item.id, note)} disabled={!note.trim()}>Gửi lên QM xác nhận</GoldBtn>
+      </div>
+    </Modal>
+  )
+}
