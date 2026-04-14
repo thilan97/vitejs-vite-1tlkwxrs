@@ -6139,121 +6139,125 @@ function InvCheckRow({ check, products, allUsers, canEdit, onUpdate, idx, total 
 }
 
 // ── Mobile Check Input (NV dùng điện thoại) ──────────────
-function MobileCheckInput({ session, myChecks, user, allUsers, products, onUpdate, onBack }: any) {
-  const [idx, setIdx] = useState(0)
-  const pending = myChecks.filter((c: any) => c.status === 'pending' || c.actual_qty == null)
-  const current = pending[idx]
-  const [val, setVal] = useState('')
-  const done = myChecks.filter((c: any) => c.actual_qty != null).length
+// ── CheckListRow — 1 dòng trong list KK của NV ─────────────
+function CheckListRow({ check, isActive, onSelect, onConfirm, onSkip, idx, total }: any) {
+  const [val, setVal] = useState(check.actual_qty != null ? String(check.actual_qty) : '')
+  const inputRef = React.useRef<HTMLInputElement>(null)
+  const done = check.actual_qty != null
+  const diff = val !== '' ? Number(val) - (check.system_qty || 0) : null
 
-  const confirm = async () => {
-    if (!current || val === '') return
+  // Auto-focus input when row becomes active
+  useEffect(() => {
+    if (isActive && inputRef.current) {
+      setTimeout(() => inputRef.current?.focus(), 100)
+    }
+  }, [isActive])
+
+  const handleConfirm = async () => {
+    if (val === '') return
     const actual = Number(val)
-    const newDiff = actual - (current.system_qty || 0)
+    const newDiff = actual - (check.system_qty || 0)
     const upd = { actual_qty: actual, diff: newDiff,
       status: newDiff !== 0 ? 'discrepancy' : 'checked',
       checked_at: new Date().toISOString() }
-    await db.from('inventory_checks').update(upd).eq('id', current.id)
-    onUpdate(current.id, upd)
-    setVal('')
-    if (idx < pending.length - 1) setIdx(i => i + 1)
-    else setIdx(0)
+    await db.from('inventory_checks').update(upd).eq('id', check.id)
+    onConfirm(check.id, upd)
   }
 
-  const skip = () => {
-    setVal('')
-    if (idx < pending.length - 1) setIdx(i => i + 1)
-  }
-
-  if (pending.length === 0) return (
-    <div style={{ padding:'32px 24px', textAlign:'center' }}>
-      <div style={{ fontSize:48, marginBottom:12 }}>🎉</div>
-      <div style={{ fontSize:16, fontWeight:700, color:T.green, marginBottom:8 }}>Hoàn thành!</div>
-      <div style={{ fontSize:13, color:T.med, marginBottom:24 }}>
-        Bạn đã kiểm kê {done} mã hàng
-      </div>
-      <button onClick={onBack}
-        style={{ padding:'10px 24px', borderRadius:20, border:'none', background:T.gold,
-          color:'#fff', cursor:'pointer', fontFamily:'inherit', fontSize:13, fontWeight:700 }}>
-        ← Quay lại
-      </button>
-    </div>
-  )
-
-  const diffPreview = val !== '' ? Number(val) - (current?.system_qty || 0) : null
+  const statusIcon = done
+    ? (check.diff !== 0 ? '⚠️' : '✅')
+    : (isActive ? '▶' : '○')
+  const statusColor = done
+    ? (check.diff !== 0 ? T.red : T.green)
+    : (isActive ? T.gold : T.border)
 
   return (
-    <div style={{ padding:'16px', maxWidth:480, margin:'0 auto' }}>
-      {/* Header */}
-      <div style={{ display:'flex', alignItems:'center', gap:12, marginBottom:20 }}>
-        <button onClick={onBack}
-          style={{ padding:'6px 12px', borderRadius:20, border:`1px solid ${T.border}`,
-            background:'transparent', cursor:'pointer', fontSize:12, fontFamily:'inherit', color:T.med }}>
-          ← Quay lại
-        </button>
-        <div style={{ flex:1, textAlign:'center' }}>
-          <div style={{ fontSize:12, color:T.light }}>Tiến độ của bạn</div>
-          <div style={{ fontSize:14, fontWeight:700, color:T.dark }}>{done}/{myChecks.length} mã</div>
+    <div style={{
+      borderBottom: idx < total - 1 ? `1px solid ${T.border}` : 'none',
+      background: isActive ? '#FFFDF5' : done ? (check.diff !== 0 ? '#FFF5F5' : '#F5FFF5') : (idx%2===0?'#fff':T.rowAlt),
+      transition: 'all .15s',
+    }}>
+      {/* Compact row — always visible */}
+      <div onClick={() => !done && onSelect(check.id)}
+        style={{ display:'grid', gridTemplateColumns:'36px 1fr 60px 36px',
+          padding: isActive ? '12px 14px 0' : '10px 14px',
+          gap:10, alignItems:'center',
+          cursor: done ? 'default' : 'pointer' }}>
+        {/* Status icon */}
+        <span style={{ fontSize:18, textAlign:'center', color:statusColor,
+          transition:'all .2s' }}>{statusIcon}</span>
+        {/* Product info */}
+        <div>
+          <div style={{ fontSize:12, fontWeight:isActive?700:500, color:T.dark,
+            lineHeight:1.3 }}>{check.product_name}</div>
+          <div style={{ fontSize:10, color:T.light }}>{check.product_code}</div>
         </div>
-        <div style={{ fontSize:12, color:T.light }}>{idx+1}/{pending.length} còn lại</div>
-      </div>
-
-      {/* Progress bar */}
-      <div style={{ height:6, background:T.border, borderRadius:3, marginBottom:20 }}>
-        <div style={{ height:'100%', borderRadius:3, background:T.green,
-          width:`${myChecks.length>0?done*100/myChecks.length:0}%`, transition:'width .3s' }}/>
-      </div>
-
-      {/* Current product card */}
-      {current && (
-        <div style={{ background:T.card, borderRadius:16, padding:'20px',
-          border:`2px solid ${T.gold}`, boxShadow:'0 4px 16px rgba(196,151,58,0.15)', marginBottom:16 }}>
-          <div style={{ fontSize:11, color:T.light, marginBottom:4 }}>#{current.product_code}</div>
-          <div style={{ fontSize:15, fontWeight:700, color:T.dark, lineHeight:1.4, marginBottom:16 }}>
-            {current.product_name}
-          </div>
-          <div style={{ display:'flex', justifyContent:'space-between', marginBottom:20 }}>
-            <div style={{ textAlign:'center' }}>
-              <div style={{ fontSize:11, color:T.light, marginBottom:4 }}>Tồn hệ thống</div>
-              <div style={{ fontSize:28, fontWeight:800, color:T.blue }}>{current.system_qty ?? '—'}</div>
+        {/* System qty */}
+        <div style={{ textAlign:'right' }}>
+          <div style={{ fontSize:10, color:T.light }}>Tồn HT</div>
+          <div style={{ fontSize:14, fontWeight:700, color:T.blue }}>{check.system_qty ?? '—'}</div>
+        </div>
+        {/* Done badge */}
+        {done && (
+          <div style={{ textAlign:'center' }}>
+            <div style={{ fontSize:12, fontWeight:800,
+              color:check.diff===0?T.green:check.diff>0?T.blue:T.red }}>
+              {check.diff===0?'✓':check.diff>0?`+${check.diff}`:check.diff}
             </div>
-            <div style={{ textAlign:'center', opacity:.3, paddingTop:16, fontSize:20 }}>→</div>
+          </div>
+        )}
+        {!done && !isActive && (
+          <div style={{ width:24, height:24, borderRadius:'50%',
+            border:`1.5px solid ${T.border}`, flexShrink:0 }}/>
+        )}
+      </div>
+
+      {/* Expanded input — only when active */}
+      {isActive && (
+        <div style={{ padding:'12px 14px 16px' }}>
+          {/* 3-number display */}
+          <div style={{ display:'flex', justifyContent:'space-around',
+            background:'#fff', borderRadius:12, padding:'12px',
+            border:`1.5px solid ${T.gold}`, marginBottom:12 }}>
             <div style={{ textAlign:'center' }}>
-              <div style={{ fontSize:11, color:T.light, marginBottom:4 }}>Tồn thực tế</div>
-              <div style={{ fontSize:28, fontWeight:800,
-                color:diffPreview==null?T.light:diffPreview===0?T.green:diffPreview>0?T.blue:T.red }}>
-                {val || '—'}
+              <div style={{ fontSize:10, color:T.light, marginBottom:2 }}>Tồn hệ thống</div>
+              <div style={{ fontSize:24, fontWeight:800, color:T.blue }}>{check.system_qty ?? '—'}</div>
+            </div>
+            <div style={{ display:'flex', alignItems:'center', color:T.border, fontSize:18 }}>→</div>
+            <div style={{ textAlign:'center' }}>
+              <div style={{ fontSize:10, color:T.light, marginBottom:2 }}>Tồn thực tế</div>
+              <div style={{ fontSize:24, fontWeight:800,
+                color:diff==null?T.light:diff===0?T.green:diff>0?T.blue:T.red }}>
+                {val||'—'}
               </div>
             </div>
-            {diffPreview != null && (
+            {diff != null && (
               <div style={{ textAlign:'center' }}>
-                <div style={{ fontSize:11, color:T.light, marginBottom:4 }}>Chênh lệch</div>
-                <div style={{ fontSize:28, fontWeight:800,
-                  color:diffPreview===0?T.green:diffPreview>0?T.blue:T.red }}>
-                  {diffPreview>0?'+':''}{diffPreview}
+                <div style={{ fontSize:10, color:T.light, marginBottom:2 }}>Chênh lệch</div>
+                <div style={{ fontSize:24, fontWeight:800,
+                  color:diff===0?T.green:diff>0?T.blue:T.red }}>
+                  {diff>0?'+':''}{diff}
                 </div>
               </div>
             )}
           </div>
-
-          {/* Big number input */}
-          <input type="number" value={val} onChange={e => setVal(e.target.value)}
+          {/* Input */}
+          <input ref={inputRef} type="number" value={val}
+            onChange={e => setVal(e.target.value)}
             placeholder="Nhập tồn thực tế..."
-            style={{ width:'100%', padding:'14px', border:`2px solid ${val?T.gold:T.border}`,
-              borderRadius:12, fontSize:22, fontFamily:'inherit', textAlign:'center',
-              fontWeight:700, color:T.dark, background:'#fff', boxSizing:'border-box' as any,
-              outline:'none', marginBottom:12 }}
-            onKeyDown={e => e.key==='Enter' && confirm()}/>
-
-          <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:10 }}>
-            <button onClick={skip}
-              style={{ padding:'14px', borderRadius:12, border:`1.5px solid ${T.border}`,
+            onKeyDown={e => e.key==='Enter' && handleConfirm()}
+            style={{ width:'100%', padding:'13px', border:`2px solid ${val?T.gold:T.border}`,
+              borderRadius:12, fontSize:20, fontFamily:'inherit', textAlign:'center',
+              fontWeight:700, color:T.dark, background:'#fff',
+              boxSizing:'border-box' as any, outline:'none', marginBottom:10 }}/>
+          {/* Buttons */}
+          <div style={{ display:'grid', gridTemplateColumns:'1fr 2fr', gap:8 }}>
+            <button onClick={() => onSkip(check.id)}
+              style={{ padding:'12px', borderRadius:12, border:`1.5px solid ${T.border}`,
                 background:'transparent', cursor:'pointer', fontFamily:'inherit',
-                fontSize:14, color:T.med, fontWeight:600 }}>
-              → Bỏ qua
-            </button>
-            <button onClick={confirm} disabled={val===''}
-              style={{ padding:'14px', borderRadius:12, border:'none',
+                fontSize:13, color:T.med, fontWeight:600 }}>Bỏ qua</button>
+            <button onClick={handleConfirm} disabled={val===''}
+              style={{ padding:'12px', borderRadius:12, border:'none',
                 background:val?T.green:'#ccc', cursor:val?'pointer':'default',
                 fontFamily:'inherit', fontSize:14, color:'#fff', fontWeight:700 }}>
               ✓ Xác nhận
@@ -6261,15 +6265,95 @@ function MobileCheckInput({ session, myChecks, user, allUsers, products, onUpdat
           </div>
         </div>
       )}
+    </div>
+  )
+}
 
-      {/* Next item preview */}
-      {pending[idx+1] && (
-        <div style={{ background:T.bg, borderRadius:10, padding:'10px 14px',
-          border:`1px solid ${T.border}`, opacity:.6 }}>
-          <div style={{ fontSize:10, color:T.light, marginBottom:2 }}>Tiếp theo:</div>
-          <div style={{ fontSize:12, color:T.med }}>{pending[idx+1].product_name}</div>
+function MobileCheckInput({ session, myChecks, user, allUsers, products, onUpdate, onBack }: any) {
+  const [activeId, setActiveId] = useState<string|null>(null)
+  const [sortBy, setSortBy] = useState<'alpha'|'stock'>('alpha')
+  const done = myChecks.filter((c: any) => c.actual_qty != null).length
+  const pending = myChecks.filter((c: any) => c.actual_qty == null).length
+
+  const sorted = [...myChecks].sort((a: any, b: any) => {
+    if (sortBy === 'stock') return (b.system_qty||0) - (a.system_qty||0)
+    return (a.product_name||'').localeCompare(b.product_name||'')
+  })
+
+  const handleConfirm = (id: string, upd: any) => {
+    onUpdate(id, upd)
+    // Auto-advance to next pending
+    const nextPending = sorted.find((c: any) => c.id !== id && c.actual_qty == null && c.id !== activeId)
+    setActiveId(nextPending?.id || null)
+  }
+
+  return (
+    <div style={{ display:'flex', flexDirection:'column', height:'100vh', background:T.bg }}>
+      {/* Fixed header */}
+      <div style={{ padding:'10px 14px', background:'#fff', borderBottom:`1px solid ${T.border}`,
+        flexShrink:0, position:'sticky', top:0, zIndex:10 }}>
+        <div style={{ display:'flex', alignItems:'center', gap:10, marginBottom:8 }}>
+          <button onClick={onBack}
+            style={{ padding:'5px 12px', borderRadius:20, border:`1px solid ${T.border}`,
+              background:'transparent', cursor:'pointer', fontSize:12, fontFamily:'inherit', color:T.med }}>
+            ← Về
+          </button>
+          <div style={{ flex:1 }}>
+            <div style={{ height:6, background:T.border, borderRadius:3 }}>
+              <div style={{ height:'100%', borderRadius:3, background:T.green,
+                width:`${myChecks.length>0?done*100/myChecks.length:0}%`, transition:'width .4s' }}/>
+            </div>
+          </div>
+          <span style={{ fontSize:12, fontWeight:700, color:T.dark, flexShrink:0 }}>
+            {done}/{myChecks.length}
+          </span>
         </div>
-      )}
+        {/* Sort options */}
+        <div style={{ display:'flex', gap:6, alignItems:'center' }}>
+          <span style={{ fontSize:11, color:T.light }}>Sắp xếp:</span>
+          {([['alpha','A → Z'],['stock','Tồn kho']] as [string,string][]).map(([val,label]) => (
+            <button key={val} onClick={() => setSortBy(val as any)}
+              style={{ padding:'4px 12px', borderRadius:20, cursor:'pointer',
+                fontFamily:'inherit', fontSize:11,
+                border:`1.5px solid ${sortBy===val?T.gold:T.border}`,
+                background:sortBy===val?T.goldBg:'transparent',
+                color:sortBy===val?T.goldText:T.med, fontWeight:sortBy===val?700:400 }}>
+              {label}
+            </button>
+          ))}
+          {pending > 0 && (
+            <span style={{ marginLeft:'auto', fontSize:11, color:T.amber }}>
+              ⏳ {pending} chưa KK
+            </span>
+          )}
+        </div>
+      </div>
+
+      {/* Scrollable list */}
+      <div style={{ flex:1, overflowY:'auto', background:'#fff' }}>
+        {done === myChecks.length && (
+          <div style={{ padding:'40px 24px', textAlign:'center' }}>
+            <div style={{ fontSize:44, marginBottom:12 }}>🎉</div>
+            <div style={{ fontSize:16, fontWeight:700, color:T.green, marginBottom:6 }}>Hoàn thành!</div>
+            <div style={{ fontSize:13, color:T.med, marginBottom:20 }}>Đã kiểm kê {done} mã hàng</div>
+            <button onClick={onBack}
+              style={{ padding:'10px 24px', borderRadius:20, border:'none', background:T.gold,
+                color:'#fff', cursor:'pointer', fontFamily:'inherit', fontSize:13, fontWeight:700 }}>
+              ← Quay lại danh sách
+            </button>
+          </div>
+        )}
+        {sorted.map((c: any, i: number) => (
+          <CheckListRow key={c.id} check={c} idx={i} total={sorted.length}
+            isActive={activeId === c.id}
+            onSelect={(id: string) => setActiveId(prev => prev===id ? null : id)}
+            onConfirm={handleConfirm}
+            onSkip={(id: string) => {
+              const next = sorted.find((x: any) => x.id !== id && x.actual_qty == null && x.id !== activeId)
+              setActiveId(next?.id || null)
+            }}/>
+        ))}
+      </div>
     </div>
   )
 }
