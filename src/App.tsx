@@ -496,6 +496,7 @@ const NAV_GROUPS = (perm: any, deptId = '') => {
         { id:'tasks',      icon:'📌', label:'Giao việc'  },
         perm.manageTemplate && { id:'templates', icon:'📋', label:'Template' },
         { id:'history',    icon:'🗂️', label:'Lịch sử'   },
+        (deptId==='kho'||perm.viewAllDashboard) && { id:'inventory', icon:'📦', label:'Kiểm kê kho' },
       ].filter(Boolean)
     },
     hasAttendance && {
@@ -4798,7 +4799,6 @@ function UserManagement({ user, allUsers, setAllUsers, departments, positions, m
     } else {
       const newId = form.name.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g,'').replace(/\s/g,'_')+'_'+Date.now().toString().slice(-4)
       const newUser = { id:newId, ...form, dept_id:finalDeptId, dept_name:deptName, position_name:posName, role, must_change_password:true }
-           
       setAllUsers((prev: any) => [...prev, newUser])
       await db.from('users').insert({ id:newId, ...form, dept_id:finalDeptId, role, birthday:form.birthday||'', must_change_password:true })
     }
@@ -5302,6 +5302,7 @@ export default function App() {
   const [products, setProducts]     = useState<any[]>([])
   const [wrongOrders, setWrongOrders] = useState<any[]>([])
   const [returnSlips, setReturnSlips] = useState<any[]>([])
+  const [invSessions, setInvSessions] = useState<any[]>([])
   const [loading, setLoading]       = useState(false)
   const width   = useWindowWidth()
   const mobile  = width < 768
@@ -5565,6 +5566,7 @@ export default function App() {
           {validPage==='users'      && <UserManagement {...pp} setAllUsers={setAllUsers} departments={departments} positions={positions}/>}
           {validPage==='positions'  && <PositionsManagement positions={positions} setPositions={setPositions} mobile={mobile}/>}
           {validPage==='shortage'   && <ShortageItems {...pp} products={products} setProducts={setProducts}/>}
+          {validPage==='inventory'  && <InventoryModule {...pp} products={products} invSessions={invSessions} setInvSessions={setInvSessions}/>}
           {validPage==='returns'    && <ReturnItems {...pp} products={products}/>}
           {validPage==='wrongord'   && <WrongOrders {...pp} wrongOrders={wrongOrders} setWrongOrders={setWrongOrders} allUsers={allUsers}/>}
           {validPage==='settings'   && <Settings {...pp} setUser={setUser} settings={settings} setSettings={setSettings} onManualReset={manualReset}/>}
@@ -5574,6 +5576,7 @@ export default function App() {
         {user && <StickyNote user={user}/>}
         {/* Notification Banner — wrong orders pending */}
         {user && <NotifBanner user={user} wrongOrders={wrongOrders} returnSlips={returnSlips} setPage={setPage}/>}
+        {user && <SaturdayBanner user={user}/>}
       </div>
      )
 }
@@ -5993,5 +5996,782 @@ function SaleFillModal({ item, onSave, onClose }: any) {
         <GoldBtn small onClick={() => onSave(item.id, note)} disabled={!note.trim()}>Gửi lên QM xác nhận</GoldBtn>
       </div>
     </Modal>
+  )
+}
+
+// ════════════════════════════════════════════════════════
+// 📦 MODULE KIỂM KÊ KHO
+// ════════════════════════════════════════════════════════
+
+// ── Saturday Banner ─────────────────────────────────────
+function SaturdayBanner({ user }: any) {
+  const [dismissed, setDismissed] = useState(false)
+  const [confirmed, setConfirmed] = useState(false)
+  const [loaded, setLoaded] = useState(false)
+  const perm = getPerm(user)
+  const isSale = user.dept_id === 'sale'
+  const isManager = perm.approveLeave || perm.viewAllDashboard
+  const now = new Date()
+  const isSat = now.getDay() === 6
+  const hour = now.getHours()
+  const todayStr = now.toISOString().split('T')[0]
+  const showBanner = isSale && !isManager && isSat && hour >= 12
+
+  useEffect(() => {
+    if (!showBanner) { setLoaded(true); return }
+    db.from('saturday_checkins').select('id').eq('user_id', user.id).eq('date', todayStr)
+      .maybeSingle().then(({ data }) => { if (data) setConfirmed(true); setLoaded(true) })
+  }, [])
+
+  const handleConfirm = async () => {
+    await db.from('saturday_checkins').upsert({ id:`sat_${user.id}_${todayStr}`, user_id:user.id, date:todayStr, confirmed_at:now.toISOString() })
+    setConfirmed(true)
+  }
+
+  if (!loaded || !showBanner || confirmed || dismissed) return null
+
+  return (
+    <div style={{ position:'fixed', top:16, left:'50%', transform:'translateX(-50%)',
+      zIndex:10000, background:'#fff', border:`2px solid ${T.amber}`,
+      borderRadius:14, boxShadow:'0 8px 32px rgba(180,83,9,0.2)',
+      padding:'14px 18px', maxWidth:400, width:'calc(100vw - 32px)' }}>
+      <div style={{ display:'flex', alignItems:'flex-start', gap:12 }}>
+        <span style={{ fontSize:22, flexShrink:0 }}>⚠️</span>
+        <div style={{ flex:1 }}>
+          <div style={{ fontSize:13, fontWeight:800, color:T.amber, marginBottom:4, letterSpacing:.3 }}>
+            HOÀN THÀNH HÓA ĐƠN ĐỂ KIỂM KÊ KHO
+          </div>
+          <div style={{ fontSize:11, color:T.med, marginBottom:10, lineHeight:1.5 }}>
+            Kho sẽ kiểm kê vào sáng Chủ Nhật. Sale vui lòng hoàn thành tất cả đơn hàng hôm nay.
+          </div>
+          <div style={{ display:'flex', gap:8 }}>
+            {hour >= 18 && (
+              <button onClick={handleConfirm}
+                style={{ padding:'6px 14px', borderRadius:20, border:'none', background:T.green,
+                  color:'#fff', cursor:'pointer', fontFamily:'inherit', fontSize:11, fontWeight:700 }}>
+                ✅ Đã hoàn thành
+              </button>
+            )}
+            <button onClick={() => setDismissed(true)}
+              style={{ padding:'6px 12px', borderRadius:20, border:`1px solid ${T.border}`,
+                background:'transparent', color:T.light, cursor:'pointer', fontFamily:'inherit', fontSize:11 }}>
+              Nhắc lại sau
+            </button>
+          </div>
+        </div>
+        <button onClick={() => setDismissed(true)}
+          style={{ background:'none', border:'none', cursor:'pointer', color:T.light, fontSize:18, padding:0 }}>✕</button>
+      </div>
+    </div>
+  )
+}
+
+// ── Inventory Check Row subcomponent (avoid hooks in .map) ─
+function InvCheckRow({ check, products, allUsers, canEdit, onUpdate, idx, total }: any) {
+  const [editing, setEditing] = useState(false)
+  const [val, setVal] = useState(check.actual_qty != null ? String(check.actual_qty) : '')
+  const prod = products.find((p: any) => p.code === check.product_code)
+  const checker = allUsers.find((u: any) => u.id === check.assigned_to)
+  const diff = check.diff
+  const hasDiff = diff != null && diff !== 0
+
+  const save = async () => {
+    const actual = Number(val)
+    const newDiff = actual - (check.system_qty || 0)
+    const upd = { actual_qty: actual, diff: newDiff,
+      status: newDiff !== 0 ? 'discrepancy' : 'checked', checked_at: new Date().toISOString() }
+    await db.from('inventory_checks').update(upd).eq('id', check.id)
+    onUpdate(check.id, upd)
+    setEditing(false)
+  }
+
+  return (
+    <div style={{ display:'grid', gridTemplateColumns:'1fr 70px 70px 80px 100px 80px',
+      padding:'8px 12px', gap:8, alignItems:'center',
+      borderBottom: idx < total-1 ? `1px solid ${T.border}` : 'none',
+      background: hasDiff ? '#FFF5F5' : idx%2===0 ? '#fff' : T.rowAlt }}>
+      <div>
+        <div style={{ fontSize:12, fontWeight:500, color:T.dark }}>{check.product_name}</div>
+        <div style={{ fontSize:10, color:T.light }}>{check.product_code}
+          {checker && <span style={{ marginLeft:6, color:T.blue }}>· {checker.name}</span>}
+        </div>
+      </div>
+      <span style={{ fontSize:12, textAlign:'center', color:T.med }}>{check.system_qty ?? '—'}</span>
+      {editing ? (
+        <input type="number" value={val} onChange={e => setVal(e.target.value)}
+          autoFocus style={{ width:'100%', padding:'4px 6px', border:`1.5px solid ${T.gold}`,
+            borderRadius:6, fontSize:12, fontFamily:'inherit', textAlign:'center' }}
+          onKeyDown={e => e.key==='Enter' && save()}/>
+      ) : (
+        <span style={{ fontSize:12, textAlign:'center', fontWeight:check.actual_qty!=null?700:400,
+          color:check.actual_qty!=null?T.dark:T.light }}>
+          {check.actual_qty ?? '—'}
+        </span>
+      )}
+      <span style={{ fontSize:12, textAlign:'center', fontWeight:700,
+        color:!hasDiff?T.green:diff>0?T.blue:T.red }}>
+        {diff==null?'—':diff>0?'+'+diff:diff}
+      </span>
+      <span style={{ fontSize:10, padding:'2px 7px', borderRadius:20, textAlign:'center',
+        background:check.status==='checked'||check.status==='confirmed'?T.greenBg:check.status==='discrepancy'?T.redBg:T.bg,
+        color:check.status==='checked'||check.status==='confirmed'?T.green:check.status==='discrepancy'?T.red:T.light }}>
+        {check.status==='checked'?'✓ OK':check.status==='discrepancy'?'⚠️ Lệch':check.status==='confirmed'?'✅':check.status==='pending'?'Chờ':'—'}
+      </span>
+      <div style={{ display:'flex', gap:4, justifyContent:'flex-end' }}>
+        {canEdit && !editing && (
+          <button onClick={() => setEditing(true)}
+            style={{ padding:'3px 9px', borderRadius:20, border:`1px solid ${T.border}`,
+              background:'transparent', cursor:'pointer', fontSize:10, fontFamily:'inherit', color:T.med }}>
+            {check.actual_qty!=null?'Sửa':'Nhập'}
+          </button>
+        )}
+        {editing && <>
+          <button onClick={save}
+            style={{ padding:'3px 9px', borderRadius:20, border:'none', background:T.green,
+              cursor:'pointer', fontSize:10, fontFamily:'inherit', color:'#fff', fontWeight:700 }}>✓</button>
+          <button onClick={() => { setEditing(false); setVal(check.actual_qty!=null?String(check.actual_qty):'') }}
+            style={{ padding:'3px 8px', borderRadius:20, border:`1px solid ${T.border}`,
+              background:'transparent', cursor:'pointer', fontSize:10, fontFamily:'inherit', color:T.light }}>✕</button>
+        </>}
+      </div>
+    </div>
+  )
+}
+
+// ── Mobile Check Input (NV dùng điện thoại) ──────────────
+function MobileCheckInput({ session, myChecks, user, allUsers, products, onUpdate, onBack }: any) {
+  const [idx, setIdx] = useState(0)
+  const pending = myChecks.filter((c: any) => c.status === 'pending' || c.actual_qty == null)
+  const current = pending[idx]
+  const [val, setVal] = useState('')
+  const done = myChecks.filter((c: any) => c.actual_qty != null).length
+
+  const confirm = async () => {
+    if (!current || val === '') return
+    const actual = Number(val)
+    const newDiff = actual - (current.system_qty || 0)
+    const upd = { actual_qty: actual, diff: newDiff,
+      status: newDiff !== 0 ? 'discrepancy' : 'checked',
+      checked_at: new Date().toISOString() }
+    await db.from('inventory_checks').update(upd).eq('id', current.id)
+    onUpdate(current.id, upd)
+    setVal('')
+    if (idx < pending.length - 1) setIdx(i => i + 1)
+    else setIdx(0)
+  }
+
+  const skip = () => {
+    setVal('')
+    if (idx < pending.length - 1) setIdx(i => i + 1)
+  }
+
+  if (pending.length === 0) return (
+    <div style={{ padding:'32px 24px', textAlign:'center' }}>
+      <div style={{ fontSize:48, marginBottom:12 }}>🎉</div>
+      <div style={{ fontSize:16, fontWeight:700, color:T.green, marginBottom:8 }}>Hoàn thành!</div>
+      <div style={{ fontSize:13, color:T.med, marginBottom:24 }}>
+        Bạn đã kiểm kê {done} mã hàng
+      </div>
+      <button onClick={onBack}
+        style={{ padding:'10px 24px', borderRadius:20, border:'none', background:T.gold,
+          color:'#fff', cursor:'pointer', fontFamily:'inherit', fontSize:13, fontWeight:700 }}>
+        ← Quay lại
+      </button>
+    </div>
+  )
+
+  const diffPreview = val !== '' ? Number(val) - (current?.system_qty || 0) : null
+
+  return (
+    <div style={{ padding:'16px', maxWidth:480, margin:'0 auto' }}>
+      {/* Header */}
+      <div style={{ display:'flex', alignItems:'center', gap:12, marginBottom:20 }}>
+        <button onClick={onBack}
+          style={{ padding:'6px 12px', borderRadius:20, border:`1px solid ${T.border}`,
+            background:'transparent', cursor:'pointer', fontSize:12, fontFamily:'inherit', color:T.med }}>
+          ← Quay lại
+        </button>
+        <div style={{ flex:1, textAlign:'center' }}>
+          <div style={{ fontSize:12, color:T.light }}>Tiến độ của bạn</div>
+          <div style={{ fontSize:14, fontWeight:700, color:T.dark }}>{done}/{myChecks.length} mã</div>
+        </div>
+        <div style={{ fontSize:12, color:T.light }}>{idx+1}/{pending.length} còn lại</div>
+      </div>
+
+      {/* Progress bar */}
+      <div style={{ height:6, background:T.border, borderRadius:3, marginBottom:20 }}>
+        <div style={{ height:'100%', borderRadius:3, background:T.green,
+          width:`${myChecks.length>0?done*100/myChecks.length:0}%`, transition:'width .3s' }}/>
+      </div>
+
+      {/* Current product card */}
+      {current && (
+        <div style={{ background:T.card, borderRadius:16, padding:'20px',
+          border:`2px solid ${T.gold}`, boxShadow:'0 4px 16px rgba(196,151,58,0.15)', marginBottom:16 }}>
+          <div style={{ fontSize:11, color:T.light, marginBottom:4 }}>#{current.product_code}</div>
+          <div style={{ fontSize:15, fontWeight:700, color:T.dark, lineHeight:1.4, marginBottom:16 }}>
+            {current.product_name}
+          </div>
+          <div style={{ display:'flex', justifyContent:'space-between', marginBottom:20 }}>
+            <div style={{ textAlign:'center' }}>
+              <div style={{ fontSize:11, color:T.light, marginBottom:4 }}>Tồn hệ thống</div>
+              <div style={{ fontSize:28, fontWeight:800, color:T.blue }}>{current.system_qty ?? '—'}</div>
+            </div>
+            <div style={{ textAlign:'center', opacity:.3, paddingTop:16, fontSize:20 }}>→</div>
+            <div style={{ textAlign:'center' }}>
+              <div style={{ fontSize:11, color:T.light, marginBottom:4 }}>Tồn thực tế</div>
+              <div style={{ fontSize:28, fontWeight:800,
+                color:diffPreview==null?T.light:diffPreview===0?T.green:diffPreview>0?T.blue:T.red }}>
+                {val || '—'}
+              </div>
+            </div>
+            {diffPreview != null && (
+              <div style={{ textAlign:'center' }}>
+                <div style={{ fontSize:11, color:T.light, marginBottom:4 }}>Chênh lệch</div>
+                <div style={{ fontSize:28, fontWeight:800,
+                  color:diffPreview===0?T.green:diffPreview>0?T.blue:T.red }}>
+                  {diffPreview>0?'+':''}{diffPreview}
+                </div>
+              </div>
+            )}
+          </div>
+
+          {/* Big number input */}
+          <input type="number" value={val} onChange={e => setVal(e.target.value)}
+            placeholder="Nhập tồn thực tế..."
+            style={{ width:'100%', padding:'14px', border:`2px solid ${val?T.gold:T.border}`,
+              borderRadius:12, fontSize:22, fontFamily:'inherit', textAlign:'center',
+              fontWeight:700, color:T.dark, background:'#fff', boxSizing:'border-box' as any,
+              outline:'none', marginBottom:12 }}
+            onKeyDown={e => e.key==='Enter' && confirm()}/>
+
+          <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:10 }}>
+            <button onClick={skip}
+              style={{ padding:'14px', borderRadius:12, border:`1.5px solid ${T.border}`,
+                background:'transparent', cursor:'pointer', fontFamily:'inherit',
+                fontSize:14, color:T.med, fontWeight:600 }}>
+              → Bỏ qua
+            </button>
+            <button onClick={confirm} disabled={val===''}
+              style={{ padding:'14px', borderRadius:12, border:'none',
+                background:val?T.green:'#ccc', cursor:val?'pointer':'default',
+                fontFamily:'inherit', fontSize:14, color:'#fff', fontWeight:700 }}>
+              ✓ Xác nhận
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* Next item preview */}
+      {pending[idx+1] && (
+        <div style={{ background:T.bg, borderRadius:10, padding:'10px 14px',
+          border:`1px solid ${T.border}`, opacity:.6 }}>
+          <div style={{ fontSize:10, color:T.light, marginBottom:2 }}>Tiếp theo:</div>
+          <div style={{ fontSize:12, color:T.med }}>{pending[idx+1].product_name}</div>
+        </div>
+      )}
+    </div>
+  )
+}
+
+// ── Main InventoryModule ─────────────────────────────────
+function InventoryModule({ user, allUsers, products, invSessions, setInvSessions, mobile }: any) {
+  const [tab, setTab] = useState<'overview'|'sessions'|'check'|'discrepancy'>('overview')
+  const [checks, setChecks] = useState<any[]>([])
+  const [loading, setLoading] = useState(true)
+  const [showCreate, setShowCreate] = useState(false)
+  const [mobileCheck, setMobileCheck] = useState(false)
+  const [newDate, setNewDate] = useState(new Date().toISOString().split('T')[0])
+  const [newNote, setNewNote] = useState('')
+  const [importing, setImporting] = useState(false)
+  const [diffFilter, setDiffFilter] = useState<'all'|'neg'|'pos'>('all')
+  const [monthFilter, setMonthFilter] = useState(() => {
+    const n = new Date(); return `${n.getFullYear()}-${String(n.getMonth()+1).padStart(2,'0')}`
+  })
+  const p = mobile ? '16px' : '24px'
+  const perm = getPerm(user)
+  const canManage = perm.viewAllDashboard || perm.approveLeave
+  const canCheck  = user.dept_id === 'kho' || canManage
+
+  const openSession = invSessions.find((s: any) => s.status === 'open')
+
+  useEffect(() => {
+    Promise.all([
+      db.from('inventory_sessions').select('*').order('date', {ascending:false}).limit(100),
+      db.from('inventory_checks').select('*').order('created_at', {ascending:false}).limit(5000)
+    ]).then(([{data:s}, {data:c}]) => {
+      setInvSessions(s||[])
+      setChecks(c||[])
+      setLoading(false)
+    })
+  }, [])
+
+  const updateCheck = (id: string, upd: any) =>
+    setChecks(prev => prev.map((c: any) => c.id===id ? {...c,...upd} : c))
+
+  const createSession = async () => {
+    if (!newDate) return
+    const newS = { id:'sess_'+Date.now(), date:newDate, note:newNote, status:'open',
+      total_assigned:0, total_checked:0, created_by:user.id, created_at:new Date().toISOString() }
+    setInvSessions(prev => [newS, ...prev])
+    await db.from('inventory_sessions').insert(newS)
+    setShowCreate(false); setNewNote('')
+  }
+
+  const closeSession = async (sid: string) => {
+    if (!confirm('Chốt phiên kiểm kê này? Sau khi chốt sẽ không thể nhập liệu thêm.')) return
+    const upd = { status:'closed', closed_by:user.id, closed_at:new Date().toISOString() }
+    setInvSessions(prev => prev.map((s: any) => s.id===sid ? {...s,...upd} : s))
+    await db.from('inventory_sessions').update(upd).eq('id', sid)
+  }
+
+  // Import Excel (LichSu_KK format)
+  const importExcel = async (file: File) => {
+    setImporting(true)
+    try {
+      const xlsx = await import('https://cdn.jsdelivr.net/npm/xlsx@0.18.5/+esm' as any)
+      const buf  = await file.arrayBuffer()
+      const wb   = xlsx.read(buf, {type:'array'})
+      const ws   = wb.Sheets['LichSu_KK'] || wb.Sheets[wb.SheetNames[0]]
+      const rows: any[] = xlsx.utils.sheet_to_json(ws, {header:1, defval:''})
+      // Find header row
+      const hIdx = rows.findIndex((r: any[]) => r.some((c: any) => String(c).includes('Ngày KK')))
+      if (hIdx<0) { alert('Không tìm thấy sheet LichSu_KK đúng format'); setImporting(false); return }
+      const headers = rows[hIdx].map((h: any) => String(h).trim())
+      const colNgay  = headers.findIndex((h: string) => h.includes('Ngày KK'))
+      const colMa    = headers.findIndex((h: string) => h.includes('Mã SP'))
+      const colTen   = headers.findIndex((h: string) => h.includes('Tên SP'))
+      const colHT    = headers.findIndex((h: string) => h.includes('Hệ Thống'))
+      const colTT    = headers.findIndex((h: string) => h.includes('Thực Tế'))
+      const colCL    = headers.findIndex((h: string) => h.includes('Chênh'))
+      const colNV    = headers.findIndex((h: string) => h.includes('Người'))
+      // Group by date
+      const byDate: Record<string, any[]> = {}
+      rows.slice(hIdx+1).forEach((r: any[]) => {
+        const ma = String(r[colMa]||'').trim()
+        if (!ma) return
+        const rawDate = r[colNgay]
+        let dateStr = ''
+        if (rawDate instanceof Date) dateStr = rawDate.toISOString().split('T')[0]
+        else if (typeof rawDate === 'number') {
+          const d = new Date(Math.round((rawDate - 25569) * 86400 * 1000))
+          dateStr = d.toISOString().split('T')[0]
+        } else dateStr = String(rawDate).split('T')[0] || String(rawDate).split(' ')[0]
+        if (!byDate[dateStr]) byDate[dateStr] = []
+        byDate[dateStr].push({
+          product_code: ma, product_name: String(r[colTen]||'').trim(),
+          system_qty:   Number(r[colHT])||0, actual_qty: Number(r[colTT])||0,
+          diff:         Number(r[colCL])||0,
+          checked_by_name: String(r[colNV]||'Admin').trim()
+        })
+      })
+      // Create sessions + checks
+      let created = 0
+      for (const [dateStr, items] of Object.entries(byDate)) {
+        const existing = invSessions.find((s: any) => s.date===dateStr)
+        let sessId = existing?.id
+        if (!sessId) {
+          sessId = 'sess_import_'+dateStr.replace(/-/g,'')
+          const newS = { id:sessId, date:dateStr, note:'Import từ Excel', status:'closed',
+            total_assigned:items.length, total_checked:items.length,
+            created_by:user.id, created_at:new Date().toISOString(),
+            closed_at:new Date().toISOString() }
+          await db.from('inventory_sessions').upsert(newS)
+          setInvSessions(prev => [...prev.filter((s: any) => s.id!==sessId), newS])
+        }
+        const newChecks = items.map((item: any, i: number) => ({
+          id: `chk_${sessId}_${i}_${Date.now()}`,
+          session_id: sessId, product_code: item.product_code,
+          product_name: item.product_name, system_qty: item.system_qty,
+          actual_qty: item.actual_qty, diff: item.diff,
+          base_price: products.find((p: any) => p.code===item.product_code)?.base_price || 0,
+          assigned_to: user.id, status: item.diff!==0?'discrepancy':'checked',
+          diff_status: '', diff_note: '', checked_at: dateStr, created_at: new Date().toISOString()
+        }))
+        await db.from('inventory_checks').upsert(newChecks)
+        setChecks(prev => [...prev.filter((c: any) => c.session_id!==sessId), ...newChecks])
+        created += items.length
+      }
+      alert(`✅ Import thành công ${created} bản ghi từ ${Object.keys(byDate).length} đợt kiểm kê`)
+    } catch(e: any) { alert('❌ Lỗi import: ' + e.message) }
+    setImporting(false)
+  }
+
+  // Stats
+  const totalProducts = products.length
+  const checkedCodes  = new Set(checks.map((c: any) => c.product_code)).size
+  const discrepancies = checks.filter((c: any) => c.status==='discrepancy' && c.diff_status==='')
+  const myChecks      = openSession ? checks.filter((c: any) => c.session_id===openSession.id && c.assigned_to===user.id) : []
+
+  const [fy, fm] = monthFilter.split('-').map(Number)
+  const monthChecks = checks.filter((c: any) => {
+    const sid = invSessions.find((s: any) => s.id===c.session_id)
+    if (!sid) return false
+    const d = new Date(sid.date)
+    return d.getFullYear()===fy && d.getMonth()+1===fm
+  })
+
+  if (loading) return <div style={{padding:p,textAlign:'center',color:T.light,paddingTop:40}}>⏳ Đang tải dữ liệu...</div>
+
+  // Mobile check mode
+  if (mobileCheck && openSession && myChecks.length > 0) return (
+    <MobileCheckInput session={openSession} myChecks={myChecks} user={user}
+      allUsers={allUsers} products={products}
+      onUpdate={updateCheck} onBack={() => setMobileCheck(false)}/>
+  )
+
+  const TABS = [
+    {id:'overview',     label:'📊 Tổng quan'},
+    {id:'sessions',     label:'📋 Phiên KK'},
+    {id:'check',        label:`✅ Nhập liệu${openSession?` (${myChecks.filter((c: any)=>c.actual_qty==null).length})`:''}`},
+    {id:'discrepancy',  label:`⚠️ Lệch kho${discrepancies.length?` (${discrepancies.length})`:''}`},
+  ]
+
+  return (
+    <div style={{padding:`0 ${p} ${mobile?'80px':p}`}}>
+      <Topbar mobile={mobile} title="📦 Kiểm kê kho"
+        subtitle={openSession ? `📂 Phiên ${openSession.date} đang mở` : 'Quản lý kiểm kê hàng hóa'}
+        action={canManage ? <GoldBtn small onClick={() => setShowCreate(true)}>+ Tạo phiên KK</GoldBtn> : undefined}/>
+
+      {/* Tabs */}
+      <div style={{display:'flex',gap:6,marginBottom:14,flexWrap:'wrap'}}>
+        {TABS.map(t => (
+          <button key={t.id} onClick={() => setTab(t.id as any)}
+            style={{padding:'6px 14px',borderRadius:8,cursor:'pointer',fontFamily:'inherit',fontSize:12,
+              border:`1.5px solid ${tab===t.id?T.gold:T.border}`,
+              background:tab===t.id?T.goldBg:'transparent',
+              color:tab===t.id?T.goldText:T.med,fontWeight:tab===t.id?700:400}}>{t.label}</button>
+        ))}
+      </div>
+
+      {/* ── TAB: TỔNG QUAN ── */}
+      {tab==='overview' && (
+        <div style={{display:'flex',flexDirection:'column',gap:14}}>
+          {/* 4 cards */}
+          <div style={{display:'grid',gridTemplateColumns:mobile?'1fr 1fr':'repeat(4,1fr)',gap:12}}>
+            {[
+              ['📦 Tổng SP',        totalProducts,                    T.dark],
+              ['✅ Đã kiểm kê',     checkedCodes,                     T.green],
+              ['❌ Chưa kiểm kê',   totalProducts-checkedCodes,       T.amber],
+              ['⚠️ Đang lệch',      discrepancies.length,             T.red],
+            ].map(([label,val,color]) => (
+              <Card key={label as string} style={{textAlign:'center',padding:'14px 12px'}}>
+                <div style={{fontSize:26,fontWeight:800,color:color as string}}>{val as number}</div>
+                <div style={{fontSize:11,color:T.light,marginTop:4}}>{label}</div>
+              </Card>
+            ))}
+          </div>
+          {/* Progress */}
+          <Card>
+            <div style={{fontSize:13,fontWeight:700,color:T.dark,marginBottom:10}}>
+              Tiến độ kiểm kê tổng thể
+            </div>
+            <div style={{height:10,background:T.border,borderRadius:5,marginBottom:8}}>
+              <div style={{height:'100%',borderRadius:5,background:`linear-gradient(90deg,${T.green},${T.teal})`,
+                width:`${totalProducts>0?checkedCodes*100/totalProducts:0}%`,transition:'width .5s'}}/>
+            </div>
+            <div style={{fontSize:12,color:T.light}}>
+              {checkedCodes}/{totalProducts} mã ({totalProducts>0?Math.round(checkedCodes*100/totalProducts):0}%)
+            </div>
+          </Card>
+          {/* Recent sessions */}
+          <Card>
+            <div style={{fontSize:13,fontWeight:700,color:T.dark,marginBottom:12}}>Các đợt KK gần đây</div>
+            {invSessions.slice(0,5).map((s: any, i: number) => {
+              const sChecks = checks.filter((c: any) => c.session_id===s.id)
+              const sLech   = sChecks.filter((c: any) => c.diff!=null && c.diff!==0).length
+              return (
+                <div key={s.id} style={{display:'flex',alignItems:'center',gap:12,
+                  padding:'8px 0',borderBottom:i<4?`1px solid ${T.border}`:'none'}}>
+                  <div style={{flex:1}}>
+                    <span style={{fontSize:12,fontWeight:600,color:T.dark}}>{s.date}</span>
+                    {s.note && <span style={{fontSize:11,color:T.light,marginLeft:8}}>{s.note}</span>}
+                  </div>
+                  <span style={{fontSize:11,color:T.blue}}>{sChecks.length} SP</span>
+                  {sLech>0 && <span style={{fontSize:11,color:T.red}}>⚠️ {sLech} lệch</span>}
+                  <span style={{fontSize:10,padding:'2px 8px',borderRadius:20,
+                    background:s.status==='open'?T.greenBg:T.grayBg,
+                    color:s.status==='open'?T.green:T.gray}}>{s.status==='open'?'Đang mở':'Đã chốt'}</span>
+                </div>
+              )
+            })}
+          </Card>
+          {/* Top discrepancies */}
+          {discrepancies.length>0 && (
+            <Card>
+              <div style={{fontSize:13,fontWeight:700,color:T.red,marginBottom:12}}>
+                ⚠️ Mã lệch kho chưa xử lý (top {Math.min(10,discrepancies.length)})
+              </div>
+              {discrepancies.slice(0,10).sort((a: any,b: any)=>Math.abs(b.diff)-Math.abs(a.diff)).map((c: any,i: number) => (
+                <div key={c.id} style={{display:'flex',alignItems:'center',gap:12,
+                  padding:'7px 0',borderBottom:i<9?`1px solid ${T.border}`:'none'}}>
+                  <div style={{flex:1,fontSize:12,color:T.dark}}>{c.product_name}</div>
+                  <span style={{fontSize:11,color:T.light}}>{c.product_code}</span>
+                  <span style={{fontSize:13,fontWeight:700,color:c.diff>0?T.blue:T.red}}>
+                    {c.diff>0?'+':''}{c.diff}
+                  </span>
+                </div>
+              ))}
+            </Card>
+          )}
+        </div>
+      )}
+
+      {/* ── TAB: PHIÊN KK ── */}
+      {tab==='sessions' && (
+        <div style={{display:'flex',flexDirection:'column',gap:12}}>
+          {/* Import Excel */}
+          <Card>
+            <div style={{fontSize:13,fontWeight:700,color:T.dark,marginBottom:8}}>📥 Import từ Excel</div>
+            <div style={{fontSize:11,color:T.med,marginBottom:10}}>
+              Chọn file Excel (sheet LichSu_KK) để import lịch sử kiểm kê. Hệ thống sẽ tự tạo phiên theo ngày.
+            </div>
+            <label style={{display:'inline-block',padding:'8px 16px',borderRadius:20,
+              border:`2px dashed ${T.border}`,cursor:'pointer',fontSize:12,color:T.med,
+              background:T.bg,transition:'all .2s'}}
+              onMouseEnter={e => (e.currentTarget as any).style.borderColor=T.gold}
+              onMouseLeave={e => (e.currentTarget as any).style.borderColor=T.border}>
+              {importing ? '⏳ Đang import...' : '📂 Chọn file Excel (.xlsx)'}
+              <input type="file" accept=".xlsx,.xls" style={{display:'none'}}
+                onChange={e => e.target.files?.[0] && importExcel(e.target.files[0])}
+                disabled={importing}/>
+            </label>
+          </Card>
+
+          {/* Session list */}
+          <div style={{background:T.card,borderRadius:12,border:`1px solid ${T.border}`,overflow:'hidden',boxShadow:'0 1px 4px rgba(0,0,0,0.06)'}}>
+            {!mobile && (
+              <div style={{display:'grid',gridTemplateColumns:'100px 1fr 70px 70px 80px 110px 120px',
+                padding:'8px 12px',background:T.bg,borderBottom:`2px solid ${T.border}`,
+                fontSize:10,fontWeight:700,color:T.light,textTransform:'uppercase',letterSpacing:.5,gap:8}}>
+                <span>Ngày KK</span><span>Ghi chú</span>
+                <span style={{textAlign:'center'}}>SP KK</span>
+                <span style={{textAlign:'center'}}>SP lệch</span>
+                <span>Trạng thái</span>
+                <span>Người tạo</span>
+                <span style={{textAlign:'right'}}>Thao tác</span>
+              </div>
+            )}
+            {invSessions.length===0
+              ? <div style={{padding:'32px',textAlign:'center',color:T.light}}>Chưa có phiên kiểm kê nào</div>
+              : invSessions.map((s: any, i: number) => {
+                  const sChecks = checks.filter((c: any) => c.session_id===s.id)
+                  const sLech   = sChecks.filter((c: any) => c.diff!=null && c.diff!==0).length
+                  const creator = allUsers.find((u: any) => u.id===s.created_by)
+                  return (
+                    <div key={s.id} style={{display:mobile?'block':'grid',
+                      gridTemplateColumns:'100px 1fr 70px 70px 80px 110px 120px',
+                      padding:'10px 12px',gap:8,alignItems:'center',
+                      borderBottom:i<invSessions.length-1?`1px solid ${T.border}`:'none',
+                      background:i%2===0?'#fff':T.rowAlt}}>
+                      <span style={{fontSize:12,fontWeight:700,color:T.dark}}>{s.date}</span>
+                      <span style={{fontSize:11,color:T.med}}>{s.note||'—'}</span>
+                      <span style={{fontSize:12,textAlign:'center',color:T.blue}}>{sChecks.length}</span>
+                      <span style={{fontSize:12,textAlign:'center',color:sLech>0?T.red:T.green,fontWeight:sLech>0?700:400}}>
+                        {sLech>0?sLech:'✓'}
+                      </span>
+                      <span style={{fontSize:10,padding:'2px 8px',borderRadius:20,
+                        background:s.status==='open'?T.greenBg:T.grayBg,
+                        color:s.status==='open'?T.green:T.gray}}>
+                        {s.status==='open'?'🟢 Đang mở':'⚫ Đã chốt'}
+                      </span>
+                      <span style={{fontSize:11,color:T.med}}>{creator?.name||'Admin'}</span>
+                      <div style={{display:'flex',gap:5,justifyContent:'flex-end'}}>
+                        {s.status==='open' && canManage && (
+                          <button onClick={() => closeSession(s.id)}
+                            style={{padding:'3px 10px',borderRadius:20,border:`1.5px solid ${T.amber}`,
+                              background:T.amberBg,cursor:'pointer',fontSize:10,fontFamily:'inherit',
+                              color:T.amber,fontWeight:700}}>Chốt phiên</button>
+                        )}
+                        {perm.viewAllDashboard && (
+                          <button onClick={async () => {
+                            if (!confirm('Xóa phiên này và toàn bộ dữ liệu KK?')) return
+                            await db.from('inventory_checks').delete().eq('session_id',s.id)
+                            await db.from('inventory_sessions').delete().eq('id',s.id)
+                            setInvSessions(prev => prev.filter((x: any) => x.id!==s.id))
+                            setChecks(prev => prev.filter((c: any) => c.session_id!==s.id))
+                          }}
+                            style={{padding:'3px 8px',borderRadius:20,border:`1px solid ${T.redBg}`,
+                              background:T.redBg,cursor:'pointer',fontSize:10,fontFamily:'inherit',color:T.red}}>✕</button>
+                        )}
+                      </div>
+                    </div>
+                  )
+              })
+            }
+          </div>
+        </div>
+      )}
+
+      {/* ── TAB: NHẬP LIỆU ── */}
+      {tab==='check' && (
+        <div style={{display:'flex',flexDirection:'column',gap:12}}>
+          {!openSession ? (
+            <Card style={{textAlign:'center',padding:'40px'}}>
+              <div style={{fontSize:32,marginBottom:8}}>📋</div>
+              <div style={{fontSize:13,color:T.light,marginBottom:16}}>Không có phiên kiểm kê nào đang mở</div>
+              {canManage && <GoldBtn small onClick={() => setShowCreate(true)}>+ Tạo phiên KK mới</GoldBtn>}
+            </Card>
+          ) : (
+            <>
+              {/* Session info + mobile button */}
+              <Card style={{display:'flex',alignItems:'center',justifyContent:'space-between',flexWrap:'wrap',gap:12}}>
+                <div>
+                  <div style={{fontSize:13,fontWeight:700,color:T.dark}}>Phiên {openSession.date}</div>
+                  <div style={{fontSize:11,color:T.light}}>
+                    {myChecks.length} mã được assign · {myChecks.filter((c: any)=>c.actual_qty!=null).length} đã KK
+                  </div>
+                </div>
+                {myChecks.filter((c: any)=>c.actual_qty==null).length > 0 && (
+                  <GoldBtn small onClick={() => setMobileCheck(true)}>
+                    📱 Bắt đầu kiểm kê ({myChecks.filter((c: any)=>c.actual_qty==null).length} mã)
+                  </GoldBtn>
+                )}
+              </Card>
+
+              {/* Check table */}
+              {myChecks.length === 0 ? (
+                <Card style={{textAlign:'center',padding:'32px',color:T.light}}>
+                  Chưa có mã nào được phân cho bạn trong phiên này
+                </Card>
+              ) : (
+                <div style={{background:T.card,borderRadius:12,border:`1px solid ${T.border}`,overflow:'hidden',boxShadow:'0 1px 4px rgba(0,0,0,0.06)'}}>
+                  {!mobile && (
+                    <div style={{display:'grid',gridTemplateColumns:'1fr 70px 70px 80px 100px 80px',
+                      padding:'8px 12px',background:T.bg,borderBottom:`2px solid ${T.border}`,
+                      fontSize:10,fontWeight:700,color:T.light,textTransform:'uppercase',letterSpacing:.5,gap:8}}>
+                      <span>Sản phẩm</span>
+                      <span style={{textAlign:'center'}}>Tồn HT</span>
+                      <span style={{textAlign:'center'}}>Tồn TT</span>
+                      <span style={{textAlign:'center'}}>Chênh lệch</span>
+                      <span style={{textAlign:'center'}}>Trạng thái</span>
+                      <span style={{textAlign:'right'}}>Thao tác</span>
+                    </div>
+                  )}
+                  {myChecks.map((c: any, i: number) => (
+                    <InvCheckRow key={c.id} check={c} products={products} allUsers={allUsers}
+                      canEdit={canCheck} onUpdate={updateCheck} idx={i} total={myChecks.length}/>
+                  ))}
+                </div>
+              )}
+            </>
+          )}
+        </div>
+      )}
+
+      {/* ── TAB: LỆCH KHO ── */}
+      {tab==='discrepancy' && (
+        <div style={{display:'flex',flexDirection:'column',gap:12}}>
+          {/* Filter bar */}
+          <div style={{display:'flex',gap:8,alignItems:'center',flexWrap:'wrap'}}>
+            <input type="month" value={monthFilter} onChange={e => setMonthFilter(e.target.value)}
+              style={{padding:'6px 10px',border:`1px solid ${T.border}`,borderRadius:8,
+                fontSize:12,fontFamily:'inherit',color:T.dark,background:T.bg}}/>
+            {(['all','neg','pos'] as const).map(f => (
+              <button key={f} onClick={() => setDiffFilter(f)}
+                style={{padding:'5px 12px',borderRadius:20,cursor:'pointer',fontFamily:'inherit',fontSize:11,
+                  border:`1.5px solid ${diffFilter===f?T.gold:T.border}`,
+                  background:diffFilter===f?T.goldBg:'transparent',
+                  color:diffFilter===f?T.goldText:T.med}}>
+                {f==='all'?'Tất cả':f==='neg'?'Lệch âm':'Lệch dương'}
+              </button>
+            ))}
+          </div>
+
+          {/* Discrepancy table */}
+          <div style={{background:T.card,borderRadius:12,border:`1px solid ${T.border}`,overflow:'hidden',boxShadow:'0 1px 4px rgba(0,0,0,0.06)'}}>
+            {!mobile && (
+              <div style={{display:'grid',gridTemplateColumns:'100px 1fr 90px 70px 70px 70px 150px 100px',
+                padding:'8px 12px',background:T.bg,borderBottom:`2px solid ${T.border}`,
+                fontSize:10,fontWeight:700,color:T.light,textTransform:'uppercase',letterSpacing:.5,gap:8}}>
+                <span>Ngày KK</span><span>Sản phẩm</span><span>Mã SP</span>
+                <span style={{textAlign:'center'}}>Tồn HT</span>
+                <span style={{textAlign:'center'}}>Tồn TT</span>
+                <span style={{textAlign:'center'}}>Chênh lệch</span>
+                <span>Trạng thái xử lý</span>
+                <span style={{textAlign:'right'}}>Thao tác</span>
+              </div>
+            )}
+            {(() => {
+              const filtered = monthChecks.filter((c: any) => {
+                if (c.diff==null || c.diff===0) return false
+                if (diffFilter==='neg' && c.diff>=0) return false
+                if (diffFilter==='pos' && c.diff<=0) return false
+                return true
+              }).sort((a: any,b: any) => Math.abs(b.diff)-Math.abs(a.diff))
+
+              if (filtered.length===0) return (
+                <div style={{padding:'32px',textAlign:'center',color:T.light}}>
+                  <div style={{fontSize:28,marginBottom:8}}>✅</div>
+                  <div style={{fontSize:13}}>Không có mã nào lệch trong tháng này</div>
+                </div>
+              )
+
+              return filtered.map((c: any, i: number) => {
+                const sess = invSessions.find((s: any) => s.id===c.session_id)
+                const DIFF_STATUS_CFG: any = {
+                  '':            {label:'⏳ Chưa xử lý',     color:T.red,   bg:T.redBg   },
+                  'found':       {label:'✅ Tìm được hàng',   color:T.green, bg:T.greenBg },
+                  'reason':      {label:'🔍 Tìm được NN',     color:T.blue,  bg:T.blueBg  },
+                  'no_reason':   {label:'❌ Không tìm được',  color:T.red,   bg:T.redBg   },
+                }
+                const dsc = DIFF_STATUS_CFG[c.diff_status||''] || DIFF_STATUS_CFG['']
+                return (
+                  <div key={c.id} style={{display:mobile?'block':'grid',
+                    gridTemplateColumns:'100px 1fr 90px 70px 70px 70px 150px 100px',
+                    padding:'9px 12px',gap:8,alignItems:'center',
+                    borderBottom:i<filtered.length-1?`1px solid ${T.border}`:'none',
+                    background:c.diff_status===''?(i%2===0?'#FFF5F5':'#FFF0F0'):(i%2===0?'#fff':T.rowAlt)}}>
+                    <span style={{fontSize:11,color:T.light}}>{sess?.date||'—'}</span>
+                    <div>
+                      <div style={{fontSize:12,fontWeight:500,color:T.dark}}>{c.product_name}</div>
+                    </div>
+                    <span style={{fontSize:10,color:T.light}}>{c.product_code}</span>
+                    <span style={{fontSize:12,textAlign:'center',color:T.med}}>{c.system_qty}</span>
+                    <span style={{fontSize:12,textAlign:'center',color:T.dark,fontWeight:600}}>{c.actual_qty}</span>
+                    <span style={{fontSize:13,textAlign:'center',fontWeight:800,
+                      color:c.diff>0?T.blue:T.red}}>{c.diff>0?'+':''}{c.diff}</span>
+                    <div style={{display:'flex',alignItems:'center',gap:6}}>
+                      <span style={{fontSize:10,padding:'2px 7px',borderRadius:20,
+                        color:dsc.color,background:dsc.bg,whiteSpace:'nowrap'}}>{dsc.label}</span>
+                    </div>
+                    <div style={{display:'flex',gap:4,justifyContent:'flex-end'}}>
+                      {canCheck && (
+                        <select value={c.diff_status||''} onChange={async e => {
+                          const upd = {diff_status:e.target.value}
+                          await db.from('inventory_checks').update(upd).eq('id',c.id)
+                          updateCheck(c.id, upd)
+                        }}
+                          style={{padding:'3px 6px',borderRadius:8,border:`1px solid ${T.border}`,
+                            fontSize:10,fontFamily:'inherit',color:T.dark,background:T.bg,cursor:'pointer'}}>
+                          <option value="">⏳ Chưa XL</option>
+                          <option value="found">✅ Tìm được hàng</option>
+                          <option value="reason">🔍 Tìm được NN</option>
+                          <option value="no_reason">❌ Không tìm được</option>
+                        </select>
+                      )}
+                    </div>
+                  </div>
+                )
+              })
+            })()}
+          </div>
+        </div>
+      )}
+
+      {/* ── Modal tạo phiên ── */}
+      <Modal open={showCreate} onClose={() => setShowCreate(false)} title="📋 Tạo phiên kiểm kê mới">
+        <Inp label="Ngày kiểm kê *" type="date" value={newDate} onChange={(v) => setNewDate(v)}/>
+        <Inp label="Ghi chú" value={newNote} onChange={(v) => setNewNote(v)} placeholder="VD: Kiểm kê tuần 15"/>
+        <div style={{padding:'10px 12px',background:T.goldBg,borderRadius:8,fontSize:12,color:T.goldText,marginBottom:14}}>
+          💡 Sau khi tạo phiên, quản lý kho vào tab <b>Nhập liệu</b> để phân chia mã cho từng nhân viên.
+          Tính năng phân chia tự động sẽ được bổ sung ở phiên bản tiếp theo.
+        </div>
+        <div style={{display:'flex',justifyContent:'flex-end',gap:10}}>
+          <GoldBtn outline small onClick={() => setShowCreate(false)}>Hủy</GoldBtn>
+          <GoldBtn small onClick={createSession} disabled={!newDate}>Tạo phiên</GoldBtn>
+        </div>
+      </Modal>
+    </div>
   )
 }
