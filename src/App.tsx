@@ -5526,7 +5526,7 @@ function WrongOrders({ user, allUsers, wrongOrders, setWrongOrders, mobile }: an
       ) : (
 
       /* List */
-      {filtered.length===0
+      <>{filtered.length===0
         ? <Card style={{ textAlign:'center', padding:'40px', color:T.light }}>
             <div style={{ fontSize:32, marginBottom:8 }}>⚠️</div>
             <div style={{ fontSize:13 }}>Không có đơn sai nào trong tháng này</div>
@@ -5611,7 +5611,7 @@ function WrongOrders({ user, allUsers, wrongOrders, setWrongOrders, mobile }: an
           </div>
       }
 
-      )} {/* end stats/list ternary */}
+      }</> {/* end stats/list ternary */}
 
       {/* Modal tạo đơn sai */}
       <Modal open={showAdd} onClose={() => setShowAdd(false)} title="⚠️ Tạo đơn sai mới" wide>
