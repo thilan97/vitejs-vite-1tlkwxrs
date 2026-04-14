@@ -3656,7 +3656,6 @@ function ReturnSaleForm({ item, allUsers, saleUsers, onSave, onClose }: any) {
     violator_id:         item.violator_id         || '',
     reason:              item.reason              || '',
     sale_note:           item.sale_note           || '',
-    entered_kiot:        item.entered_kiot        || false,
   })
   const [userSearch, setUserSearch] = useState('')
   const userResults = allUsers.filter((u: any) => {
@@ -3706,11 +3705,7 @@ function ReturnSaleForm({ item, allUsers, saleUsers, onSave, onClose }: any) {
         onChange={(v: string) => setEf(f => ({...f,reason:v}))} placeholder="Lý do..."/>
       <Inp label="Ghi chú sale" value={ef.sale_note}
         onChange={(v: string) => setEf(f => ({...f,sale_note:v}))} placeholder="Ghi chú thêm..."/>
-      <div style={{ display:'flex', alignItems:'center', gap:10, marginBottom:14 }}>
-        <input type="checkbox" id="kiot2" checked={ef.entered_kiot}
-          onChange={e => setEf(f => ({...f,entered_kiot:e.target.checked}))}/>
-        <label htmlFor="kiot2" style={{ fontSize:13, color:T.dark, cursor:'pointer' }}>✅ Đã nhập KiotViet</label>
-      </div>
+
       <div style={{ display:'flex', justifyContent:'flex-end', gap:10 }}>
         <GoldBtn outline small onClick={onClose}>Hủy</GoldBtn>
         <GoldBtn small onClick={() => onSave(ef)}>Lưu</GoldBtn>
@@ -3888,12 +3883,16 @@ function ReturnItems({ user, allUsers, products, mobile }: any) {
         <div style={{ background:T.card, border:`1px solid ${T.border}`, borderRadius:12, overflow:'hidden' }}>
           {/* Table header */}
           <div style={{ display:'grid',
-            gridTemplateColumns: mobile?'60px 1fr auto':'80px 1fr 50px 90px 60px 80px auto',
-            gap:0, background:T.bg, padding:'8px 12px',
-            borderBottom:`1px solid ${T.border}`, fontSize:10, fontWeight:700, color:T.light, textTransform:'uppercase' }}>
+            gridTemplateColumns: mobile?'56px 1fr auto':"80px 1fr 44px 110px 70px 100px 160px",
+            background:T.bg, padding:'8px 14px',
+            borderBottom:`1px solid ${T.border}`, fontSize:10, fontWeight:700,
+            color:T.light, textTransform:'uppercase', letterSpacing:.5, gap:8, alignItems:'center' }}>
             <span>Ngày</span>
             <span>Sản phẩm</span>
-            {!mobile && <><span style={{textAlign:'center'}}>SL</span><span>Tình trạng</span><span style={{textAlign:'right'}}>Ship</span><span>Sale</span></>}
+            {!mobile && <><span style={{textAlign:'center'}}>SL</span>
+              <span>Tình trạng</span>
+              <span style={{textAlign:'right'}}>Ship</span>
+              <span>Sale</span></>}
             <span style={{textAlign:'right'}}>Thao tác</span>
           </div>
           {filtered.length===0
@@ -3915,8 +3914,8 @@ function ReturnItems({ user, allUsers, products, mobile }: any) {
                   background: i%2===0?'#fff':T.bg }}>
                   {/* Main compact row */}
                   <div style={{ display:'grid',
-                    gridTemplateColumns: mobile?'60px 1fr auto':'80px 1fr 50px 90px 60px 80px auto',
-                    gap:4, padding:'8px 12px', alignItems:'center' }}>
+                    gridTemplateColumns: mobile?'56px 1fr auto':"80px 1fr 44px 110px 70px 100px 160px",
+                    gap:8, padding:'9px 14px', alignItems:'center' }}>
                     <span style={{ fontSize:11, color:T.light }}>
                       {r.date ? new Date(r.date).toLocaleDateString('vi-VN',{day:'2-digit',month:'2-digit'}) : '—'}
                     </span>
@@ -3940,42 +3939,46 @@ function ReturnItems({ user, allUsers, products, mobile }: any) {
                       </span>
                       <span style={{ fontSize:11, color:T.gold }}>{saleUser?.name||'—'}</span>
                     </>}
-                    <div style={{ display:'flex', gap:4, justifyContent:'flex-end' }}>
-                      {r.entered_kiot
-                      ? <span title={`Nhập bởi: ${allUsers.find((u: any)=>u.id===r.entered_kiot_by)?.name||'?'} lúc ${r.entered_kiot_at?new Date(r.entered_kiot_at).toLocaleString('vi-VN',''):'?'}`}
-                          style={{ fontSize:9, fontWeight:700, color:T.green, background:T.greenBg, padding:'2px 6px', borderRadius:10, cursor:'help' }}>
+                    <div style={{ display:'flex', gap:5, justifyContent:'flex-end', alignItems:'center' }}>
+                      {/* KV — chỉ người có quyền mới thấy */}
+                      {r.entered_kiot ? (
+                        <span title={`${allUsers.find((u: any)=>u.id===r.entered_kiot_by)?.name||'?'} · ${r.entered_kiot_at?new Date(r.entered_kiot_at).toLocaleString('vi-VN'):'?'}`}
+                          style={{ fontSize:10, fontWeight:700, color:'#fff', background:T.green,
+                            padding:'3px 8px', borderRadius:20, cursor:'help', whiteSpace:'nowrap', flexShrink:0 }}>
                           ✅ KV
                         </span>
-                      : canKiot && (
-                          <button onClick={async e => { e.stopPropagation()
-                            const now = new Date().toISOString()
-                            const upd = { entered_kiot:true, entered_kiot_by:user.id, entered_kiot_at:now }
-                            setItems(prev => prev.map((i: any) => i.id===r.id ? {...i,...upd} : i))
-                            await db.from('return_items').update(upd).eq('id', r.id)
-                          }}
-                            style={{ fontSize:9, padding:'2px 6px', borderRadius:10, border:`1px solid ${T.border}`,
-                              background:T.bg, cursor:'pointer', fontFamily:'inherit', color:T.light }}>
-                            KV?
-                          </button>
-                        )
-                    }
+                      ) : canKiot ? (
+                        <button onClick={async () => {
+                          const now = new Date().toISOString()
+                          const upd = { entered_kiot:true, entered_kiot_by:user.id, entered_kiot_at:now }
+                          setItems((prev: any) => prev.map((i: any) => i.id===r.id ? {...i,...upd} : i))
+                          await db.from('return_items').update(upd).eq('id', r.id)
+                        }}
+                          style={{ fontSize:10, padding:'3px 9px', borderRadius:20, border:`1.5px solid ${T.border}`,
+                            background:'transparent', cursor:'pointer', fontFamily:'inherit',
+                            color:T.light, whiteSpace:'nowrap', flexShrink:0 }}>
+                          KV?
+                        </button>
+                      ) : null}
+                      {/* Sale điền / Sửa */}
                       {!hasSaleInfo && canFillSale && (
                         <button onClick={() => setShowEdit(r)}
-                          style={{ padding:'3px 8px', borderRadius:6, border:`1.5px solid ${T.gold}`,
-                            background:T.goldBg, cursor:'pointer', fontSize:10, fontFamily:'inherit', color:T.goldText, fontWeight:600 }}>
+                          style={{ padding:'4px 10px', borderRadius:20, border:`1.5px solid ${T.gold}`,
+                            background:T.goldBg, cursor:'pointer', fontSize:10, fontFamily:'inherit',
+                            color:T.goldText, fontWeight:700, whiteSpace:'nowrap' }}>
                           Sale điền
                         </button>
                       )}
                       {hasSaleInfo && (canFillSale || canEdit) && (
                         <button onClick={() => setShowEdit(r)}
-                          style={{ padding:'3px 8px', borderRadius:6, border:`1px solid ${T.border}`,
+                          style={{ padding:'4px 10px', borderRadius:20, border:`1px solid ${T.border}`,
                             background:'transparent', cursor:'pointer', fontSize:10, fontFamily:'inherit', color:T.med }}>
                           Sửa
                         </button>
                       )}
                       {canEdit && (
                         <button onClick={() => del(r.id)}
-                          style={{ padding:'3px 7px', borderRadius:6, border:`1px solid ${T.redBg}`,
+                          style={{ padding:'3px 8px', borderRadius:20, border:`1px solid ${T.redBg}`,
                             background:T.redBg, cursor:'pointer', fontSize:10, fontFamily:'inherit', color:T.red }}>✕</button>
                       )}
                     </div>
@@ -5042,13 +5045,14 @@ export default function App() {
   const pendingOT = 0 // will be updated from Overtime component
 
   return (
-       <div style={{ display:'flex', minHeight:'100vh', fontFamily:"'Segoe UI',system-ui,sans-serif", background:T.bg }}>
+    <div style={{ display:'flex', minHeight:'100vh', width:'100vw', maxWidth:'100vw',
+      fontFamily:"'Segoe UI',system-ui,sans-serif", background:T.bg, overflow:'hidden' }}>
         {!mobile && (
           <Sidebar user={user} page={validPage} setPage={setPage}
             pendingLeave={pendingLeave} pendingOT={pendingOT}
             onLogout={() => { localStorage.removeItem('la_user'); setUser(null); setAllUsers([]); setChecklist([]) }}/>
         )}
-        <main style={{ flex:1, overflowY:'auto', paddingTop:4 }}>
+        <main style={{ flex:1, overflowY:'auto', paddingTop:4, minWidth:0, width:'100%' }}>
           {validPage==='dashboard' && <Dashboard {...pp} checklist={checklist} tasks={tasks} attendance={attendance} leaveRequests={leaveRequests} otRequests={[]}/>}
           {validPage==='checklist'  && <Checklist {...pp} checklist={checklist} setChecklist={setChecklist} addLog={addLog}/>}
           {validPage==='tasks'      && <Tasks {...pp} tasks={tasks} setTasks={setTasks} addLog={addLog}/>}
