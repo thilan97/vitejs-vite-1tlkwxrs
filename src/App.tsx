@@ -4798,7 +4798,8 @@ function UserManagement({ user, allUsers, setAllUsers, departments, positions, m
     } else {
       const newId = form.name.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g,'').replace(/\s/g,'_')+'_'+Date.now().toString().slice(-4)
       const newUser = { id:newId, ...form, dept_id:finalDeptId, dept_name:deptName, position_name:posName, role, must_change_password:true }
-            setAllUsers((prev: any) => [...prev, newUser])
+           
+      setAllUsers((prev: any) => [...prev, newUser])
       await db.from('users').insert({ id:newId, ...form, dept_id:finalDeptId, role, birthday:form.birthday||'', must_change_password:true })
     }
     setShow(false)
@@ -5938,7 +5939,7 @@ function WrongOrders({ user, allUsers, wrongOrders, setWrongOrders, mobile }: an
               )
             })}
           </div>
-      }</>
+      }</> )}
 
       {/* Modal tạo đơn sai */}
       <Modal open={showAdd} onClose={() => setShowAdd(false)} title="⚠️ Tạo đơn sai mới" wide>
@@ -5994,4 +5995,3 @@ function SaleFillModal({ item, onSave, onClose }: any) {
     </Modal>
   )
 }
-
