@@ -2702,9 +2702,108 @@ function Announcements({ user, allUsers, mobile }: any) {
 }
 
 // ── SHORTAGE ITEMS ───────────────────────────────
-function ShortageItems({ user, allUsers, mobile }: any) {
+// ── MANAGER SHORTAGE ROW ─────────────────────────────
+function MgrShortageRow({ item, idx, total, products, norm, setItems }: any) {
+  const [open, setOpen] = useState(false)
+  const hot = (item.reporters||[]).length
+  const days = (() => {
+    if (!item.arrival_date) return null
+    const today = new Date(); today.setHours(0,0,0,0)
+    return Math.ceil((new Date(item.arrival_date).getTime()-today.getTime())/86400000)
+  })()
+  const arrivedMs = item.arrived_at ? Date.now()-new Date(item.arrived_at).getTime() : 0
+  const daysLeft  = Math.max(0, 3-Math.floor(arrivedMs/86400000))
+  const prod  = (products||[]).find((p: any) => p.code===item.product_code || norm(p.name)===norm(item.product_name))
+  const stock = prod?.stock
+
+  const sb = (() => {
+    if (item.status==='arrived')  return { label:'✅ Đã về',       color:T.green, bg:T.greenBg }
+    if (item.status==='burned')   return { label:'🔥 Cháy hàng',  color:T.red,   bg:T.redBg   }
+    if (item.status==='pending')  return { label:'⏳ Chờ xử lý',  color:T.amber, bg:T.amberBg }
+    if (item.status==='incoming' && days!==null) {
+      if (days>0)  return { label:`📅 Còn ${days}N`,          color:T.blue,  bg:T.blueBg }
+      if (days===0) return { label:'⏰ Hôm nay',               color:T.amber, bg:T.amberBg }
+      return        { label:`⚠️ Trễ ${Math.abs(days)}N`,     color:T.red,   bg:T.redBg }
+    }
+    return { label:'⏳ Chờ xử lý', color:T.amber, bg:T.amberBg }
+  })()
+
+  const markArrived = async () => {
+    const upd = { status:'arrived', arrived_at:new Date().toISOString() }
+    setItems((prev: any) => prev.map((i: any) => i.id===item.id ? {...i,...upd} : i))
+    await db.from('shortage_items').update(upd).eq('id', item.id)
+  }
+  const remove = async () => {
+    if (!confirm('Xóa mã này?')) return
+    setItems((prev: any) => prev.filter((i: any) => i.id!==item.id))
+    await db.from('shortage_items').delete().eq('id', item.id)
+  }
+
+  return (
+    <div style={{ borderBottom: idx<total-1?`1px solid ${T.border}`:'none' }}>
+      <div onClick={() => setOpen(v => !v)}
+        style={{ display:'flex', alignItems:'center', gap:8, padding:'8px 12px',
+          cursor:'pointer', background:open?T.goldBg:'transparent', transition:'background .12s' }}
+        onMouseEnter={e => { if(!open)(e.currentTarget as any).style.background=T.bg }}
+        onMouseLeave={e => { if(!open)(e.currentTarget as any).style.background='transparent' }}>
+        {hot>=3 && <span style={{ fontSize:9, fontWeight:700, color:'#BF360C', background:'#FBE9E7', padding:'1px 5px', borderRadius:10, flexShrink:0 }}>🔥{hot}</span>}
+        {hot===2 && <span style={{ fontSize:9, fontWeight:700, color:T.amber, background:T.amberBg, padding:'1px 5px', borderRadius:10, flexShrink:0 }}>⚡{hot}</span>}
+        <div style={{ flex:1, fontSize:12, fontWeight:500, color:T.dark,
+          display:'-webkit-box', WebkitLineClamp:2, WebkitBoxOrient:'vertical', overflow:'hidden', lineHeight:1.4 }}>
+          {item.product_name}
+          {item.product_code && <span style={{ fontSize:10, color:T.light, marginLeft:6 }}>#{item.product_code}</span>}
+        </div>
+        {stock!=null && (
+          <span style={{ fontSize:10, fontWeight:700, padding:'1px 6px', borderRadius:20, flexShrink:0,
+            color:stock===0?T.red:stock<=5?T.amber:T.green,
+            background:stock===0?T.redBg:stock<=5?T.amberBg:T.greenBg }}>{stock}</span>
+        )}
+        <span style={{ fontSize:10, fontWeight:700, padding:'2px 7px', borderRadius:20, flexShrink:0,
+          color:sb.color, background:sb.bg, whiteSpace:'nowrap' }}>{sb.label}</span>
+        {item.status==='arrived' && <span style={{ fontSize:9, color:T.light, flexShrink:0 }}>{daysLeft}N</span>}
+        <span style={{ fontSize:9, color:T.light, flexShrink:0 }}>{open?'▲':'▼'}</span>
+      </div>
+
+      {open && (
+        <div style={{ padding:'8px 12px 12px', background:T.bg, borderTop:`1px solid ${T.border}` }}>
+          <div style={{ display:'flex', gap:5, flexWrap:'wrap', marginBottom:6 }}>
+            {(item.reporters||[]).map((r: any, i: number) => (
+              <span key={i} style={{ fontSize:11, padding:'2px 8px', borderRadius:20, background:T.goldBg, color:T.goldText, fontWeight:600 }}>
+                {r.name}{r.note?` · ${r.note}`:''}
+              </span>
+            ))}
+          </div>
+          {item.manager_note && (
+            <div style={{ fontSize:11, color:T.blue, padding:'5px 9px', background:T.blueBg, borderRadius:7, marginBottom:6 }}>
+              💬 QM: {item.manager_note}
+              {item.arrival_date && <b> · Ngày về: {item.arrival_date}</b>}
+              {item.arrival_qty>0 && <b> · SL: {item.arrival_qty}</b>}
+            </div>
+          )}
+          {item.status==='arrived' && <div style={{ fontSize:11, color:T.green, marginBottom:6, fontStyle:'italic' }}>🕐 Tự xóa sau {daysLeft} ngày</div>}
+          <div style={{ display:'flex', gap:7, flexWrap:'wrap' }}>
+            {item.status!=='arrived' && item.status!=='burned' && (
+              <button onClick={markArrived}
+                style={{ padding:'4px 11px', borderRadius:7, border:`1.5px solid ${T.green}`,
+                  background:T.greenBg, cursor:'pointer', fontSize:11, fontFamily:'inherit', color:T.green, fontWeight:600 }}>
+                ✅ Xác nhận đã về
+              </button>
+            )}
+            <button onClick={remove}
+              style={{ padding:'4px 10px', borderRadius:7, border:`1px solid ${T.redBg}`,
+                background:T.redBg, cursor:'pointer', fontSize:11, fontFamily:'inherit', color:T.red }}>
+              🗑️ Xóa
+            </button>
+          </div>
+        </div>
+      )}
+    </div>
+  )
+}
+
+function ShortageItems({ user, allUsers, mobile, products, setProducts }: any) {
   const [items,        setItems]       = useState<any[]>([])
-  const [products,     setProducts]    = useState<any[]>([])
+  // products from App props
   const [showAdd,      setShowAdd]     = useState(false)
   const [showProdMgmt, setShowProdMgmt] = useState(false)
   const [search,       setSearch]      = useState('')
@@ -2720,24 +2819,8 @@ function ShortageItems({ user, allUsers, mobile }: any) {
   const isSale    = user.dept_id === 'sale'
 
   useEffect(() => {
-    // Fetch shortage items
     db.from('shortage_items').select('*').order('created_at', { ascending:false })
       .then(({ data }) => { if (data) setItems(data) })
-    // Fetch ALL products (vượt giới hạn 1000 của Supabase bằng cách dùng range)
-    ;(async () => {
-      const all: any[] = []
-      const PAGE = 1000
-      let from = 0
-      while (true) {
-        const { data, error } = await db.from('products').select('*').eq('active', true)
-          .order('name').range(from, from + PAGE - 1)
-        if (error || !data || data.length === 0) break
-        all.push(...data)
-        if (data.length < PAGE) break
-        from += PAGE
-      }
-      setProducts(all)
-    })()
   }, [])
 
   // Auto-filter: ẩn hàng đã về > 3 ngày
@@ -3066,37 +3149,15 @@ function ShortageItems({ user, allUsers, mobile }: any) {
               <div style={{ fontSize:32, marginBottom:8 }}>📦</div>
               <div>Không có mục nào</div>
             </Card>
-          ) : mgrTab === 'arrived'
-            ? tabData['arrived'].map((item: any) => {
-                const arrivedMs = item.arrived_at ? Date.now() - new Date(item.arrived_at).getTime() : 0
-                const daysLeft  = Math.max(0, 3 - Math.floor(arrivedMs / 86400000))
-                return (
-                  <div key={item.id} style={{ background:T.card, borderRadius:12,
-                    border:`1.5px solid ${T.green}`, padding:'12px 16px', marginBottom:10,
-                    display:'flex', alignItems:'center', justifyContent:'space-between', gap:12 }}>
-                    <div style={{ flex:1 }}>
-                      <div style={{ fontSize:13, fontWeight:600, color:T.dark, marginBottom:4 }}>{item.product_name}</div>
-                      {item.product_code && <div style={{ fontSize:11, color:T.light }}>#{item.product_code}</div>}
-                      <div style={{ display:'flex', gap:6, marginTop:6, flexWrap:'wrap' }}>
-                        <span style={{ fontSize:11, fontWeight:700, color:T.green, background:T.greenBg, padding:'2px 9px', borderRadius:20 }}>✅ Đã về</span>
-                        {item.arrival_qty>0 && <span style={{ fontSize:11, color:T.med }}>SL: {item.arrival_qty}</span>}
-                        {item.arrived_at && <span style={{ fontSize:11, color:T.light }}>Lúc: {new Date(item.arrived_at).toLocaleString('vi-VN')}</span>}
-                        <span style={{ fontSize:11, color:T.light, fontStyle:'italic' }}>🕐 Tự xóa sau {daysLeft} ngày</span>
-                      </div>
-                    </div>
-                    <button onClick={async () => {
-                      if (!confirm('Xóa mã này khỏi danh sách?')) return
-                      setItems(prev => prev.filter(i => i.id !== item.id))
-                      await db.from('shortage_items').delete().eq('id', item.id)
-                    }}
-                      style={{ padding:'5px 12px', borderRadius:8, border:`1px solid ${T.redBg}`,
-                        background:T.redBg, cursor:'pointer', fontSize:12, fontFamily:'inherit', color:T.red, flexShrink:0 }}>
-                      🗑️ Xóa
-                    </button>
-                  </div>
-                )
-              })
-            : tabData[mgrTab].map((item: any) => <ItemCard key={item.id} item={item} canManage={true}/>)}
+          ) : (
+            <div style={{ background:T.card, borderRadius:12, border:`1px solid ${T.border}`, overflow:'hidden' }}>
+              {tabData[mgrTab].map((item: any, idx: number) => (
+                <MgrShortageRow key={item.id} item={item} idx={idx}
+                  total={tabData[mgrTab].length} products={products}
+                  norm={norm} setItems={setItems}/>
+              ))}
+            </div>
+          )}
         </div>
       ) : (
         /* ══ SALE VIEW — compact list ══ */
@@ -4663,6 +4724,7 @@ export default function App() {
   const [attendance, setAttendance] = useState<any[]>([])
   const [leaveRequests, setLeaveReqs] = useState<any[]>([])
   const [positions, setPositions]   = useState<any[]>([])
+  const [products, setProducts]     = useState<any[]>([])
   const [loading, setLoading]       = useState(false)
   const width   = useWindowWidth()
   const mobile  = width < 768
@@ -4806,6 +4868,15 @@ export default function App() {
       setTasks(tk.data||[]); setHistory(hist.data||[])
       setSettings(stData); setAttendance(att.data||[])
       setPositions(posData)
+      ;(async () => {
+        const all: any[] = []; let from = 0
+        while (true) {
+          const { data } = await db.from('products').select('*').eq('active',true).order('name').range(from,from+999)
+          if (!data||data.length===0) break
+          all.push(...data); if (data.length<1000) break; from+=1000
+        }
+        setProducts(all)
+      })()
 
       // Merge DB data với localStorage backup để tránh mất đơn khi Supabase RLS chặn SELECT
       const dbLeave = lr.data || []
@@ -4901,7 +4972,7 @@ export default function App() {
           {validPage==='history'    && <History {...pp} history={history}/>}
           {validPage==='users'      && <UserManagement {...pp} setAllUsers={setAllUsers} departments={departments} positions={positions}/>}
           {validPage==='positions'  && <PositionsManagement positions={positions} setPositions={setPositions} mobile={mobile}/>}
-          {validPage==='shortage'   && <ShortageItems {...pp}/>}
+          {validPage==='shortage'   && <ShortageItems {...pp} products={products} setProducts={setProducts}/>}
           {validPage==='returns'    && <ReturnItems {...pp} products={products}/>}
           {validPage==='settings'   && <Settings {...pp} setUser={setUser} settings={settings} setSettings={setSettings} onManualReset={manualReset}/>}
         </main>
