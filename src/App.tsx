@@ -4648,7 +4648,7 @@ function UserManagement({ user, allUsers, setAllUsers, departments, positions, m
                   <div style={{ fontSize:13, fontWeight:600, color:T.dark }}>{u.name}</div>
                   <div style={{ fontSize:11, color:T.gold, fontWeight:500 }}>{u.position_name||'Chưa có vị trí'}</div>
                   <div style={{ display:'flex', gap:6, marginTop:3, flexWrap:'wrap' }}>
-                    {!u.active && <span style={{ fontSize:10, color:T.red }}>Đã khóa</span>}
+                                        {!u.active && <span style={{ fontSize:10, color:T.red }}>Đã khóa</span>}
                     {u.must_change_password && <span style={{ fontSize:10, color:T.amber }}>⚠️ Chưa đổi mật khẩu</span>}
                     {getPerm(user).viewBirthday && u.birthday && (
                       <span style={{ fontSize:10, color:T.blue }}>🎂 {u.birthday}</span>
@@ -5610,7 +5610,7 @@ function WrongOrders({ user, allUsers, wrongOrders, setWrongOrders, mobile }: an
               )
             })}
           </div>
-      }</>
+      }</> )}
 
       {/* Modal tạo đơn sai */}
       <Modal open={showAdd} onClose={() => setShowAdd(false)} title="⚠️ Tạo đơn sai mới" wide>
@@ -5666,3 +5666,4 @@ function SaleFillModal({ item, onSave, onClose }: any) {
     </Modal>
   )
 }
+
