@@ -4798,7 +4798,7 @@ function UserManagement({ user, allUsers, setAllUsers, departments, positions, m
     } else {
       const newId = form.name.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g,'').replace(/\s/g,'_')+'_'+Date.now().toString().slice(-4)
       const newUser = { id:newId, ...form, dept_id:finalDeptId, dept_name:deptName, position_name:posName, role, must_change_password:true }
-      setAllUsers((prev: any) => [...prev, newUser])
+            setAllUsers((prev: any) => [...prev, newUser])
       await db.from('users').insert({ id:newId, ...form, dept_id:finalDeptId, role, birthday:form.birthday||'', must_change_password:true })
     }
     setShow(false)
@@ -5938,39 +5938,7 @@ function WrongOrders({ user, allUsers, wrongOrders, setWrongOrders, mobile }: an
               )
             })}
           </div>
-      }</>}
-                    <div style={{ display:'flex', flexDirection:'column', gap:4, alignItems:'flex-start' }}>
-                      <span style={{ fontSize:10, fontWeight:700, padding:'2px 7px', borderRadius:20,
-                        color:sc.color, background:sc.bg, whiteSpace:'nowrap' }}>{sc.label}</span>
-                      <div style={{ display:'flex', gap:4, flexWrap:'wrap' }}>
-                        {canSaleFill && (
-                          <button onClick={() => setShowEdit(r)}
-                            style={{ fontSize:10, padding:'2px 8px', borderRadius:6, border:`1.5px solid ${T.gold}`,
-                              background:T.goldBg, cursor:'pointer', fontFamily:'inherit', color:T.goldText, fontWeight:600 }}>
-                            Điền xử lý
-                          </button>
-                        )}
-                        {canRes && (
-                          <button onClick={() => resolve(r.id)}
-                            style={{ fontSize:10, padding:'2px 8px', borderRadius:6, border:`1.5px solid ${T.green}`,
-                              background:T.greenBg, cursor:'pointer', fontFamily:'inherit', color:T.green, fontWeight:600 }}>
-                            ✅ Xác nhận
-                          </button>
-                        )}
-                        {r.status==='pending' && canSaleFill && !canSaleFill && null}
-                        {canDel && (
-                          <button onClick={() => del(r.id)}
-                            style={{ fontSize:10, padding:'2px 6px', borderRadius:6, border:`1px solid ${T.redBg}`,
-                              background:T.redBg, cursor:'pointer', fontFamily:'inherit', color:T.red }}>✕</button>
-                        )}
-                      </div>
-                    </div>
-                  </div>
-                </div>
-              )
-            })}
-          </div>
-      }</> )}
+      }</>
 
       {/* Modal tạo đơn sai */}
       <Modal open={showAdd} onClose={() => setShowAdd(false)} title="⚠️ Tạo đơn sai mới" wide>
@@ -6026,3 +5994,4 @@ function SaleFillModal({ item, onSave, onClose }: any) {
     </Modal>
   )
 }
+
