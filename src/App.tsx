@@ -296,7 +296,7 @@ const AlertBanner = ({ user, checklist, leaveRequests, otRequests, allUsers }: a
   if (alerts.length === 0) return null
   return (
     <div style={{ margin:'0 0 14px', display:'flex', flexDirection:'column', gap:6 }}>
-      {alerts.slice(0,3).map((a, i) => (
+            {alerts.slice(0,3).map((a, i) => (
         <div key={i} style={{ padding:'8px 14px', borderRadius:8, fontSize:12, fontWeight:500,
           color:a.color, background:a.bg }}>{a.msg}</div>
       ))}
@@ -1223,19 +1223,19 @@ function Checklist({ user, checklist, setChecklist, addLog, allUsers, mobile }: 
           💡 Việc tự thêm chỉ áp dụng cho hôm nay, không lặp lại tự động. Dùng để ghi nhận công việc phát sinh.
         </div>
         <Inp label="Tên công việc *" value={addForm.title}
-          onChange={(v: string) => setAddForm(f => ({...f, title:v}))} placeholder="VD: Gọi điện khách hàng X..."/>
+          onChange={(v) => setAddForm(f => ({...f, title:v}))} placeholder="VD: Gọi điện khách hàng X..."/>
         <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:12 }}>
           <Inp label="🕐 Giờ bắt đầu" type="time" value={addForm.time_start}
-            onChange={(v: string) => setAddForm(f => ({...f, time_start:v}))}/>
+            onChange={(v) => setAddForm(f => ({...f, time_start:v}))}/>
           <Inp label="🏁 Giờ kết thúc" type="time" value={addForm.time_end}
-            onChange={(v: string) => setAddForm(f => ({...f, time_end:v}))}/>
+            onChange={(v) => setAddForm(f => ({...f, time_end:v}))}/>
         </div>
         <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:12 }}>
           <Sel label="Tần suất" value={addForm.freq}
-            onChange={(v: string) => setAddForm(f => ({...f, freq:v}))}
+            onChange={(v) => setAddForm(f => ({...f, freq:v}))}
             options={['Hàng ngày','Hàng tuần','Hàng tháng'].map(v => ({value:v, label:v}))}/>
           <Sel label="Ưu tiên" value={addForm.priority}
-            onChange={(v: string) => setAddForm(f => ({...f, priority:v}))}
+            onChange={(v) => setAddForm(f => ({...f, priority:v}))}
             options={[{value:'high',label:'🔴 Cao'},{value:'mid',label:'🟡 Trung bình'},{value:'low',label:'🟢 Thấp'}]}/>
         </div>
         <div style={{ display:'flex', justifyContent:'flex-end', gap:10, marginTop:8 }}>
@@ -1474,20 +1474,20 @@ function Tasks({ user, tasks, setTasks, addLog, allUsers, mobile }: any) {
       )}
 
       <Modal open={show} onClose={() => setShow(false)} title="Tạo task mới">
-        <Inp label="Tiêu đề *" value={form.title} onChange={(v: string) => setForm(f => ({...f, title:v}))} placeholder="Nhập tiêu đề..."/>
-        <Inp label="Mô tả" value={form.description} onChange={(v: string) => setForm(f => ({...f, description:v}))} placeholder="Mô tả yêu cầu..."/>
-        <Sel label="Giao cho *" value={form.assignee_id} onChange={(v: string) => setForm(f => ({...f, assignee_id:v}))}
+        <Inp label="Tiêu đề *" value={form.title} onChange={(v) => setForm(f => ({...f, title:v}))} placeholder="Nhập tiêu đề..."/>
+        <Inp label="Mô tả" value={form.description} onChange={(v) => setForm(f => ({...f, description:v}))} placeholder="Mô tả yêu cầu..."/>
+        <Sel label="Giao cho *" value={form.assignee_id} onChange={(v) => setForm(f => ({...f, assignee_id:v}))}
           options={[{value:'',label:'— Chọn nhân viên —'},...assignable.map((u: any) => ({value:u.id,label:`${u.name} — ${u.position_name||u.dept_name||''}`}))]}/>
-        <Sel label="Mức ưu tiên" value={form.priority} onChange={(v: string) => setForm(f => ({...f, priority:v}))}
+        <Sel label="Mức ưu tiên" value={form.priority} onChange={(v) => setForm(f => ({...f, priority:v}))}
           options={[{value:'high',label:'🔴 Cao'},{value:'mid',label:'🟡 Trung bình'},{value:'low',label:'🟢 Thấp'}]}/>
         <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:12 }}>
-          <Inp label="Ngày deadline *" type="date" value={form.deadline} onChange={(v: string) => setForm(f => ({...f, deadline:v}))}/>
-          <Inp label="Giờ kết thúc *" type="time" value={form.deadline_time} onChange={(v: string) => setForm(f => ({...f, deadline_time:v}))}/>
+          <Inp label="Ngày deadline *" type="date" value={form.deadline} onChange={(v) => setForm(f => ({...f, deadline:v}))}/>
+          <Inp label="Giờ kết thúc *" type="time" value={form.deadline_time} onChange={(v) => setForm(f => ({...f, deadline_time:v}))}/>
         </div>
         <div style={{ padding:'8px 12px', background:T.goldBg, borderRadius:8, fontSize:12, color:T.goldText, marginBottom:13 }}>
           ⏰ Giờ bắt đầu sẽ tự động ghi nhận thời điểm tạo task
         </div>
-        <Inp label="Ghi chú" value={form.notes} onChange={(v: string) => setForm(f => ({...f, notes:v}))} placeholder="Ghi chú thêm..."/>
+        <Inp label="Ghi chú" value={form.notes} onChange={(v) => setForm(f => ({...f, notes:v}))} placeholder="Ghi chú thêm..."/>
         <div style={{ display:'flex', justifyContent:'flex-end', gap:10, marginTop:8 }}>
           <GoldBtn outline small onClick={() => setShow(false)}>Hủy</GoldBtn>
           <GoldBtn small onClick={create} disabled={!form.title||!form.deadline||!form.assignee_id}>Tạo task</GoldBtn>
@@ -1498,16 +1498,516 @@ function Tasks({ user, tasks, setTasks, addLog, allUsers, mobile }: any) {
 }
 
 // ── TEMPLATES ────────────────────────────────────
-            onChange={(v: string) => setEditForm(f => ({...f, late_mins:Number(v)}))}
+function Templates({ templates, setTemplates, allUsers, mobile }: any) {
+  const [show, setShow] = useState(false)
+  const [edit, setEdit] = useState<any>(null)
+  const emptyForm = { title:'', description:'', assignee_id:'', priority:'mid',
+    freq:'Hàng ngày', time_start:'08:00', time_end:'09:00',
+    day_of_month:'1', mins:'60', active:true }
+  const [form, setForm] = useState<any>(emptyForm)
+  const p = mobile ? '16px' : '24px'
+  const staff = allUsers.filter((u: any) => u.id !== 'admin')
+
+  const openCreate = () => { setEdit(null); setForm(emptyForm); setShow(true) }
+  const openEdit = (t: any) => {
+    setEdit(t)
+    setForm({ title:t.title, description:t.description||'', assignee_id:t.assignee_id||'',
+      priority:t.priority, freq:t.freq, time_start:t.time_start||'08:00',
+      time_end:t.time_end||'09:00', day_of_month:String(t.day_of_month||1),
+      mins:String(t.mins||60), active:t.active })
+    setShow(true)
+  }
+
+  const save = async () => {
+    if (!form.title || !form.assignee_id) return
+    const data = { ...form, mins:Number(form.mins), day_of_month:Number(form.day_of_month),
+      // deadline_suggest vẫn giữ = time_end để tương thích với performReset
+      deadline_suggest: form.time_end }
+    if (edit) {
+      const updated = {...edit, ...data}
+      setTemplates((prev: any) => prev.map((t: any) => t.id === edit.id ? updated : t))
+      await db.from('checklist_templates').upsert(updated)
+    } else {
+      const newT = { id:'tp'+Date.now(), ...data }
+      setTemplates((prev: any) => [...prev, newT])
+      await db.from('checklist_templates').insert(newT)
+    }
+    setShow(false)
+  }
+
+  const remove = async (id: string) => {
+    if (!confirm('Xóa template này?')) return
+    setTemplates((prev: any) => prev.filter((t: any) => t.id !== id))
+    await db.from('checklist_templates').delete().eq('id', id)
+  }
+
+  const deptGroups = ['kho','sale','vp'].map(d => ({
+    dept:d, name:DEPT_NAME[d],
+    items:templates.filter((t: any) => allUsers.find((u: any) => u.id === t.assignee_id)?.dept_id === d)
+  }))
+
+  const timeRange = (tp: any) => {
+    if (tp.time_start && tp.time_end) return `${tp.time_start} → ${tp.time_end}`
+    if (tp.deadline_suggest) return `→ ${tp.deadline_suggest}`
+    return '—'
+  }
+
+  return (
+    <div style={{ padding:`0 ${p} ${mobile?'80px':p}` }}>
+      <Topbar mobile={mobile} title="Template checklist" subtitle="Tự sinh checklist hàng ngày"
+        action={<GoldBtn small onClick={openCreate}>+ Thêm template</GoldBtn>}/>
+
+      {deptGroups.map(group => group.items.length === 0 ? null : (
+        <Card key={group.dept} style={{ padding:0, overflow:'hidden', marginBottom:16 }}>
+          <div style={{ background:DEPT_COLOR[group.dept], padding:'11px 16px' }}>
+            <span style={{ color:'#fff', fontWeight:700, fontSize:14 }}>{group.name} — {group.items.length} template</span>
+          </div>
+          <table style={{ width:'100%', borderCollapse:'collapse' }}>
+            <TH cols={['Công việc','Giao cho','Tần suất','Ưu tiên','Khung giờ','Trạng thái','']}/>
+            <tbody>
+              {group.items.map((tp: any, i: number) => {
+                const assignee = allUsers.find((u: any) => u.id === tp.assignee_id)
+                return (
+                  <tr key={tp.id} style={{ background:i%2===0?'#fff':T.bg, borderBottom:`1px solid ${T.border}`, opacity:tp.active?1:0.5 }}>
+                    <td style={{ padding:'9px 13px' }}>
+                      <div style={{ fontSize:13, fontWeight:500, color:T.dark }}>{tp.title}</div>
+                      {tp.description && <div style={{ fontSize:11, color:T.light }}>{tp.description}</div>}
+                    </td>
+                    <td style={{ padding:'9px 13px' }}>{assignee && <Av u={assignee} size={22} showTitle/>}</td>
+                    <td style={{ padding:'9px 13px' }}>
+                      <span style={{ fontSize:10, fontWeight:600, padding:'2px 7px', borderRadius:20,
+                        color:FREQ_COLOR[tp.freq]?.color, background:FREQ_COLOR[tp.freq]?.bg }}>{tp.freq}</span>
+                      {tp.freq==='Hàng tháng' && tp.day_of_month && (
+                        <div style={{ fontSize:10, color:T.light, marginTop:2 }}>
+                          {Number(tp.day_of_month)===99 ? '📅 Cuối tháng' : `📅 Ngày ${tp.day_of_month}`}
+                        </div>
+                      )}
+                    </td>
+                    <td style={{ padding:'9px 13px' }}><Badge cfg={PRI_CFG[tp.priority]} small/></td>
+                    <td style={{ padding:'9px 13px', fontSize:12, fontWeight:600, color:T.dark }}>
+                      🕐 {timeRange(tp)}
+                      <div style={{ fontSize:10, color:T.light }}>{tp.mins} phút</div>
+                    </td>
+                    <td style={{ padding:'9px 13px' }}>
+                      <span style={{ fontSize:10, fontWeight:600, padding:'2px 7px', borderRadius:20,
+                        color:tp.active?T.green:T.gray, background:tp.active?T.greenBg:T.grayBg }}>
+                        {tp.active?'Đang dùng':'Tắt'}
+                      </span>
+                    </td>
+                    <td style={{ padding:'9px 13px' }}>
+                      <div style={{ display:'flex', gap:6 }}>
+                        <button onClick={() => openEdit(tp)} style={{ padding:'4px 10px', borderRadius:6, border:`1px solid ${T.border}`, background:'transparent', cursor:'pointer', fontSize:11, fontFamily:'inherit', color:T.med }}>Sửa</button>
+                        <button onClick={() => remove(tp.id)} style={{ padding:'4px 10px', borderRadius:6, border:`1px solid ${T.redBg}`, background:T.redBg, cursor:'pointer', fontSize:11, fontFamily:'inherit', color:T.red }}>Xóa</button>
+                      </div>
+                    </td>
+                  </tr>
+                )
+              })}
+            </tbody>
+          </table>
+        </Card>
+      ))}
+
+      <Modal open={show} onClose={() => setShow(false)} title={edit?'Sửa template':'Thêm template mới'} wide>
+        <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:12 }}>
+          <div style={{ gridColumn:'1/-1' }}>
+            <Inp label="Tiêu đề *" value={form.title} onChange={(v) => setForm((f: any) => ({...f, title:v}))} placeholder="Nhập tiêu đề..."/>
+          </div>
+          <div style={{ gridColumn:'1/-1' }}>
+            <Inp label="Mô tả" value={form.description} onChange={(v) => setForm((f: any) => ({...f, description:v}))} placeholder="Mô tả ngắn..."/>
+          </div>
+          <div style={{ gridColumn:'1/-1' }}>
+            <Sel label="Giao cho *" value={form.assignee_id} onChange={(v) => setForm((f: any) => ({...f, assignee_id:v}))}
+              options={[{value:'',label:'— Chọn nhân viên —'},...staff.map((u: any) => ({value:u.id,label:`${u.name} — ${u.position_name||u.dept_name||''}`}))]}/>
+          </div>
+          <Sel label="Tần suất" value={form.freq} onChange={(v) => setForm((f: any) => ({...f, freq:v}))}
+            options={['Hàng ngày','Hàng tuần','Hàng tháng'].map(v => ({value:v,label:v}))}/>
+          <Sel label="Ưu tiên" value={form.priority} onChange={(v) => setForm((f: any) => ({...f, priority:v}))}
+            options={[{value:'high',label:'🔴 Cao'},{value:'mid',label:'🟡 Trung bình'},{value:'low',label:'🟢 Thấp'}]}/>
+          <Inp label="🕐 Giờ bắt đầu" type="time" value={form.time_start} onChange={(v) => setForm((f: any) => ({...f, time_start:v}))}/>
+          <Inp label="🏁 Giờ kết thúc" type="time" value={form.time_end} onChange={(v) => setForm((f: any) => ({...f, time_end:v}))}/>
+          {form.freq === 'Hàng tháng' && (
+            <div style={{ marginBottom:13 }}>
+              <div style={{ fontSize:12, fontWeight:500, color:T.med, marginBottom:6 }}>📅 Ngày thực hiện hàng tháng</div>
+              <div style={{ display:'flex', gap:6, flexWrap:'wrap' }}>
+                {[
+                  {val:'1',  label:'Ngày 1'},  {val:'3',  label:'Ngày 3'},
+                  {val:'5',  label:'Ngày 5'},  {val:'10', label:'Ngày 10'},
+                  {val:'15', label:'Ngày 15'}, {val:'20', label:'Ngày 20'},
+                  {val:'25', label:'Ngày 25'}, {val:'99', label:'Cuối tháng'},
+                ].map(opt => (
+                  <button key={opt.val} type="button"
+                    onClick={() => setForm((f: any) => ({...f, day_of_month:opt.val}))}
+                    style={{ padding:'6px 12px', borderRadius:8, cursor:'pointer',
+                      fontFamily:'inherit', fontSize:12, border:'none',
+                      background: form.day_of_month===opt.val ? T.gold : T.bg,
+                      color: form.day_of_month===opt.val ? '#fff' : T.dark,
+                      fontWeight: form.day_of_month===opt.val ? 700 : 400,
+                      border: `1.5px solid ${form.day_of_month===opt.val ? T.gold : T.border}` }}>
+                    {opt.label}
+                  </button>
+                ))}
+                <div style={{ display:'flex', alignItems:'center', gap:6, marginLeft:4 }}>
+                  <span style={{ fontSize:12, color:T.med }}>Ngày khác:</span>
+                  <input type="number" min="1" max="28"
+                    value={['1','3','5','10','15','20','25','99'].includes(form.day_of_month)?'':form.day_of_month}
+                    onChange={e => setForm((f: any) => ({...f, day_of_month:e.target.value}))}
+                    placeholder="1-28"
+                    style={{ width:60, padding:'5px 8px', border:`1.5px solid ${T.border}`, borderRadius:8,
+                      fontSize:12, fontFamily:'inherit', color:T.dark, background:T.bg, outline:'none' }}/>
+                </div>
+              </div>
+              <div style={{ fontSize:11, color:T.light, marginTop:5 }}>
+                {form.day_of_month==='99'
+                  ? '⚡ Sẽ tạo vào ngày cuối cùng của mỗi tháng (28/29/30/31)'
+                  : `⚡ Sẽ tạo vào ngày ${form.day_of_month} mỗi tháng`}
+              </div>
+            </div>
+          )}
+          <Inp label="Thời lượng (phút)" type="number" value={form.mins} onChange={(v) => setForm((f: any) => ({...f, mins:v}))}/>
+        </div>
+        {form.time_start && form.time_end && (
+          <div style={{ padding:'8px 12px', background:T.goldBg, borderRadius:8, fontSize:12, color:T.goldText, margin:'8px 0 13px', fontWeight:600 }}>
+            🕐 Khung giờ: <b>{form.time_start} → {form.time_end}</b>
+            {form.freq==='Hàng tháng' && ` — ${Number(form.day_of_month)===99?'Cuối tháng':`Ngày ${form.day_of_month}`} hàng tháng`}
+          </div>
+        )}
+        <div style={{ display:'flex', alignItems:'center', gap:10, marginBottom:16 }}>
+          <input type="checkbox" id="tpact" checked={form.active} onChange={e => setForm((f: any) => ({...f, active:e.target.checked}))}/>
+          <label htmlFor="tpact" style={{ fontSize:13, color:T.dark, cursor:'pointer' }}>Đang hoạt động</label>
+        </div>
+        <div style={{ display:'flex', justifyContent:'flex-end', gap:10 }}>
+          <GoldBtn outline small onClick={() => setShow(false)}>Hủy</GoldBtn>
+          <GoldBtn small onClick={save} disabled={!form.title||!form.assignee_id}>Lưu</GoldBtn>
+        </div>
+      </Modal>
+    </div>
+  )
+}
+
+// ══ KẾT THÚC PHẦN 3 — Paste tiếp Phần 4 bên dưới ══
+// ═══════════════════════════════════════════════
+// PHẦN 4A — Paste nối tiếp bên dưới Phần 3
+// ═══════════════════════════════════════════════
+
+function Attendance({ user, allUsers, leaveRequests, attendance, setAttendance, mobile }: any) {
+  const [tab, setTab]           = useState<'today'|'week'|'month'>('today')
+  const [date, setDate]         = useState(todayISO())
+  const [monthYear, setMonthYear] = useState(() => {
+    const now = new Date()
+    return `${now.getFullYear()}-${String(now.getMonth()+1).padStart(2,'0')}`
+  })
+  const [editRow, setEditRow]   = useState<any>(null)
+  const [editForm, setEditForm] = useState({ status:'present', late_mins:0, reason:'', notes:'' })
+  const p = mobile ? '16px' : '24px'
+
+  const canMarkAll  = getPerm(user).viewAllAttendance
+  const canMarkDept = getPerm(user).markAttendance
+  const canMarkPeer = getPerm(user).markPeerAttendance
+  const canMark     = canMarkAll || canMarkDept || canMarkPeer
+
+  const peerIds = allUsers
+    .filter((u: any) => u.reports_to && u.reports_to === user.position_id && u.id !== user.id)
+    .map((u: any) => u.id)
+
+  // Quản lý tự chấm được cho bản thân + nhân viên phòng mình
+  const staffList = canMarkAll
+    ? allUsers  // Admin thấy tất cả (kể cả mình)
+    : canMarkDept
+    ? allUsers.filter((u: any) => u.dept_id === user.dept_id)  // Quản lý: cả phòng kể cả mình
+    : allUsers.filter((u: any) => peerIds.includes(u.id))
+
+  const deptGroups = canMarkAll
+    ? ['kho','sale','vp'].map(d => ({ dept:d, name:DEPT_NAME[d], users:staffList.filter((u: any) => u.dept_id === d) }))
+    : [{ dept:user.dept_id, name:user.dept_name, users:staffList }]
+
+  const hasLeave = (uid: string, d: string) =>
+    leaveRequests.some((r: any) => r.user_id===uid && r.status==='approved' && r.start_date<=d && r.end_date>=d)
+
+  const getRec    = (uid: string, d: string) => attendance.find((r: any) => r.user_id===uid && r.date===d)
+
+  const getStatus = (uid: string, d: string) => {
+    const rec = getRec(uid, d)
+    if (rec) return rec.status
+    if (hasLeave(uid, d)) return 'leave'
+    return 'present'
+  }
+
+  const saveRec = async (u: any, d: string, overrides: any = {}) => {
+    const ex = getRec(u.id, d)
+    const rec = {
+      id: ex?.id || `att_${u.id}_${d.replace(/-/g,'')}`,
+      date:d, user_id:u.id, dept_id:u.dept_id,
+      status:   overrides.status   ?? editForm.status,
+      late_mins:Number(overrides.late_mins ?? editForm.late_mins),
+      reason:   overrides.reason   ?? editForm.reason,
+      notes:    overrides.notes    ?? editForm.notes,
+      marked_by:user.id, created_at:fmtNow()
+    }
+    setAttendance((prev: any) => ex ? prev.map((r: any) => r.id===ex.id ? rec : r) : [...prev, rec])
+    await db.from('attendance').upsert(rec)
+    setEditRow(null)
+  }
+
+  const quickMark = (u: any, d: string, status: string) =>
+    saveRec(u, d, { status, late_mins:0, reason:'', notes:'' })
+
+  const openEdit = (u: any, d: string) => {
+    const rec = getRec(u.id, d)
+    setEditRow({ u, d })
+    setEditForm({ status:rec?.status||(hasLeave(u.id,d)?'leave':'present'), late_mins:rec?.late_mins||0, reason:rec?.reason||'', notes:rec?.notes||'' })
+  }
+
+  const scheduleLabel = (deptId: string) => {
+    const s = SCHEDULE[deptId] || SCHEDULE['sale']
+    return `Vào: ${s.in} | Nghỉ trưa: ${s.breakStart}–${s.breakEnd} | Tan: ${s.out}`
+  }
+
+  const weekDays = Array.from({ length:7 }, (_, i) => {
+    const d = new Date(); d.setDate(d.getDate() - 6 + i)
+    return { iso:d.toISOString().split('T')[0], label:['CN','T2','T3','T4','T5','T6','T7'][d.getDay()], dayNum:d.getDate(), isToday:d.toISOString().split('T')[0]===todayISO() }
+  })
+
+  const [yr, mo] = monthYear.split('-').map(Number)
+  const daysInMonth = new Date(yr, mo, 0).getDate()
+  const monthDays = Array.from({ length:daysInMonth }, (_, i) => {
+    const d = new Date(yr, mo-1, i+1)
+    return { iso:d.toISOString().split('T')[0], dayNum:i+1, isWeekend:d.getDay()===0||d.getDay()===6 }
+  })
+
+  const monthSummary = (uid: string) => {
+    let present=0,late=0,absent=0,sick=0,leave=0,half=0
+    monthDays.forEach(({ iso, isWeekend }) => {
+      if (isWeekend) return
+      const s = getStatus(uid, iso)
+      if (s==='present') present++
+      else if (s==='late') { present++; late++ }
+      else if (s==='absent') absent++
+      else if (s==='sick') sick++
+      else if (s==='leave') leave++
+      else if (s==='half') half++
+    })
+    return { present, late, absent, sick, leave, half }
+  }
+
+  const renderToday = () => (
+    <div>
+      <div style={{ display:'flex', justifyContent:'flex-end', marginBottom:14 }}>
+        <input type="date" value={date} onChange={e => setDate(e.target.value)}
+          style={{ padding:'7px 11px', border:`1px solid ${T.border}`, borderRadius:8, fontSize:13, fontFamily:'inherit', color:T.dark, background:T.bg, cursor:'pointer' }}/>
+      </div>
+      {deptGroups.map(group => (
+        <div key={group.dept} style={{ marginBottom:20 }}>
+          <div style={{ background:DEPT_COLOR[group.dept], borderRadius:'10px 10px 0 0', padding:'12px 16px' }}>
+            <span style={{ color:'#fff', fontWeight:700, fontSize:14 }}>🏢 {group.name}</span>
+            <span style={{ color:'rgba(255,255,255,0.6)', fontSize:11, marginLeft:10 }}>{scheduleLabel(group.dept)}</span>
+          </div>
+          <div style={{ background:T.card, border:`1px solid ${T.border}`, borderRadius:'0 0 10px 10px', overflow:'hidden' }}>
+            {group.users.map((u: any, i: number) => {
+              const status = getStatus(u.id, date)
+              const rec    = getRec(u.id, date)
+              const sc     = ATT_STATUS[status] || ATT_STATUS.present
+              return (
+                <div key={u.id} style={{ display:'flex', alignItems:'center', gap:12, padding:'11px 16px',
+                  borderBottom:i<group.users.length-1?`1px solid ${T.border}`:'none',
+                  background:['absent','sick'].includes(status)?'#FFF5F5':status==='late'?'#FFFBEB':'#fff' }}>
+                  <Av u={u} size={36}/>
+                  <div style={{ flex:1 }}>
+                    <div style={{ fontSize:13, fontWeight:600, color:T.dark }}>{u.name}</div>
+                    <div style={{ fontSize:10, color:T.gold }}>{u.position_name||''}</div>
+                    {rec?.late_mins>0 && <div style={{ fontSize:11, color:T.amber }}>Muộn {rec.late_mins} phút</div>}
+                    {rec?.reason && <div style={{ fontSize:11, color:T.light }}>Lý do: {rec.reason}</div>}
+                  </div>
+                  {canMark && !mobile && (
+                    <div style={{ display:'flex', gap:5 }}>
+                      {Object.entries(ATT_STATUS).map(([st, cfg]: any) => (
+                        <button key={st} onClick={() => quickMark(u, date, st)}
+                          style={{ padding:'5px 9px', borderRadius:7, cursor:'pointer', fontFamily:'inherit', fontSize:11, fontWeight:600,
+                            border:`1.5px solid ${status===st?cfg.color:T.border}`,
+                            background:status===st?cfg.bg:'transparent',
+                            color:status===st?cfg.color:T.light }}>
+                          {cfg.label.split(' ')[0]}
+                        </button>
+                      ))}
+                    </div>
+                  )}
+                  <div style={{ display:'flex', gap:8, alignItems:'center' }}>
+                    <span style={{ fontSize:11, fontWeight:700, padding:'4px 10px', borderRadius:20,
+                      color:sc.color, background:sc.bg, whiteSpace:'nowrap' }}>{sc.label}</span>
+                    {canMark && (
+                      <button onClick={() => openEdit(u, date)}
+                        style={{ padding:'5px 11px', borderRadius:7, border:`1px solid ${T.border}`,
+                          background:'transparent', cursor:'pointer', fontSize:11, fontFamily:'inherit', color:T.med }}>
+                        {mobile ? '✏️' : 'Chi tiết'}
+                      </button>
+                    )}
+                  </div>
+                </div>
+              )
+            })}
+          </div>
+        </div>
+      ))}
+    </div>
+  )
+
+  const renderWeek = () => (
+    <div>
+      {deptGroups.map(group => (
+        <div key={group.dept} style={{ marginBottom:20 }}>
+          <div style={{ background:DEPT_COLOR[group.dept], borderRadius:'10px 10px 0 0', padding:'11px 16px' }}>
+            <span style={{ color:'#fff', fontWeight:700, fontSize:14 }}>🏢 {group.name}</span>
+          </div>
+          <div style={{ background:T.card, border:`1px solid ${T.border}`, borderRadius:'0 0 10px 10px', overflow:'hidden', overflowX:'auto' }}>
+            <table style={{ width:'100%', borderCollapse:'collapse', minWidth:500 }}>
+              <thead>
+                <tr style={{ background:T.bg }}>
+                  <th style={{ padding:'10px 14px', textAlign:'left', fontSize:12, fontWeight:600, color:T.dark, borderBottom:`1px solid ${T.border}`, minWidth:130 }}>Nhân viên</th>
+                  {weekDays.map(d => (
+                    <th key={d.iso} style={{ padding:'10px 8px', textAlign:'center', fontSize:11, fontWeight:600,
+                      color:d.isToday?T.gold:T.light, borderBottom:`1px solid ${T.border}`,
+                      background:d.isToday?T.goldBg:'transparent', minWidth:65 }}>
+                      <div style={{ fontWeight:700 }}>{d.label}</div>
+                      <div style={{ fontSize:13, color:d.isToday?T.gold:T.dark }}>{d.dayNum}</div>
+                    </th>
+                  ))}
+                  <th style={{ padding:'10px 8px', textAlign:'center', fontSize:11, fontWeight:600, color:T.light, borderBottom:`1px solid ${T.border}`, minWidth:70 }}>Tổng</th>
+                </tr>
+              </thead>
+              <tbody>
+                {group.users.map((u: any, ri: number) => {
+                  const ws = weekDays.reduce((acc, d) => {
+                    const s = getStatus(u.id, d.iso)
+                    if (['present','late'].includes(s)) acc.p++
+                    if (s==='late') acc.l++
+                    if (s==='absent') acc.a++
+                    return acc
+                  }, {p:0,l:0,a:0})
+                  return (
+                    <tr key={u.id} style={{ background:ri%2===0?'#fff':T.bg, borderBottom:`1px solid ${T.border}` }}>
+                      <td style={{ padding:'10px 14px' }}>
+                        <div style={{ fontSize:13, fontWeight:600, color:T.dark }}>{u.name}</div>
+                        <div style={{ fontSize:10, color:T.gold }}>{u.position_name||''}</div>
+                      </td>
+                      {weekDays.map(d => {
+                        const status = getStatus(u.id, d.iso)
+                        const rec    = getRec(u.id, d.iso)
+                        const isFuture = d.iso > todayISO()
+                        return (
+                          <td key={d.iso} style={{ padding:'8px', textAlign:'center', background:d.isToday?'#FFFDF5':'transparent' }}>
+                            {isFuture ? <span style={{ fontSize:11, color:T.border }}>—</span> : (
+                              <div style={{ display:'flex', flexDirection:'column', alignItems:'center', gap:2 }}>
+                                <span style={{ fontSize:16, cursor:canMark?'pointer':'default' }}
+                                  onClick={() => canMark && openEdit(u, d.iso)}>
+                                  {status==='present'?'✅':status==='late'?'⏰':status==='absent'?'❌':status==='sick'?'🏥':status==='leave'?'🏖️':'🌓'}
+                                </span>
+                                {rec?.late_mins>0 && <span style={{ fontSize:9, color:T.amber }}>+{rec.late_mins}'</span>}
+                              </div>
+                            )}
+                          </td>
+                        )
+                      })}
+                      <td style={{ padding:'8px', textAlign:'center' }}>
+                        <div style={{ fontSize:12, fontWeight:700, color:T.green }}>{ws.p}/7</div>
+                        {ws.l>0 && <div style={{ fontSize:10, color:T.amber }}>{ws.l} muộn</div>}
+                        {ws.a>0 && <div style={{ fontSize:10, color:T.red }}>{ws.a} vắng</div>}
+                      </td>
+                    </tr>
+                  )
+                })}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      ))}
+    </div>
+  )
+
+  const renderMonth = () => {
+    const workDays = monthDays.filter(d => !d.isWeekend).length
+    return (
+      <div>
+        <div style={{ display:'flex', justifyContent:'flex-end', marginBottom:14 }}>
+          <input type="month" value={monthYear} onChange={e => setMonthYear(e.target.value)}
+            style={{ padding:'7px 11px', border:`1px solid ${T.border}`, borderRadius:8, fontSize:13, fontFamily:'inherit', color:T.dark, background:T.bg, cursor:'pointer' }}/>
+        </div>
+        {deptGroups.map(group => (
+          <div key={group.dept} style={{ marginBottom:20 }}>
+            <div style={{ background:DEPT_COLOR[group.dept], borderRadius:'10px 10px 0 0', padding:'11px 16px' }}>
+              <span style={{ color:'#fff', fontWeight:700, fontSize:14 }}>🏢 {group.name}</span>
+              <span style={{ color:'rgba(255,255,255,0.6)', fontSize:11, marginLeft:10 }}>Tháng {mo}/{yr} — {workDays} ngày làm</span>
+            </div>
+            <div style={{ background:T.card, border:`1px solid ${T.border}`, borderRadius:'0 0 10px 10px', overflow:'hidden' }}>
+              <table style={{ width:'100%', borderCollapse:'collapse' }}>
+                <TH cols={['Nhân viên','Ngày đi','Đi muộn','Vắng','Nghỉ bệnh','Nghỉ phép','Tỷ lệ']}/>
+                <tbody>
+                  {group.users.map((u: any, i: number) => {
+                    const ms = monthSummary(u.id)
+                    const pct = workDays>0 ? Math.round(ms.present/workDays*100) : 0
+                    return (
+                      <tr key={u.id} style={{ background:i%2===0?'#fff':T.bg, borderBottom:`1px solid ${T.border}` }}>
+                        <td style={{ padding:'10px 14px' }}>
+                          <div style={{ fontSize:13, fontWeight:600, color:T.dark }}>{u.name}</div>
+                          <div style={{ fontSize:10, color:T.gold }}>{u.position_name||''}</div>
+                        </td>
+                        <td style={{ padding:'10px', textAlign:'center', fontSize:13, fontWeight:700, color:T.green }}>{ms.present}/{workDays}</td>
+                        <td style={{ padding:'10px', textAlign:'center', fontSize:13, fontWeight:600, color:ms.late>0?T.amber:T.light }}>{ms.late}</td>
+                        <td style={{ padding:'10px', textAlign:'center', fontSize:13, fontWeight:600, color:ms.absent>0?T.red:T.light }}>{ms.absent}</td>
+                        <td style={{ padding:'10px', textAlign:'center', fontSize:13, fontWeight:600, color:ms.sick>0?T.purple:T.light }}>{ms.sick}</td>
+                        <td style={{ padding:'10px', textAlign:'center', fontSize:13, fontWeight:600, color:ms.leave>0?T.blue:T.light }}>{ms.leave}</td>
+                        <td style={{ padding:'10px', textAlign:'center' }}>
+                          <span style={{ fontSize:14, fontWeight:700, color:pct>=90?T.green:pct>=75?T.amber:T.red }}>{pct}%</span>
+                        </td>
+                      </tr>
+                    )
+                  })}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        ))}
+      </div>
+    )
+  }
+
+  return (
+    <div style={{ padding:`0 ${p} ${mobile?'80px':p}` }}>
+      <Topbar mobile={mobile} title="Chấm công" subtitle="Quản lý điểm danh nhân viên"/>
+      <div style={{ display:'flex', gap:6, marginBottom:16, flexWrap:'wrap' }}>
+        {([['today','📅 Hôm nay'],['week','📊 Tuần này'],['month','📈 Tháng này']] as [string,string][]).map(([id, label]) => (
+          <button key={id} onClick={() => setTab(id as any)}
+            style={{ padding:'7px 16px', borderRadius:8, cursor:'pointer', fontFamily:'inherit', fontSize:13,
+              border:`1.5px solid ${tab===id?T.gold:T.border}`,
+              background:tab===id?T.goldBg:'transparent',
+              color:tab===id?T.goldText:T.med,
+              fontWeight:tab===id?700:400 }}>{label}</button>
+        ))}
+      </div>
+      {tab==='today' && renderToday()}
+      {tab==='week'  && renderWeek()}
+      {tab==='month' && renderMonth()}
+
+      <Modal open={!!editRow} onClose={() => setEditRow(null)}
+        title={`Chấm công: ${editRow?.u?.name} — ${editRow?.d ? fmtDate(editRow.d) : ''}`}>
+        <div style={{ padding:'8px 12px', background:T.bg, borderRadius:8, marginBottom:14, fontSize:12, color:T.med }}>
+          {scheduleLabel(editRow?.u?.dept_id)}
+        </div>
+        <Sel label="Trạng thái" value={editForm.status}
+          onChange={(v) => setEditForm((f: any) => ({...f, status:v}))}
+          options={Object.entries(ATT_STATUS).map(([v, s]: any) => ({ value:v, label:s.label }))}/>
+        {editForm.status==='late' && (
+          <Inp label="Số phút đi muộn" type="number"
+            value={String(editForm.late_mins)}
+            onChange={(v) => setEditForm((f: any) => ({...f, late_mins:Number(v)}))}
             placeholder="VD: 15"/>
         )}
         {['absent','sick','half'].includes(editForm.status) && (
           <Inp label="Lý do" value={editForm.reason}
-            onChange={(v: string) => setEditForm(f => ({...f, reason:v}))}
+            onChange={(v) => setEditForm((f: any) => ({...f, reason:v}))}
             placeholder="Nhập lý do..."/>
         )}
         <Inp label="Ghi chú" value={editForm.notes}
-          onChange={(v: string) => setEditForm(f => ({...f, notes:v}))}
+          onChange={(v) => setEditForm(f => ({...f, notes:v}))}
           placeholder="Ghi chú..."/>
         <div style={{ display:'flex', justifyContent:'flex-end', gap:10 }}>
           <GoldBtn outline small onClick={() => setEditRow(null)}>Hủy</GoldBtn>
@@ -1722,12 +2222,12 @@ function Overtime({ user, allUsers, mobile }: any) {
       {/* Modal đăng ký OT */}
       <Modal open={show} onClose={() => setShow(false)} title="Đăng ký làm thêm giờ">
         <Inp label="Ngày làm thêm *" type="date" value={form.date}
-          onChange={(v: string) => setForm(f => ({...f, date:v}))}/>
+          onChange={(v) => setForm(f => ({...f, date:v}))}/>
         <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:12 }}>
           <Inp label="Giờ bắt đầu *" type="time" value={form.start_time}
-            onChange={(v: string) => setForm(f => ({...f, start_time:v}))}/>
+            onChange={(v) => setForm(f => ({...f, start_time:v}))}/>
           <Inp label="Giờ kết thúc *" type="time" value={form.end_time}
-            onChange={(v: string) => setForm(f => ({...f, end_time:v}))}/>
+            onChange={(v) => setForm(f => ({...f, end_time:v}))}/>
         </div>
         {form.start_time && form.end_time && calcHours(form.start_time, form.end_time) > 0 && (
           <div style={{ padding:'8px 12px', background:T.goldBg, borderRadius:8, fontSize:12, color:T.goldText, marginBottom:13, fontWeight:600 }}>
@@ -1735,7 +2235,7 @@ function Overtime({ user, allUsers, mobile }: any) {
           </div>
         )}
         <Inp label="Lý do làm thêm *" value={form.reason}
-          onChange={(v: string) => setForm(f => ({...f, reason:v}))}
+          onChange={(v) => setForm(f => ({...f, reason:v}))}
           placeholder="Nhập lý do..."/>
         <div style={{ fontSize:11, color:T.light, marginBottom:14 }}>Đơn sẽ gửi tới quản lý để phê duyệt.</div>
         <div style={{ display:'flex', justifyContent:'flex-end', gap:10 }}>
@@ -2018,7 +2518,7 @@ function Leave({ user, allUsers, leaveRequests, setLeaveRequests, mobile }: any)
 
       <Modal open={show} onClose={() => setShow(false)} title="Xin nghỉ phép">
         <Sel label="Loại nghỉ phép" value={form.type}
-          onChange={(v: string) => setForm((f: any) => ({
+          onChange={(v) => setForm((f: any) => ({
             ...f, type:v,
             half_day: v === 'half' ? 'yes' : '',
             start_date: v === 'half' ? f.start_date : f.start_date,
@@ -2030,7 +2530,7 @@ function Leave({ user, allUsers, leaveRequests, setLeaveRequests, mobile }: any)
         {form.half_day === 'yes' ? (
           <div>
             <Inp label="Ngày nghỉ *" type="date" value={form.start_date}
-              onChange={(v: string) => setForm((f: any) => ({...f, start_date:v, end_date:v}))}/>
+              onChange={(v) => setForm((f: any) => ({...f, start_date:v, end_date:v}))}/>
             <div style={{ marginBottom:13 }}>
               <div style={{ fontSize:12, fontWeight:500, color:T.med, marginBottom:6 }}>Chọn buổi *</div>
               <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:10 }}>
@@ -2052,9 +2552,9 @@ function Leave({ user, allUsers, leaveRequests, setLeaveRequests, mobile }: any)
         ) : (
           <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:12 }}>
             <Inp label="Từ ngày *" type="date" value={form.start_date}
-              onChange={(v: string) => setForm((f: any) => ({...f, start_date:v}))}/>
+              onChange={(v) => setForm((f: any) => ({...f, start_date:v}))}/>
             <Inp label="Đến ngày *" type="date" value={form.end_date}
-              onChange={(v: string) => setForm((f: any) => ({...f, end_date:v, start_date:f.start_date||v}))}/>
+              onChange={(v) => setForm((f: any) => ({...f, end_date:v, start_date:f.start_date||v}))}/>
           </div>
         )}
 
@@ -2074,7 +2574,7 @@ function Leave({ user, allUsers, leaveRequests, setLeaveRequests, mobile }: any)
             )}
           </div>
         )}
-        <Inp label="Lý do *" value={form.reason} onChange={(v: string) => setForm((f: any) => ({...f, reason:v}))} placeholder="Nhập lý do xin nghỉ..."/>
+        <Inp label="Lý do *" value={form.reason} onChange={(v) => setForm((f: any) => ({...f, reason:v}))} placeholder="Nhập lý do xin nghỉ..."/>
         {submitError && <div style={{ fontSize:12, color:T.red, marginBottom:10 }}>{submitError}</div>}
         <div style={{ display:'flex', justifyContent:'flex-end', gap:10 }}>
           <GoldBtn outline small onClick={() => { setShow(false); setSubmitError('') }}>Hủy</GoldBtn>
@@ -2230,7 +2730,7 @@ function Announcements({ user, allUsers, mobile }: any) {
       )}
 
       <Modal open={show} onClose={() => setShow(false)} title="Tạo thông báo mới" wide>
-        <Inp label="Tiêu đề *" value={form.title} onChange={(v: string) => setForm(f => ({...f, title:v}))} placeholder="Tiêu đề thông báo..."/>
+        <Inp label="Tiêu đề *" value={form.title} onChange={(v) => setForm(f => ({...f, title:v}))} placeholder="Tiêu đề thông báo..."/>
         <div style={{ marginBottom:13 }}>
           <div style={{ fontSize:12, fontWeight:500, color:T.med, marginBottom:5 }}>Nội dung *</div>
           <textarea value={form.content} onChange={e => setForm(f => ({...f, content:e.target.value}))}
@@ -2240,9 +2740,9 @@ function Announcements({ user, allUsers, mobile }: any) {
               boxSizing:'border-box', outline:'none', minHeight:120, resize:'vertical' }}/>
         </div>
         <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:12 }}>
-          <Sel label="Gửi tới" value={form.target_dept} onChange={(v: string) => setForm(f => ({...f, target_dept:v}))}
+          <Sel label="Gửi tới" value={form.target_dept} onChange={(v) => setForm(f => ({...f, target_dept:v}))}
             options={[{value:'all',label:'📢 Toàn công ty'},{value:'kho',label:'🏭 Phòng Kho'},{value:'sale',label:'💼 Phòng Sale'},{value:'vp',label:'🏢 Văn phòng'}]}/>
-          <Sel label="Mức độ" value={form.priority} onChange={(v: string) => setForm(f => ({...f, priority:v}))}
+          <Sel label="Mức độ" value={form.priority} onChange={(v) => setForm(f => ({...f, priority:v}))}
             options={[{value:'normal',label:'📋 Bình thường'},{value:'urgent',label:'🔴 Khẩn cấp'}]}/>
         </div>
         <div style={{ display:'flex', justifyContent:'flex-end', gap:10 }}>
@@ -3305,11 +3805,11 @@ function ReturnSaleForm({ item, allUsers, saleUsers, onSave, onClose }: any) {
         {item.ship_fee>0 && ` · Ship: ${item.ship_fee.toLocaleString()}đ`}
       </div>
       <Inp label="Tên khách hàng" value={ef.customer_name}
-        onChange={(v: string) => setEf(f => ({...f,customer_name:v}))} placeholder="Tên KH..."/>
+        onChange={(v) => setEf(f => ({...f,customer_name:v}))} placeholder="Tên KH..."/>
       <Inp label="Mã đơn gốc bị sai" value={ef.original_order_code}
-        onChange={(v: string) => setEf(f => ({...f,original_order_code:v}))} placeholder="VD: DH000842"/>
+        onChange={(v) => setEf(f => ({...f,original_order_code:v}))} placeholder="VD: DH000842"/>
       <Sel label="Sale phụ trách" value={ef.sale_id}
-        onChange={(v: string) => setEf(f => ({...f,sale_id:v}))}
+        onChange={(v) => setEf(f => ({...f,sale_id:v}))}
         options={[{value:'',label:'— Chọn sale —'},...saleOnlyUsers.map((u: any) => ({value:u.id,label:u.name}))]}/>
       <div style={{ marginBottom:13 }}>
         <div style={{ fontSize:12, fontWeight:500, color:T.med, marginBottom:5 }}>Nhân viên vi phạm (Kho/Sale)</div>
@@ -3337,9 +3837,9 @@ function ReturnSaleForm({ item, allUsers, saleUsers, onSave, onClose }: any) {
         )}
       </div>
       <Inp label="Lý do hoàn" value={ef.reason}
-        onChange={(v: string) => setEf(f => ({...f,reason:v}))} placeholder="Lý do..."/>
+        onChange={(v) => setEf(f => ({...f,reason:v}))} placeholder="Lý do..."/>
       <Inp label="Ghi chú sale" value={ef.sale_note}
-        onChange={(v: string) => setEf(f => ({...f,sale_note:v}))} placeholder="Ghi chú thêm..."/>
+        onChange={(v) => setEf(f => ({...f,sale_note:v}))} placeholder="Ghi chú thêm..."/>
 
       <div style={{ display:'flex', justifyContent:'flex-end', gap:10 }}>
         <GoldBtn outline small onClick={onClose}>Hủy</GoldBtn>
@@ -3678,11 +4178,14 @@ function ReturnItems({ user, allUsers, products, mobile }: any) {
                     <div>
                       <div style={{ fontSize:12, fontWeight:600, color:T.dark, lineHeight:1.3 }}>{r.product_name}</div>
                       {mobile && <div style={{ fontSize:10, color:T.light }}>{r.condition} · {r.quantity} cái{r.ship_fee>0?` · Ship: ${r.ship_fee.toLocaleString()}đ`:''}</div>}
-                      {hasSaleInfo && <div style={{ fontSize:10, color:T.blue, marginTop:2 }}>
-                        {r.customer_name}{r.original_order_code?` · #${r.original_order_code}`:''}
-                        {violatorUser && <span style={{ color:T.red }}> · ⚠️{violatorUser.name}</span>}
-                      </div>}
+                      {/* Thông tin sale đã điền — hiện dưới tên SP */}
+                      {r.customer_name && (
+                        <div style={{ fontSize:10, marginTop:2, color:T.blue }}>
+                          👤 {r.customer_name}{r.original_order_code && <span style={{ color:T.light }}> · #{r.original_order_code}</span>}
+                        </div>
+                      )}
                       {r.reason && <div style={{ fontSize:10, color:T.med, marginTop:1 }}>📝 {r.reason}</div>}
+                      {r.sale_note && <div style={{ fontSize:10, color:T.light, marginTop:1, fontStyle:'italic' }}>{r.sale_note}</div>}
                     </div>
                     {!mobile && <>
                       <span style={{ fontSize:12, textAlign:'center', color:T.dark, fontWeight:600 }}>{r.quantity}</span>
@@ -3732,8 +4235,8 @@ function ReturnItems({ user, allUsers, products, mobile }: any) {
       {/* Modal nhập kho */}
       <Modal open={showAdd} onClose={() => setShowAdd(false)} title="📦 Nhập hàng hoàn" wide>
         <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:12 }}>
-          <Inp label="Ngày hoàn *" type="date" value={form.date} onChange={(v: string) => setForm((f: any) => ({...f,date:v}))}/>
-          <Sel label="Tình trạng" value={form.condition} onChange={(v: string) => setForm((f: any) => ({...f,condition:v}))}
+          <Inp label="Ngày hoàn *" type="date" value={form.date} onChange={(v) => setForm((f: any) => ({...f,date:v}))}/>
+          <Sel label="Tình trạng" value={form.condition} onChange={(v) => setForm((f: any) => ({...f,condition:v}))}
             options={CONDITIONS.map(c => ({value:c,label:c}))}/>
         </div>
         {/* Fuzzy search sản phẩm */}
@@ -3766,10 +4269,10 @@ function ReturnItems({ user, allUsers, products, mobile }: any) {
           )}
         </div>
         <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:12 }}>
-          <Inp label="Số lượng" type="number" value={String(form.quantity)} onChange={(v: string) => setForm((f: any) => ({...f,quantity:v}))}/>
-          <Inp label="Phí ship (đ)" type="number" value={String(form.ship_fee)} onChange={(v: string) => setForm((f: any) => ({...f,ship_fee:v}))}/>
+          <Inp label="Số lượng" type="number" value={String(form.quantity)} onChange={(v) => setForm((f: any) => ({...f,quantity:v}))}/>
+          <Inp label="Phí ship (đ)" type="number" value={String(form.ship_fee)} onChange={(v) => setForm((f: any) => ({...f,ship_fee:v}))}/>
         </div>
-        <Inp label="Mã đơn hoàn (tự nhập)" value={form.return_order_code} onChange={(v: string) => setForm((f: any) => ({...f,return_order_code:v}))} placeholder="VD: HV001234"/>
+        <Inp label="Mã đơn hoàn (tự nhập)" value={form.return_order_code} onChange={(v) => setForm((f: any) => ({...f,return_order_code:v}))} placeholder="VD: HV001234"/>
 
         <div style={{ display:'flex', justifyContent:'flex-end', gap:10 }}>
           <GoldBtn outline small onClick={() => setShowAdd(false)}>Hủy</GoldBtn>
@@ -4170,10 +4673,10 @@ function UserManagement({ user, allUsers, setAllUsers, departments, positions, m
       <Modal open={show} onClose={() => setShow(false)} title={edit?'Sửa tài khoản':'Thêm nhân viên mới'}>
         <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:12 }}>
           <Inp label="Họ tên *" value={form.name}
-            onChange={(v: string) => setForm(f => ({...f, name:v, ini:autoIni(v)}))} placeholder="Nguyễn Văn A"/>
+            onChange={(v) => setForm(f => ({...f, name:v, ini:autoIni(v)}))} placeholder="Nguyễn Văn A"/>
           {isAdmin ? (
             <Inp label="Tên đăng nhập (ini) 🔐 Admin" value={form.ini}
-              onChange={(v: string) => setForm(f => ({...f, ini:v.toUpperCase().slice(0,4)}))} placeholder="VA"/>
+              onChange={(v) => setForm(f => ({...f, ini:v.toUpperCase().slice(0,4)}))} placeholder="VA"/>
           ) : (
             <div style={{ marginBottom:13 }}>
               <div style={{ fontSize:12, fontWeight:500, color:T.med, marginBottom:5 }}>Tên đăng nhập (ini)</div>
@@ -4182,7 +4685,7 @@ function UserManagement({ user, allUsers, setAllUsers, departments, positions, m
           )}
         </div>
         {/* Vị trí — chọn trước để auto-fill phòng ban */}
-        <Sel label="Vị trí *" value={form.position_id} onChange={(v: string) => {
+        <Sel label="Vị trí *" value={form.position_id} onChange={(v) => {
           const pos = positions.find((p: any) => p.id === v)
           const autoDept = pos?.dept_id || ''
           setForm(f => ({...f, position_id:v, dept_id: autoDept || f.dept_id}))
@@ -4197,7 +4700,7 @@ function UserManagement({ user, allUsers, setAllUsers, departments, positions, m
             </div>
           )
           return (
-            <Sel label="Phòng ban" value={form.dept_id} onChange={(v: string) => setForm(f => ({...f, dept_id:v}))}
+            <Sel label="Phòng ban" value={form.dept_id} onChange={(v) => setForm(f => ({...f, dept_id:v}))}
               options={departments.filter((d: any) => d.id!=='all').map((d: any) => ({value:d.id,label:d.name}))}/>
           )
         })()}
@@ -4205,7 +4708,7 @@ function UserManagement({ user, allUsers, setAllUsers, departments, positions, m
           💡 Mật khẩu mặc định khi tạo mới: <b>1234</b> — nhân viên sẽ được yêu cầu đổi khi đăng nhập lần đầu.
         </div>
         <Inp label="🎂 Ngày sinh (DD/MM/YYYY)" value={form.birthday}
-          onChange={(v: string) => setForm(f => ({...f, birthday:v}))} placeholder="VD: 15/08/1995"/>
+          onChange={(v) => setForm(f => ({...f, birthday:v}))} placeholder="VD: 15/08/1995"/>
         <div style={{ display:'flex', alignItems:'center', gap:10, marginBottom:16 }}>
           <input type="checkbox" id="uact" checked={form.active} onChange={e => setForm(f => ({...f, active:e.target.checked}))}/>
           <label htmlFor="uact" style={{ fontSize:13, color:T.dark, cursor:'pointer' }}>Tài khoản đang hoạt động</label>
@@ -4363,11 +4866,11 @@ function PositionsManagement({ positions, setPositions, mobile }: any) {
 
       <Modal open={show} onClose={() => setShow(false)} title={edit?'Sửa vị trí':'Thêm vị trí mới'} wide>
         <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:12 }}>
-          <Inp label="Tên vị trí *" value={form.name} onChange={(v: string) => setForm((f: any) => ({...f, name:v}))} placeholder="VD: Kế toán, Phó kho..."/>
-          <Sel label="Phòng ban" value={form.dept_id} onChange={(v: string) => setForm((f: any) => ({...f, dept_id:v}))}
+          <Inp label="Tên vị trí *" value={form.name} onChange={(v) => setForm((f: any) => ({...f, name:v}))} placeholder="VD: Kế toán, Phó kho..."/>
+          <Sel label="Phòng ban" value={form.dept_id} onChange={(v) => setForm((f: any) => ({...f, dept_id:v}))}
             options={[{value:'all',label:'Tất cả'},{value:'kho',label:'Kho'},{value:'sale',label:'Sale'},{value:'vp',label:'Văn phòng'}]}/>
         </div>
-        <Sel label="Báo cáo cho vị trí" value={form.reports_to} onChange={(v: string) => setForm((f: any) => ({...f, reports_to:v}))}
+        <Sel label="Báo cáo cho vị trí" value={form.reports_to} onChange={(v) => setForm((f: any) => ({...f, reports_to:v}))}
           options={[{value:'',label:'— Không (cấp cao nhất) —'},...positions.filter((p: any) => p.id!==edit?.id).map((pos: any) => ({value:pos.id,label:pos.name}))]}/>
 
         <div style={{ marginBottom:14 }}>
@@ -5114,13 +5617,13 @@ function WrongOrders({ user, allUsers, wrongOrders, setWrongOrders, mobile }: an
       {/* Modal tạo đơn sai */}
       <Modal open={showAdd} onClose={() => setShowAdd(false)} title="⚠️ Tạo đơn sai mới" wide>
         <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:12 }}>
-          <Inp label="Ngày sai *" type="date" value={form.date} onChange={(v: string) => setForm((f: any) => ({...f,date:v}))}/>
-          <Inp label="Mã đơn hàng *" value={form.order_code} onChange={(v: string) => setForm((f: any) => ({...f,order_code:v}))} placeholder="VD: DH006994"/>
+          <Inp label="Ngày sai *" type="date" value={form.date} onChange={(v) => setForm((f: any) => ({...f,date:v}))}/>
+          <Inp label="Mã đơn hàng *" value={form.order_code} onChange={(v) => setForm((f: any) => ({...f,order_code:v}))} placeholder="VD: DH006994"/>
         </div>
-        <Inp label="Tên khách hàng" value={form.customer_name} onChange={(v: string) => setForm((f: any) => ({...f,customer_name:v}))} placeholder="Tên KH..."/>
-        <Sel label="Sale phụ trách" value={form.sale_id} onChange={(v: string) => setForm((f: any) => ({...f,sale_id:v}))}
+        <Inp label="Tên khách hàng" value={form.customer_name} onChange={(v) => setForm((f: any) => ({...f,customer_name:v}))} placeholder="Tên KH..."/>
+        <Sel label="Sale phụ trách" value={form.sale_id} onChange={(v) => setForm((f: any) => ({...f,sale_id:v}))}
           options={[{value:'',label:'— Chọn sale —'},...allUsers.filter((u: any)=>u.dept_id==='sale').map((u: any)=>({value:u.id,label:u.name}))]}/>
-        <Sel label="Nhân viên vi phạm (Kho/Sale)" value={form.violator_id} onChange={(v: string) => setForm((f: any) => ({...f,violator_id:v}))}
+        <Sel label="Nhân viên vi phạm (Kho/Sale)" value={form.violator_id} onChange={(v) => setForm((f: any) => ({...f,violator_id:v}))}
           options={[{value:'',label:'— Chọn NV —'},...allUsers.filter((u: any)=>u.dept_id==='kho'||u.dept_id==='sale').map((u: any)=>({value:u.id,label:`${u.name} (${u.dept_name||u.dept_id})`}))]}/>
         <div style={{ marginBottom:13 }}>
           <div style={{ fontSize:12, fontWeight:500, color:T.med, marginBottom:5 }}>Chi tiết đơn sai *</div>
