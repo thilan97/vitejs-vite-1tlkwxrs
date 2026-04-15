@@ -8584,9 +8584,11 @@ function BatchForm({ edit, products, onSave, onClose, saving, mobile }: any) {
   })
   const [searchProd, setSearchProd] = useState('')
 
+  const normStr = (s: string) => (s||'').toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g,'').replace(/đ/g,'d')
   const filteredProds = products.filter((p: any) => {
     if (!searchProd) return true
-    return (p.code + ' ' + p.name).toLowerCase().includes(searchProd.toLowerCase())
+    const hay = normStr(p.code + ' ' + p.name + ' ' + (p.unit||''))
+    return normStr(searchProd).split(/\s+/).filter(Boolean).every((t: string) => hay.includes(t))
   }).slice(0, 20)
 
   const selectProd = (p: any) => {
@@ -8632,7 +8634,7 @@ function BatchForm({ edit, products, onSave, onClose, saving, mobile }: any) {
                 placeholder="Gõ mã hoặc tên SP để tìm..."
                 style={{ width:'100%', padding:'9px 12px', border:`1px solid ${T.border}`,
                   borderRadius:10, fontSize:12, fontFamily:'inherit', outline:'none',
-                  color:T.dark, boxSizing:'border-box' as any }}/>
+                  color:T.dark, background:'#fff', boxSizing:'border-box' as any }}/>
               {searchProd && (
                 <div style={{ border:`1px solid ${T.border}`, borderRadius:10, marginTop:4,
                   maxHeight:200, overflowY:'auto', background:'#fff',
