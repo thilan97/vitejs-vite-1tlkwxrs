@@ -3374,15 +3374,14 @@ function ShortageItems({ user, allUsers, mobile, products, setProducts }: any) {
                 <div style={{ borderBottom:`1px solid ${T.border}` }}>
                   {/* ── Main row ── */}
                   <div onClick={() => setExpanded(v => !v)}
-                    style={{ display:'flex', alignItems:'center', gap:8, padding:'8px 12px',
+                    style={{ display:'flex', alignItems:'center', gap:6, padding:'6px 10px',
                       cursor:'pointer', background:expanded?T.goldBg:'transparent',
                       transition:'background .15s' }}
                     onMouseEnter={e => { if(!expanded) (e.currentTarget as any).style.background=T.bg }}
                     onMouseLeave={e => { if(!expanded) (e.currentTarget as any).style.background='transparent' }}>
-                    {/* Tên SP — tối đa 2 dòng */}
-                    <div style={{ flex:1, fontSize:12, fontWeight:500, color:T.dark,
-                      display:'-webkit-box', WebkitLineClamp:2, WebkitBoxOrient:'vertical',
-                      overflow:'hidden', lineHeight:1.4 }}>
+                    {/* Tên SP — 1 dòng compact */}
+                    <div style={{ flex:1, fontSize:11, fontWeight:500, color:T.dark,
+                      overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap', lineHeight:1.3 }}>
                       {item.product_name}
                     </div>
                     {/* Tồn kho + đặt hàng compact */}
@@ -4038,7 +4037,7 @@ function ReturnItems({ user, allUsers, products, mobile }: any) {
     const newItems = validLines.map((l: any, i: number) => ({
       id: 'ret'+Date.now()+'_'+i,
       slip_id, date: slipForm.date,
-      return_order_code: slipForm.return_order_code,
+      return_order_code: slipForm.return_order_code || '',
       reason: slipForm.reason||'',
       ship_fee: i===0 ? Number(slipForm.ship_fee)||0 : 0,
       product_name: l.product_name, quantity: Number(l.quantity)||1,
@@ -4292,7 +4291,7 @@ function ReturnItems({ user, allUsers, products, mobile }: any) {
                     <div style={{ display:'flex', alignItems:'center', gap:10 }}>
                       <div onClick={e => e.stopPropagation()}>
                         {slip.entered_kiot ? (
-                          <button onClick={() => toggleKiot(slip)}
+                          <button onClick={() => canKiot && toggleKiot(slip)}
                             style={{ width:28,height:28,borderRadius:'50%',border:'none',
                               background:T.green,color:'#fff',cursor:canKiot?'pointer':'default',fontSize:14,
                               display:'flex',alignItems:'center',justifyContent:'center' }}>✓</button>
@@ -4315,7 +4314,14 @@ function ReturnItems({ user, allUsers, products, mobile }: any) {
                           {slip.lines.length>1&&<span style={{ color:T.light }}> +{slip.lines.length-1} SP</span>}
                         </div>
                       </div>
-                      <span style={{ color:T.light }}>{isOpen?'▲':'▼'}</span>
+                      <div style={{ display:'flex',gap:6,alignItems:'center' }}>
+                        {canEdit && (
+                          <button onClick={e => { e.stopPropagation(); delSlip(slip.slip_id) }}
+                            style={{ padding:'3px 8px',borderRadius:20,border:`1px solid ${T.redBg}`,
+                              background:T.redBg,cursor:'pointer',fontSize:10,fontFamily:'inherit',color:T.red }}>✕</button>
+                        )}
+                        <span style={{ color:T.light }}>{isOpen?'▲':'▼'}</span>
+                      </div>
                     </div>
                   </div>
                 ) : (
@@ -5283,24 +5289,31 @@ function Settings({ user, setUser, settings, setSettings, onManualReset, mobile 
 
 // ── MAIN APP ──────────────────────────────────────
 // ── NOTIFICATION BANNER ─────────────────────────────
-function NotifBanner({ user, wrongOrders, returnSlips, setPage }: any) {
+function NotifBanner({ user, wrongOrders, returnSlips, shortageItems, setPage }: any) {
   const [dismissed, setDismissed] = useState(false)
-  const perm    = getPerm(user)
-  const isSale  = user.dept_id === 'sale'
-  const isAdmin = perm.viewAllDashboard
+  const perm      = getPerm(user)
+  const isSale    = user.dept_id === 'sale'
+  const isAdmin   = perm.viewAllDashboard
+  const isMgrSale = isSale && perm.approveLeave  // Quản lý Sale
 
-  // Chỉ hiện cho sale — không hiện cho admin/giám đốc
+  // NV Sale: đơn sai pending của họ
   const pendingWO  = (isSale && !isAdmin) ? wrongOrders.filter((r: any) =>
     r.status==='pending' && (r.sale_id===user.id || !r.sale_id)
   ) : []
+  // NV Sale: phiếu hoàn chưa điền
   const pendingRet = (isSale && !isAdmin) ? (returnSlips||[]).filter((r: any) => !r.sale_id) : []
-  const totalPending = pendingWO.length + pendingRet.length
+  // QM Sale: hàng thiếu mới chờ xử lý (pending + chưa có phản hồi QM)
+  const pendingShortage = isMgrSale ? (shortageItems||[]).filter((r: any) =>
+    r.status==='pending' && !r.manager_note
+  ) : []
 
+  const totalPending = pendingWO.length + pendingRet.length + pendingShortage.length
   if (dismissed || totalPending === 0) return null
 
   const hasWO = pendingWO.length > 0
   const hasRet = pendingRet.length > 0
-  const accent = hasWO ? T.red : T.amber
+  const hasSh  = pendingShortage.length > 0
+  const accent = hasWO ? T.red : hasRet ? T.amber : T.blue
 
   return (
     <div style={{ position:'fixed', top:16, left:'50%', transform:'translateX(-50%)',
@@ -5334,6 +5347,17 @@ function NotifBanner({ user, wrongOrders, returnSlips, setPage }: any) {
               </div>
             </div>
           )}
+          {pendingShortage.length > 0 && (
+            <div style={{ paddingTop:(hasWO||hasRet)?8:0, borderTop:(hasWO||hasRet)?`1px solid ${T.border}`:'' }}>
+              <div style={{ fontSize:11, fontWeight:700, color:T.blue, marginBottom:3 }}>
+                📦 {pendingShortage.length} mã thiếu hàng chưa được xử lý
+              </div>
+              {pendingShortage.slice(0,2).map((r: any) => (
+                <div key={r.id} style={{ fontSize:11, color:T.med }}>• {r.product_name}</div>
+              ))}
+              {pendingShortage.length>2 && <div style={{ fontSize:11, color:T.light }}>...+{pendingShortage.length-2} mã nữa</div>}
+            </div>
+          )}
           <div style={{ display:'flex', gap:8, marginTop:12, flexWrap:'wrap' }}>
             {hasWO && (
               <button onClick={() => { setPage('wrongord'); setDismissed(true) }}
@@ -5347,6 +5371,13 @@ function NotifBanner({ user, wrongOrders, returnSlips, setPage }: any) {
                 style={{ padding:'5px 13px', borderRadius:20, border:'none', background:T.amber,
                   color:'#fff', cursor:'pointer', fontFamily:'inherit', fontSize:11, fontWeight:700 }}>
                 Xem phiếu hoàn →
+              </button>
+            )}
+            {pendingShortage.length > 0 && (
+              <button onClick={() => { setPage('shortage'); setDismissed(true) }}
+                style={{ padding:'5px 13px', borderRadius:20, border:'none', background:T.blue,
+                  color:'#fff', cursor:'pointer', fontFamily:'inherit', fontSize:11, fontWeight:700 }}>
+                Xem hàng thiếu →
               </button>
             )}
             <button onClick={() => setDismissed(true)}
@@ -5398,6 +5429,7 @@ export default function App() {
   const [products, setProducts]     = useState<any[]>([])
   const [wrongOrders, setWrongOrders] = useState<any[]>([])
   const [returnSlips, setReturnSlips] = useState<any[]>([])
+  const [shortageNoti, setShortageNoti] = useState<any[]>([])
   const [invSessions, setInvSessions] = useState<any[]>([])
   const [loading, setLoading]       = useState(false)
   const width   = useWindowWidth()
@@ -5553,6 +5585,8 @@ export default function App() {
       })()
       db.from('wrong_orders').select('*').order('created_at',{ascending:false})
         .then(({data}) => { if (data) setWrongOrders(data) })
+      db.from('shortage_items').select('id,product_name,status,manager_note').eq('status','pending')
+        .then(({data}) => { if (data) setShortageNoti(data) })
       // Fetch return slips for notifications (last 30 days)
       const thirtyAgo = new Date(Date.now()-30*86400000).toISOString().split('T')[0]
       db.from('return_items').select('id,slip_id,sale_id,created_at,created_by,date')
@@ -5671,7 +5705,7 @@ export default function App() {
         {/* Sticky Note — floating for all users */}
         {user && <StickyNote user={user}/>}
         {/* Notification Banner — wrong orders pending */}
-        {user && <NotifBanner user={user} wrongOrders={wrongOrders} returnSlips={returnSlips} setPage={setPage}/>}
+        {user && <NotifBanner user={user} wrongOrders={wrongOrders} returnSlips={returnSlips} shortageItems={shortageNoti} setPage={setPage}/>}
         {user && <SaturdayBanner user={user}/>}
       </div>
      )
@@ -5952,8 +5986,15 @@ function WrongOrders({ user, allUsers, wrongOrders, setWrongOrders, mobile }: an
                           {r.detail && <div style={{ fontSize:11, color:T.med, marginTop:3, lineHeight:1.4 }}>{r.detail}</div>}
                           {r.resolution_note && <div style={{ fontSize:11, color:T.blue, marginTop:3 }}>📝 {r.resolution_note}</div>}
                         </div>
-                        <span style={{ fontSize:10, fontWeight:700, padding:'2px 7px', borderRadius:20,
-                          color:sc.color, background:sc.bg, whiteSpace:'nowrap', flexShrink:0 }}>{sc.label}</span>
+                        <div style={{ display:'flex',flexDirection:'column',gap:4,alignItems:'flex-end',flexShrink:0 }}>
+                          <span style={{ fontSize:10, fontWeight:700, padding:'2px 7px', borderRadius:20,
+                            color:sc.color, background:sc.bg, whiteSpace:'nowrap' }}>{sc.label}</span>
+                          {canDel && (
+                            <button onClick={() => del(r.id)}
+                              style={{ padding:'2px 7px',borderRadius:20,border:`1px solid ${T.redBg}`,
+                                background:T.redBg,cursor:'pointer',fontSize:9,fontFamily:'inherit',color:T.red }}>✕ Hủy</button>
+                          )}
+                        </div>
                       </div>
                       <div style={{ display:'flex', gap:6, marginTop:8, flexWrap:'wrap' }}>
                         {canSaleFill && <button onClick={() => setShowEdit(r)}
@@ -6262,6 +6303,8 @@ function CheckListRow({ check, isActive, onSelect, onConfirm, onSkip, idx, total
   const [val, setVal] = useState(check.actual_qty != null ? String(check.actual_qty) : '')
   const inputRef = React.useRef<HTMLInputElement>(null)
   const done = check.actual_qty != null
+  const [editDone, setEditDone] = useState(false)
+  const isEditable = done && editDone
   const diff = val !== '' ? Number(val) - (check.system_qty || 0) : null
 
   // Auto-focus input when row becomes active
@@ -6282,12 +6325,13 @@ function CheckListRow({ check, isActive, onSelect, onConfirm, onSkip, idx, total
     onConfirm(check.id, upd)
   }
 
-  const statusIcon = done
+  const effectiveActive = isActive || isEditable
+  const statusIcon = done && !isEditable
     ? (check.diff !== 0 ? '⚠️' : '✅')
-    : (isActive ? '▶' : '○')
-  const statusColor = done
+    : (effectiveActive ? '▶' : '○')
+  const statusColor = done && !isEditable
     ? (check.diff !== 0 ? T.red : T.green)
-    : (isActive ? T.gold : T.border)
+    : (effectiveActive ? T.gold : T.border)
 
   return (
     <div style={{
@@ -6296,11 +6340,11 @@ function CheckListRow({ check, isActive, onSelect, onConfirm, onSkip, idx, total
       transition: 'all .15s',
     }}>
       {/* Compact row — always visible */}
-      <div onClick={() => !done && onSelect(check.id)}
+      <div onClick={() => done ? setEditDone(v => !v) : onSelect(check.id)}
         style={{ display:'grid', gridTemplateColumns:'36px 1fr 60px 36px',
-          padding: isActive ? '12px 14px 0' : '10px 14px',
+          padding: effectiveActive ? '12px 14px 0' : '10px 14px',
           gap:10, alignItems:'center',
-          cursor: done ? 'default' : 'pointer' }}>
+          cursor: 'pointer' }}>
         {/* Status icon */}
         <span style={{ fontSize:18, textAlign:'center', color:statusColor,
           transition:'all .2s' }}>{statusIcon}</span>
@@ -6331,7 +6375,7 @@ function CheckListRow({ check, isActive, onSelect, onConfirm, onSkip, idx, total
       </div>
 
       {/* Expanded input — only when active */}
-      {isActive && (
+      {effectiveActive && (
         <div style={{ padding:'12px 14px 16px' }}>
           {/* 3-number display */}
           <div style={{ display:'flex', justifyContent:'space-around',
@@ -6448,7 +6492,7 @@ function MobileCheckInput({ session, myChecks, user, allUsers, products, onUpdat
       </div>
 
       {/* Scrollable list */}
-      <div style={{ flex:1, overflowY:'auto', background:'#fff' }}>
+      <div style={{ flex:1, overflowY:'auto', background:'#fff', paddingBottom:80 }}>
         {done === myChecks.length && (
           <div style={{ padding:'40px 24px', textAlign:'center' }}>
             <div style={{ fontSize:44, marginBottom:12 }}>🎉</div>
@@ -6485,6 +6529,8 @@ function InventoryModule({ user, allUsers, products, invSessions, setInvSessions
   const [showAssign, setShowAssign] = useState(false)
   const [showWizard, setShowWizard] = useState(false)
   const [showExcluded, setShowExcluded] = useState(false)
+  const [expandedSession, setExpandedSession] = useState<string|null>(null)
+  const [searchSP, setSearchSP] = useState('')
   const [mobileCheck, setMobileCheck] = useState(false)
   const [excludedCodes, setExcludedCodes] = useState<Set<string>>(new Set())
   const [lastKvSync, setLastKvSync] = useState<string>('')
@@ -6693,6 +6739,7 @@ function InventoryModule({ user, allUsers, products, invSessions, setInvSessions
     {id:'check',         label:`✅ Nhập liệu${openSession?` (${myChecks.filter((c: any)=>c.actual_qty==null).length})`:''}`},
     {id:'discrepancy',   label:`⚠️ Lệch kho${discrepancies.length?` (${discrepancies.length})`:''}`},
     {id:'monthly',       label:'📈 Cuối tháng'},
+    ...(canManage ? [{id:'excluded', label:`🚫 Mã không KK${excludedCodes.size?` (${excludedCodes.size})`:''}`}] : []),
   ]
 
   return (
@@ -6815,28 +6862,7 @@ function InventoryModule({ user, allUsers, products, invSessions, setInvSessions
       {/* ── TAB: PHIÊN KK ── */}
       {tab==='sessions' && (
         <div style={{display:'flex',flexDirection:'column',gap:12}}>
-          {/* Gợi ý + Export + Assign */}
-          {canManage && openSession && (
-            <Card style={{display:'flex',alignItems:'center',justifyContent:'space-between',flexWrap:'wrap',gap:12}}>
-              <div>
-                <div style={{fontSize:13,fontWeight:700,color:T.dark}}>Phiên đang mở: {openSession.date}</div>
-                <div style={{fontSize:11,color:T.light}}>
-                  {checks.filter((c: any)=>c.session_id===openSession.id).length} mã đã được phân · Bấm để phân chia thêm
-                </div>
-              </div>
-              <div style={{display:'flex',gap:8}}>
-                <button onClick={async () => {
-                  const toExport = products.filter((p: any) => p.stock>0).slice(0,150)
-                  exportKKForm(toExport)
-                }}
-                  style={{padding:'7px 14px',borderRadius:20,border:`1.5px solid ${T.border}`,
-                    background:'transparent',cursor:'pointer',fontSize:12,fontFamily:'inherit',color:T.med}}>
-                  📄 Xuất phiếu KK
-                </button>
-                <GoldBtn small onClick={() => setShowAssign(true)}>👥 Phân chia mã</GoldBtn>
-              </div>
-            </Card>
-          )}
+{/* Assign/Export buttons removed — handled inside wizard */}
 
           {/* Import Excel */}
           <Card>
@@ -6870,53 +6896,163 @@ function InventoryModule({ user, allUsers, products, invSessions, setInvSessions
                 <span style={{textAlign:'right'}}>Thao tác</span>
               </div>
             )}
-            {invSessions.length===0
+            {/* Search SP across sessions */}
+            <div style={{padding:'8px 12px',background:T.bg,borderBottom:`1px solid ${T.border}`}}>
+              <input value={searchSP} onChange={e => setSearchSP(e.target.value)}
+                placeholder="🔍 Tìm sản phẩm để xem lịch sử các phiên KK..."
+                style={{width:'100%',padding:'7px 12px',border:`1px solid ${T.border}`,borderRadius:20,
+                  fontSize:12,fontFamily:'inherit',color:T.dark,background:'#fff',
+                  boxSizing:'border-box' as any,outline:'none'}}/>
+            </div>
+
+            {/* Search results */}
+            {searchSP.trim() && (() => {
+              const norm2 = (s: string) => (s||'').toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g,'').replace(/đ/g,'d')
+              const q = norm2(searchSP)
+              const matched = checks.filter((c: any) => norm2(c.product_name+' '+c.product_code).includes(q))
+              const bySess = invSessions.map(s => {
+                const sc = matched.filter((c: any) => c.session_id===s.id)
+                return sc.length>0 ? {s, sc} : null
+              }).filter(Boolean)
+              if (bySess.length===0) return (
+                <div style={{padding:'20px',textAlign:'center',color:T.light,fontSize:12}}>
+                  Không tìm thấy sản phẩm này trong lịch sử kiểm kê
+                </div>
+              )
+              return (
+                <div style={{padding:'8px 12px'}}>
+                  <div style={{fontSize:11,color:T.med,marginBottom:8}}>
+                    Tìm thấy trong <b>{bySess.length}</b> phiên:
+                  </div>
+                  {bySess.map(({s,sc}: any) => (
+                    <div key={s.id} style={{padding:'8px 12px',borderRadius:8,border:`1px solid ${T.border}`,
+                      marginBottom:6,background:'#fff'}}>
+                      <div style={{display:'flex',alignItems:'center',justifyContent:'space-between',gap:8,marginBottom:4}}>
+                        <span style={{fontSize:12,fontWeight:700,color:T.dark}}>📅 {s.date}</span>
+                        <span style={{fontSize:10,color:T.light}}>{s.note||''}</span>
+                      </div>
+                      {sc.map((c: any) => (
+                        <div key={c.id} style={{display:'grid',gridTemplateColumns:'1fr 70px 70px 70px',
+                          gap:8,fontSize:11,padding:'4px 0',borderTop:`1px solid ${T.border}`}}>
+                          <span style={{color:T.dark}}>{c.product_name}</span>
+                          <span style={{textAlign:'center',color:T.blue}}>HT: {c.system_qty??'—'}</span>
+                          <span style={{textAlign:'center',color:T.dark}}>TT: {c.actual_qty??'—'}</span>
+                          <span style={{textAlign:'center',fontWeight:700,
+                            color:c.diff===0||c.diff==null?T.green:c.diff>0?T.blue:T.red}}>
+                            {c.diff==null?'—':c.diff===0?'✓':c.diff>0?'+'+c.diff:c.diff}
+                          </span>
+                        </div>
+                      ))}
+                    </div>
+                  ))}
+                </div>
+              )
+            })()}
+
+            {!searchSP.trim() && (invSessions.length===0
               ? <div style={{padding:'32px',textAlign:'center',color:T.light}}>Chưa có phiên kiểm kê nào</div>
               : invSessions.map((s: any, i: number) => {
                   const sChecks = checks.filter((c: any) => c.session_id===s.id)
                   const sLech   = sChecks.filter((c: any) => c.diff!=null && c.diff!==0).length
                   const creator = allUsers.find((u: any) => u.id===s.created_by)
+                  const isExp   = expandedSession === s.id
+                  // Group by NV
+                  const nvIds   = [...new Set(sChecks.map((c: any) => c.assigned_to))].filter(Boolean)
                   return (
-                    <div key={s.id} style={{display:mobile?'block':'grid',
-                      gridTemplateColumns:'100px 1fr 70px 70px 80px 110px 120px',
-                      padding:'10px 12px',gap:8,alignItems:'center',
-                      borderBottom:i<invSessions.length-1?`1px solid ${T.border}`:'none',
-                      background:i%2===0?'#fff':T.rowAlt}}>
-                      <span style={{fontSize:12,fontWeight:700,color:T.dark}}>{s.date}</span>
-                      <span style={{fontSize:11,color:T.med}}>{s.note||'—'}</span>
-                      <span style={{fontSize:12,textAlign:'center',color:T.blue}}>{sChecks.length}</span>
-                      <span style={{fontSize:12,textAlign:'center',color:sLech>0?T.red:T.green,fontWeight:sLech>0?700:400}}>
-                        {sLech>0?sLech:'✓'}
-                      </span>
-                      <span style={{fontSize:10,padding:'2px 8px',borderRadius:20,
-                        background:s.status==='open'?T.greenBg:T.grayBg,
-                        color:s.status==='open'?T.green:T.gray}}>
-                        {s.status==='open'?'🟢 Đang mở':'⚫ Đã chốt'}
-                      </span>
-                      <span style={{fontSize:11,color:T.med}}>{creator?.name||'Admin'}</span>
-                      <div style={{display:'flex',gap:5,justifyContent:'flex-end'}}>
-                        {s.status==='open' && canManage && (
-                          <button onClick={() => closeSession(s.id)}
-                            style={{padding:'3px 10px',borderRadius:20,border:`1.5px solid ${T.amber}`,
-                              background:T.amberBg,cursor:'pointer',fontSize:10,fontFamily:'inherit',
-                              color:T.amber,fontWeight:700}}>Chốt phiên</button>
-                        )}
-                        {perm.viewAllDashboard && (
-                          <button onClick={async () => {
-                            if (!confirm('Xóa phiên này và toàn bộ dữ liệu KK?')) return
-                            await db.from('inventory_checks').delete().eq('session_id',s.id)
-                            await db.from('inventory_sessions').delete().eq('id',s.id)
-                            setInvSessions(prev => prev.filter((x: any) => x.id!==s.id))
-                            setChecks(prev => prev.filter((c: any) => c.session_id!==s.id))
-                          }}
-                            style={{padding:'3px 8px',borderRadius:20,border:`1px solid ${T.redBg}`,
-                              background:T.redBg,cursor:'pointer',fontSize:10,fontFamily:'inherit',color:T.red}}>✕</button>
-                        )}
+                    <div key={s.id} style={{borderBottom:i<invSessions.length-1?`1px solid ${T.border}`:'none',background:'transparent'}}>
+                      {/* ── Session row ── */}
+                      <div style={{display:'grid',
+                        gridTemplateColumns:'100px 1fr 70px 70px 80px 110px 120px',
+                        padding:'10px 12px',gap:8,alignItems:'center',cursor:'pointer',
+                        background:isExp?T.goldBg:i%2===0?'#fff':T.rowAlt}}
+                        onClick={() => setExpandedSession(isExp?null:s.id)}>
+                        <span style={{fontSize:12,fontWeight:700,color:T.dark}}>{s.date}</span>
+                        <span style={{fontSize:11,color:T.med}}>{s.note||'—'}</span>
+                        <span style={{fontSize:12,textAlign:'center',color:T.blue}}>{sChecks.length}</span>
+                        <span style={{fontSize:12,textAlign:'center',color:sLech>0?T.red:T.green,fontWeight:sLech>0?700:400}}>
+                          {sLech>0?sLech:'✓'}
+                        </span>
+                        <span style={{fontSize:10,padding:'2px 8px',borderRadius:20,
+                          background:s.status==='open'?T.greenBg:T.grayBg,
+                          color:s.status==='open'?T.green:T.gray}}>
+                          {s.status==='open'?'🟢 Đang mở':'⚫ Đã chốt'}
+                        </span>
+                        <span style={{fontSize:11,color:T.med}}>{creator?.name||'Admin'}</span>
+                        <div style={{display:'flex',gap:5,justifyContent:'flex-end',alignItems:'center'}}
+                          onClick={e => e.stopPropagation()}>
+                          {s.status==='open' && canManage && (
+                            <button onClick={() => closeSession(s.id)}
+                              style={{padding:'3px 10px',borderRadius:20,border:`1.5px solid ${T.amber}`,
+                                background:T.amberBg,cursor:'pointer',fontSize:10,fontFamily:'inherit',
+                                color:T.amber,fontWeight:700}}>Chốt</button>
+                          )}
+                          {perm.viewAllDashboard && (
+                            <button onClick={async () => {
+                              if (!confirm('Xóa phiên này và toàn bộ dữ liệu KK?')) return
+                              await db.from('inventory_checks').delete().eq('session_id',s.id)
+                              await db.from('inventory_sessions').delete().eq('id',s.id)
+                              setInvSessions(prev => prev.filter((x: any) => x.id!==s.id))
+                              setChecks(prev => prev.filter((c: any) => c.session_id!==s.id))
+                            }}
+                              style={{padding:'3px 8px',borderRadius:20,border:`1px solid ${T.redBg}`,
+                                background:T.redBg,cursor:'pointer',fontSize:10,fontFamily:'inherit',color:T.red}}>✕</button>
+                          )}
+                          <span style={{fontSize:10,color:T.light}}>{isExp?'▲':'▼'}</span>
+                        </div>
                       </div>
+
+                      {/* ── Expanded: NV + mã ── */}
+                      {isExp && (
+                        <div style={{background:T.bg,borderTop:`1px dashed ${T.border}`,padding:'10px 14px'}}>
+                          {nvIds.length===0 ? (
+                            <div style={{fontSize:12,color:T.light}}>Chưa phân chia mã cho nhân viên</div>
+                          ) : nvIds.map((nvId: any) => {
+                            const nv = allUsers.find((u: any) => u.id===nvId)
+                            const nvChecks = sChecks.filter((c: any) => c.assigned_to===nvId)
+                            const nvDone   = nvChecks.filter((c: any) => c.actual_qty!=null).length
+                            return (
+                              <NVCheckGroup key={nvId} nv={nv} nvChecks={nvChecks} nvDone={nvDone}/>
+                            )
+                          })}
+                                  <div style={{borderTop:`1px solid ${T.border}`}}>
+                                    <div style={{display:'grid',gridTemplateColumns:'1fr 65px 65px 65px',
+                                      padding:'5px 12px',background:T.bg,fontSize:9,fontWeight:700,
+                                      color:T.light,textTransform:'uppercase',letterSpacing:.5,gap:6}}>
+                                      <span>Sản phẩm</span>
+                                      <span style={{textAlign:'center'}}>Tồn HT</span>
+                                      <span style={{textAlign:'center'}}>Tồn TT</span>
+                                      <span style={{textAlign:'center'}}>Lệch</span>
+                                    </div>
+                                    {nvChecks.map((c: any, ci: number) => (
+                                      <div key={c.id} style={{display:'grid',
+                                        gridTemplateColumns:'1fr 65px 65px 65px',
+                                        padding:'6px 12px',gap:6,alignItems:'center',
+                                        borderTop:`1px solid ${T.border}`,
+                                        background:ci%2===0?'#fff':T.rowAlt}}>
+                                        <div>
+                                          <div style={{fontSize:11,color:T.dark,lineHeight:1.3}}>{c.product_name}</div>
+                                          <div style={{fontSize:9,color:T.light}}>{c.product_code}</div>
+                                        </div>
+                                        <span style={{textAlign:'center',fontSize:11,color:T.med}}>{c.system_qty??'—'}</span>
+                                        <span style={{textAlign:'center',fontSize:11,fontWeight:c.actual_qty!=null?700:400,
+                                          color:c.actual_qty!=null?T.dark:T.light}}>{c.actual_qty??'Chưa KK'}</span>
+                                        <span style={{textAlign:'center',fontSize:12,fontWeight:700,
+                                          color:c.diff==null?T.light:c.diff===0?T.green:c.diff>0?T.blue:T.red}}>
+                                          {c.diff==null?'—':c.diff===0?'✓':c.diff>0?'+'+c.diff:c.diff}
+                                        </span>
+                                      </div>
+                                    ))}
+                                  </div>
+                                )}
+                              </div>
+                            )
+                          })}
+                        </div>
+                      )}
                     </div>
                   )
               })
-            }
+            )}
           </div>
         </div>
       )}
@@ -7302,6 +7438,111 @@ function InventoryModule({ user, allUsers, products, invSessions, setInvSessions
               </>
             )
           })()}
+        </div>
+      )}
+
+      {/* ── TAB: MÃ KHÔNG KK ── */}
+      {tab==='excluded' && (
+        <div style={{display:'flex',flexDirection:'column',gap:12}}>
+          <Card>
+            <div style={{fontSize:13,fontWeight:700,color:T.dark,marginBottom:4}}>
+              🚫 Danh sách mã không kiểm kê
+            </div>
+            <div style={{fontSize:11,color:T.med,marginBottom:12}}>
+              Các mã trong danh sách này sẽ bị loại ra khi hệ thống gợi ý sản phẩm kiểm kê.
+              Thường là: tiền ship, túi, hộp giấy, phụ kiện...
+            </div>
+            {/* Add new excluded product */}
+            {(() => {
+              const [excSearch, setExcSearch] = React.useState('')
+              const norm3 = (s: string) => (s||'').toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g,'').replace(/đ/g,'d')
+              const excResults = excSearch.length>=2
+                ? products.filter((p: any) =>
+                    !excludedCodes.has(p.code) &&
+                    norm3(p.name+' '+p.code).includes(norm3(excSearch))
+                  ).slice(0,8)
+                : []
+              return (
+                <div style={{marginBottom:12,position:'relative'}}>
+                  <input value={excSearch} onChange={e => setExcSearch(e.target.value)}
+                    placeholder="🔍 Tìm mã SP để thêm vào danh sách không KK..."
+                    style={{width:'100%',padding:'8px 12px',border:`1px solid ${T.border}`,
+                      borderRadius:8,fontSize:12,fontFamily:'inherit',color:T.dark,
+                      background:'#fff',boxSizing:'border-box' as any,outline:'none'}}/>
+                  {excResults.length>0 && (
+                    <div style={{position:'absolute',top:'100%',left:0,right:0,zIndex:100,
+                      background:'#fff',border:`1px solid ${T.border}`,borderRadius:8,
+                      boxShadow:'0 4px 12px rgba(0,0,0,0.1)',maxHeight:240,overflowY:'auto'}}>
+                      {excResults.map((p: any) => (
+                        <div key={p.code} onClick={async () => {
+                          const row = {product_code:p.code, excluded_by:user.id,
+                            excluded_at:new Date().toISOString(), reason:'Không cần KK'}
+                          await db.from('kk_excluded_products').upsert(row)
+                          setExcludedCodes(prev => new Set([...prev, p.code]))
+                          setExcSearch('')
+                        }}
+                          style={{padding:'8px 12px',cursor:'pointer',borderBottom:`1px solid ${T.border}`,
+                            display:'flex',justifyContent:'space-between',alignItems:'center'}}
+                          onMouseEnter={e => (e.currentTarget as any).style.background=T.bg}
+                          onMouseLeave={e => (e.currentTarget as any).style.background='#fff'}>
+                          <div>
+                            <div style={{fontSize:12,color:T.dark}}>{p.name}</div>
+                            <div style={{fontSize:10,color:T.light}}>{p.code}</div>
+                          </div>
+                          <span style={{fontSize:11,color:T.green}}>+ Thêm</span>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              )
+            })()}
+          </Card>
+
+          {/* Excluded list */}
+          <div style={{background:T.card,borderRadius:12,border:`1px solid ${T.border}`,overflow:'hidden',boxShadow:'0 1px 4px rgba(0,0,0,0.06)'}}>
+            {!mobile && (
+              <div style={{display:'grid',gridTemplateColumns:'1fr 120px 120px 80px',
+                padding:'8px 14px',background:T.bg,borderBottom:`2px solid ${T.border}`,
+                fontSize:10,fontWeight:700,color:T.light,textTransform:'uppercase',letterSpacing:.5,gap:8}}>
+                <span>Sản phẩm</span>
+                <span>Mã SP</span>
+                <span>Người thêm</span>
+                <span style={{textAlign:'right'}}>Bỏ khỏi DS</span>
+              </div>
+            )}
+            {excludedCodes.size===0
+              ? <div style={{padding:'32px',textAlign:'center',color:T.light,fontSize:12}}>
+                  Chưa có mã nào trong danh sách không KK
+                </div>
+              : [...excludedCodes].map((code: string, i: number) => {
+                  const prod = products.find((p: any) => p.code===code)
+                  return (
+                    <div key={code} style={{display:'grid',
+                      gridTemplateColumns:'1fr 120px 120px 80px',
+                      padding:'9px 14px',gap:8,alignItems:'center',
+                      borderBottom:i<excludedCodes.size-1?`1px solid ${T.border}`:'none',
+                      background:i%2===0?'#fff':T.rowAlt}}>
+                      <div>
+                        <div style={{fontSize:12,color:T.dark}}>{prod?.name||code}</div>
+                      </div>
+                      <span style={{fontSize:11,color:T.light}}>{code}</span>
+                      <span style={{fontSize:11,color:T.light}}>—</span>
+                      <div style={{textAlign:'right'}}>
+                        <button onClick={async () => {
+                          await db.from('kk_excluded_products').delete().eq('product_code',code)
+                          setExcludedCodes(prev => { const n=new Set(prev); n.delete(code); return n })
+                        }}
+                          style={{padding:'3px 10px',borderRadius:20,border:`1px solid ${T.redBg}`,
+                            background:T.redBg,cursor:'pointer',fontSize:10,fontFamily:'inherit',color:T.red}}>
+                          Bỏ
+                        </button>
+                      </div>
+                    </div>
+                  )
+                })
+            }
+          </div>
         </div>
       )}
 
@@ -8018,6 +8259,66 @@ function SessionCreateWizard({ products, checks, allUsers, user, excludedCodes, 
           </div>
         </div>
       </div>
+    </div>
+  )
+}
+
+// ── NVCheckGroup subcomponent (avoid useState in map) ─────
+function NVCheckGroup({ nv, nvChecks, nvDone }: any) {
+  const [expNV, setExpNV] = useState(false)
+  return (
+    <div style={{marginBottom:8,borderRadius:8,border:`1px solid ${T.border}`,overflow:'hidden'}}>
+      <div onClick={() => setExpNV(v=>!v)}
+        style={{display:'flex',alignItems:'center',gap:10,padding:'8px 12px',
+          background:'#fff',cursor:'pointer'}}>
+        <div style={{width:28,height:28,borderRadius:'50%',background:T.gold,
+          display:'flex',alignItems:'center',justifyContent:'center',
+          color:'#fff',fontSize:10,fontWeight:700,flexShrink:0}}>
+          {nv?.ini||'?'}
+        </div>
+        <span style={{flex:1,fontSize:12,fontWeight:600,color:T.dark}}>{nv?.name||'NV không xác định'}</span>
+        <span style={{fontSize:11,color:T.blue}}>{nvDone}/{nvChecks.length} mã</span>
+        <div style={{height:6,width:80,background:T.border,borderRadius:3}}>
+          <div style={{height:'100%',borderRadius:3,
+            background:nvDone===nvChecks.length?T.green:T.amber,
+            width:`${nvChecks.length>0?nvDone*100/nvChecks.length:0}%`}}/>
+        </div>
+        <span style={{fontSize:10,color:T.light}}>{expNV?'▲':'▼'}</span>
+      </div>
+      {expNV && (
+        <div style={{borderTop:`1px solid ${T.border}`}}>
+          <div style={{display:'grid',gridTemplateColumns:'1fr 65px 65px 65px',
+            padding:'5px 12px',background:T.bg,fontSize:9,fontWeight:700,
+            color:T.light,textTransform:'uppercase',letterSpacing:.5,gap:6}}>
+            <span>Sản phẩm</span>
+            <span style={{textAlign:'center'}}>Tồn HT</span>
+            <span style={{textAlign:'center'}}>Tồn TT</span>
+            <span style={{textAlign:'center'}}>Lệch</span>
+          </div>
+          {nvChecks.map((c: any, ci: number) => (
+            <div key={c.id} style={{display:'grid',
+              gridTemplateColumns:'1fr 65px 65px 65px',
+              padding:'6px 12px',gap:6,alignItems:'center',
+              borderTop:`1px solid ${T.border}`,
+              background:ci%2===0?'#fff':T.rowAlt}}>
+              <div>
+                <div style={{fontSize:11,color:T.dark,lineHeight:1.3}}>{c.product_name}</div>
+                <div style={{fontSize:9,color:T.light}}>{c.product_code}</div>
+              </div>
+              <span style={{textAlign:'center',fontSize:11,color:T.med}}>{c.system_qty??'—'}</span>
+              <span style={{textAlign:'center',fontSize:11,
+                fontWeight:c.actual_qty!=null?700:400,
+                color:c.actual_qty!=null?T.dark:T.light}}>
+                {c.actual_qty??'Chưa KK'}
+              </span>
+              <span style={{textAlign:'center',fontSize:12,fontWeight:700,
+                color:c.diff==null?T.light:c.diff===0?T.green:c.diff>0?T.blue:T.red}}>
+                {c.diff==null?'—':c.diff===0?'✓':c.diff>0?'+'+c.diff:c.diff}
+              </span>
+            </div>
+          ))}
+        </div>
+      )}
     </div>
   )
 }
