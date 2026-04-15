@@ -83,6 +83,7 @@ const getPerm = (user: any) => {
     enterKiot:          isAdmin || (pos.perm_enter_kiot ?? false),
     manageInventory:    isAdmin || (pos.perm_approve_leave ?? false) || (pos.perm_manage_inventory ?? false),
     resolveWrongOrder:  isAdmin || (pos.perm_approve_leave ?? false) || (pos.perm_resolve_wrong_order ?? false),
+    manageExpiry:       isAdmin || (pos.perm_manage_inventory ?? false) || (pos.perm_manage_expiry ?? false),
   }
 }
 
@@ -118,6 +119,7 @@ const ALL_PERMS = [
   { key:'perm_enter_kiot',           label:'Tích đã nhập KiotViet (hàng hoàn)', group:'Kho'      },
   { key:'perm_resolve_wrong_order',  label:'Xác nhận đã xử lý đơn sai',        group:'Kho'      },
   { key:'perm_manage_inventory',     label:'Xử lý kiểm kê (QM Kho)',            group:'Kho'      },
+  { key:'perm_manage_expiry',        label:'Quản lý date sản phẩm (QM Kho)',    group:'Kho'      },
 ]
 // ── UTILITIES ────────────────────────────────────
 const fmtNow   = () => new Date().toLocaleString('vi-VN',{hour:'2-digit',minute:'2-digit',day:'2-digit',month:'2-digit',year:'numeric'})
@@ -524,7 +526,9 @@ const NAV_GROUPS = (perm: any, deptId = '') => {
         { id:'shortage', icon:'📦', label:'Hàng thiếu'  },
         { id:'returns',  icon:'🔄', label:'Hàng hoàn'   },
         { id:'wrongord', icon:'⚠️', label:'Đơn sai'     },
+        { id:'expiry',   icon:'📅', label:'Date SP'      },
       ].filter(p => p.id!=='shortage' || deptId==='sale' || perm.viewAllDashboard)
+       .filter(p => p.id!=='expiry'   || deptId==='sale' || deptId==='kho' || perm.viewAllDashboard)
     },
     {
       id:'manage', icon:'⚙️', label:'Quản lý',
@@ -5320,12 +5324,13 @@ function Settings({ user, setUser, settings, setSettings, onManualReset, mobile 
 
 // ── MAIN APP ──────────────────────────────────────
 // ── NOTIFICATION BANNER ─────────────────────────────
-function NotifBanner({ user, wrongOrders, returnSlips, shortageItems, setPage }: any) {
+function NotifBanner({ user, wrongOrders, returnSlips, shortageItems, batches, setPage }: any) {
   const [dismissed, setDismissed] = useState(false)
-  const perm      = getPerm(user)
-  const isSale    = user.dept_id === 'sale'
-  const isAdmin   = perm.viewAllDashboard
-  const isMgrSale = isSale && perm.approveLeave  // Quản lý Sale
+  const perm       = getPerm(user)
+  const isSale     = user.dept_id === 'sale'
+  const isAdmin    = perm.viewAllDashboard
+  const isMgrSale  = isSale && perm.approveLeave
+  const canManageExp = perm.manageExpiry || perm.manageInventory || isAdmin
 
   // NV Sale: đơn sai pending của họ
   const pendingWO  = (isSale && !isAdmin) ? wrongOrders.filter((r: any) =>
@@ -5333,18 +5338,39 @@ function NotifBanner({ user, wrongOrders, returnSlips, shortageItems, setPage }:
   ) : []
   // NV Sale: phiếu hoàn chưa điền
   const pendingRet = (isSale && !isAdmin) ? (returnSlips||[]).filter((r: any) => !r.sale_id) : []
-  // QM Sale: hàng thiếu mới chờ xử lý (pending + chưa có phản hồi QM)
+  // QM Sale: hàng thiếu mới chờ xử lý
   const pendingShortage = isMgrSale ? (shortageItems||[]).filter((r: any) =>
     r.status==='pending' && !r.manager_note
   ) : []
 
+  // Sale (tất cả): lô <6 tháng còn tồn
+  const today = new Date()
+  const allBatches = batches || []
+  const expiryAlertSale = isSale ? allBatches.filter((b: any) => {
+    if (!b.expiry_date || (b.qty_remaining||0) <= 0) return false
+    const exp = new Date(b.expiry_date)
+    const ml  = (exp.getFullYear() - today.getFullYear()) * 12 + (exp.getMonth() - today.getMonth())
+    return ml < 6
+  }) : []
+
+  // QM Kho: lô chưa update quá 7 ngày còn tồn
+  const staleThreshold = new Date(Date.now() - 7 * 86400000).toISOString()
+  const staleBatches = canManageExp ? allBatches.filter((b: any) => {
+    if ((b.qty_remaining||0) <= 0) return false
+    const lastUpd = b.last_updated_at || b.created_at || ''
+    return lastUpd < staleThreshold
+  }) : []
+
   const totalPending = pendingWO.length + pendingRet.length + pendingShortage.length
+    + expiryAlertSale.length + staleBatches.length
   if (dismissed || totalPending === 0) return null
 
-  const hasWO = pendingWO.length > 0
-  const hasRet = pendingRet.length > 0
-  const hasSh  = pendingShortage.length > 0
-  const accent = hasWO ? T.red : hasRet ? T.amber : T.blue
+  const hasWO    = pendingWO.length > 0
+  const hasRet   = pendingRet.length > 0
+  const hasSh    = pendingShortage.length > 0
+  const hasExp   = expiryAlertSale.length > 0
+  const hasStale = staleBatches.length > 0
+  const accent   = hasWO ? T.red : hasRet ? T.amber : hasExp ? T.red : T.blue
 
   return (
     <div style={{ position:'fixed', top:16, left:'50%', transform:'translateX(-50%)',
@@ -5352,13 +5378,13 @@ function NotifBanner({ user, wrongOrders, returnSlips, shortageItems, setPage }:
       borderRadius:14, boxShadow:`0 8px 32px rgba(0,0,0,0.14)`,
       padding:'14px 18px', maxWidth:440, width:'calc(100vw - 32px)' }}>
       <div style={{ display:'flex', alignItems:'flex-start', gap:12 }}>
-        <span style={{ fontSize:22, flexShrink:0 }}>{hasWO?'⚠️':'🔄'}</span>
+        <span style={{ fontSize:22, flexShrink:0 }}>{hasWO?'⚠️':hasExp?'📅':'🔄'}</span>
         <div style={{ flex:1 }}>
           <div style={{ fontSize:13, fontWeight:700, color:accent, marginBottom:8 }}>
             {totalPending} việc cần xử lý
           </div>
           {hasWO && (
-            <div style={{ marginBottom:hasRet?10:0 }}>
+            <div style={{ marginBottom:6 }}>
               <div style={{ fontSize:11, fontWeight:700, color:T.red, marginBottom:4 }}>
                 ⚠️ {pendingWO.length} đơn sai chờ bạn điền
               </div>
@@ -5369,7 +5395,7 @@ function NotifBanner({ user, wrongOrders, returnSlips, shortageItems, setPage }:
             </div>
           )}
           {hasRet && (
-            <div style={{ paddingTop:hasWO?8:0, borderTop:hasWO?`1px solid ${T.border}`:'' }}>
+            <div style={{ paddingTop:hasWO?8:0, borderTop:hasWO?`1px solid ${T.border}`:'', marginBottom:6 }}>
               <div style={{ fontSize:11, fontWeight:700, color:T.amber, marginBottom:3 }}>
                 🔄 {pendingRet.length} phiếu hoàn chờ điền thông tin
               </div>
@@ -5378,8 +5404,8 @@ function NotifBanner({ user, wrongOrders, returnSlips, shortageItems, setPage }:
               </div>
             </div>
           )}
-          {pendingShortage.length > 0 && (
-            <div style={{ paddingTop:(hasWO||hasRet)?8:0, borderTop:(hasWO||hasRet)?`1px solid ${T.border}`:'' }}>
+          {hasSh && (
+            <div style={{ paddingTop:(hasWO||hasRet)?8:0, borderTop:(hasWO||hasRet)?`1px solid ${T.border}`:'', marginBottom:6 }}>
               <div style={{ fontSize:11, fontWeight:700, color:T.blue, marginBottom:3 }}>
                 📦 {pendingShortage.length} mã thiếu hàng chưa được xử lý
               </div>
@@ -5387,6 +5413,31 @@ function NotifBanner({ user, wrongOrders, returnSlips, shortageItems, setPage }:
                 <div key={r.id} style={{ fontSize:11, color:T.med }}>• {r.product_name}</div>
               ))}
               {pendingShortage.length>2 && <div style={{ fontSize:11, color:T.light }}>...+{pendingShortage.length-2} mã nữa</div>}
+            </div>
+          )}
+          {hasExp && (
+            <div style={{ paddingTop:(hasWO||hasRet||hasSh)?8:0,
+              borderTop:(hasWO||hasRet||hasSh)?`1px solid ${T.border}`:'', marginBottom:6 }}>
+              <div style={{ fontSize:11, fontWeight:700, color:T.red, marginBottom:3 }}>
+                📅 {expiryAlertSale.length} lô hàng dưới 6 tháng cần đẩy
+              </div>
+              {expiryAlertSale.slice(0,2).map((b: any) => (
+                <div key={b.id} style={{ fontSize:11, color:T.med }}>
+                  • {b.product_name} (tồn: {b.qty_remaining})
+                </div>
+              ))}
+              {expiryAlertSale.length>2 && <div style={{ fontSize:11, color:T.light }}>...+{expiryAlertSale.length-2} lô nữa</div>}
+            </div>
+          )}
+          {hasStale && (
+            <div style={{ paddingTop:(hasWO||hasRet||hasSh||hasExp)?8:0,
+              borderTop:(hasWO||hasRet||hasSh||hasExp)?`1px solid ${T.border}`:'', marginBottom:6 }}>
+              <div style={{ fontSize:11, fontWeight:700, color:T.amber, marginBottom:3 }}>
+                ⏰ {staleBatches.length} lô chưa cập nhật tồn quá 7 ngày
+              </div>
+              <div style={{ fontSize:11, color:T.light, fontStyle:'italic' }}>
+                Vào Báo cáo → Date SP để cập nhật
+              </div>
             </div>
           )}
           <div style={{ display:'flex', gap:8, marginTop:12, flexWrap:'wrap' }}>
@@ -5404,11 +5455,18 @@ function NotifBanner({ user, wrongOrders, returnSlips, shortageItems, setPage }:
                 Xem phiếu hoàn →
               </button>
             )}
-            {pendingShortage.length > 0 && (
+            {hasSh && (
               <button onClick={() => { setPage('shortage'); setDismissed(true) }}
                 style={{ padding:'5px 13px', borderRadius:20, border:'none', background:T.blue,
                   color:'#fff', cursor:'pointer', fontFamily:'inherit', fontSize:11, fontWeight:700 }}>
                 Xem hàng thiếu →
+              </button>
+            )}
+            {(hasExp || hasStale) && (
+              <button onClick={() => { setPage('expiry'); setDismissed(true) }}
+                style={{ padding:'5px 13px', borderRadius:20, border:'none', background:T.red,
+                  color:'#fff', cursor:'pointer', fontFamily:'inherit', fontSize:11, fontWeight:700 }}>
+                Xem Date SP →
               </button>
             )}
             <button onClick={() => setDismissed(true)}
@@ -5462,6 +5520,7 @@ export default function App() {
   const [returnSlips, setReturnSlips] = useState<any[]>([])
   const [shortageNoti, setShortageNoti] = useState<any[]>([])
   const [invSessions, setInvSessions] = useState<any[]>([])
+  const [batches, setBatches]         = useState<any[]>([])
   const [loading, setLoading]       = useState(false)
   const width   = useWindowWidth()
   const mobile  = width < 768
@@ -5618,6 +5677,8 @@ export default function App() {
         .then(({data}) => { if (data) setWrongOrders(data) })
       db.from('shortage_items').select('id,product_name,status,manager_note').eq('status','pending')
         .then(({data}) => { if (data) setShortageNoti(data) })
+      db.from('product_batches').select('*').order('expiry_date', { ascending:true })
+        .then(({data}) => { if (data) setBatches(data) })
       // Fetch return slips for notifications (last 30 days)
       const thirtyAgo = new Date(Date.now()-30*86400000).toISOString().split('T')[0]
       db.from('return_items').select('id,slip_id,sale_id,created_at,created_by,date')
@@ -5730,13 +5791,14 @@ export default function App() {
           {validPage==='inventory'  && <InventoryModule {...pp} products={products} invSessions={invSessions} setInvSessions={setInvSessions}/>}
           {validPage==='returns'    && <ReturnItems {...pp} products={products}/>}
           {validPage==='wrongord'   && <WrongOrders {...pp} wrongOrders={wrongOrders} setWrongOrders={setWrongOrders} allUsers={allUsers}/>}
+          {validPage==='expiry'     && <ExpiryModule {...pp} products={products} batches={batches} setBatches={setBatches}/>}
           {validPage==='settings'   && <Settings {...pp} setUser={setUser} settings={settings} setSettings={setSettings} onManualReset={manualReset}/>}
         </main>
         {mobile && <BottomNav user={user} page={validPage} setPage={setPage} pendingLeave={pendingLeave} pendingOT={pendingOT} onLogout={() => { localStorage.removeItem('la_user'); setUser(null); setAllUsers([]); setChecklist([]) }}/>}
         {/* Sticky Note — floating for all users */}
         {user && <StickyNote user={user}/>}
         {/* Notification Banner — wrong orders pending */}
-        {user && <NotifBanner user={user} wrongOrders={wrongOrders} returnSlips={returnSlips} shortageItems={shortageNoti} setPage={setPage}/>}
+        {user && <NotifBanner user={user} wrongOrders={wrongOrders} returnSlips={returnSlips} shortageItems={shortageNoti} batches={batches} setPage={setPage}/>}
         {user && <SaturdayBanner user={user}/>}
       </div>
      )
@@ -7832,6 +7894,7 @@ function SessionCreateWizard({ products, checks, allUsers, user, excludedCodes, 
   const [searchQ, setSearchQ] = useState('')
   const [selectedNVs, setSelectedNVs] = useState<string[]>([])
   const [page, setPage] = useState(0)
+  const [kkImportErrors, setKkImportErrors] = useState<string[]>([])
   const PAGE_SIZE = 80
 
   const khoUsers = allUsers.filter((u: any) => u.dept_id==='kho')
@@ -7860,20 +7923,49 @@ function SessionCreateWizard({ products, checks, allUsers, user, excludedCodes, 
     setSelected(new Set(total150.map((p: any) => p.code).slice(0,150)))
   }, [step])
 
-  // Import Excel for product selection
+  // Import Excel for product selection — validate Mã SP vs products
   const importExcelCodes = async (file: File) => {
     const xlsx = await import('https://cdn.jsdelivr.net/npm/xlsx@0.18.5/+esm' as any)
     const buf  = await file.arrayBuffer()
     const wb   = xlsx.read(buf, {type:'array'})
     const ws   = wb.Sheets[wb.SheetNames[0]]
     const rows: any[] = xlsx.utils.sheet_to_json(ws, {header:1, defval:''})
-    const codes = new Set<string>()
-    rows.forEach((r: any[]) => r.forEach((cell: any) => {
-      const s = String(cell).trim()
-      if (s.match(/^[A-Za-z]{2,4}\d{4,}/i) || s.match(/^VT\d+/i) || s.match(/^SP\d+/i))
-        codes.add(s.toUpperCase())
-    }))
-    setSelected(prev => new Set([...prev, ...codes]))
+    const dataRows = rows.slice(1).filter((r: any[]) => r[0] || r[1])
+    const errors: string[] = []
+    const validCodes = new Set<string>()
+    dataRows.forEach((r: any[], i: number) => {
+      const codeRaw = String(r[0]||'').trim()
+      const nameRaw = String(r[1]||'').trim()
+      const lineNum = i + 2
+      if (!codeRaw && !nameRaw) return
+      const prod = products.find((p: any) =>
+        (codeRaw && p.code.toUpperCase() === codeRaw.toUpperCase()) ||
+        (nameRaw && p.name.toLowerCase() === nameRaw.toLowerCase())
+      )
+      if (!prod) {
+        errors.push(`Dòng ${lineNum}: Mã "${codeRaw||'?'}" / Tên "${nameRaw||'?'}" không tồn tại. Vui lòng nhập đúng Mã SP hoặc Tên SP theo KiotViet.`)
+        return
+      }
+      validCodes.add(prod.code)
+    })
+    setKkImportErrors(errors)
+    if (errors.length === 0) setSelected(prev => new Set([...prev, ...validCodes]))
+  }
+
+  // Download file mẫu KK (Mã SP + Tên SP)
+  const downloadKKTemplate = async () => {
+    const xlsx = await import('https://cdn.jsdelivr.net/npm/xlsx@0.18.5/+esm' as any)
+    const rows: any[][] = [['Mã SP *', 'Tên SP']]
+    if (selected.size > 0) {
+      products.filter((p: any) => selected.has(p.code)).forEach((p: any) => rows.push([p.code, p.name]))
+    } else {
+      rows.push(['(Nhập Mã SP hoặc Tên SP theo đúng KiotViet)', ''])
+    }
+    const ws = xlsx.utils.aoa_to_sheet(rows)
+    ws['!cols'] = [{wch:20},{wch:50}]
+    const wb = xlsx.utils.book_new()
+    xlsx.utils.book_append_sheet(wb, ws, 'Danh Sach KK')
+    xlsx.writeFile(wb, 'mau_danh_sach_KK.xlsx')
   }
 
   // Filtered + sorted product list
@@ -8002,10 +8094,15 @@ function SessionCreateWizard({ products, checks, allUsers, user, excludedCodes, 
                 ))}
                 <label style={{padding:'5px 12px',borderRadius:20,border:`1px solid ${T.border}`,
                   cursor:'pointer',fontSize:11,color:T.med,background:T.bg,whiteSpace:'nowrap'}}>
-                  📥 Import Excel
+                  📥 Import danh sách KK
                   <input type="file" accept=".xlsx,.xls" style={{display:'none'}}
                     onChange={e => e.target.files?.[0] && importExcelCodes(e.target.files[0])}/>
                 </label>
+                <button onClick={downloadKKTemplate}
+                  style={{padding:'5px 12px',borderRadius:20,border:`1px solid ${T.border}`,
+                    cursor:'pointer',fontFamily:'inherit',fontSize:11,color:T.med,background:T.bg,whiteSpace:'nowrap'}}>
+                  📄 Tải file mẫu KK
+                </button>
               </div>
 
               {/* Quick actions */}
@@ -8024,6 +8121,29 @@ function SessionCreateWizard({ products, checks, allUsers, user, excludedCodes, 
                   Hiện {filteredProds.length} SP · Trang {page+1}/{totalPages}
                 </span>
               </div>
+
+              {/* KK Import error panel */}
+              {kkImportErrors.length > 0 && (
+                <div style={{padding:'10px 14px',background:T.redBg,border:`1px solid ${T.red}`,borderRadius:10,fontSize:11}}>
+                  <div style={{fontWeight:700,color:T.red,marginBottom:6}}>
+                    ❌ {kkImportErrors.length} mã không tìm thấy — cần sửa lại file Excel:
+                  </div>
+                  {kkImportErrors.slice(0,5).map((e,i) => (
+                    <div key={i} style={{color:T.red,marginBottom:3}}>• {e}</div>
+                  ))}
+                  {kkImportErrors.length > 5 && (
+                    <div style={{color:T.light}}>...+{kkImportErrors.length-5} lỗi nữa</div>
+                  )}
+                  <div style={{marginTop:8,fontStyle:'italic',color:T.med}}>
+                    💡 Tải file mẫu KK để xem đúng định dạng Mã SP / Tên SP
+                  </div>
+                  <button onClick={() => setKkImportErrors([])}
+                    style={{marginTop:8,padding:'3px 12px',borderRadius:20,border:`1px solid ${T.red}`,
+                      background:'transparent',color:T.red,cursor:'pointer',fontFamily:'inherit',fontSize:11}}>
+                    Đóng
+                  </button>
+                </div>
+              )}
 
               {/* Table */}
               <div style={{border:`1px solid ${T.border}`,borderRadius:10,overflow:'hidden'}}>
@@ -8440,6 +8560,713 @@ function ExcludedTab({ products, excludedCodes, user, mobile, onAdd, onRemove }:
           </div>
         )}
       </div>
+    </div>
+  )
+}
+
+// ══ BATCH FORM ════════════════════════════════════════════════
+function BatchForm({ edit, products, onSave, onClose, saving, mobile }: any) {
+  const [form, setForm] = useState<any>(() => {
+    if (edit) {
+      const parts = (edit.expiry_date || '').split('-')
+      const mm   = parts[1] || '01'
+      const yyyy = parts[0] || new Date().getFullYear().toString()
+      return {
+        product_code:  edit.product_code  || '',
+        product_name:  edit.product_name  || '',
+        unit:          edit.unit          || '',
+        expiry_mmyyyy: `${mm}/${yyyy}`,
+        qty_remaining: String(edit.qty_remaining ?? 0),
+        note:          edit.note          || '',
+      }
+    }
+    return { product_code:'', product_name:'', unit:'', expiry_mmyyyy:'', qty_remaining:'0', note:'' }
+  })
+  const [searchProd, setSearchProd] = useState('')
+
+  const filteredProds = products.filter((p: any) => {
+    if (!searchProd) return true
+    return (p.code + ' ' + p.name).toLowerCase().includes(searchProd.toLowerCase())
+  }).slice(0, 20)
+
+  const selectProd = (p: any) => {
+    setForm((f: any) => ({ ...f, product_code: p.code, product_name: p.name, unit: p.unit || '' }))
+    setSearchProd('')
+  }
+
+  const validExpiry = /^\d{1,2}\/\d{4}$/.test(form.expiry_mmyyyy)
+  const isValid = form.product_code && validExpiry && Number(form.qty_remaining) >= 0
+
+  return (
+    <div style={{ position:'fixed', inset:0, background:'rgba(0,0,0,0.55)', zIndex:3000,
+      display:'flex', alignItems:'center', justifyContent:'center', padding:16 }}>
+      <div style={{ background:'#fff', borderRadius:16, width:'100%', maxWidth:480,
+        maxHeight:'90vh', overflowY:'auto', padding:'20px 24px', boxSizing:'border-box' as any }}>
+        <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:18 }}>
+          <div style={{ fontSize:15, fontWeight:700, color:T.dark }}>
+            {edit ? '✏️ Sửa lô hàng' : '➕ Thêm lô hàng mới'}
+          </div>
+          <button onClick={onClose}
+            style={{ background:'none', border:'none', fontSize:20, cursor:'pointer', color:T.light }}>✕</button>
+        </div>
+
+        {/* Product picker */}
+        <div style={{ marginBottom:14 }}>
+          <label style={{ fontSize:11, fontWeight:600, color:T.med, textTransform:'uppercase',
+            letterSpacing:.5, display:'block', marginBottom:6 }}>Sản phẩm *</label>
+          {form.product_code ? (
+            <div style={{ display:'flex', alignItems:'center', gap:8, padding:'10px 14px',
+              background:T.goldBg, borderRadius:10, border:`1px solid ${T.goldBorder}` }}>
+              <div style={{ flex:1 }}>
+                <div style={{ fontSize:13, fontWeight:700, color:T.dark }}>{form.product_name}</div>
+                <div style={{ fontSize:10, color:T.goldText }}>{form.product_code} · {form.unit}</div>
+              </div>
+              {!edit && (
+                <button onClick={() => setForm((f: any) => ({ ...f, product_code:'', product_name:'', unit:'' }))}
+                  style={{ background:'none', border:'none', cursor:'pointer', color:T.light, fontSize:18 }}>✕</button>
+              )}
+            </div>
+          ) : (
+            <div>
+              <input value={searchProd} onChange={e => setSearchProd(e.target.value)}
+                placeholder="Gõ mã hoặc tên SP để tìm..."
+                style={{ width:'100%', padding:'9px 12px', border:`1px solid ${T.border}`,
+                  borderRadius:10, fontSize:12, fontFamily:'inherit', outline:'none',
+                  color:T.dark, boxSizing:'border-box' as any }}/>
+              {searchProd && (
+                <div style={{ border:`1px solid ${T.border}`, borderRadius:10, marginTop:4,
+                  maxHeight:200, overflowY:'auto', background:'#fff',
+                  boxShadow:'0 4px 12px rgba(0,0,0,0.08)' }}>
+                  {filteredProds.map((p: any) => (
+                    <div key={p.code} onClick={() => selectProd(p)}
+                      style={{ padding:'9px 12px', cursor:'pointer',
+                        borderBottom:`1px solid ${T.border}`,
+                        display:'flex', justifyContent:'space-between', alignItems:'center' }}
+                      onMouseEnter={e => { (e.currentTarget as HTMLElement).style.background = T.bg }}
+                      onMouseLeave={e => { (e.currentTarget as HTMLElement).style.background = '#fff' }}>
+                      <span style={{ fontSize:12, color:T.dark }}>{p.name}</span>
+                      <span style={{ fontSize:10, color:T.light, flexShrink:0 }}>{p.code}</span>
+                    </div>
+                  ))}
+                  {filteredProds.length === 0 && (
+                    <div style={{ padding:'12px', fontSize:12, color:T.light, textAlign:'center' }}>
+                      Không tìm thấy SP
+                    </div>
+                  )}
+                </div>
+              )}
+            </div>
+          )}
+        </div>
+
+        <Inp label="Ngày HSD * — định dạng MM/YYYY (VD: 06/2026)"
+          value={form.expiry_mmyyyy}
+          onChange={(v: string) => setForm((f: any) => ({ ...f, expiry_mmyyyy: v }))}
+          placeholder="06/2026"/>
+        {form.expiry_mmyyyy && !validExpiry && (
+          <div style={{ fontSize:11, color:T.red, marginTop:-10, marginBottom:10 }}>
+            ⚠️ Định dạng sai — nhập MM/YYYY, VD: 06/2026
+          </div>
+        )}
+
+        <Inp label="SL tồn thực tế"
+          type="number"
+          value={form.qty_remaining}
+          onChange={(v: string) => setForm((f: any) => ({ ...f, qty_remaining: v }))}/>
+
+        <Inp label="Ghi chú (tùy chọn)"
+          value={form.note}
+          onChange={(v: string) => setForm((f: any) => ({ ...f, note: v }))}
+          placeholder="VD: Lô tháng 1, nhập từ NCC A"/>
+
+        <div style={{ display:'flex', gap:10, marginTop:20 }}>
+          <GoldBtn onClick={() => isValid && onSave(form)} disabled={!isValid || saving}>
+            {saving ? 'Đang lưu...' : edit ? 'Cập nhật lô' : 'Thêm lô'}
+          </GoldBtn>
+          <button onClick={onClose}
+            style={{ padding:'9px 20px', borderRadius:20, border:`1px solid ${T.border}`,
+              background:'transparent', color:T.med, cursor:'pointer', fontFamily:'inherit', fontSize:13 }}>
+            Hủy
+          </button>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+// ══ EXPIRY MODULE ════════════════════════════════════════════
+function ExpiryModule({ user, mobile, products, batches, setBatches }: any) {
+  const perm      = getPerm(user)
+  const canManage = perm.manageExpiry || perm.manageInventory || perm.viewAllDashboard
+
+  const [tab, setTab]               = useState<'overview'|'list'|'alert'>('overview')
+  const [showAdd, setShowAdd]       = useState(false)
+  const [editBatch, setEditBatch]   = useState<any>(null)
+  const [searchQ, setSearchQ]       = useState('')
+  const [filterStatus, setFilterStatus] = useState<string>('all')
+  const [importErrors, setImportErrors]   = useState<string[]>([])
+  const [importPreview, setImportPreview] = useState<any[]|null>(null)
+  const [saving, setSaving]         = useState(false)
+
+  const today = new Date()
+  const pad   = mobile ? '16px' : '24px'
+
+  const calcMonthsLeft = (expiry_date: string) => {
+    if (!expiry_date) return 0
+    const exp = new Date(expiry_date)
+    return (exp.getFullYear() - today.getFullYear()) * 12 + (exp.getMonth() - today.getMonth())
+  }
+
+  const getStatus = (ml: number) => {
+    if (ml <  6) return { label:'🔴 Dưới 6 tháng',  color:T.red,    bg:T.redBg,   key:'red'    }
+    if (ml < 12) return { label:'🟠 Dưới 12 tháng', color:'#C2410C', bg:'#FFEDD5', key:'orange' }
+    if (ml < 18) return { label:'🟡 Dưới 18 tháng', color:'#854D0E', bg:'#FEF9C3', key:'yellow' }
+    return             { label:'🟢 Còn hàng',        color:T.green,  bg:T.greenBg, key:'green'  }
+  }
+
+  const fmtExpiry = (expiry_date: string) => {
+    if (!expiry_date) return '—'
+    const p = expiry_date.split('-')
+    return `${p[1]}/${p[0]}`
+  }
+
+  const enriched = (batches || []).map((b: any) => {
+    const ml   = calcMonthsLeft(b.expiry_date)
+    const st   = getStatus(ml)
+    const prod = products.find((pp: any) => pp.code === b.product_code)
+    return { ...b, monthsLeft: ml, status: st, prod }
+  })
+
+  const batchTotalByCode: Record<string, number> = {}
+  enriched.forEach((b: any) => {
+    batchTotalByCode[b.product_code] = (batchTotalByCode[b.product_code] || 0) + (b.qty_remaining || 0)
+  })
+
+  const withQty     = enriched.filter((b: any) => (b.qty_remaining || 0) > 0)
+  const countRed    = withQty.filter((b: any) => b.monthsLeft <  6).length
+  const countOrange = withQty.filter((b: any) => b.monthsLeft >=  6 && b.monthsLeft < 12).length
+  const countYellow = withQty.filter((b: any) => b.monthsLeft >= 12 && b.monthsLeft < 18).length
+  const countGreen  = withQty.filter((b: any) => b.monthsLeft >= 18).length
+
+  const filtered = enriched.filter((b: any) => {
+    if (filterStatus !== 'all' && b.status.key !== filterStatus) return false
+    if (searchQ) return (b.product_code + ' ' + b.product_name).toLowerCase().includes(searchQ.toLowerCase())
+    return true
+  }).sort((a: any, b: any) => a.monthsLeft - b.monthsLeft)
+
+  const alertList = enriched
+    .filter((b: any) => b.monthsLeft < 12 && (b.qty_remaining || 0) > 0)
+    .sort((a: any, b: any) => a.monthsLeft - b.monthsLeft)
+
+  const tabs = [
+    { id:'overview', icon:'📊', label:'Tổng quan' },
+    { id:'list',     icon:'📦', label:'Danh sách lô' },
+    { id:'alert',    icon:'🚨', label:`Cảnh báo (${alertList.length})` },
+  ]
+
+  // ── CRUD ──
+  const saveBatch = async (form: any) => {
+    setSaving(true)
+    const now = new Date().toISOString()
+    const [mm, yyyy] = form.expiry_mmyyyy.split('/')
+    const expiry_date = `${yyyy}-${mm.padStart(2,'0')}-01`
+    if (editBatch) {
+      const upd = {
+        product_code: form.product_code, product_name: form.product_name,
+        unit: form.unit, expiry_date, qty_remaining: Number(form.qty_remaining),
+        note: form.note, last_updated_at: now, last_updated_by: user.id
+      }
+      await db.from('product_batches').update(upd).eq('id', editBatch.id)
+      setBatches((prev: any[]) => prev.map((b: any) => b.id === editBatch.id ? { ...b, ...upd } : b))
+    } else {
+      const newB = {
+        id: 'bat_' + Date.now() + '_' + Math.random().toString(36).slice(2,7),
+        product_code: form.product_code, product_name: form.product_name,
+        unit: form.unit, expiry_date, qty_remaining: Number(form.qty_remaining),
+        note: form.note, last_updated_at: now, last_updated_by: user.id,
+        created_by: user.id, created_at: now
+      }
+      await db.from('product_batches').insert(newB)
+      setBatches((prev: any[]) => [newB, ...prev])
+    }
+    setSaving(false); setShowAdd(false); setEditBatch(null)
+  }
+
+  const deleteBatch = async (id: string) => {
+    if (!confirm('Xóa lô hàng này? Thao tác không thể hoàn tác.')) return
+    await db.from('product_batches').delete().eq('id', id)
+    setBatches((prev: any[]) => prev.filter((b: any) => b.id !== id))
+  }
+
+  // ── Import Excel ──
+  const handleImportFile = async (file: File) => {
+    const xlsx = await import('https://cdn.jsdelivr.net/npm/xlsx@0.18.5/+esm' as any)
+    const buf  = await file.arrayBuffer()
+    const wb   = xlsx.read(buf, { type:'array' })
+    const ws   = wb.Sheets[wb.SheetNames[0]]
+    const rows: any[] = xlsx.utils.sheet_to_json(ws, { header:1, defval:'' })
+    const dataRows = rows.slice(1).filter((r: any[]) => r[0] || r[1] || r[2])
+    const errors: string[] = []
+    const preview: any[]   = []
+    dataRows.forEach((r: any[], i: number) => {
+      const codeRaw   = String(r[0] || '').trim().toUpperCase()
+      const expiryRaw = String(r[1] || '').trim()
+      const qty       = Number(r[2]) || 0
+      const note      = String(r[3] || '').trim()
+      const lineNum   = i + 2
+      if (!codeRaw) { errors.push(`Dòng ${lineNum}: Thiếu Mã SP`); return }
+      const prod = products.find((pp: any) => pp.code.toUpperCase() === codeRaw)
+      if (!prod) {
+        errors.push(`Dòng ${lineNum}: Mã SP "${codeRaw}" không tồn tại. Vui lòng kiểm tra lại đúng theo Mã SP hoặc Tên SP trong KiotViet.`)
+        return
+      }
+      const match = expiryRaw.match(/^(\d{1,2})\/(\d{4})$/)
+      if (!match) { errors.push(`Dòng ${lineNum}: Ngày HSD "${expiryRaw}" sai định dạng — cần MM/YYYY (VD: 06/2026)`); return }
+      const [, mm, yyyy] = match
+      if (Number(mm) < 1 || Number(mm) > 12) { errors.push(`Dòng ${lineNum}: Tháng "${mm}" không hợp lệ`); return }
+      preview.push({
+        product_code: prod.code, product_name: prod.name, unit: prod.unit || '',
+        expiry_date: `${yyyy}-${mm.padStart(2,'0')}-01`,
+        qty_remaining: qty, note, _disp: `${mm.padStart(2,'0')}/${yyyy}`
+      })
+    })
+    setImportErrors(errors)
+    setImportPreview(errors.length === 0 ? preview : null)
+  }
+
+  const confirmImport = async () => {
+    if (!importPreview) return
+    setSaving(true)
+    const now = new Date().toISOString()
+    const newBatches = importPreview.map(b => ({
+      id: 'bat_' + Date.now() + '_' + Math.random().toString(36).slice(2,7),
+      ...b, last_updated_at: now, last_updated_by: user.id,
+      created_by: user.id, created_at: now
+    }))
+    await db.from('product_batches').insert(newBatches)
+    setBatches((prev: any[]) => [...newBatches, ...prev])
+    setImportPreview(null); setSaving(false); setTab('list')
+  }
+
+  const downloadTemplate = async () => {
+    const xlsx = await import('https://cdn.jsdelivr.net/npm/xlsx@0.18.5/+esm' as any)
+    const ws = xlsx.utils.aoa_to_sheet([
+      ['Mã SP *', 'Ngày HSD * (MM/YYYY)', 'SL Tồn', 'Ghi chú'],
+      ['SP001', '06/2026', 120, 'Lô tháng 1'],
+      ['SP002', '12/2027', 80,  ''],
+      ['(Xóa 2 dòng mẫu này, giữ nguyên hàng tiêu đề)', '', '', ''],
+    ])
+    ws['!cols'] = [{wch:15},{wch:22},{wch:10},{wch:35}]
+    const wb = xlsx.utils.book_new()
+    xlsx.utils.book_append_sheet(wb, ws, 'Nhap Lo Hang')
+    xlsx.writeFile(wb, 'mau_nhap_lo_hang_DATE_SP.xlsx')
+  }
+
+  return (
+    <div style={{ padding: pad, paddingBottom: mobile ? 90 : pad }}>
+      <Topbar mobile={mobile}
+        title="📅 Quản lý Date SP"
+        subtitle="Theo dõi hạn sử dụng theo lô hàng · Đồng bộ tồn KiotViet"
+        action={canManage ? (
+          <div style={{ display:'flex', gap:8, flexWrap:'wrap' }}>
+            <GoldBtn small onClick={downloadTemplate}>📥 File mẫu</GoldBtn>
+            <label style={{ padding:'7px 14px', borderRadius:20, border:`1px solid ${T.border}`,
+              cursor:'pointer', fontSize:12, color:T.med, background:'#fff',
+              whiteSpace:'nowrap', fontFamily:'inherit', display:'flex', alignItems:'center' }}>
+              📤 Import Excel
+              <input type="file" accept=".xlsx,.xls" style={{ display:'none' }}
+                onChange={e => e.target.files?.[0] && handleImportFile(e.target.files[0])}/>
+            </label>
+            <GoldBtn small onClick={() => { setEditBatch(null); setShowAdd(true) }}>+ Thêm lô</GoldBtn>
+          </div>
+        ) : undefined}
+      />
+
+      {/* Error panel */}
+      {importErrors.length > 0 && (
+        <div style={{ margin:'0 0 16px', padding:'12px 16px', background:T.redBg,
+          border:`1px solid ${T.red}`, borderRadius:10 }}>
+          <div style={{ fontWeight:700, color:T.red, marginBottom:8, fontSize:13 }}>
+            ❌ {importErrors.length} lỗi cần sửa trước khi import:
+          </div>
+          {importErrors.map((e, i) => (
+            <div key={i} style={{ fontSize:12, color:T.red, marginBottom:4 }}>• {e}</div>
+          ))}
+          <div style={{ fontSize:11, color:T.med, marginTop:8, fontStyle:'italic' }}>
+            💡 Tải file mẫu để xem đúng định dạng. Mã SP phải trùng khớp với KiotViet.
+          </div>
+          <button onClick={() => setImportErrors([])}
+            style={{ marginTop:10, padding:'4px 14px', borderRadius:20, border:`1px solid ${T.red}`,
+              background:'transparent', color:T.red, cursor:'pointer', fontFamily:'inherit', fontSize:11 }}>
+            Đóng
+          </button>
+        </div>
+      )}
+
+      {/* Import preview */}
+      {importPreview && (
+        <div style={{ margin:'0 0 16px', padding:'12px 16px', background:T.greenBg,
+          border:`1px solid ${T.green}`, borderRadius:10 }}>
+          <div style={{ fontWeight:700, color:T.green, marginBottom:8, fontSize:13 }}>
+            ✅ Sẵn sàng import {importPreview.length} lô hàng:
+          </div>
+          {importPreview.slice(0, 5).map((b, i) => (
+            <div key={i} style={{ fontSize:12, color:T.dark, marginBottom:3 }}>
+              • {b.product_code} — {b.product_name} · HSD: {b._disp} · Tồn: {b.qty_remaining}
+            </div>
+          ))}
+          {importPreview.length > 5 && (
+            <div style={{ fontSize:11, color:T.light }}>...+{importPreview.length - 5} lô nữa</div>
+          )}
+          <div style={{ display:'flex', gap:8, marginTop:12 }}>
+            <GoldBtn small onClick={confirmImport} disabled={saving}>
+              {saving ? 'Đang import...' : '✅ Xác nhận import'}
+            </GoldBtn>
+            <button onClick={() => setImportPreview(null)}
+              style={{ padding:'6px 14px', borderRadius:20, border:`1px solid ${T.border}`,
+                background:'transparent', color:T.med, cursor:'pointer', fontFamily:'inherit', fontSize:12 }}>
+              Hủy
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* Tab bar */}
+      <div style={{ display:'flex', gap:4, marginBottom:16, flexWrap:'wrap' }}>
+        {tabs.map(t => (
+          <button key={t.id} onClick={() => setTab(t.id as any)}
+            style={{ padding:'7px 16px', borderRadius:20,
+              border:`1.5px solid ${tab === t.id ? T.gold : T.border}`,
+              background: tab === t.id ? T.goldBg : '#fff',
+              color: tab === t.id ? T.goldText : T.med,
+              cursor:'pointer', fontFamily:'inherit', fontSize:12,
+              fontWeight: tab === t.id ? 700 : 400 }}>
+            {t.icon} {t.label}
+          </button>
+        ))}
+      </div>
+
+      {/* ════ Tab: Tổng quan ════ */}
+      {tab === 'overview' && (
+        <div>
+          <div style={{ display:'grid', gridTemplateColumns:'repeat(auto-fit,minmax(155px,1fr))',
+            gap:12, marginBottom:20 }}>
+            {[
+              { label:'🔴 Dưới 6 tháng',  count:countRed,    color:T.red,    bg:T.redBg   },
+              { label:'🟠 Dưới 12 tháng', count:countOrange, color:'#C2410C', bg:'#FFEDD5' },
+              { label:'🟡 Dưới 18 tháng', count:countYellow, color:'#854D0E', bg:'#FEF9C3' },
+              { label:'🟢 Còn hàng',       count:countGreen,  color:T.green,  bg:T.greenBg },
+            ].map((c, i) => (
+              <div key={i} style={{ background:c.bg, border:`1.5px solid ${c.color}`,
+                borderRadius:12, padding:'16px', textAlign:'center' }}>
+                <div style={{ fontSize:28, fontWeight:800, color:c.color, lineHeight:1 }}>{c.count}</div>
+                <div style={{ fontSize:11, color:c.color, fontWeight:600, marginTop:6 }}>{c.label}</div>
+                <div style={{ fontSize:10, color:T.light, marginTop:3 }}>lô có tồn kho</div>
+              </div>
+            ))}
+          </div>
+
+          <div style={{ background:T.card, borderRadius:12, border:`1px solid ${T.border}`,
+            overflow:'hidden', marginBottom:20 }}>
+            <div style={{ padding:'12px 16px', borderBottom:`1px solid ${T.border}`,
+              display:'flex', alignItems:'center', gap:8 }}>
+              <span style={{ fontWeight:700, color:T.dark, fontSize:13 }}>
+                📊 Đối chiếu tổng tồn lô vs KiotViet
+              </span>
+              <span style={{ fontSize:11, color:T.light }}>(chênh ≥ 6 → đỏ)</span>
+            </div>
+            {!mobile && (
+              <div style={{ display:'grid', gridTemplateColumns:'100px 1fr 80px 80px 90px',
+                padding:'7px 14px', background:T.bg, borderBottom:`2px solid ${T.border}`,
+                fontSize:10, fontWeight:700, color:T.light,
+                textTransform:'uppercase', letterSpacing:.6, gap:8 }}>
+                <span>Mã SP</span><span>Tên SP</span>
+                <span style={{ textAlign:'right' }}>Tổng lô</span>
+                <span style={{ textAlign:'right' }}>Tồn KV</span>
+                <span style={{ textAlign:'right' }}>Chênh lệch</span>
+              </div>
+            )}
+            {Object.entries(batchTotalByCode).map(([code, total], i) => {
+              const prod     = products.find((pp: any) => pp.code === code)
+              const kv       = prod?.stock ?? 0
+              const diff     = (total as number) - kv
+              const diffAbs  = Math.abs(diff)
+              const diffColor = diff === 0 ? T.green : diffAbs <= 5 ? T.amber : T.red
+              return (
+                <div key={code} style={{
+                  display: mobile ? 'flex' : 'grid',
+                  gridTemplateColumns:'100px 1fr 80px 80px 90px',
+                  padding:'9px 14px', gap:8, alignItems:'center',
+                  borderBottom: i < Object.keys(batchTotalByCode).length - 1 ? `1px solid ${T.border}` : 'none',
+                  background: i % 2 === 0 ? '#fff' : T.rowAlt,
+                  justifyContent: mobile ? 'space-between' : undefined }}>
+                  {mobile ? (
+                    <>
+                      <div>
+                        <div style={{ fontSize:10, color:T.light }}>{code}</div>
+                        <div style={{ fontSize:12, fontWeight:600, color:T.dark }}>{prod?.name || code}</div>
+                      </div>
+                      <div style={{ textAlign:'right', flexShrink:0 }}>
+                        <div style={{ fontSize:11, color:T.med }}>Lô: <b>{total as number}</b> · KV: <b>{kv}</b></div>
+                        <div style={{ fontSize:12, fontWeight:700, color:diffColor }}>
+                          {diff === 0 ? '✅ Khớp' : diff > 0 ? `+${diff}` : `${diff}`}
+                        </div>
+                      </div>
+                    </>
+                  ) : (
+                    <>
+                      <span style={{ fontSize:10, color:T.light }}>{code}</span>
+                      <span style={{ fontSize:12, color:T.dark, overflow:'hidden',
+                        textOverflow:'ellipsis', whiteSpace:'nowrap' }}>{prod?.name || code}</span>
+                      <span style={{ fontSize:12, fontWeight:700, textAlign:'right', color:T.dark }}>
+                        {total as number}
+                      </span>
+                      <span style={{ fontSize:12, textAlign:'right', color:T.med }}>{kv}</span>
+                      <span style={{ fontSize:12, fontWeight:700, textAlign:'right', color:diffColor }}>
+                        {diff === 0 ? '✅ Khớp' : diff > 0 ? `+${diff}` : `${diff}`}
+                      </span>
+                    </>
+                  )}
+                </div>
+              )
+            })}
+            {Object.keys(batchTotalByCode).length === 0 && (
+              <div style={{ padding:'32px', textAlign:'center', color:T.light, fontSize:13 }}>
+                Chưa có lô hàng nào. Nhấn "+ Thêm lô" hoặc Import Excel.
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+
+      {/* ════ Tab: Danh sách lô ════ */}
+      {tab === 'list' && (
+        <div>
+          <div style={{ display:'flex', gap:8, marginBottom:12, flexWrap:'wrap', alignItems:'center' }}>
+            <input value={searchQ} onChange={e => setSearchQ(e.target.value)}
+              placeholder="🔍 Tìm mã SP hoặc tên..."
+              style={{ flex:1, minWidth:180, padding:'7px 12px', border:`1px solid ${T.border}`,
+                borderRadius:20, fontSize:12, fontFamily:'inherit', outline:'none',
+                color:T.dark, background:'#fff' }}/>
+            {['all','red','orange','yellow','green'].map(f => (
+              <button key={f} onClick={() => setFilterStatus(f)}
+                style={{ padding:'5px 12px', borderRadius:20, cursor:'pointer',
+                  fontFamily:'inherit', fontSize:11,
+                  border:`1.5px solid ${filterStatus === f ? T.gold : T.border}`,
+                  background: filterStatus === f ? T.goldBg : '#fff',
+                  color: filterStatus === f ? T.goldText : T.med }}>
+                {f==='all'?'Tất cả':f==='red'?'🔴 <6T':f==='orange'?'🟠 <12T':f==='yellow'?'🟡 <18T':'🟢 Còn'}
+              </button>
+            ))}
+          </div>
+          <div style={{ background:T.card, borderRadius:12, border:`1px solid ${T.border}`, overflow:'hidden' }}>
+            {!mobile && (
+              <div style={{ display:'grid',
+                gridTemplateColumns: canManage
+                  ? '90px 1fr 80px 50px 55px 55px 55px 1fr 100px'
+                  : '90px 1fr 80px 50px 55px 55px 55px 1fr',
+                padding:'8px 14px', background:T.bg, borderBottom:`2px solid ${T.border}`,
+                fontSize:10, fontWeight:700, color:T.light,
+                textTransform:'uppercase', letterSpacing:.6,
+                position:'sticky', top:0, zIndex:2, gap:8 }}>
+                <span>Mã SP</span><span>Tên SP</span>
+                <span style={{ textAlign:'center' }}>HSD</span>
+                <span style={{ textAlign:'center' }}>Còn</span>
+                <span style={{ textAlign:'right' }}>Tồn lô</span>
+                <span style={{ textAlign:'right' }}>Tồn KV</span>
+                <span style={{ textAlign:'right' }}>Chênh</span>
+                <span>Ghi chú</span>
+                {canManage && <span style={{ textAlign:'center' }}>Thao tác</span>}
+              </div>
+            )}
+            {filtered.map((b: any, i: number) => {
+              const kv         = b.prod?.stock ?? 0
+              const batchTotal = batchTotalByCode[b.product_code] || 0
+              const diff       = batchTotal - kv
+              const diffColor  = diff === 0 ? T.green : Math.abs(diff) <= 5 ? T.amber : T.red
+              return (
+                <div key={b.id} style={{
+                  display: mobile ? 'block' : 'grid',
+                  gridTemplateColumns: canManage
+                    ? '90px 1fr 80px 50px 55px 55px 55px 1fr 100px'
+                    : '90px 1fr 80px 50px 55px 55px 55px 1fr',
+                  padding:'10px 14px', gap:8, alignItems:'center',
+                  borderBottom: i < filtered.length - 1 ? `1px solid ${T.border}` : 'none',
+                  background: i % 2 === 0 ? '#fff' : T.rowAlt }}>
+                  {mobile ? (
+                    <div style={{ display:'flex', justifyContent:'space-between', gap:8 }}>
+                      <div style={{ flex:1, minWidth:0 }}>
+                        <div style={{ fontSize:10, color:T.light }}>{b.product_code}</div>
+                        <div style={{ fontSize:13, fontWeight:600, color:T.dark,
+                          overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap' }}>
+                          {b.product_name}
+                        </div>
+                        <div style={{ display:'flex', gap:6, marginTop:4, flexWrap:'wrap', alignItems:'center' }}>
+                          <span style={{ fontSize:11, padding:'2px 8px', borderRadius:10,
+                            background:b.status.bg, color:b.status.color, fontWeight:600 }}>
+                            {b.status.label}
+                          </span>
+                          <span style={{ fontSize:11, color:T.med }}>
+                            HSD: {fmtExpiry(b.expiry_date)} · Tồn: {b.qty_remaining}
+                          </span>
+                        </div>
+                        {b.note && <div style={{ fontSize:11, color:T.light, marginTop:3 }}>{b.note}</div>}
+                      </div>
+                      {canManage && (
+                        <div style={{ display:'flex', flexDirection:'column', gap:4, flexShrink:0 }}>
+                          <button onClick={() => { setEditBatch(b); setShowAdd(true) }}
+                            style={{ padding:'4px 12px', borderRadius:8, border:`1px solid ${T.border}`,
+                              background:'#fff', cursor:'pointer', fontSize:11,
+                              fontFamily:'inherit', color:T.med }}>Sửa</button>
+                          <button onClick={() => deleteBatch(b.id)}
+                            style={{ padding:'4px 12px', borderRadius:8, border:`1px solid ${T.red}`,
+                              background:'transparent', cursor:'pointer', fontSize:11,
+                              fontFamily:'inherit', color:T.red }}>✕ Xóa</button>
+                        </div>
+                      )}
+                    </div>
+                  ) : (
+                    <>
+                      <span style={{ fontSize:10, color:T.light, overflow:'hidden',
+                        textOverflow:'ellipsis', whiteSpace:'nowrap' }}>{b.product_code}</span>
+                      <span style={{ fontSize:12, color:T.dark, overflow:'hidden',
+                        textOverflow:'ellipsis', whiteSpace:'nowrap' }}>{b.product_name}</span>
+                      <span style={{ fontSize:11, textAlign:'center', display:'block',
+                        padding:'2px 6px', borderRadius:10,
+                        background:b.status.bg, color:b.status.color, fontWeight:600 }}>
+                        {fmtExpiry(b.expiry_date)}
+                      </span>
+                      <span style={{ fontSize:11, textAlign:'center', fontWeight:700, color:b.status.color }}>
+                        {b.monthsLeft}T
+                      </span>
+                      <span style={{ fontSize:12, fontWeight:700, textAlign:'right',
+                        color:(b.qty_remaining||0)===0?T.light:T.dark }}>{b.qty_remaining??0}</span>
+                      <span style={{ fontSize:12, textAlign:'right', color:T.med }}>{kv}</span>
+                      <span style={{ fontSize:11, fontWeight:700, textAlign:'right', color:diffColor }}>
+                        {diff===0?'✅':diff>0?`+${diff}`:`${diff}`}
+                      </span>
+                      <span style={{ fontSize:11, color:T.light, overflow:'hidden',
+                        textOverflow:'ellipsis', whiteSpace:'nowrap' }}>{b.note||'—'}</span>
+                      {canManage && (
+                        <div style={{ display:'flex', gap:6, justifyContent:'center' }}>
+                          <button onClick={() => { setEditBatch(b); setShowAdd(true) }}
+                            style={{ padding:'4px 10px', borderRadius:8, border:`1px solid ${T.border}`,
+                              background:'#fff', cursor:'pointer', fontSize:11,
+                              fontFamily:'inherit', color:T.med }}>Sửa</button>
+                          <button onClick={() => deleteBatch(b.id)}
+                            style={{ padding:'4px 8px', borderRadius:8, border:`1px solid ${T.red}`,
+                              background:'transparent', cursor:'pointer', fontSize:11,
+                              fontFamily:'inherit', color:T.red }}>✕</button>
+                        </div>
+                      )}
+                    </>
+                  )}
+                </div>
+              )
+            })}
+            {filtered.length === 0 && (
+              <div style={{ padding:'32px', textAlign:'center', color:T.light, fontSize:13 }}>
+                {searchQ || filterStatus !== 'all'
+                  ? 'Không tìm thấy lô nào phù hợp'
+                  : 'Chưa có lô hàng. Nhấn "+ Thêm lô" hoặc Import Excel.'}
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+
+      {/* ════ Tab: Cảnh báo ════ */}
+      {tab === 'alert' && (
+        <div>
+          {alertList.length === 0 ? (
+            <div style={{ textAlign:'center', padding:'56px 24px', fontSize:14,
+              color:T.green, fontWeight:600 }}>
+              🎉 Không có lô hàng nào dưới 12 tháng còn tồn kho. Tốt lắm!
+            </div>
+          ) : (
+            <>
+              <div style={{ padding:'10px 14px', marginBottom:12, background:T.amberBg,
+                border:`1px solid ${T.amber}`, borderRadius:10, fontSize:12,
+                color:T.amber, fontWeight:600 }}>
+                ⚠️ {alertList.length} lô hàng cần chú ý — phòng Sale lên phương án xử lý
+              </div>
+              <div style={{ background:T.card, borderRadius:12, border:`1px solid ${T.border}`,
+                overflow:'hidden' }}>
+                {!mobile && (
+                  <div style={{ display:'grid',
+                    gridTemplateColumns:'90px 1fr 80px 120px 60px 1fr',
+                    padding:'8px 14px', background:T.bg, borderBottom:`2px solid ${T.border}`,
+                    fontSize:10, fontWeight:700, color:T.light,
+                    textTransform:'uppercase', letterSpacing:.6,
+                    position:'sticky', top:0, zIndex:2, gap:8 }}>
+                    <span>Mã SP</span><span>Tên SP</span>
+                    <span style={{ textAlign:'center' }}>HSD</span>
+                    <span style={{ textAlign:'center' }}>Trạng thái</span>
+                    <span style={{ textAlign:'right' }}>Tồn</span>
+                    <span>Ghi chú</span>
+                  </div>
+                )}
+                {alertList.map((b: any, i: number) => (
+                  <div key={b.id} style={{
+                    display: mobile ? 'block' : 'grid',
+                    gridTemplateColumns:'90px 1fr 80px 120px 60px 1fr',
+                    padding:'10px 14px', gap:8, alignItems:'center',
+                    borderBottom: i < alertList.length - 1 ? `1px solid ${T.border}` : 'none',
+                    background: i % 2 === 0 ? '#fff' : T.rowAlt,
+                    borderLeft:`3px solid ${b.status.color}` }}>
+                    {mobile ? (
+                      <div>
+                        <div style={{ fontSize:10, color:T.light }}>{b.product_code}</div>
+                        <div style={{ fontSize:13, fontWeight:600, color:T.dark }}>{b.product_name}</div>
+                        <div style={{ display:'flex', gap:6, marginTop:4, flexWrap:'wrap' }}>
+                          <span style={{ fontSize:11, padding:'2px 8px', borderRadius:10,
+                            background:b.status.bg, color:b.status.color, fontWeight:600 }}>
+                            {b.status.label}
+                          </span>
+                          <span style={{ fontSize:11, color:T.med }}>
+                            HSD: {fmtExpiry(b.expiry_date)} · Tồn: {b.qty_remaining}
+                          </span>
+                        </div>
+                        {b.note && <div style={{ fontSize:11, color:T.light, marginTop:3 }}>{b.note}</div>}
+                      </div>
+                    ) : (
+                      <>
+                        <span style={{ fontSize:10, color:T.light }}>{b.product_code}</span>
+                        <span style={{ fontSize:12, color:T.dark, overflow:'hidden',
+                          textOverflow:'ellipsis', whiteSpace:'nowrap' }}>{b.product_name}</span>
+                        <span style={{ fontSize:12, textAlign:'center', color:T.med }}>
+                          {fmtExpiry(b.expiry_date)}
+                        </span>
+                        <span style={{ fontSize:11, textAlign:'center', display:'block',
+                          padding:'2px 8px', borderRadius:10,
+                          background:b.status.bg, color:b.status.color, fontWeight:600 }}>
+                          {b.status.label}
+                        </span>
+                        <span style={{ fontSize:12, fontWeight:700, textAlign:'right', color:T.dark }}>
+                          {b.qty_remaining}
+                        </span>
+                        <span style={{ fontSize:11, color:T.light, overflow:'hidden',
+                          textOverflow:'ellipsis', whiteSpace:'nowrap' }}>{b.note||'—'}</span>
+                      </>
+                    )}
+                  </div>
+                ))}
+              </div>
+            </>
+          )}
+        </div>
+      )}
+
+      {showAdd && canManage && (
+        <BatchForm
+          edit={editBatch}
+          products={products}
+          onSave={saveBatch}
+          onClose={() => { setShowAdd(false); setEditBatch(null) }}
+          saving={saving}
+          mobile={mobile}
+        />
+      )}
     </div>
   )
 }
