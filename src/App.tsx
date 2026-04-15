@@ -122,7 +122,8 @@ const ALL_PERMS = [
   { key:'perm_manage_inventory',     label:'Xử lý kiểm kê (QM Kho)',            group:'Kho'      },
   { key:'perm_manage_expiry',        label:'Quản lý date sản phẩm (QM Kho)',    group:'Kho'      },
   { key:'perm_manage_payment',       label:'Quản lý lệnh chuyển khoản',         group:'Sale'     },
-] ────────────────────────────────────
+]
+// ── UTILITIES ────────────────────────────────────
 const fmtNow   = () => new Date().toLocaleString('vi-VN',{hour:'2-digit',minute:'2-digit',day:'2-digit',month:'2-digit',year:'numeric'})
 const todayStr = () => new Date().toLocaleDateString('vi-VN')
 const todayISO = () => new Date().toISOString().split('T')[0]
