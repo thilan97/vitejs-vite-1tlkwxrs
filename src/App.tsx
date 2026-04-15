@@ -7014,39 +7014,6 @@ function InventoryModule({ user, allUsers, products, invSessions, setInvSessions
                               <NVCheckGroup key={nvId} nv={nv} nvChecks={nvChecks} nvDone={nvDone}/>
                             )
                           })}
-                                  <div style={{borderTop:`1px solid ${T.border}`}}>
-                                    <div style={{display:'grid',gridTemplateColumns:'1fr 65px 65px 65px',
-                                      padding:'5px 12px',background:T.bg,fontSize:9,fontWeight:700,
-                                      color:T.light,textTransform:'uppercase',letterSpacing:.5,gap:6}}>
-                                      <span>Sản phẩm</span>
-                                      <span style={{textAlign:'center'}}>Tồn HT</span>
-                                      <span style={{textAlign:'center'}}>Tồn TT</span>
-                                      <span style={{textAlign:'center'}}>Lệch</span>
-                                    </div>
-                                    {nvChecks.map((c: any, ci: number) => (
-                                      <div key={c.id} style={{display:'grid',
-                                        gridTemplateColumns:'1fr 65px 65px 65px',
-                                        padding:'6px 12px',gap:6,alignItems:'center',
-                                        borderTop:`1px solid ${T.border}`,
-                                        background:ci%2===0?'#fff':T.rowAlt}}>
-                                        <div>
-                                          <div style={{fontSize:11,color:T.dark,lineHeight:1.3}}>{c.product_name}</div>
-                                          <div style={{fontSize:9,color:T.light}}>{c.product_code}</div>
-                                        </div>
-                                        <span style={{textAlign:'center',fontSize:11,color:T.med}}>{c.system_qty??'—'}</span>
-                                        <span style={{textAlign:'center',fontSize:11,fontWeight:c.actual_qty!=null?700:400,
-                                          color:c.actual_qty!=null?T.dark:T.light}}>{c.actual_qty??'Chưa KK'}</span>
-                                        <span style={{textAlign:'center',fontSize:12,fontWeight:700,
-                                          color:c.diff==null?T.light:c.diff===0?T.green:c.diff>0?T.blue:T.red}}>
-                                          {c.diff==null?'—':c.diff===0?'✓':c.diff>0?'+'+c.diff:c.diff}
-                                        </span>
-                                      </div>
-                                    ))}
-                                  </div>
-                                )}
-                              </div>
-                            )
-                          })}
                         </div>
                       )}
                     </div>
