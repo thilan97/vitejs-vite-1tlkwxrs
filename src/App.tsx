@@ -3058,16 +3058,25 @@ function ShortageItems({ user, allUsers, mobile, products, setProducts }: any) {
       : item.status==='burned' ? T.red
       : hot>=3 ? '#E65100' : hot===2 ? T.amber : T.border
 
+    const prod = products.find((p: any) =>
+      p.code === item.product_code || norm(p.name) === norm(item.product_name))
+    const stockNow   = prod?.stock ?? null
+    const orderedNow = prod?.ordered_qty ?? 0
+
     return (
-      <div style={{ background:T.card, borderRadius:12, border:`1.5px solid ${borderColor}`,
-        padding:'14px 16px', marginBottom:10 }}>
-        {/* ── Header ── */}
-        <div style={{ display:'flex', justifyContent:'space-between', alignItems:'flex-start', gap:10, marginBottom:8 }}>
-          <div style={{ flex:1 }}>
-            <div style={{ display:'flex', alignItems:'center', gap:7, flexWrap:'wrap', marginBottom:6 }}>
-              {hot>=3 && <span style={{ fontSize:11, fontWeight:700, color:'#BF360C', background:'#FBE9E7', padding:'2px 8px', borderRadius:20 }}>🔥 {hot} sale hỏi</span>}
-              {hot===2 && <span style={{ fontSize:11, fontWeight:700, color:T.amber, background:T.amberBg, padding:'2px 8px', borderRadius:20 }}>⚡ {hot} sale hỏi</span>}
-              <span style={{ fontSize:14, fontWeight:700, color:T.dark }}>{item.product_name}</span>
+      <div style={{ background: idx%2===0?'#fff':T.rowAlt,
+        borderBottom:`1px solid ${T.border}`,
+        borderLeft:`3px solid ${borderColor}` }}>
+        {/* ── Desktop grid row ── */}
+        <div style={{ display:'grid',
+          gridTemplateColumns:'1fr 70px 70px 90px 120px',
+          padding:'10px 16px', gap:8, alignItems:'center' }}>
+          {/* Product name + code + reporters */}
+          <div>
+            <div style={{ display:'flex', alignItems:'center', gap:6, flexWrap:'wrap', marginBottom:4 }}>
+              {hot>=3 && <span style={{ fontSize:10, fontWeight:700, color:'#BF360C', background:'#FBE9E7', padding:'1px 7px', borderRadius:20 }}>🔥{hot}</span>}
+              {hot===2 && <span style={{ fontSize:10, fontWeight:700, color:T.amber, background:T.amberBg, padding:'1px 7px', borderRadius:20 }}>⚡{hot}</span>}
+              <span style={{ fontSize:13, fontWeight:700, color:T.dark }}>{item.product_name}</span>
               {item.product_code && <span style={{ fontSize:11, color:T.light }}>#{item.product_code}</span>}
             </div>
             {/* Reporters pills */}
@@ -3088,55 +3097,59 @@ function ShortageItems({ user, allUsers, mobile, products, setProducts }: any) {
               })}
             </div>
           </div>
-          {/* Status + KiotViet placeholder */}
-          <div style={{ display:'flex', flexDirection:'column', alignItems:'flex-end', gap:5, flexShrink:0 }}>
-            {(() => {
-              const prod = products.find((p: any) =>
-                p.code === item.product_code || norm(p.name) === norm(item.product_name)
-              )
-              if (!prod || (prod.stock === null && prod.stock === undefined)) {
-                return <div style={{ fontSize:10, color:T.light, padding:'2px 8px', borderRadius:20,
-                  border:`1px solid ${T.border}`, background:T.bg }}>🔗 KV: —</div>
-              }
-              const stock    = prod.stock ?? 0
-              const ordered  = prod.ordered_qty ?? 0
-              const shortage = prod.shortage_qty ?? Math.max(0, ordered - stock)
-              const hasOrder = ordered > 0
-              return (
-                <div style={{ display:'flex', gap:6, flexWrap:'wrap', alignItems:'center' }}>
-                  <span style={{ fontSize:11, fontWeight:700, padding:'2px 8px', borderRadius:20,
-                    color:stock===0?T.red:stock<=5?T.amber:T.green,
-                    background:stock===0?T.redBg:stock<=5?T.amberBg:T.greenBg }}>
-                    📦 Tồn: {stock}
-                  </span>
-                  <span style={{ fontSize:11, fontWeight:700, padding:'2px 8px', borderRadius:20,
-                    color:ordered>0?T.blue:T.light, background:ordered>0?T.blueBg:T.bg }}>
-                    🛒 KH đặt: {ordered}
-                  </span>
-                  {hasOrder && <>
-                    {shortage > 0 && (
-                      <span style={{ fontSize:11, fontWeight:700, padding:'2px 8px', borderRadius:20,
-                        color:'#fff', background:T.red }}>
-                        ⚠️ Thiếu: {shortage}
-                      </span>
-                    )}
-                    {shortage === 0 && (
-                      <span style={{ fontSize:11, fontWeight:600, padding:'2px 8px', borderRadius:20,
-                        color:T.green, background:T.greenBg }}>
-                        ✅ Đủ hàng
-                      </span>
-                    )}
-                  </>}
-                </div>
-              )
-            })()}
-            {item.status==='arrived'  && <span style={{ fontSize:11, fontWeight:700, color:T.green,  background:T.greenBg,  padding:'3px 10px', borderRadius:20 }}>✅ Đã về</span>}
-            {item.status==='burned'   && <span style={{ fontSize:11, fontWeight:700, color:T.red,    background:T.redBg,    padding:'3px 10px', borderRadius:20 }}>🔥 Hàng cháy</span>}
-            {item.status==='pending'  && <span style={{ fontSize:11, fontWeight:600, color:T.amber,  background:T.amberBg,  padding:'3px 10px', borderRadius:20 }}>⏳ Chờ xử lý</span>}
+          {/* Tồn kho */}
+          <div style={{ textAlign:'right' }}>
+            {stockNow !== null
+              ? <span style={{ fontSize:14, fontWeight:800,
+                  color:stockNow===0?T.red:stockNow<=5?T.amber:T.green }}>
+                  {stockNow}
+                </span>
+              : <span style={{ fontSize:12, color:T.light }}>—</span>
+            }
+          </div>
+
+          {/* KH đặt */}
+          <div style={{ textAlign:'right' }}>
+            <span style={{ fontSize:14, fontWeight:orderedNow>0?800:400,
+              color:orderedNow>0?T.blue:T.light }}>
+              {orderedNow}
+            </span>
+            {stockNow!==null && orderedNow>0 && (
+              <div style={{ fontSize:10, color:orderedNow>stockNow?T.red:T.green, marginTop:1 }}>
+                {orderedNow>stockNow?`⚠️ thiếu ${orderedNow-stockNow}`:'✅ đủ'}
+              </div>
+            )}
+          </div>
+
+          {/* Trạng thái */}
+          <div style={{ textAlign:'center' }}>
+            {item.status==='arrived'  && <span style={{ fontSize:10, fontWeight:700, color:T.green,  background:T.greenBg,  padding:'2px 8px', borderRadius:20, whiteSpace:'nowrap' }}>✅ Đã về</span>}
+            {item.status==='burned'   && <span style={{ fontSize:10, fontWeight:700, color:T.red,    background:T.redBg,    padding:'2px 8px', borderRadius:20, whiteSpace:'nowrap' }}>🔥 Cháy</span>}
+            {item.status==='pending'  && <span style={{ fontSize:10, fontWeight:600, color:T.amber,  background:T.amberBg,  padding:'2px 8px', borderRadius:20, whiteSpace:'nowrap' }}>⏳ Chờ</span>}
             {item.status==='incoming' && days !== null && (
-              days > 0  ? <span style={{ fontSize:11, fontWeight:700, color:T.blue,  background:T.blueBg,  padding:'3px 10px', borderRadius:20 }}>📅 Còn {days} ngày</span>
-            : days===0  ? <span style={{ fontSize:11, fontWeight:700, color:T.amber, background:T.amberBg, padding:'3px 10px', borderRadius:20 }}>⏰ Hôm nay về!</span>
-            : <span style={{ fontSize:11, fontWeight:700, color:T.red, background:T.redBg, padding:'3px 10px', borderRadius:20 }}>⚠️ Quá {Math.abs(days)} ngày</span>
+              days > 0  ? <span style={{ fontSize:10, fontWeight:700, color:T.blue,  background:T.blueBg,  padding:'2px 8px', borderRadius:20, whiteSpace:'nowrap' }}>📅 Còn {days}n</span>
+            : days===0  ? <span style={{ fontSize:10, fontWeight:700, color:T.amber, background:T.amberBg, padding:'2px 8px', borderRadius:20, whiteSpace:'nowrap' }}>⏰ Hôm nay</span>
+            : <span style={{ fontSize:10, fontWeight:700, color:T.red, background:T.redBg, padding:'2px 8px', borderRadius:20, whiteSpace:'nowrap' }}>⚠️ +{Math.abs(days)}n</span>
+            )}
+          </div>
+
+          {/* Thao tác */}
+          <div style={{ display:'flex', gap:5, justifyContent:'flex-end' }}>
+            {item.status!=='arrived' && (
+              <button onClick={() => setEditMode(!editMode)}
+                style={{ padding:'3px 10px', borderRadius:20,
+                  border:`1px solid ${T.border}`, background:'transparent',
+                  cursor:'pointer', fontSize:10, fontFamily:'inherit', color:T.med }}>
+                {editMode?'Đóng':'Xử lý'}
+              </button>
+            )}
+            {item.status==='incoming' && (
+              <button onClick={markArrived}
+                style={{ padding:'3px 10px', borderRadius:20, border:'none',
+                  background:T.green, cursor:'pointer', fontSize:10,
+                  fontFamily:'inherit', color:'#fff', fontWeight:700 }}>
+                ✅ Đã về
+              </button>
             )}
           </div>
         </div>
@@ -3280,10 +3293,26 @@ function ShortageItems({ user, allUsers, mobile, products, setProducts }: any) {
             </Card>
           ) : (
             <div style={{ background:T.card, borderRadius:12, border:`1px solid ${T.border}`, overflow:'hidden' }}>
+              {/* ── Sticky header (desktop only) ── */}
+              {!mobile && (
+                <div style={{ display:'grid',
+                  gridTemplateColumns:'1fr 70px 70px 90px 120px',
+                  padding:'8px 16px', background:T.bg,
+                  borderBottom:`2px solid ${T.border}`,
+                  fontSize:10, fontWeight:700, color:T.light,
+                  textTransform:'uppercase', letterSpacing:.6, gap:8,
+                  position:'sticky', top:0, zIndex:2 }}>
+                  <span>Sản phẩm</span>
+                  <span style={{ textAlign:'right' }}>Tồn kho</span>
+                  <span style={{ textAlign:'right' }}>KH đặt</span>
+                  <span style={{ textAlign:'center' }}>Trạng thái</span>
+                  <span style={{ textAlign:'right' }}>Thao tác</span>
+                </div>
+              )}
               {tabData[mgrTab].map((item: any, idx: number) => (
                 <MgrShortageRow key={item.id} item={item} idx={idx}
                   total={tabData[mgrTab].length} products={products}
-                  norm={norm} setItems={setItems}/>
+                  norm={norm} setItems={setItems} mobile={mobile}/>
               ))}
             </div>
           )}
@@ -3903,7 +3932,7 @@ function ReturnItems({ user, allUsers, products, mobile }: any) {
     entered_kiot_by: rows[0].entered_kiot_by,
     entered_kiot_at: rows[0].entered_kiot_at,
     total_qty:   rows.reduce((s: number, r: any) => s+(r.quantity||0), 0),
-    total_ship:  Number(slipForm.ship_fee)||0,
+    total_ship:  Number(rows[0].ship_fee)||0,
     lines: rows,
   })).filter((slip: any) => {
     if (!searchQ.trim()) return true
@@ -3987,8 +4016,10 @@ function ReturnItems({ user, allUsers, products, mobile }: any) {
       id: 'ret'+Date.now()+'_'+i,
       slip_id, date: slipForm.date,
       return_order_code: slipForm.return_order_code,
+      reason: slipForm.reason||'',
+      ship_fee: i===0 ? Number(slipForm.ship_fee)||0 : 0,
       product_name: l.product_name, quantity: Number(l.quantity)||1,
-      condition: l.condition, ship_fee: Number(l.ship_fee)||0,
+      condition: l.condition,
       entered_kiot:false, entered_kiot_by:'', entered_kiot_at:'',
       customer_name:'', original_order_code:'', sale_id:'',
       violator_id:'', reason:'', sale_note:'',
