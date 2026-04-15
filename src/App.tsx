@@ -37,8 +37,9 @@ const STATUS_CFG: any = {
   blocked: { label:'⚠️ Bị block', color:T.red,   bg:T.redBg   },
 }
 const ATT_STATUS: any = {
-  present: { label:'✅ Có mặt',    color:T.green,  bg:T.greenBg  },
-  late:    { label:'⏰ Đi muộn',   color:T.amber,  bg:T.amberBg  },
+  present:    { label:'✅ Có mặt',    color:T.green,  bg:T.greenBg  },
+  late:       { label:'⏰ Đi muộn',   color:T.amber,  bg:T.amberBg  },
+  early_out:  { label:'🏃 Về sớm',    color:'#7C3AED', bg:'#EDE9FE'  },
   absent:  { label:'❌ Vắng',      color:T.red,    bg:T.redBg    },
   sick:    { label:'🏥 Nghỉ bệnh', color:T.purple, bg:T.purpleBg },
   leave:   { label:'🏖️ Nghỉ phép', color:T.blue,   bg:T.blueBg   },
@@ -1777,7 +1778,8 @@ function Attendance({ user, allUsers, leaveRequests, attendance, setAttendance, 
       if (isWeekend) return
       const s = getStatus(uid, iso)
       if (s==='present') present++
-      else if (s==='late') { present++; late++ }
+      else if (s==='late')       { present++; late++ }
+      else if (s==='early_out') { present++ }
       else if (s==='absent') absent++
       else if (s==='sick') sick++
       else if (s==='leave') leave++
@@ -3107,11 +3109,11 @@ function ShortageItems({ user, allUsers, mobile, products, setProducts }: any) {
                     background:stock===0?T.redBg:stock<=5?T.amberBg:T.greenBg }}>
                     📦 Tồn: {stock}
                   </span>
+                  <span style={{ fontSize:11, fontWeight:700, padding:'2px 8px', borderRadius:20,
+                    color:ordered>0?T.blue:T.light, background:ordered>0?T.blueBg:T.bg }}>
+                    🛒 KH đặt: {ordered}
+                  </span>
                   {hasOrder && <>
-                    <span style={{ fontSize:11, fontWeight:700, padding:'2px 8px', borderRadius:20,
-                      color:T.blue, background:T.blueBg }}>
-                      🛒 KH đặt: {ordered}
-                    </span>
                     {shortage > 0 && (
                       <span style={{ fontSize:11, fontWeight:700, padding:'2px 8px', borderRadius:20,
                         color:'#fff', background:T.red }}>
@@ -3901,7 +3903,7 @@ function ReturnItems({ user, allUsers, products, mobile }: any) {
     entered_kiot_by: rows[0].entered_kiot_by,
     entered_kiot_at: rows[0].entered_kiot_at,
     total_qty:   rows.reduce((s: number, r: any) => s+(r.quantity||0), 0),
-    total_ship:  rows.reduce((s: number, r: any) => s+(r.ship_fee||0), 0),
+    total_ship:  Number(slipForm.ship_fee)||0,
     lines: rows,
   })).filter((slip: any) => {
     if (!searchQ.trim()) return true
@@ -3949,13 +3951,13 @@ function ReturnItems({ user, allUsers, products, mobile }: any) {
   const emptyLine = () => ({ _id:'line_'+Date.now()+'_'+Math.random().toString(36).slice(2,5),
     product_name:'', quantity:1, condition:'Bình thường', ship_fee:0, _search:'' })
   const [slipForm, setSlipForm] = React.useState<any>({
-    date: new Date().toISOString().split('T')[0], return_order_code:''
+    date: new Date().toISOString().split('T')[0], return_order_code:'', ship_fee:'0'
   })
   const [lines, setLines] = React.useState<any[]>([emptyLine()])
   const [searchStates, setSearchStates] = React.useState<Record<string,any[]>>({})
 
   const openAdd = () => {
-    setSlipForm({ date: new Date().toISOString().split('T')[0], return_order_code:'' })
+    setSlipForm({ date: new Date().toISOString().split('T')[0], return_order_code:'', ship_fee:'0' })
     setLines([emptyLine()])
     setSearchStates({})
     setShowAdd(true)
@@ -4452,14 +4454,12 @@ function ReturnItems({ user, allUsers, products, mobile }: any) {
                       background:T.redBg, color:T.red, cursor:'pointer', fontSize:12, fontFamily:'inherit' }}>✕</button>
                 )}
               </div>
-              <div style={{ display:'grid', gridTemplateColumns:'80px 1fr 100px', gap:8 }}>
+              <div style={{ display:'grid', gridTemplateColumns:'80px 1fr', gap:8 }}>
                 <Inp label="SL" type="number" value={String(line.quantity)}
                   onChange={(v) => updateLine(line._id, 'quantity', v)}/>
                 <Sel label="Tình trạng" value={line.condition}
                   onChange={(v) => updateLine(line._id, 'condition', v)}
                   options={['Bình thường','Móp','Rách','Hỏng','Khác'].map(c=>({value:c,label:c}))}/>
-                <Inp label="Ship (đ)" type="number" value={String(line.ship_fee)}
-                  onChange={(v) => updateLine(line._id, 'ship_fee', v)}/>
               </div>
             </div>
           ))}
@@ -4469,6 +4469,22 @@ function ReturnItems({ user, allUsers, products, mobile }: any) {
               cursor:'pointer', fontSize:12, fontFamily:'inherit', color:T.med }}>
             + Thêm sản phẩm
           </button>
+        </div>
+
+        {/* Ship fee — 1 lần cho cả phiếu */}
+        <div style={{ display:'grid', gridTemplateColumns:'1fr 160px', gap:12, marginBottom:12 }}>
+          <Inp label="Lý do hoàn" value={slipForm.reason||''}
+            onChange={(v) => setSlipForm((f: any) => ({...f,reason:v}))}
+            placeholder="VD: Khách đổi ý, giao sai, hỏng hàng..."/>
+          <div>
+            <div style={{ fontSize:12, fontWeight:500, color:T.med, marginBottom:5 }}>Phí ship (đ)</div>
+            <input type="number" value={slipForm.ship_fee||'0'}
+              onChange={e => setSlipForm((f: any) => ({...f,ship_fee:e.target.value}))}
+              style={{ width:'100%', padding:'8px 11px', border:`1px solid ${T.border}`, borderRadius:8,
+                fontSize:13, fontFamily:'inherit', color:T.dark, background:'#fff',
+                boxSizing:'border-box' as any, outline:'none' }}/>
+            <div style={{ fontSize:10, color:T.light, marginTop:3 }}>1 phiếu = 1 lần ship</div>
+          </div>
         </div>
 
         <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center' }}>
@@ -5908,7 +5924,7 @@ function WrongOrders({ user, allUsers, wrongOrders, setWrongOrders, mobile }: an
 
                       {/* Vi phạm */}
                       <span style={{ fontSize:11, color:violUser?T.red:T.light,
-                        overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap' }}>
+                        lineHeight:1.4 }}>
                         {violUser?'⚠️ '+violUser.name:'—'}
                       </span>
 
@@ -6943,10 +6959,11 @@ function InventoryModule({ user, allUsers, products, invSessions, setInvSessions
               return filtered.map((c: any, i: number) => {
                 const sess = invSessions.find((s: any) => s.id===c.session_id)
                 const DIFF_STATUS_CFG: any = {
-                  '':            {label:'⏳ Chưa xử lý',     color:T.red,   bg:T.redBg   },
-                  'found':       {label:'✅ Tìm được hàng',   color:T.green, bg:T.greenBg },
-                  'reason':      {label:'🔍 Tìm được NN',     color:T.blue,  bg:T.blueBg  },
-                  'no_reason':   {label:'❌ Không tìm được',  color:T.red,   bg:T.redBg   },
+                  '':            {label:'⏳ Chưa xử lý',     color:T.red,    bg:T.redBg   },
+                  'found':       {label:'✅ Tìm được hàng',   color:T.green,  bg:T.greenBg },
+                  'reason':      {label:'🔍 Tìm được NN',     color:T.blue,   bg:T.blueBg  },
+                  'no_reason':   {label:'❌ Không tìm được',  color:T.red,    bg:T.redBg   },
+                  'resolved':    {label:'✔️ Đã xử lý',         color:'#7C3AED', bg:'#EDE9FE' },
                 }
                 const dsc = DIFF_STATUS_CFG[c.diff_status||''] || DIFF_STATUS_CFG['']
                 return (
@@ -6968,10 +6985,13 @@ function InventoryModule({ user, allUsers, products, invSessions, setInvSessions
                       <span style={{fontSize:10,padding:'2px 7px',borderRadius:20,
                         color:dsc.color,background:dsc.bg,whiteSpace:'nowrap'}}>{dsc.label}</span>
                     </div>
-                    <div style={{display:'flex',gap:4,justifyContent:'flex-end'}}>
-                      {canCheck && (
+                    <div style={{display:'flex',flexDirection:'column',gap:3,alignItems:'flex-end'}}>
+                      {canManage ? (
                         <select value={c.diff_status||''} onChange={async e => {
-                          const upd = {diff_status:e.target.value}
+                          const val = e.target.value
+                          const now = new Date().toISOString()
+                          const upd: any = {diff_status:val}
+                          if (val) { upd.resolved_by = user.id; upd.resolved_at = now }
                           await db.from('inventory_checks').update(upd).eq('id',c.id)
                           updateCheck(c.id, upd)
                         }}
@@ -6981,7 +7001,17 @@ function InventoryModule({ user, allUsers, products, invSessions, setInvSessions
                           <option value="found">✅ Tìm được hàng</option>
                           <option value="reason">🔍 Tìm được NN</option>
                           <option value="no_reason">❌ Không tìm được</option>
+                          <option value="resolved">✔️ Đã xử lý</option>
                         </select>
+                      ) : (
+                        <span style={{fontSize:10,padding:'2px 7px',borderRadius:20,
+                          color:dsc.color,background:dsc.bg,whiteSpace:'nowrap'}}>{dsc.label}</span>
+                      )}
+                      {c.diff_status && c.resolved_by && (
+                        <div style={{fontSize:9,color:T.light,textAlign:'right',lineHeight:1.3}}>
+                          {allUsers.find((u: any)=>u.id===c.resolved_by)?.name||'?'}
+                          {c.resolved_at&&<> · {new Date(c.resolved_at).toLocaleDateString('vi-VN',{day:'2-digit',month:'2-digit'})}</>}
+                        </div>
                       )}
                     </div>
                   </div>
