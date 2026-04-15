@@ -3341,10 +3341,10 @@ function ShortageItems({ user, allUsers, mobile, products, setProducts }: any) {
               </span>
             </div>
           )}
-          <div style={{ display:'grid', gridTemplateColumns:mobile?'1fr':'1fr 1fr', gap:16 }}>
+          <div style={{ display:'grid', gridTemplateColumns:mobile?'1fr':'1fr 1fr', gap:mobile?0:16 }}>
           {/* ── Helper: compact row ── */}
           {(() => {
-            const CompactRow = ({ item }: any) => {
+            const CompactRow = ({ item, mobile: isMob }: any) => {
               const [expanded, setExpanded] = useState(false)
               const days = daysRemaining(item)
               const prod = products.find((p: any) =>
@@ -3374,14 +3374,15 @@ function ShortageItems({ user, allUsers, mobile, products, setProducts }: any) {
                 <div style={{ borderBottom:`1px solid ${T.border}` }}>
                   {/* ── Main row ── */}
                   <div onClick={() => setExpanded(v => !v)}
-                    style={{ display:'flex', alignItems:'center', gap:6, padding:'6px 10px',
+                    style={{ display:'flex', alignItems:'center', gap:6,
+                      padding: isMob ? '5px 10px' : '6px 10px',
                       cursor:'pointer', background:expanded?T.goldBg:'transparent',
                       transition:'background .15s' }}
                     onMouseEnter={e => { if(!expanded) (e.currentTarget as any).style.background=T.bg }}
                     onMouseLeave={e => { if(!expanded) (e.currentTarget as any).style.background='transparent' }}>
                     {/* Tên SP — 1 dòng compact */}
-                    <div style={{ flex:1, fontSize:11, fontWeight:500, color:T.dark,
-                      overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap', lineHeight:1.3 }}>
+                    <div style={{ flex:1, fontSize: isMob?11:12, fontWeight:500, color:T.dark,
+                      overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap', lineHeight:1.25 }}>
                       {item.product_name}
                     </div>
                     {/* Tồn kho + đặt hàng compact */}
@@ -3517,7 +3518,7 @@ function ShortageItems({ user, allUsers, mobile, products, setProducts }: any) {
                       {[...items].sort((a: any, b: any) => {
                         const order: any = { pending:0, incoming:1, burned:2, arrived:3 }
                         return (order[a.status]??1)-(order[b.status]??1)
-                      }).map((item: any) => <CompactRow key={item.id} item={item}/>)}
+                      }).map((item: any) => <CompactRow key={item.id} item={item} mobile={mobile}/>)}
                     </div>
                 }
               </div>
@@ -7168,20 +7169,16 @@ function InventoryModule({ user, allUsers, products, invSessions, setInvSessions
           {/* Discrepancy table */}
           <div style={{background:T.card,borderRadius:12,border:`1px solid ${T.border}`,overflow:'hidden',boxShadow:'0 1px 4px rgba(0,0,0,0.06)'}}>
             {!mobile && (
-              <div style={{display:'grid',gridTemplateColumns:'28px 100px 1fr 90px 60px 60px 60px 150px 120px',
+              <div style={{display:'grid',gridTemplateColumns:'28px 1fr 90px 60px 60px 60px 150px 120px',
                 padding:'8px 12px',background:T.bg,borderBottom:`2px solid ${T.border}`,
                 fontSize:10,fontWeight:700,color:T.light,textTransform:'uppercase',letterSpacing:.5,gap:8,
                 alignItems:'center'}}>
-                {/* Select all checkbox */}
-                <input type="checkbox" checked={selectedChecks.size>0 && filtered.every((c: any)=>selectedChecks.has(c.id))}
-                  onChange={e => {
-                    if (e.target.checked) setSelectedChecks(new Set(filtered.map((c: any)=>c.id)))
-                    else setSelectedChecks(new Set())
-                  }} style={{cursor:'pointer'}}/>
-                <span>Ngày KK</span><span>Sản phẩm</span><span>Mã SP</span>
+                <span></span>
+                <span>Sản phẩm</span>
                 <span style={{textAlign:'center'}}>Tồn HT</span>
                 <span style={{textAlign:'center'}}>Tồn TT</span>
                 <span style={{textAlign:'center'}}>Lệch</span>
+                <span></span>
                 <span>Trạng thái</span>
                 <span style={{textAlign:'right'}}>Thao tác</span>
               </div>
@@ -7192,7 +7189,19 @@ function InventoryModule({ user, allUsers, products, invSessions, setInvSessions
                 if (diffFilter==='neg' && c.diff>=0) return false
                 if (diffFilter==='pos' && c.diff<=0) return false
                 return true
-              }).sort((a: any,b: any) => Math.abs(b.diff)-Math.abs(a.diff))
+              }).sort((a: any,b: any) => {
+                const da = invSessions.find((s: any)=>s.id===a.session_id)?.date||''
+                const db2 = invSessions.find((s: any)=>s.id===b.session_id)?.date||''
+                return db2.localeCompare(da) || Math.abs(b.diff)-Math.abs(a.diff)
+              })
+              // Group by date
+              const byDate: Record<string,any[]> = {}
+              filtered.forEach((c: any) => {
+                const d = invSessions.find((s: any)=>s.id===c.session_id)?.date||'—'
+                if (!byDate[d]) byDate[d] = []
+                byDate[d].push(c)
+              })
+              const dates = Object.keys(byDate).sort((a,b)=>b.localeCompare(a))
 
               if (filtered.length===0) return (
                 <div style={{padding:'32px',textAlign:'center',color:T.light}}>
@@ -7201,83 +7210,95 @@ function InventoryModule({ user, allUsers, products, invSessions, setInvSessions
                 </div>
               )
 
-              return filtered.map((c: any, i: number) => {
-                const sess = invSessions.find((s: any) => s.id===c.session_id)
-                const DIFF_STATUS_CFG: any = {
-                  '':            {label:'⏳ Chưa xử lý',     color:T.red,    bg:T.redBg   },
-                  'found':       {label:'✅ Tìm được hàng',   color:T.green,  bg:T.greenBg },
-                  'reason':      {label:'🔍 Tìm được NN',     color:T.blue,   bg:T.blueBg  },
-                  'no_reason':   {label:'❌ Không tìm được',  color:T.red,    bg:T.redBg   },
-                  'resolved':    {label:'✔️ Đã xử lý',         color:'#7C3AED', bg:'#EDE9FE' },
-                }
-                const dsc = DIFF_STATUS_CFG[c.diff_status||''] || DIFF_STATUS_CFG['']
-                const isSel = selectedChecks.has(c.id)
+              const DIFF_CFG: any = {
+                '':          {label:'⏳ Chưa xử lý',    color:T.red,    bg:T.redBg  },
+                'found':     {label:'✅ Tìm được hàng',  color:T.green,  bg:T.greenBg},
+                'reason':    {label:'🔍 Tìm được NN',    color:T.blue,   bg:T.blueBg },
+                'no_reason': {label:'❌ Không tìm được', color:T.red,    bg:T.redBg  },
+                'resolved':  {label:'✔️ Đã xử lý',       color:'#7C3AED',bg:'#EDE9FE'},
+              }
+
+              return dates.map((date: string) => {
+                const dateItems = byDate[date]
+                const dateIds   = dateItems.map((c: any) => c.id)
+                const allDateSel = dateIds.every((id: string) => selectedChecks.has(id))
+                const lech = dateItems.filter((c: any) => c.diff!==0).length
                 return (
-                  <div key={c.id} style={{display:mobile?'block':'grid',
-                    gridTemplateColumns:'28px 100px 1fr 90px 60px 60px 60px 150px 120px',
-                    padding:'9px 12px',gap:8,alignItems:'center',
-                    borderBottom:i<filtered.length-1?`1px solid ${T.border}`:'none',
-                    background:isSel?T.goldBg:c.diff_status===''?(i%2===0?'#FFF5F5':'#FFF0F0'):(i%2===0?'#fff':T.rowAlt)}}>
-                    {/* Checkbox */}
-                    <input type="checkbox" checked={isSel}
-                      onChange={() => setSelectedChecks(prev => {
-                        const n = new Set(prev)
-                        isSel ? n.delete(c.id) : n.add(c.id)
-                        return n
-                      })} style={{cursor:'pointer'}}/>
-                    {/* Ngày KK — clickable to select all in session */}
-                    <span style={{fontSize:11,color:T.blue,cursor:'pointer',textDecoration:'underline dotted'}}
-                      title="Click để chọn tất cả mã cùng phiên KK"
-                      onClick={() => {
-                        const sameSession = filtered.filter((x: any) => x.session_id===c.session_id).map((x: any)=>x.id)
-                        const allSel = sameSession.every((id: string) => selectedChecks.has(id))
-                        setSelectedChecks(prev => {
+                  <div key={date}>
+                    {/* ── Date group header ── */}
+                    <div style={{display:'flex',alignItems:'center',gap:10,
+                      padding:'8px 12px',background:T.bg,borderBottom:`1px solid ${T.border}`,
+                      borderTop:`2px solid ${T.border}`,position:'sticky',top:0,zIndex:1}}>
+                      <input type="checkbox"
+                        checked={allDateSel && dateIds.length>0}
+                        onChange={() => setSelectedChecks(prev => {
                           const n = new Set(prev)
-                          allSel ? sameSession.forEach((id: string) => n.delete(id)) : sameSession.forEach((id: string) => n.add(id))
+                          allDateSel ? dateIds.forEach((id: string) => n.delete(id))
+                                     : dateIds.forEach((id: string) => n.add(id))
                           return n
-                        })
-                      }}>{sess?.date||'—'}</span>
-                    <div>
-                      <div style={{fontSize:12,fontWeight:500,color:T.dark}}>{c.product_name}</div>
+                        })} style={{cursor:'pointer'}}/>
+                      <span style={{fontSize:12,fontWeight:700,color:T.dark}}>📅 {date}</span>
+                      <span style={{fontSize:11,color:T.blue}}>{dateItems.length} mã lệch</span>
+                      {lech>0 && <span style={{fontSize:11,color:T.red}}>⚠️ {lech} chưa xử lý</span>}
                     </div>
-                    <span style={{fontSize:10,color:T.light,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{c.product_code}</span>
-                    <span style={{fontSize:12,textAlign:'center',color:T.med}}>{c.system_qty}</span>
-                    <span style={{fontSize:12,textAlign:'center',color:T.dark,fontWeight:600}}>{c.actual_qty}</span>
-                    <span style={{fontSize:13,textAlign:'center',fontWeight:800,
-                      color:c.diff>0?T.blue:T.red}}>{c.diff>0?'+':''}{c.diff}</span>
-                    <div style={{display:'flex',alignItems:'center',gap:6}}>
-                      <span style={{fontSize:10,padding:'2px 7px',borderRadius:20,
-                        color:dsc.color,background:dsc.bg,whiteSpace:'nowrap'}}>{dsc.label}</span>
-                    </div>
-                    <div style={{display:'flex',flexDirection:'column',gap:3,alignItems:'flex-end'}}>
-                      {canManage ? (
-                        <select value={c.diff_status||''} onChange={async e => {
-                          const val = e.target.value
-                          const now = new Date().toISOString()
-                          const upd: any = {diff_status:val}
-                          if (val) { upd.resolved_by = user.id; upd.resolved_at = now }
-                          await db.from('inventory_checks').update(upd).eq('id',c.id)
-                          updateCheck(c.id, upd)
-                        }}
-                          style={{padding:'3px 6px',borderRadius:8,border:`1px solid ${T.border}`,
-                            fontSize:10,fontFamily:'inherit',color:T.dark,background:T.bg,cursor:'pointer'}}>
-                          <option value="">⏳ Chưa XL</option>
-                          <option value="found">✅ Tìm được hàng</option>
-                          <option value="reason">🔍 Tìm được NN</option>
-                          <option value="no_reason">❌ Không tìm được</option>
-                          <option value="resolved">✔️ Đã xử lý</option>
-                        </select>
-                      ) : (
-                        <span style={{fontSize:10,padding:'2px 7px',borderRadius:20,
-                          color:dsc.color,background:dsc.bg,whiteSpace:'nowrap'}}>{dsc.label}</span>
-                      )}
-                      {c.diff_status && c.resolved_by && (
-                        <div style={{fontSize:9,color:T.light,textAlign:'right',lineHeight:1.3}}>
-                          {allUsers.find((u: any)=>u.id===c.resolved_by)?.name||'?'}
-                          {c.resolved_at&&<> · {new Date(c.resolved_at).toLocaleDateString('vi-VN',{day:'2-digit',month:'2-digit'})}</>}
+                    {/* ── Rows ── */}
+                    {dateItems.map((c: any, i: number) => {
+                      const dsc = DIFF_CFG[c.diff_status||''] || DIFF_CFG['']
+                      const isSel = selectedChecks.has(c.id)
+                      return (
+                        <div key={c.id} style={{display:'grid',
+                          gridTemplateColumns:'28px 1fr 90px 60px 60px 60px 150px 120px',
+                          padding:'8px 12px',gap:8,alignItems:'center',
+                          borderBottom:i<dateItems.length-1?`1px solid ${T.border}`:'none',
+                          background:isSel?T.goldBg:c.diff_status===''?(i%2===0?'#FFF5F5':'#FFF0F0'):(i%2===0?'#fff':T.rowAlt)}}>
+                          <input type="checkbox" checked={isSel}
+                            onChange={() => setSelectedChecks(prev => {
+                              const n = new Set(prev)
+                              isSel ? n.delete(c.id) : n.add(c.id)
+                              return n
+                            })} style={{cursor:'pointer'}}/>
+                          <div>
+                            <div style={{fontSize:12,fontWeight:500,color:T.dark,lineHeight:1.3}}>{c.product_name}</div>
+                            <div style={{fontSize:10,color:T.light}}>{c.product_code}</div>
+                          </div>
+                          <span style={{fontSize:11,textAlign:'center',color:T.med}}>{c.system_qty}</span>
+                          <span style={{fontSize:11,textAlign:'center',color:T.dark,fontWeight:600}}>{c.actual_qty}</span>
+                          <span style={{fontSize:13,textAlign:'center',fontWeight:800,
+                            color:c.diff>0?T.blue:T.red}}>{c.diff>0?'+':''}{c.diff}</span>
+                          <div/>
+                          <span style={{fontSize:10,padding:'2px 7px',borderRadius:20,
+                            color:dsc.color,background:dsc.bg,whiteSpace:'nowrap'}}>{dsc.label}</span>
+                          <div style={{display:'flex',flexDirection:'column',gap:3,alignItems:'flex-end'}}>
+                            {canManage ? (
+                              <select value={c.diff_status||''} onChange={async e => {
+                                const val = e.target.value
+                                const now = new Date().toISOString()
+                                const upd: any = {diff_status:val}
+                                if (val) { upd.resolved_by = user.id; upd.resolved_at = now }
+                                await db.from('inventory_checks').update(upd).eq('id',c.id)
+                                updateCheck(c.id, upd)
+                              }}
+                                style={{padding:'3px 6px',borderRadius:8,border:`1px solid ${T.border}`,
+                                  fontSize:10,fontFamily:'inherit',color:T.dark,background:T.bg,cursor:'pointer'}}>
+                                <option value="">⏳ Chưa XL</option>
+                                <option value="found">✅ Tìm được hàng</option>
+                                <option value="reason">🔍 Tìm được NN</option>
+                                <option value="no_reason">❌ Không tìm được</option>
+                                <option value="resolved">✔️ Đã xử lý</option>
+                              </select>
+                            ) : (
+                              <span style={{fontSize:10,padding:'2px 7px',borderRadius:20,
+                                color:dsc.color,background:dsc.bg,whiteSpace:'nowrap'}}>{dsc.label}</span>
+                            )}
+                            {c.diff_status && c.resolved_by && (
+                              <div style={{fontSize:9,color:T.light,textAlign:'right'}}>
+                                {allUsers.find((u: any)=>u.id===c.resolved_by)?.name||'?'}
+                              </div>
+                            )}
+                          </div>
                         </div>
-                      )}
-                    </div>
+                      )
+                    })}
                   </div>
                 )
               })
@@ -7420,50 +7441,9 @@ function InventoryModule({ user, allUsers, products, invSessions, setInvSessions
               Thường là: tiền ship, túi, hộp giấy, phụ kiện...
             </div>
             {/* Add new excluded product */}
-            {(() => {
-              const [excSearch, setExcSearch] = React.useState('')
-              const norm3 = (s: string) => (s||'').toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g,'').replace(/đ/g,'d')
-              const excResults = excSearch.length>=2
-                ? products.filter((p: any) =>
-                    !excludedCodes.has(p.code) &&
-                    norm3(p.name+' '+p.code).includes(norm3(excSearch))
-                  ).slice(0,8)
-                : []
-              return (
-                <div style={{marginBottom:12,position:'relative'}}>
-                  <input value={excSearch} onChange={e => setExcSearch(e.target.value)}
-                    placeholder="🔍 Tìm mã SP để thêm vào danh sách không KK..."
-                    style={{width:'100%',padding:'8px 12px',border:`1px solid ${T.border}`,
-                      borderRadius:8,fontSize:12,fontFamily:'inherit',color:T.dark,
-                      background:'#fff',boxSizing:'border-box' as any,outline:'none'}}/>
-                  {excResults.length>0 && (
-                    <div style={{position:'absolute',top:'100%',left:0,right:0,zIndex:100,
-                      background:'#fff',border:`1px solid ${T.border}`,borderRadius:8,
-                      boxShadow:'0 4px 12px rgba(0,0,0,0.1)',maxHeight:240,overflowY:'auto'}}>
-                      {excResults.map((p: any) => (
-                        <div key={p.code} onClick={async () => {
-                          const row = {product_code:p.code, excluded_by:user.id,
-                            excluded_at:new Date().toISOString(), reason:'Không cần KK'}
-                          await db.from('kk_excluded_products').upsert(row)
-                          setExcludedCodes(prev => new Set([...prev, p.code]))
-                          setExcSearch('')
-                        }}
-                          style={{padding:'8px 12px',cursor:'pointer',borderBottom:`1px solid ${T.border}`,
-                            display:'flex',justifyContent:'space-between',alignItems:'center'}}
-                          onMouseEnter={e => (e.currentTarget as any).style.background=T.bg}
-                          onMouseLeave={e => (e.currentTarget as any).style.background='#fff'}>
-                          <div>
-                            <div style={{fontSize:12,color:T.dark}}>{p.name}</div>
-                            <div style={{fontSize:10,color:T.light}}>{p.code}</div>
-                          </div>
-                          <span style={{fontSize:11,color:T.green}}>+ Thêm</span>
-                        </div>
-                      ))}
-                    </div>
-                  )}
-                </div>
-              )
-            })()}
+            <ExcludedSearchBox products={products} excludedCodes={excludedCodes}
+              user={user} onAdd={(code: string) =>
+                setExcludedCodes(prev => new Set([...prev, code]))}/>
           </Card>
 
           {/* Excluded list */}
@@ -8282,6 +8262,53 @@ function NVCheckGroup({ nv, nvChecks, nvDone }: any) {
                 color:c.diff==null?T.light:c.diff===0?T.green:c.diff>0?T.blue:T.red}}>
                 {c.diff==null?'—':c.diff===0?'✓':c.diff>0?'+'+c.diff:c.diff}
               </span>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  )
+}
+
+// ── ExcludedSearchBox — standalone component (no hook in IIFE) ─────
+function ExcludedSearchBox({ products, excludedCodes, user, onAdd }: any) {
+  const [excSearch, setExcSearch] = useState('')
+  const norm3 = (s: string) => (s||'').toLowerCase()
+    .normalize('NFD').replace(/[\u0300-\u036f]/g,'').replace(/đ/g,'d')
+  const excResults = excSearch.length >= 2
+    ? (products||[]).filter((p: any) =>
+        !excludedCodes.has(p.code) &&
+        norm3(p.name+' '+p.code).includes(norm3(excSearch))
+      ).slice(0,8)
+    : []
+  return (
+    <div style={{marginBottom:12, position:'relative'}}>
+      <input value={excSearch} onChange={e => setExcSearch(e.target.value)}
+        placeholder="🔍 Tìm mã SP để thêm vào danh sách không KK..."
+        style={{width:'100%',padding:'8px 12px',border:`1px solid ${T.border}`,
+          borderRadius:8,fontSize:12,fontFamily:'inherit',color:T.dark,
+          background:'#fff',boxSizing:'border-box' as any,outline:'none'}}/>
+      {excResults.length > 0 && (
+        <div style={{position:'absolute',top:'100%',left:0,right:0,zIndex:200,
+          background:'#fff',border:`1px solid ${T.border}`,borderRadius:8,
+          boxShadow:'0 4px 12px rgba(0,0,0,0.12)',maxHeight:240,overflowY:'auto'}}>
+          {excResults.map((p: any) => (
+            <div key={p.code} onClick={async () => {
+              const row = {product_code:p.code, excluded_by:user.id,
+                excluded_at:new Date().toISOString(), reason:'Không cần KK'}
+              await db.from('kk_excluded_products').upsert(row)
+              onAdd(p.code)
+              setExcSearch('')
+            }}
+              style={{padding:'8px 12px',cursor:'pointer',borderBottom:`1px solid ${T.border}`,
+                display:'flex',justifyContent:'space-between',alignItems:'center'}}
+              onMouseEnter={e=>(e.currentTarget as any).style.background=T.bg}
+              onMouseLeave={e=>(e.currentTarget as any).style.background='#fff'}>
+              <div>
+                <div style={{fontSize:12,color:T.dark}}>{p.name}</div>
+                <div style={{fontSize:10,color:T.light}}>{p.code}</div>
+              </div>
+              <span style={{fontSize:11,color:T.green,fontWeight:600}}>+ Thêm</span>
             </div>
           ))}
         </div>
