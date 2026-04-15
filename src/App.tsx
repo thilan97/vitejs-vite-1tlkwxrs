@@ -4094,9 +4094,7 @@ function ReturnItems({ user, allUsers, products, mobile }: any) {
     <div style={{ padding:`0 ${p} ${mobile?'80px':p}` }}>
       <Topbar mobile={mobile} title="🔄 Báo cáo hàng hoàn"
         subtitle={`Tháng ${fm}/${fy} — ${slips.length} phiếu · ${filteredItems.length} sản phẩm`}
-        action={
-          {canAdd && <GoldBtn small onClick={openAdd}>+ Nhập phiếu hoàn</GoldBtn>}
-        }/>
+        action={canAdd ? <GoldBtn small onClick={openAdd}>+ Nhập phiếu hoàn</GoldBtn> : undefined}/>
 
       {/* Tabs + Month + Search */}
       <div style={{ display:'flex', gap:8, marginBottom:14, flexWrap:'wrap', alignItems:'center' }}>
