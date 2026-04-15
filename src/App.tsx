@@ -2776,7 +2776,7 @@ function Announcements({ user, allUsers, mobile }: any) {
 
 // ── SHORTAGE ITEMS ───────────────────────────────
 // ── MANAGER SHORTAGE ROW ─────────────────────────────
-function MgrShortageRow({ item, idx, total, products, norm, setItems }: any) {
+function MgrShortageRow({ item, idx, total, products, norm, setItems, mobile: isMob }: any) {
   const [open, setOpen]       = useState(false)
   const [editMode, setEditMode] = useState(false)
   const [arrDate, setArrDate]  = useState(item.arrival_date||'')
@@ -2832,7 +2832,36 @@ function MgrShortageRow({ item, idx, total, products, norm, setItems }: any) {
   return (
     <div style={{ borderBottom: idx<total-1?`1px solid ${T.border}`:'none',
       background: open ? T.goldBg : idx%2===0 ? '#fff' : T.rowAlt }}>
-      {/* ── Grid row matching header ── */}
+
+      {isMob ? (
+        /* ── Mobile compact card ── */
+        <div onClick={() => setOpen((v: boolean) => !v)}
+          style={{ display:'flex', alignItems:'center', gap:8, padding:'7px 12px', cursor:'pointer' }}>
+          {/* Hot badge */}
+          <div style={{ flexShrink:0 }}>
+            {hot>=3 && <span style={{ fontSize:9,fontWeight:700,color:'#BF360C',background:'#FBE9E7',padding:'1px 5px',borderRadius:10 }}>🔥{hot}</span>}
+            {hot===2 && <span style={{ fontSize:9,fontWeight:700,color:T.amber,background:T.amberBg,padding:'1px 5px',borderRadius:10 }}>⚡{hot}</span>}
+            {hot<=1 && hot>0 && <span style={{ fontSize:9,color:T.light,padding:'1px 4px' }}>👤1</span>}
+          </div>
+          {/* Name — 1 line ellipsis */}
+          <div style={{ flex:1, minWidth:0 }}>
+            <div style={{ fontSize:12,fontWeight:600,color:T.dark,
+              overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap' }}>
+              {item.product_name}
+            </div>
+            <div style={{ display:'flex',gap:6,marginTop:2,alignItems:'center' }}>
+              {stock!=null && <span style={{ fontSize:10,fontWeight:700,
+                color:stock===0?T.red:stock<=5?T.amber:T.green }}>Tồn: {stock}</span>}
+              {ordered>0 && <span style={{ fontSize:10,color:T.blue }}>KH: {ordered}</span>}
+            </div>
+          </div>
+          {/* Status badge */}
+          <span style={{ fontSize:10,fontWeight:700,padding:'2px 7px',borderRadius:20,
+            color:sb.color,background:sb.bg,whiteSpace:'nowrap',flexShrink:0 }}>{sb.label}</span>
+          <span style={{ fontSize:10,color:T.light,flexShrink:0 }}>{open?'▲':'▼'}</span>
+        </div>
+      ) : (
+      /* ── Desktop grid row ── */
       <div style={{ display:'grid',
         gridTemplateColumns:'1fr 70px 70px 90px 120px',
         padding:'9px 14px', gap:8, alignItems:'center' }}>
@@ -2903,6 +2932,7 @@ function MgrShortageRow({ item, idx, total, products, norm, setItems }: any) {
           <span style={{ fontSize:9, color:T.light }}>{open?'▲':'▼'}</span>
         </div>
       </div>
+      )} {/* end desktop-only grid */}
 
       {open && (
         <div style={{ padding:'10px 14px 14px', background:T.bg, borderTop:`1px solid ${T.border}` }}>
@@ -7183,8 +7213,9 @@ function InventoryModule({ user, allUsers, products, invSessions, setInvSessions
                 <span style={{textAlign:'right'}}>Thao tác</span>
               </div>
             )}
-            {(() => {
-              const filtered = monthChecks.filter((c: any) => {
+            {/* filtered computed outside for checkbox header access */}
+            {(()=>{
+              const filtered=monthChecks.filter((c: any)=>{
                 if (c.diff==null || c.diff===0) return false
                 if (diffFilter==='neg' && c.diff>=0) return false
                 if (diffFilter==='pos' && c.diff<=0) return false
@@ -7248,8 +7279,10 @@ function InventoryModule({ user, allUsers, products, invSessions, setInvSessions
                       return (
                         <div key={c.id} style={{display:'grid',
                           gridTemplateColumns:'28px 1fr 90px 60px 60px 60px 150px 120px',
-                          padding:'8px 12px',gap:8,alignItems:'center',
+                          padding:'8px 12px 8px 28px',gap:8,alignItems:'center',
                           borderBottom:i<dateItems.length-1?`1px solid ${T.border}`:'none',
+                          borderLeft:`3px solid ${isSel?T.gold:T.border}`,
+                          marginLeft:16,
                           background:isSel?T.goldBg:c.diff_status===''?(i%2===0?'#FFF5F5':'#FFF0F0'):(i%2===0?'#fff':T.rowAlt)}}>
                           <input type="checkbox" checked={isSel}
                             onChange={() => setSelectedChecks(prev => {
@@ -7431,66 +7464,10 @@ function InventoryModule({ user, allUsers, products, invSessions, setInvSessions
 
       {/* ── TAB: MÃ KHÔNG KK ── */}
       {tab==='excluded' && (
-        <div style={{display:'flex',flexDirection:'column',gap:12}}>
-          <Card>
-            <div style={{fontSize:13,fontWeight:700,color:T.dark,marginBottom:4}}>
-              🚫 Danh sách mã không kiểm kê
-            </div>
-            <div style={{fontSize:11,color:T.med,marginBottom:12}}>
-              Các mã trong danh sách này sẽ bị loại ra khi hệ thống gợi ý sản phẩm kiểm kê.
-              Thường là: tiền ship, túi, hộp giấy, phụ kiện...
-            </div>
-            {/* Add new excluded product */}
-            <ExcludedSearchBox products={products} excludedCodes={excludedCodes}
-              user={user} onAdd={(code: string) =>
-                setExcludedCodes(prev => new Set([...prev, code]))}/>
-          </Card>
-
-          {/* Excluded list */}
-          <div style={{background:T.card,borderRadius:12,border:`1px solid ${T.border}`,overflow:'hidden',boxShadow:'0 1px 4px rgba(0,0,0,0.06)'}}>
-            {!mobile && (
-              <div style={{display:'grid',gridTemplateColumns:'1fr 120px 120px 80px',
-                padding:'8px 14px',background:T.bg,borderBottom:`2px solid ${T.border}`,
-                fontSize:10,fontWeight:700,color:T.light,textTransform:'uppercase',letterSpacing:.5,gap:8}}>
-                <span>Sản phẩm</span>
-                <span>Mã SP</span>
-                <span>Người thêm</span>
-                <span style={{textAlign:'right'}}>Bỏ khỏi DS</span>
-              </div>
-            )}
-            {excludedCodes.size===0
-              ? <div style={{padding:'32px',textAlign:'center',color:T.light,fontSize:12}}>
-                  Chưa có mã nào trong danh sách không KK
-                </div>
-              : [...excludedCodes].map((code: string, i: number) => {
-                  const prod = products.find((p: any) => p.code===code)
-                  return (
-                    <div key={code} style={{display:'grid',
-                      gridTemplateColumns:'1fr 120px 120px 80px',
-                      padding:'9px 14px',gap:8,alignItems:'center',
-                      borderBottom:i<excludedCodes.size-1?`1px solid ${T.border}`:'none',
-                      background:i%2===0?'#fff':T.rowAlt}}>
-                      <div>
-                        <div style={{fontSize:12,color:T.dark}}>{prod?.name||code}</div>
-                      </div>
-                      <span style={{fontSize:11,color:T.light}}>{code}</span>
-                      <span style={{fontSize:11,color:T.light}}>—</span>
-                      <div style={{textAlign:'right'}}>
-                        <button onClick={async () => {
-                          await db.from('kk_excluded_products').delete().eq('product_code',code)
-                          setExcludedCodes(prev => { const n=new Set(prev); n.delete(code); return n })
-                        }}
-                          style={{padding:'3px 10px',borderRadius:20,border:`1px solid ${T.redBg}`,
-                            background:T.redBg,cursor:'pointer',fontSize:10,fontFamily:'inherit',color:T.red}}>
-                          Bỏ
-                        </button>
-                      </div>
-                    </div>
-                  )
-                })
-            }
-          </div>
-        </div>
+        <ExcludedTab products={products} excludedCodes={excludedCodes}
+          user={user} mobile={mobile}
+          onAdd={(code: string) => setExcludedCodes(prev => new Set([...prev, code]))}
+          onRemove={(code: string) => setExcludedCodes(prev => {const n=new Set(prev);n.delete(code);return n})}/>
       )}
 
       {/* ── Modal phân chia mã ── */}
@@ -8313,6 +8290,156 @@ function ExcludedSearchBox({ products, excludedCodes, user, onAdd }: any) {
           ))}
         </div>
       )}
+    </div>
+  )
+}
+
+// ── ExcludedTab — full product table with multi-select ────────
+function ExcludedTab({ products, excludedCodes, user, mobile, onAdd, onRemove }: any) {
+  const [search, setSearch] = useState('')
+  const [selected, setSelected] = useState<Set<string>>(new Set())
+  const [viewMode, setViewMode] = useState<'all'|'excluded'>('excluded')
+  const norm_ = (s: string) => (s||'').toLowerCase()
+    .normalize('NFD').replace(/[\u0300-\u036f]/g,'').replace(/đ/g,'d')
+
+  const filtered = products.filter((p: any) => {
+    if (viewMode==='excluded' && !excludedCodes.has(p.code)) return false
+    if (search.length>=1 && !norm_(p.name+' '+p.code).includes(norm_(search))) return false
+    return true
+  }).slice(0, 200)
+
+  const selAll = filtered.length>0 && filtered.every((p: any)=>selected.has(p.code))
+
+  const addSelected = async () => {
+    const toAdd = [...selected].filter((c: string)=>!excludedCodes.has(c))
+    for (const code of toAdd) {
+      await db.from('kk_excluded_products').upsert({
+        product_code:code, excluded_by:user.id,
+        excluded_at:new Date().toISOString(), reason:'Không cần KK'
+      })
+      onAdd(code)
+    }
+    setSelected(new Set())
+  }
+
+  const removeSelected = async () => {
+    const toRm = [...selected].filter((c: string)=>excludedCodes.has(c))
+    for (const code of toRm) {
+      await db.from('kk_excluded_products').delete().eq('product_code',code)
+      onRemove(code)
+    }
+    setSelected(new Set())
+  }
+
+  return (
+    <div style={{display:'flex',flexDirection:'column',gap:10}}>
+      {/* Header card */}
+      <Card style={{padding:'12px 14px'}}>
+        <div style={{fontSize:13,fontWeight:700,color:T.dark,marginBottom:4}}>🚫 Mã không kiểm kê</div>
+        <div style={{fontSize:11,color:T.med}}>
+          Mã trong danh sách này sẽ bị loại khỏi gợi ý khi tạo phiên KK.
+          Thường là: tiền ship, túi, hộp giấy, phụ kiện...
+        </div>
+      </Card>
+
+      {/* Controls */}
+      <div style={{display:'flex',gap:8,flexWrap:'wrap',alignItems:'center'}}>
+        <input value={search} onChange={e => setSearch(e.target.value)}
+          placeholder="🔍 Tìm mã SP hoặc tên..."
+          style={{flex:1,minWidth:180,padding:'7px 12px',border:`1px solid ${T.border}`,
+            borderRadius:20,fontSize:12,fontFamily:'inherit',color:T.dark,
+            background:'#fff',outline:'none'}}/>
+        {[{id:'excluded',label:`🚫 Đang loại (${excludedCodes.size})`},{id:'all',label:'📦 Tất cả SP'}].map(v => (
+          <button key={v.id} onClick={() => setViewMode(v.id as any)}
+            style={{padding:'6px 13px',borderRadius:20,cursor:'pointer',fontFamily:'inherit',fontSize:11,
+              border:`1.5px solid ${viewMode===v.id?T.gold:T.border}`,
+              background:viewMode===v.id?T.goldBg:'transparent',
+              color:viewMode===v.id?T.goldText:T.med,fontWeight:viewMode===v.id?700:400}}>
+            {v.label}
+          </button>
+        ))}
+      </div>
+
+      {/* Bulk action bar */}
+      {selected.size > 0 && (
+        <div style={{display:'flex',gap:8,alignItems:'center',padding:'9px 14px',
+          background:T.goldBg,borderRadius:10,border:`1.5px solid ${T.gold}`,flexWrap:'wrap'}}>
+          <span style={{fontSize:12,fontWeight:700,color:T.goldText}}>Đã chọn {selected.size} mã</span>
+          <button onClick={addSelected}
+            style={{padding:'5px 14px',borderRadius:20,border:'none',background:T.red,
+              cursor:'pointer',fontFamily:'inherit',fontSize:11,color:'#fff',fontWeight:700}}>
+            🚫 Thêm vào danh sách không KK
+          </button>
+          <button onClick={removeSelected}
+            style={{padding:'5px 14px',borderRadius:20,border:`1.5px solid ${T.green}`,
+              background:T.greenBg,cursor:'pointer',fontFamily:'inherit',fontSize:11,
+              color:T.green,fontWeight:700}}>
+            ✅ Bỏ khỏi danh sách không KK
+          </button>
+          <button onClick={() => setSelected(new Set())}
+            style={{padding:'5px 10px',borderRadius:20,border:`1px solid ${T.border}`,
+              background:'transparent',cursor:'pointer',fontFamily:'inherit',fontSize:11,color:T.light}}>
+            Bỏ chọn
+          </button>
+        </div>
+      )}
+
+      {/* Table */}
+      <div style={{background:T.card,borderRadius:12,border:`1px solid ${T.border}`,overflow:'hidden',boxShadow:'0 1px 4px rgba(0,0,0,0.06)'}}>
+        {/* Header */}
+        <div style={{display:'grid',gridTemplateColumns:'36px 1fr 100px 70px',
+          padding:'8px 14px',background:T.bg,borderBottom:`2px solid ${T.border}`,
+          fontSize:10,fontWeight:700,color:T.light,textTransform:'uppercase',letterSpacing:.5,gap:8,
+          alignItems:'center'}}>
+          <input type="checkbox" checked={selAll}
+            onChange={() => setSelected(selAll
+              ? new Set()
+              : new Set(filtered.map((p: any)=>p.code))
+            )} style={{cursor:'pointer'}}/>
+          <span>Sản phẩm</span>
+          <span>Mã SP</span>
+          <span style={{textAlign:'center'}}>Trạng thái</span>
+        </div>
+        {filtered.length===0
+          ? <div style={{padding:'32px',textAlign:'center',color:T.light,fontSize:12}}>
+              {viewMode==='excluded'?'Chưa có mã nào trong danh sách':'Không tìm thấy sản phẩm'}
+            </div>
+          : filtered.map((p: any, i: number) => {
+              const isSel   = selected.has(p.code)
+              const isExcl  = excludedCodes.has(p.code)
+              return (
+                <div key={p.code} onClick={() => setSelected(prev => {
+                  const n = new Set(prev)
+                  isSel ? n.delete(p.code) : n.add(p.code)
+                  return n
+                })}
+                  style={{display:'grid',gridTemplateColumns:'36px 1fr 100px 70px',
+                    padding:'8px 14px',gap:8,alignItems:'center',cursor:'pointer',
+                    borderBottom:i<filtered.length-1?`1px solid ${T.border}`:'none',
+                    background:isSel?T.goldBg:i%2===0?'#fff':T.rowAlt}}>
+                  <input type="checkbox" checked={isSel}
+                    onChange={() => {}} style={{cursor:'pointer',pointerEvents:'none'}}/>
+                  <div>
+                    <div style={{fontSize:12,color:T.dark,fontWeight:500,lineHeight:1.4}}>{p.name}</div>
+                  </div>
+                  <span style={{fontSize:11,color:T.light}}>{p.code}</span>
+                  <div style={{textAlign:'center'}}>
+                    {isExcl
+                      ? <span style={{fontSize:10,padding:'2px 7px',borderRadius:20,
+                          background:T.redBg,color:T.red,fontWeight:700}}>🚫 Loại</span>
+                      : <span style={{fontSize:10,color:T.light}}>—</span>
+                    }
+                  </div>
+                </div>
+              )
+            })
+        }
+        {filtered.length>=200 && (
+          <div style={{padding:'8px',textAlign:'center',fontSize:11,color:T.light,borderTop:`1px solid ${T.border}`}}>
+            Đang hiển thị 200 kết quả đầu. Dùng tìm kiếm để thu hẹp.
+          </div>
+        )}
+      </div>
     </div>
   )
 }
