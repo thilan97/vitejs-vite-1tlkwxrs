@@ -2805,29 +2805,81 @@ function MgrShortageRow({ item, idx, total, products, norm, setItems }: any) {
     await db.from('shortage_items').delete().eq('id', item.id)
   }
 
+  const ordered = prod?.ordered_qty ?? 0
+
   return (
-    <div style={{ borderBottom: idx<total-1?`1px solid ${T.border}`:'none' }}>
-      <div onClick={() => setOpen(v => !v)}
-        style={{ display:'flex', alignItems:'center', gap:8, padding:'8px 12px',
-          cursor:'pointer', background:open?T.goldBg:'transparent', transition:'background .12s' }}
-        onMouseEnter={e => { if(!open)(e.currentTarget as any).style.background=T.bg }}
-        onMouseLeave={e => { if(!open)(e.currentTarget as any).style.background='transparent' }}>
-        {hot>=3 && <span style={{ fontSize:9, fontWeight:700, color:'#BF360C', background:'#FBE9E7', padding:'1px 5px', borderRadius:10, flexShrink:0 }}>🔥{hot}</span>}
-        {hot===2 && <span style={{ fontSize:9, fontWeight:700, color:T.amber, background:T.amberBg, padding:'1px 5px', borderRadius:10, flexShrink:0 }}>⚡{hot}</span>}
-        <div style={{ flex:1, fontSize:12, fontWeight:500, color:T.dark,
-          display:'-webkit-box', WebkitLineClamp:2, WebkitBoxOrient:'vertical', overflow:'hidden', lineHeight:1.4 }}>
-          {item.product_name}
-          {item.product_code && <span style={{ fontSize:10, color:T.light, marginLeft:6 }}>#{item.product_code}</span>}
+    <div style={{ borderBottom: idx<total-1?`1px solid ${T.border}`:'none',
+      background: open ? T.goldBg : idx%2===0 ? '#fff' : T.rowAlt }}>
+      {/* ── Grid row matching header ── */}
+      <div style={{ display:'grid',
+        gridTemplateColumns:'1fr 70px 70px 90px 120px',
+        padding:'9px 14px', gap:8, alignItems:'center' }}>
+
+        {/* Sản phẩm */}
+        <div>
+          <div style={{ display:'flex', alignItems:'center', gap:5, flexWrap:'wrap', marginBottom:2 }}>
+            {hot>=3 && <span style={{ fontSize:9, fontWeight:700, color:'#BF360C', background:'#FBE9E7', padding:'1px 5px', borderRadius:10 }}>🔥{hot}</span>}
+            {hot===2 && <span style={{ fontSize:9, fontWeight:700, color:T.amber, background:T.amberBg, padding:'1px 5px', borderRadius:10 }}>⚡{hot}</span>}
+            <span style={{ fontSize:12, fontWeight:600, color:T.dark, lineHeight:1.4 }}>{item.product_name}</span>
+            {item.product_code && <span style={{ fontSize:10, color:T.light }}>#{item.product_code}</span>}
+          </div>
+          {(item.reporters||[]).length > 0 && (
+            <div style={{ display:'flex', gap:4, flexWrap:'wrap', marginTop:2 }}>
+              {(item.reporters||[]).map((r: any, i: number) => (
+                <span key={i} style={{ fontSize:10, padding:'1px 7px', borderRadius:20,
+                  background:T.goldBg, color:T.goldText }}>{r.name}</span>
+              ))}
+            </div>
+          )}
         </div>
-        {stock!=null && (
-          <span style={{ fontSize:10, fontWeight:700, padding:'1px 6px', borderRadius:20, flexShrink:0,
-            color:stock===0?T.red:stock<=5?T.amber:T.green,
-            background:stock===0?T.redBg:stock<=5?T.amberBg:T.greenBg }}>{stock}</span>
-        )}
-        <span style={{ fontSize:10, fontWeight:700, padding:'2px 7px', borderRadius:20, flexShrink:0,
-          color:sb.color, background:sb.bg, whiteSpace:'nowrap' }}>{sb.label}</span>
-        {item.status==='arrived' && <span style={{ fontSize:9, color:T.light, flexShrink:0 }}>{daysLeft}N</span>}
-        <span style={{ fontSize:9, color:T.light, flexShrink:0 }}>{open?'▲':'▼'}</span>
+
+        {/* Tồn kho */}
+        <div style={{ textAlign:'right' }}>
+          {stock != null
+            ? <span style={{ fontSize:14, fontWeight:800,
+                color:stock===0?T.red:stock<=5?T.amber:T.green }}>{stock}</span>
+            : <span style={{ fontSize:12, color:T.light }}>—</span>
+          }
+        </div>
+
+        {/* KH đặt */}
+        <div style={{ textAlign:'right' }}>
+          <span style={{ fontSize:14, fontWeight:ordered>0?800:400,
+            color:ordered>0?T.blue:T.light }}>{ordered}</span>
+          {stock!=null && ordered>0 && (
+            <div style={{ fontSize:9, color:ordered>stock?T.red:T.green }}>
+              {ordered>stock?`⚠️-${ordered-stock}`:'✅đủ'}
+            </div>
+          )}
+        </div>
+
+        {/* Trạng thái */}
+        <div style={{ textAlign:'center' }}>
+          <span style={{ fontSize:10, fontWeight:700, padding:'2px 7px', borderRadius:20,
+            color:sb.color, background:sb.bg, whiteSpace:'nowrap' }}>{sb.label}</span>
+          {item.status==='arrived' && <div style={{ fontSize:9, color:T.light, marginTop:2 }}>{daysLeft}N còn lại</div>}
+        </div>
+
+        {/* Thao tác */}
+        <div style={{ display:'flex', gap:5, justifyContent:'flex-end', alignItems:'center' }}>
+          {item.status!=='arrived' && item.status!=='burned' && (
+            <button onClick={() => setOpen(v => !v)}
+              style={{ padding:'3px 10px', borderRadius:20,
+                border:`1.5px solid ${open?T.gold:T.border}`,
+                background:open?T.goldBg:'transparent',
+                cursor:'pointer', fontSize:10, fontFamily:'inherit',
+                color:open?T.goldText:T.med }}>
+              {open?'Đóng':'Xử lý'}
+            </button>
+          )}
+          {item.status==='incoming' && !open && (
+            <button onClick={markArrived}
+              style={{ padding:'3px 10px', borderRadius:20, border:'none',
+                background:T.green, cursor:'pointer', fontSize:10,
+                fontFamily:'inherit', color:'#fff', fontWeight:700 }}>✅</button>
+          )}
+          <span style={{ fontSize:9, color:T.light }}>{open?'▲':'▼'}</span>
+        </div>
       </div>
 
       {open && (
@@ -3064,95 +3116,8 @@ function ShortageItems({ user, allUsers, mobile, products, setProducts }: any) {
     const orderedNow = prod?.ordered_qty ?? 0
 
     return (
-      <div style={{ background: idx%2===0?'#fff':T.rowAlt,
-        borderBottom:`1px solid ${T.border}`,
-        borderLeft:`3px solid ${borderColor}` }}>
-        {/* ── Desktop grid row ── */}
-        <div style={{ display:'grid',
-          gridTemplateColumns:'1fr 70px 70px 90px 120px',
-          padding:'10px 16px', gap:8, alignItems:'center' }}>
-          {/* Product name + code + reporters */}
-          <div>
-            <div style={{ display:'flex', alignItems:'center', gap:6, flexWrap:'wrap', marginBottom:4 }}>
-              {hot>=3 && <span style={{ fontSize:10, fontWeight:700, color:'#BF360C', background:'#FBE9E7', padding:'1px 7px', borderRadius:20 }}>🔥{hot}</span>}
-              {hot===2 && <span style={{ fontSize:10, fontWeight:700, color:T.amber, background:T.amberBg, padding:'1px 7px', borderRadius:20 }}>⚡{hot}</span>}
-              <span style={{ fontSize:13, fontWeight:700, color:T.dark }}>{item.product_name}</span>
-              {item.product_code && <span style={{ fontSize:11, color:T.light }}>#{item.product_code}</span>}
-            </div>
-            {/* Reporters pills */}
-            <div style={{ display:'flex', gap:5, flexWrap:'wrap' }}>
-              {reporters.map((r: any, i: number) => {
-                const u = allUsers.find((u: any) => u.id===r.user_id)
-                return (
-                  <div key={i} style={{ display:'flex', alignItems:'center', gap:4, padding:'2px 8px',
-                    background:T.goldBg, borderRadius:20, border:`1px solid ${T.goldBorder}` }}>
-                    <div style={{ width:18, height:18, borderRadius:'50%', background:T.gold,
-                      display:'flex', alignItems:'center', justifyContent:'center', color:'#fff', fontSize:8, fontWeight:700 }}>
-                      {u?.ini||'?'}
-                    </div>
-                    <span style={{ fontSize:11, fontWeight:600, color:T.goldText }}>{r.name}</span>
-                    {r.note && <span style={{ fontSize:10, color:T.med }}>· {r.note}</span>}
-                  </div>
-                )
-              })}
-            </div>
-          </div>
-          {/* Tồn kho */}
-          <div style={{ textAlign:'right' }}>
-            {stockNow !== null
-              ? <span style={{ fontSize:14, fontWeight:800,
-                  color:stockNow===0?T.red:stockNow<=5?T.amber:T.green }}>
-                  {stockNow}
-                </span>
-              : <span style={{ fontSize:12, color:T.light }}>—</span>
-            }
-          </div>
-
-          {/* KH đặt */}
-          <div style={{ textAlign:'right' }}>
-            <span style={{ fontSize:14, fontWeight:orderedNow>0?800:400,
-              color:orderedNow>0?T.blue:T.light }}>
-              {orderedNow}
-            </span>
-            {stockNow!==null && orderedNow>0 && (
-              <div style={{ fontSize:10, color:orderedNow>stockNow?T.red:T.green, marginTop:1 }}>
-                {orderedNow>stockNow?`⚠️ thiếu ${orderedNow-stockNow}`:'✅ đủ'}
-              </div>
-            )}
-          </div>
-
-          {/* Trạng thái */}
-          <div style={{ textAlign:'center' }}>
-            {item.status==='arrived'  && <span style={{ fontSize:10, fontWeight:700, color:T.green,  background:T.greenBg,  padding:'2px 8px', borderRadius:20, whiteSpace:'nowrap' }}>✅ Đã về</span>}
-            {item.status==='burned'   && <span style={{ fontSize:10, fontWeight:700, color:T.red,    background:T.redBg,    padding:'2px 8px', borderRadius:20, whiteSpace:'nowrap' }}>🔥 Cháy</span>}
-            {item.status==='pending'  && <span style={{ fontSize:10, fontWeight:600, color:T.amber,  background:T.amberBg,  padding:'2px 8px', borderRadius:20, whiteSpace:'nowrap' }}>⏳ Chờ</span>}
-            {item.status==='incoming' && days !== null && (
-              days > 0  ? <span style={{ fontSize:10, fontWeight:700, color:T.blue,  background:T.blueBg,  padding:'2px 8px', borderRadius:20, whiteSpace:'nowrap' }}>📅 Còn {days}n</span>
-            : days===0  ? <span style={{ fontSize:10, fontWeight:700, color:T.amber, background:T.amberBg, padding:'2px 8px', borderRadius:20, whiteSpace:'nowrap' }}>⏰ Hôm nay</span>
-            : <span style={{ fontSize:10, fontWeight:700, color:T.red, background:T.redBg, padding:'2px 8px', borderRadius:20, whiteSpace:'nowrap' }}>⚠️ +{Math.abs(days)}n</span>
-            )}
-          </div>
-
-          {/* Thao tác */}
-          <div style={{ display:'flex', gap:5, justifyContent:'flex-end' }}>
-            {item.status!=='arrived' && (
-              <button onClick={() => setEditMode(!editMode)}
-                style={{ padding:'3px 10px', borderRadius:20,
-                  border:`1px solid ${T.border}`, background:'transparent',
-                  cursor:'pointer', fontSize:10, fontFamily:'inherit', color:T.med }}>
-                {editMode?'Đóng':'Xử lý'}
-              </button>
-            )}
-            {item.status==='incoming' && (
-              <button onClick={markArrived}
-                style={{ padding:'3px 10px', borderRadius:20, border:'none',
-                  background:T.green, cursor:'pointer', fontSize:10,
-                  fontFamily:'inherit', color:'#fff', fontWeight:700 }}>
-                ✅ Đã về
-              </button>
-            )}
-          </div>
-        </div>
+      <div style={{ background:T.card, borderRadius:12, border:`1.5px solid ${borderColor}`,
+        padding:'12px 14px', marginBottom:8 }}>
 
         {/* Manager note reply (visible to sale) */}
         {item.manager_note && !editMode && (
@@ -4128,51 +4093,50 @@ function ReturnItems({ user, allUsers, products, mobile }: any) {
               }
             </Card>
           </div>
-          <Card style={{ padding:0, overflow:'hidden' }}>
-            <div style={{ padding:'12px 16px', background:T.goldBg, borderBottom:`1px solid ${T.goldBorder}`,
+          <div style={{ background:T.card, borderRadius:12, border:`1px solid ${T.border}`, overflow:'hidden' }}>
+            <div style={{ padding:'10px 14px', background:T.goldBg, borderBottom:`1px solid ${T.goldBorder}`,
               fontSize:13, fontWeight:700, color:T.goldText }}>👤 Thống kê theo Sale phụ trách</div>
-            <div style={{ overflowX:'auto' }}>
-              <table style={{ width:'100%', borderCollapse:'collapse', fontSize:12 }}>
-                <thead>
-                  <tr style={{ background:T.bg }}>
-                    {['Sale','Số đơn','Tình trạng','Ship phải trả','Vi phạm'].map(h => (
-                      <th key={h} style={{ padding:'8px 12px', textAlign:'left', fontWeight:700,
-                        color:T.light, fontSize:10, textTransform:'uppercase', letterSpacing:.5,
-                        borderBottom:`1px solid ${T.border}` }}>{h}</th>
-                    ))}
-                  </tr>
-                </thead>
-                <tbody>
-                  {stats.bySale.length===0
-                    ? <tr><td colSpan={5} style={{ padding:'20px', textAlign:'center', color:T.light }}>Chưa có dữ liệu</td></tr>
-                    : stats.bySale.map((s: any, i: number) => (
-                      <tr key={s.id} style={{ background:i%2===0?'#fff':T.bg, borderBottom:`1px solid ${T.border}` }}>
-                        <td style={{ padding:'9px 12px', fontWeight:600, color:T.dark }}>{s.name}</td>
-                        <td style={{ padding:'9px 12px', color:T.blue, fontWeight:700 }}>{s.count}</td>
-                        <td style={{ padding:'9px 12px' }}>
-                          <div style={{ display:'flex', gap:4, flexWrap:'wrap' }}>
-                            {s.byCondition.map((c: any) => (
-                              <span key={c.label} style={{ fontSize:10, padding:'1px 7px', borderRadius:20,
-                                background:c.label==='Bình thường'?T.greenBg:c.label==='Hỏng'?T.redBg:T.amberBg,
-                                color:c.label==='Bình thường'?T.green:c.label==='Hỏng'?T.red:T.amber }}>
-                                {c.label}: {c.count}
-                              </span>
-                            ))}
-                          </div>
-                        </td>
-                        <td style={{ padding:'9px 12px', color:s.ship>0?T.amber:T.light, fontWeight:s.ship>0?700:400 }}>
-                          {s.ship>0?s.ship.toLocaleString('vi-VN')+'đ':'—'}
-                        </td>
-                        <td style={{ padding:'9px 12px', color:s.violations>0?T.red:T.light, fontWeight:s.violations>0?700:400 }}>
-                          {s.violations>0?`⚠️ ${s.violations}`:'—'}
-                        </td>
-                      </tr>
-                    ))
-                  }
-                </tbody>
-              </table>
+            {/* Header */}
+            <div style={{ display:'grid', gridTemplateColumns:'1fr 60px 1fr 100px 70px',
+              padding:'7px 14px', background:T.bg, borderBottom:`2px solid ${T.border}`,
+              fontSize:10, fontWeight:700, color:T.light, textTransform:'uppercase', letterSpacing:.5, gap:8 }}>
+              <span>Sale</span>
+              <span style={{ textAlign:'center' }}>Số đơn</span>
+              <span>Tình trạng hàng</span>
+              <span style={{ textAlign:'right' }}>Ship phải trả</span>
+              <span style={{ textAlign:'center' }}>Vi phạm</span>
             </div>
-          </Card>
+            {stats.bySale.length===0
+              ? <div style={{ padding:'20px', textAlign:'center', color:T.light, fontSize:12 }}>Chưa có dữ liệu</div>
+              : stats.bySale.map((s: any, i: number) => (
+                <div key={s.id} style={{ display:'grid',
+                  gridTemplateColumns:'1fr 60px 1fr 100px 70px',
+                  padding:'9px 14px', gap:8, alignItems:'center',
+                  borderBottom:`1px solid ${T.border}`,
+                  background:i%2===0?'#fff':T.rowAlt }}>
+                  <span style={{ fontSize:12, fontWeight:600, color:T.dark }}>{s.name}</span>
+                  <span style={{ textAlign:'center', fontSize:14, fontWeight:700, color:T.blue }}>{s.count}</span>
+                  <div style={{ display:'flex', gap:4, flexWrap:'wrap' }}>
+                    {s.byCondition.map((c: any) => (
+                      <span key={c.label} style={{ fontSize:10, padding:'1px 7px', borderRadius:20,
+                        background:c.label==='Bình thường'?T.greenBg:c.label==='Hỏng'?T.redBg:T.amberBg,
+                        color:c.label==='Bình thường'?T.green:c.label==='Hỏng'?T.red:T.amber }}>
+                        {c.label}: {c.count}
+                      </span>
+                    ))}
+                  </div>
+                  <span style={{ textAlign:'right', fontSize:12, fontWeight:s.ship>0?700:400,
+                    color:s.ship>0?T.amber:T.light }}>
+                    {s.ship>0?s.ship.toLocaleString('vi-VN')+'đ':'—'}
+                  </span>
+                  <span style={{ textAlign:'center', fontSize:12, fontWeight:s.violations>0?700:400,
+                    color:s.violations>0?T.red:T.light }}>
+                    {s.violations>0?`⚠️ ${s.violations}`:'—'}
+                  </span>
+                </div>
+              ))
+            }
+          </div>
           <Card style={{ padding:0, overflow:'hidden' }}>
             <div style={{ padding:'12px 16px', background:T.redBg, borderBottom:`1px solid #fca5a5`,
               fontSize:13, fontWeight:700, color:T.red }}>💸 Phí ship theo nhân viên vi phạm</div>
@@ -5791,37 +5755,40 @@ function WrongOrders({ user, allUsers, wrongOrders, setWrongOrders, mobile }: an
               </Card>
             ))}
           </div>
-          <Card style={{ padding:0, overflow:'hidden' }}>
-            <div style={{ padding:'12px 16px', background:T.amberBg, borderBottom:`1px solid #fcd34d`,
+          <div style={{ background:T.card, borderRadius:12, border:`1px solid ${T.border}`, overflow:'hidden' }}>
+            <div style={{ padding:'10px 14px', background:T.amberBg, borderBottom:`1px solid #fcd34d`,
               fontSize:13, fontWeight:700, color:T.amber }}>👤 Thống kê theo nhân viên</div>
-            <table style={{ width:'100%', borderCollapse:'collapse', fontSize:12 }}>
-              <thead>
-                <tr style={{ background:T.bg }}>
-                  {['Nhân viên','Sale phụ trách','Vi phạm'].map(h => (
-                    <th key={h} style={{ padding:'8px 12px', textAlign:'left', fontWeight:700,
-                      color:T.light, fontSize:10, textTransform:'uppercase', letterSpacing:.5,
-                      borderBottom:`1px solid ${T.border}` }}>{h}</th>
-                  ))}
-                </tr>
-              </thead>
-              <tbody>
-                {woStats.bySale.length===0
-                  ? <tr><td colSpan={3} style={{ padding:'20px', textAlign:'center', color:T.light }}>Chưa có dữ liệu</td></tr>
-                  : woStats.bySale.map((s: any, i: number) => (
-                    <tr key={s.id} style={{ background:i%2===0?'#fff':T.bg, borderBottom:`1px solid ${T.border}` }}>
-                      <td style={{ padding:'9px 12px', fontWeight:600, color:T.dark }}>{s.name}</td>
-                      <td style={{ padding:'9px 12px', color:T.blue, fontWeight:s.asResponsible>0?700:400 }}>
-                        {s.asResponsible>0?s.asResponsible:'—'}
-                      </td>
-                      <td style={{ padding:'9px 12px', color:T.red, fontWeight:s.asViolator>0?700:400 }}>
-                        {s.asViolator>0?`⚠️ ${s.asViolator}`:'—'}
-                      </td>
-                    </tr>
-                  ))
-                }
-              </tbody>
-            </table>
-          </Card>
+            {/* Header */}
+            <div style={{ display:'grid', gridTemplateColumns:'1fr 100px 100px',
+              padding:'7px 14px', background:T.bg, borderBottom:`2px solid ${T.border}`,
+              fontSize:10, fontWeight:700, color:T.light, textTransform:'uppercase', letterSpacing:.5, gap:8 }}>
+              <span>Nhân viên</span>
+              <span style={{ textAlign:'center' }}>Sale phụ trách</span>
+              <span style={{ textAlign:'center' }}>Vi phạm</span>
+            </div>
+            {woStats.bySale.length===0
+              ? <div style={{ padding:'20px', textAlign:'center', color:T.light, fontSize:12 }}>Chưa có dữ liệu</div>
+              : woStats.bySale.map((s: any, i: number) => (
+                <div key={s.id} style={{ display:'grid',
+                  gridTemplateColumns:'1fr 100px 100px',
+                  padding:'9px 14px', gap:8, alignItems:'center',
+                  borderBottom:`1px solid ${T.border}`,
+                  background:i%2===0?'#fff':T.rowAlt }}>
+                  <span style={{ fontSize:12, fontWeight:600, color:T.dark }}>{s.name}</span>
+                  <span style={{ textAlign:'center', fontSize:14,
+                    fontWeight:s.asResponsible>0?700:400,
+                    color:s.asResponsible>0?T.blue:T.light }}>
+                    {s.asResponsible>0?s.asResponsible:'—'}
+                  </span>
+                  <span style={{ textAlign:'center', fontSize:12,
+                    fontWeight:s.asViolator>0?700:400,
+                    color:s.asViolator>0?T.red:T.light }}>
+                    {s.asViolator>0?`⚠️ ${s.asViolator}`:'—'}
+                  </span>
+                </div>
+              ))
+            }
+          </div>
         </div>
       ) : (
       <>{filtered.length===0
