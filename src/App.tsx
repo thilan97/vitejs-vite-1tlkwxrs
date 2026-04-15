@@ -1416,58 +1416,80 @@ function Tasks({ user, tasks, setTasks, addLog, allUsers, mobile }: any) {
           })}
         </div>
       ) : (
-        <Card style={{ padding:0, overflow:'hidden' }}>
-          <table style={{ width:'100%', borderCollapse:'collapse' }}>
-            <TH cols={['Tiêu đề','Giao cho','Ưu tiên','Bắt đầu','Deadline','Trạng thái','Xong lúc','']}/>
-            <tbody>
-              {mine.map((t: any, i: number) => {
-                const late = isOverdue(t), sc = STATUS_CFG[t.status]||{}
-                const av = allUsers.find((u: any) => u.id === t.assignee_id)
-                const ce = perm.viewAllChecklist || t.assignee_id === user.id || (perm.viewDeptChecklist && dids.includes(t.assignee_id))
-                return (
-                  <tr key={t.id} style={{ background:late&&t.status!=='done'?'#FFF5F5':i%2===0?'#fff':T.bg, borderBottom:`1px solid ${T.border}` }}>
-                    <td style={{ padding:'10px 13px', maxWidth:220 }}>
-                      <div style={{ fontSize:13, fontWeight:500, color:late&&t.status!=='done'?T.red:T.dark }}>{t.title}</div>
-                      {t.description && <div style={{ fontSize:11, color:T.light, marginTop:2 }}>{t.description}</div>}
-                      {t.notes && <div style={{ fontSize:11, color:T.blue }}>📝 {t.notes}</div>}
-                    </td>
-                    <td style={{ padding:'10px 13px' }}>{av && <Av u={av} size={24} showTitle/>}</td>
-                    <td style={{ padding:'10px 13px' }}><Badge cfg={PRI_CFG[t.priority]} small/></td>
-                    <td style={{ padding:'10px 13px', fontSize:12, color:T.med, whiteSpace:'nowrap' }}>
-                      <div style={{ fontWeight:500, color:T.dark }}>{t.start_time||'—'}</div>
-                      <div style={{ fontSize:10, color:T.light }}>{fmtDate(t.assigned||'')||'—'}</div>
-                    </td>
-                    <td style={{ padding:'10px 13px', whiteSpace:'nowrap' }}>
-                      <div style={{ fontSize:12, fontWeight:600, color:late&&t.status!=='done'?T.red:T.dark }}>
-                        {late&&t.status!=='done'?'⚠️ ':''}
-                        {t.deadline_time||'--:--'}
-                      </div>
-                      <div style={{ fontSize:11, color:T.light }}>{fmtDate(t.deadline)}</div>
-                    </td>
-                    <td style={{ padding:'10px 13px' }}>
-                      {ce ? <select value={t.status} onChange={e => upd(t.id, e.target.value)}
-                        style={{ padding:'4px 8px', borderRadius:7, border:`1.5px solid ${sc.color||T.border}`,
-                          background:sc.bg||'#fff', color:sc.color||T.dark, fontSize:11, fontWeight:600,
-                          cursor:'pointer', fontFamily:'inherit', outline:'none' }}>
-                        {sopts.map(o => <option key={o.value} value={o.value}>{o.label}</option>)}
-                      </select> : <Badge type={t.status} small/>}
-                    </td>
-                    <td style={{ padding:'10px 13px', fontSize:11, color:t.done_at?T.green:T.light }}>{t.done_at||'—'}</td>
-                    <td style={{ padding:'10px 8px' }}>
-                      {canDelete(t) && (
-                        <button onClick={() => del(t.id)}
-                          style={{ padding:'4px 8px', borderRadius:6, border:`1px solid ${T.redBg}`,
-                            background:T.redBg, cursor:'pointer', fontSize:11, fontFamily:'inherit', color:T.red }}>
-                          🗑️
-                        </button>
-                      )}
-                    </td>
-                  </tr>
-                )
-              })}
-            </tbody>
-          </table>
-        </Card>
+        <div style={{ background:T.card, borderRadius:12, border:`1px solid ${T.border}`, overflow:'hidden', boxShadow:'0 1px 4px rgba(0,0,0,0.06)' }}>
+          {/* Sticky header */}
+          {!mobile && (
+            <div style={{ display:'grid', gridTemplateColumns:'1fr 100px 70px 90px 100px 110px 80px 36px',
+              padding:'8px 14px', background:T.bg, borderBottom:`2px solid ${T.border}`,
+              fontSize:10, fontWeight:700, color:T.light, textTransform:'uppercase',
+              letterSpacing:.6, gap:8, alignItems:'center', position:'sticky', top:0, zIndex:2 }}>
+              <span>Tiêu đề</span>
+              <span>Giao cho</span>
+              <span style={{ textAlign:'center' }}>Ưu tiên</span>
+              <span>Bắt đầu</span>
+              <span>Deadline</span>
+              <span>Trạng thái</span>
+              <span>Xong lúc</span>
+              <span></span>
+            </div>
+          )}
+          {mine.map((t: any, i: number) => {
+            const late = isOverdue(t), sc = STATUS_CFG[t.status]||{}
+            const av = allUsers.find((u: any) => u.id === t.assignee_id)
+            const ce = perm.viewAllChecklist || t.assignee_id === user.id || (perm.viewDeptChecklist && dids.includes(t.assignee_id))
+            return (
+              <div key={t.id} style={{ display:mobile?'block':'grid',
+                gridTemplateColumns:'1fr 100px 70px 90px 100px 110px 80px 36px',
+                padding:'10px 14px', gap:8, alignItems:'center',
+                borderBottom:i<mine.length-1?`1px solid ${T.border}`:'none',
+                background:late&&t.status!=='done'?'#FFF5F5':i%2===0?'#fff':T.rowAlt }}>
+                {/* Tiêu đề */}
+                <div>
+                  <div style={{ fontSize:13, fontWeight:500, color:late&&t.status!=='done'?T.red:T.dark, lineHeight:1.4 }}>{t.title}</div>
+                  {t.description && <div style={{ fontSize:11, color:T.light, marginTop:2 }}>{t.description}</div>}
+                  {t.notes && <div style={{ fontSize:11, color:T.blue }}>📝 {t.notes}</div>}
+                </div>
+                {/* Giao cho */}
+                <div>{av && <Av u={av} size={22} showTitle/>}</div>
+                {/* Ưu tiên */}
+                <div style={{ textAlign:'center' }}><Badge cfg={PRI_CFG[t.priority]} small/></div>
+                {/* Bắt đầu */}
+                <div style={{ fontSize:11 }}>
+                  <div style={{ fontWeight:500, color:T.dark }}>{t.start_time||'—'}</div>
+                  <div style={{ fontSize:10, color:T.light }}>{fmtDate(t.assigned||'')||'—'}</div>
+                </div>
+                {/* Deadline */}
+                <div>
+                  <div style={{ fontSize:12, fontWeight:600, color:late&&t.status!=='done'?T.red:T.dark }}>
+                    {late&&t.status!=='done'?'⚠️ ':''}{t.deadline_time||'--:--'}
+                  </div>
+                  <div style={{ fontSize:11, color:T.light }}>{fmtDate(t.deadline)}</div>
+                </div>
+                {/* Trạng thái */}
+                <div>
+                  {ce ? <select value={t.status} onChange={e => upd(t.id, e.target.value)}
+                    style={{ width:'100%', padding:'4px 7px', borderRadius:7, border:`1.5px solid ${sc.color||T.border}`,
+                      background:sc.bg||'#fff', color:sc.color||T.dark, fontSize:11, fontWeight:600,
+                      cursor:'pointer', fontFamily:'inherit', outline:'none' }}>
+                    {sopts.map(o => <option key={o.value} value={o.value}>{o.label}</option>)}
+                  </select> : <Badge type={t.status} small/>}
+                </div>
+                {/* Xong lúc */}
+                <div style={{ fontSize:11, color:t.done_at?T.green:T.light }}>{t.done_at||'—'}</div>
+                {/* Xóa */}
+                <div>
+                  {canDelete(t) && (
+                    <button onClick={() => del(t.id)}
+                      style={{ padding:'4px 7px', borderRadius:6, border:`1px solid ${T.redBg}`,
+                        background:T.redBg, cursor:'pointer', fontSize:11, fontFamily:'inherit', color:T.red }}>
+                      🗑️
+                    </button>
+                  )}
+                </div>
+              </div>
+            )
+          })}
+        </div>
       )}
 
       <Modal open={show} onClose={() => setShow(false)} title="Tạo task mới">
@@ -2999,9 +3021,13 @@ function ShortageItems({ user, allUsers, mobile, products, setProducts }: any) {
   const isManager = perm.viewAllDashboard || perm.approveLeave
   const isSale    = user.dept_id === 'sale'
 
+  const [lastKvSync, setLastKvSync] = useState<string>('')
+
   useEffect(() => {
     db.from('shortage_items').select('*').order('created_at', { ascending:false })
       .then(({ data }) => { if (data) setItems(data) })
+    db.from('settings').select('last_kv_sync').eq('id','main').maybeSingle()
+      .then(({ data: st }) => { if (st?.last_kv_sync) setLastKvSync(st.last_kv_sync) })
   }, [])
 
   // Auto-filter: ẩn hàng đã về > 3 ngày
@@ -3219,6 +3245,12 @@ function ShortageItems({ user, allUsers, mobile, products, setProducts }: any) {
     ['arrived',  `✅ Đã về`,        arrivedList.length],
   ]
 
+  const fmtKvSync = (ts: string) => {
+    if (!ts) return null
+    const d = new Date(ts)
+    return d.toLocaleString('vi-VN', { hour:'2-digit', minute:'2-digit', day:'2-digit', month:'2-digit', year:'numeric' })
+  }
+
   return (
     <div style={{ padding:`0 ${p} ${mobile?'80px':p}` }}>
       <Topbar mobile={mobile} title="📦 Hàng thiếu" subtitle="Theo dõi tình trạng hàng hóa phòng Sale"
@@ -3251,6 +3283,19 @@ function ShortageItems({ user, allUsers, mobile, products, setProducts }: any) {
               </select>
             )}
           </div>
+          {/* KV Sync time banner */}
+          {lastKvSync && (
+            <div style={{ display:'flex', alignItems:'center', gap:6, padding:'7px 12px',
+              background:T.blueBg, borderRadius:10, marginBottom:10,
+              border:`1px solid ${T.border}` }}>
+              <span style={{ fontSize:10, color:T.light }}>🕐</span>
+              <span style={{ fontSize:11, color:T.med }}>
+                Thời gian update tồn kho với KiotViet:{' '}
+                <b style={{ color:T.dark }}>{fmtKvSync(lastKvSync)}</b>
+              </span>
+            </div>
+          )}
+
           {tabData[mgrTab]?.length === 0 ? (
             <Card style={{ textAlign:'center', padding:'40px', color:T.light }}>
               <div style={{ fontSize:32, marginBottom:8 }}>📦</div>
@@ -3284,7 +3329,19 @@ function ShortageItems({ user, allUsers, mobile, products, setProducts }: any) {
         </div>
       ) : (
         /* ══ SALE VIEW — compact list ══ */
-        <div style={{ display:'grid', gridTemplateColumns:mobile?'1fr':'1fr 1fr', gap:16 }}>
+        <div>
+          {lastKvSync && (
+            <div style={{ display:'flex', alignItems:'center', gap:6, padding:'7px 12px',
+              background:T.blueBg, borderRadius:10, marginBottom:12,
+              border:`1px solid ${T.border}` }}>
+              <span style={{ fontSize:10, color:T.light }}>🕐</span>
+              <span style={{ fontSize:11, color:T.med }}>
+                Thời gian update tồn kho với KiotViet:{' '}
+                <b style={{ color:T.dark }}>{fmtKvSync(lastKvSync)}</b>
+              </span>
+            </div>
+          )}
+          <div style={{ display:'grid', gridTemplateColumns:mobile?'1fr':'1fr 1fr', gap:16 }}>
           {/* ── Helper: compact row ── */}
           {(() => {
             const CompactRow = ({ item }: any) => {
@@ -3480,6 +3537,7 @@ function ShortageItems({ user, allUsers, mobile, products, setProducts }: any) {
               </>
             )
           })()}
+          </div>
         </div>
       )}
 
@@ -4037,15 +4095,10 @@ function ReturnItems({ user, allUsers, products, mobile }: any) {
       <Topbar mobile={mobile} title="🔄 Báo cáo hàng hoàn"
         subtitle={`Tháng ${fm}/${fy} — ${slips.length} phiếu · ${filteredItems.length} sản phẩm`}
         action={
-          <div style={{ display:'flex', gap:8, alignItems:'center' }}>
-            <input type="month" value={monthFilter} onChange={e => setMonthFilter(e.target.value)}
-              style={{ padding:'6px 10px', border:`1px solid ${T.border}`, borderRadius:8,
-                fontSize:12, fontFamily:'inherit', color:T.dark, background:T.bg, cursor:'pointer' }}/>
-            {canAdd && <GoldBtn small onClick={openAdd}>+ Nhập phiếu hoàn</GoldBtn>}
-          </div>
+          {canAdd && <GoldBtn small onClick={openAdd}>+ Nhập phiếu hoàn</GoldBtn>}
         }/>
 
-      {/* Tabs + Search */}
+      {/* Tabs + Month + Search */}
       <div style={{ display:'flex', gap:8, marginBottom:14, flexWrap:'wrap', alignItems:'center' }}>
         {([['list','📋 Danh sách'],['stats','📊 Thống kê']] as [string,string][]).map(([id,label]) => (
           <button key={id} onClick={() => setTab(id as any)}
@@ -4054,9 +4107,31 @@ function ReturnItems({ user, allUsers, products, mobile }: any) {
               background:tab===id?T.goldBg:'transparent',
               color:tab===id?T.goldText:T.med, fontWeight:tab===id?700:400 }}>{label}</button>
         ))}
+        <div style={{ display:'flex', gap:6, alignItems:'center', flexShrink:0 }}>
+          {(() => {
+            const now = new Date()
+            const thisM = `${now.getFullYear()}-${String(now.getMonth()+1).padStart(2,'0')}`
+            const prevD = new Date(now.getFullYear(), now.getMonth()-1, 1)
+            const prevM = `${prevD.getFullYear()}-${String(prevD.getMonth()+1).padStart(2,'0')}`
+            return (<>
+              {[{label:'Tháng này', val:thisM}, {label:'Tháng trước', val:prevM}].map(opt => (
+                <button key={opt.val} onClick={() => setMonthFilter(opt.val)}
+                  style={{ padding:'5px 11px', borderRadius:20, cursor:'pointer', fontFamily:'inherit', fontSize:11,
+                    border:`1.5px solid ${monthFilter===opt.val?T.gold:T.border}`,
+                    background:monthFilter===opt.val?T.goldBg:'transparent',
+                    color:monthFilter===opt.val?T.goldText:T.med, fontWeight:monthFilter===opt.val?700:400 }}>
+                  {opt.label}
+                </button>
+              ))}
+              <input type="month" value={monthFilter} onChange={e => setMonthFilter(e.target.value)}
+                style={{ padding:'5px 9px', border:`1px solid ${T.border}`, borderRadius:8,
+                  fontSize:11, fontFamily:'inherit', color:T.dark, background:T.bg, cursor:'pointer' }}/>
+            </>)
+          })()}
+        </div>
         <input value={searchQ} onChange={e => setSearchQ(e.target.value)}
           placeholder="🔍 Tìm sản phẩm, KH, sale..."
-          style={{ flex:1, minWidth:160, padding:'6px 10px', border:`1px solid ${T.border}`, borderRadius:8,
+          style={{ flex:1, minWidth:140, padding:'6px 10px', border:`1px solid ${T.border}`, borderRadius:8,
             fontSize:12, fontFamily:'inherit', color:T.dark, background:T.bg, outline:'none' }}/>
       </div>
 
@@ -4309,13 +4384,13 @@ function ReturnItems({ user, allUsers, products, mobile }: any) {
 
                     {/* Sale PT */}
                     <span style={{ fontSize:11,color:saleUser?T.gold:T.light,
-                      overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap' }}>
+                      lineHeight:1.4 }}>
                       {saleUser?.name||'—'}
                     </span>
 
                     {/* Vi phạm */}
                     <span style={{ fontSize:11,color:violatorUser?T.red:T.light,
-                      overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap' }}>
+                      lineHeight:1.4 }}>
                       {violatorUser?'⚠️ '+violatorUser.name:'—'}
                     </span>
 
@@ -4736,31 +4811,41 @@ function History({ user, history, allUsers, mobile }: any) {
                     <span style={{ color:T.light }}>Tỷ lệ: {Math.round(done/items.length*100)}%</span>
                   </div>
                 </div>
-                <table style={{ width:'100%', borderCollapse:'collapse' }}>
-                  <TH cols={['Công việc','Nhân viên','Tần suất','Kết quả','Xong lúc']}/>
-                  <tbody>
+                <div>
+                  {/* Grid header */}
+                  <div style={{ display:'grid', gridTemplateColumns:'1fr 100px 70px 80px 80px',
+                    padding:'6px 14px', background:T.bg, borderBottom:`1px solid ${T.border}`,
+                    fontSize:10, fontWeight:700, color:T.light, textTransform:'uppercase', letterSpacing:.5, gap:8 }}>
+                    <span>Công việc</span><span>Nhân viên</span>
+                    <span style={{ textAlign:'center' }}>Tần suất</span>
+                    <span style={{ textAlign:'center' }}>Kết quả</span>
+                    <span>Xong lúc</span>
+                  </div>
                     {items.map((h: any, i: number) => {
                       const assignee = allUsers.find((u: any) => u.id===h.assignee_id)
                       return (
-                        <tr key={h.id||i} style={{ background:i%2===0?'#fff':T.bg, borderBottom:`1px solid ${T.border}` }}>
-                          <td style={{ padding:'9px 13px', fontSize:13, fontWeight:500, color:T.dark }}>{h.title}</td>
-                          <td style={{ padding:'9px 13px' }}>{assignee && <Av u={assignee} size={22} showTitle/>}</td>
-                          <td style={{ padding:'9px 13px' }}>
+                        <div key={h.id||i} style={{ display:'grid',
+                          gridTemplateColumns:'1fr 100px 70px 80px 80px',
+                          padding:'9px 14px', gap:8, alignItems:'center',
+                          borderBottom:i<items.length-1?`1px solid ${T.border}`:'none',
+                          background:i%2===0?'#fff':T.rowAlt }}>
+                          <div style={{ fontSize:12, fontWeight:500, color:T.dark, lineHeight:1.4 }}>{h.title}</div>
+                          <div>{assignee && <Av u={assignee} size={22} showTitle/>}</div>
+                          <div style={{ textAlign:'center' }}>
                             <span style={{ fontSize:10, fontWeight:600, padding:'2px 7px', borderRadius:20,
                               color:FREQ_COLOR[h.freq]?.color, background:FREQ_COLOR[h.freq]?.bg }}>{h.freq}</span>
-                          </td>
-                          <td style={{ padding:'9px 13px' }}>
+                          </div>
+                          <div style={{ textAlign:'center' }}>
                             <span style={{ fontSize:11, fontWeight:600, padding:'3px 9px', borderRadius:20,
                               color:h.status==='done'?T.green:T.red, background:h.status==='done'?T.greenBg:T.redBg }}>
                               {h.status==='done'?'✅ Hoàn thành':'❌ Chưa xong'}
                             </span>
-                          </td>
-                          <td style={{ padding:'9px 13px', fontSize:11, color:h.done_at?T.green:T.light }}>{h.done_at||'—'}</td>
-                        </tr>
+                          </div>
+                          <div style={{ fontSize:11, color:h.done_at?T.green:T.light }}>{h.done_at||'—'}</div>
+                        </div>
                       )
                     })}
-                  </tbody>
-                </table>
+                </div>
               </Card>
             )
           })}
@@ -5709,14 +5794,11 @@ function WrongOrders({ user, allUsers, wrongOrders, setWrongOrders, mobile }: an
               <span style={{ fontSize:12, fontWeight:700, color:T.red, background:T.redBg,
                 padding:'4px 10px', borderRadius:20 }}>⚠️ {pendingMine} chờ xử lý</span>
             )}
-            <input type="month" value={monthFilter} onChange={e => setMonthFilter(e.target.value)}
-              style={{ padding:'6px 10px', border:`1px solid ${T.border}`, borderRadius:8,
-                fontSize:12, fontFamily:'inherit', color:T.dark, background:T.bg }}/>
             {canAdd && <GoldBtn small onClick={() => { setForm({...emptyForm, date:new Date().toISOString().split('T')[0]}); setShowAdd(true) }}>+ Tạo đơn sai</GoldBtn>}
           </div>
         }/>
 
-      {/* Tabs + Sort + Search */}
+      {/* Tabs + Month + Sort + Search */}
       <div style={{ display:'flex', gap:8, marginBottom:12, flexWrap:'wrap', alignItems:'center' }}>
         {([['list','📋 Danh sách'],['stats','📊 Thống kê']] as [string,string][]).map(([id,label]) => (
           <button key={id} onClick={() => setTab(id as any)}
@@ -5725,6 +5807,28 @@ function WrongOrders({ user, allUsers, wrongOrders, setWrongOrders, mobile }: an
               background:tab===id?T.goldBg:'transparent',
               color:tab===id?T.goldText:T.med, fontWeight:tab===id?700:400 }}>{label}</button>
         ))}
+        <div style={{ display:'flex', gap:6, alignItems:'center', flexShrink:0 }}>
+          {(() => {
+            const now = new Date()
+            const thisM = `${now.getFullYear()}-${String(now.getMonth()+1).padStart(2,'0')}`
+            const prevD = new Date(now.getFullYear(), now.getMonth()-1, 1)
+            const prevM = `${prevD.getFullYear()}-${String(prevD.getMonth()+1).padStart(2,'0')}`
+            return (<>
+              {[{label:'Tháng này', val:thisM},{label:'Tháng trước', val:prevM}].map(opt => (
+                <button key={opt.val} onClick={() => setMonthFilter(opt.val)}
+                  style={{ padding:'5px 11px', borderRadius:20, cursor:'pointer', fontFamily:'inherit', fontSize:11,
+                    border:`1.5px solid ${monthFilter===opt.val?T.gold:T.border}`,
+                    background:monthFilter===opt.val?T.goldBg:'transparent',
+                    color:monthFilter===opt.val?T.goldText:T.med, fontWeight:monthFilter===opt.val?700:400 }}>
+                  {opt.label}
+                </button>
+              ))}
+              <input type="month" value={monthFilter} onChange={e => setMonthFilter(e.target.value)}
+                style={{ padding:'5px 9px', border:`1px solid ${T.border}`, borderRadius:8,
+                  fontSize:11, fontFamily:'inherit', color:T.dark, background:T.bg, cursor:'pointer' }}/>
+            </>)
+          })()}
+        </div>
         {tab==='list' && (
           <select value={sortBy} onChange={e => setSortBy(e.target.value as any)}
             style={{ padding:'6px 10px', borderRadius:8, border:`1px solid ${T.border}`,
@@ -5916,7 +6020,7 @@ function WrongOrders({ user, allUsers, wrongOrders, setWrongOrders, mobile }: an
 
                       {/* Sale PT */}
                       <span style={{ fontSize:11, color:saleUser?T.gold:T.light,
-                        overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap' }}>
+                        lineHeight:1.4 }}>
                         {saleUser?.name||'—'}
                       </span>
 
@@ -6391,6 +6495,7 @@ function InventoryModule({ user, allUsers, products, invSessions, setInvSessions
   const [newNote, setNewNote] = useState('')
   const [importing, setImporting] = useState(false)
   const [diffFilter, setDiffFilter] = useState<'all'|'neg'|'pos'>('all')
+  const [selectedChecks, setSelectedChecks] = useState<Set<string>>(new Set())
   const [monthFilter, setMonthFilter] = useState(() => {
     const n = new Date(); return `${n.getFullYear()}-${String(n.getMonth()+1).padStart(2,'0')}`
   })
@@ -6883,6 +6988,40 @@ function InventoryModule({ user, allUsers, products, invSessions, setInvSessions
       {/* ── TAB: LỆCH KHO ── */}
       {tab==='discrepancy' && (
         <div style={{display:'flex',flexDirection:'column',gap:12}}>
+          {/* Bulk action bar */}
+          {selectedChecks.size > 0 && (
+            <div style={{display:'flex',gap:8,alignItems:'center',padding:'10px 14px',
+              background:T.goldBg,borderRadius:10,border:`1.5px solid ${T.gold}`,flexWrap:'wrap'}}>
+              <span style={{fontSize:12,fontWeight:700,color:T.goldText,flexShrink:0}}>
+                Đã chọn {selectedChecks.size} mã
+              </span>
+              <span style={{fontSize:11,color:T.light}}>→</span>
+              {[
+                {val:'found',    label:'✅ Tìm được hàng',  color:T.green,   bg:T.greenBg},
+                {val:'reason',   label:'🔍 Tìm được NN',    color:T.blue,    bg:T.blueBg},
+                {val:'no_reason',label:'❌ Không tìm được', color:T.red,     bg:T.redBg},
+                {val:'resolved', label:'✔️ Đã xử lý',       color:'#7C3AED', bg:'#EDE9FE'},
+              ].map(opt => (
+                <button key={opt.val} onClick={async () => {
+                  const now = new Date().toISOString()
+                  const ids = [...selectedChecks]
+                  const upd: any = {diff_status:opt.val, resolved_by:user.id, resolved_at:now}
+                  await db.from('inventory_checks').update(upd).in('id', ids)
+                  ids.forEach((id: string) => updateCheck(id, upd))
+                  setSelectedChecks(new Set())
+                }}
+                  style={{padding:'4px 12px',borderRadius:20,border:`1.5px solid ${opt.color}`,
+                    background:opt.bg,cursor:'pointer',fontSize:11,fontFamily:'inherit',
+                    color:opt.color,fontWeight:700}}>
+                  {opt.label}
+                </button>
+              ))}
+              <button onClick={() => setSelectedChecks(new Set())}
+                style={{padding:'4px 10px',borderRadius:20,border:`1px solid ${T.border}`,
+                  background:'transparent',cursor:'pointer',fontSize:11,fontFamily:'inherit',
+                  color:T.light,marginLeft:'auto'}}>Bỏ chọn</button>
+            </div>
+          )}
           {/* Filter bar */}
           {/* Time range filter */}
           {(() => {
@@ -6928,14 +7067,21 @@ function InventoryModule({ user, allUsers, products, invSessions, setInvSessions
           {/* Discrepancy table */}
           <div style={{background:T.card,borderRadius:12,border:`1px solid ${T.border}`,overflow:'hidden',boxShadow:'0 1px 4px rgba(0,0,0,0.06)'}}>
             {!mobile && (
-              <div style={{display:'grid',gridTemplateColumns:'100px 1fr 90px 70px 70px 70px 150px 100px',
+              <div style={{display:'grid',gridTemplateColumns:'28px 100px 1fr 90px 60px 60px 60px 150px 120px',
                 padding:'8px 12px',background:T.bg,borderBottom:`2px solid ${T.border}`,
-                fontSize:10,fontWeight:700,color:T.light,textTransform:'uppercase',letterSpacing:.5,gap:8}}>
+                fontSize:10,fontWeight:700,color:T.light,textTransform:'uppercase',letterSpacing:.5,gap:8,
+                alignItems:'center'}}>
+                {/* Select all checkbox */}
+                <input type="checkbox" checked={selectedChecks.size>0 && filtered.every((c: any)=>selectedChecks.has(c.id))}
+                  onChange={e => {
+                    if (e.target.checked) setSelectedChecks(new Set(filtered.map((c: any)=>c.id)))
+                    else setSelectedChecks(new Set())
+                  }} style={{cursor:'pointer'}}/>
                 <span>Ngày KK</span><span>Sản phẩm</span><span>Mã SP</span>
                 <span style={{textAlign:'center'}}>Tồn HT</span>
                 <span style={{textAlign:'center'}}>Tồn TT</span>
-                <span style={{textAlign:'center'}}>Chênh lệch</span>
-                <span>Trạng thái xử lý</span>
+                <span style={{textAlign:'center'}}>Lệch</span>
+                <span>Trạng thái</span>
                 <span style={{textAlign:'right'}}>Thao tác</span>
               </div>
             )}
@@ -6964,17 +7110,36 @@ function InventoryModule({ user, allUsers, products, invSessions, setInvSessions
                   'resolved':    {label:'✔️ Đã xử lý',         color:'#7C3AED', bg:'#EDE9FE' },
                 }
                 const dsc = DIFF_STATUS_CFG[c.diff_status||''] || DIFF_STATUS_CFG['']
+                const isSel = selectedChecks.has(c.id)
                 return (
                   <div key={c.id} style={{display:mobile?'block':'grid',
-                    gridTemplateColumns:'100px 1fr 90px 70px 70px 70px 150px 100px',
+                    gridTemplateColumns:'28px 100px 1fr 90px 60px 60px 60px 150px 120px',
                     padding:'9px 12px',gap:8,alignItems:'center',
                     borderBottom:i<filtered.length-1?`1px solid ${T.border}`:'none',
-                    background:c.diff_status===''?(i%2===0?'#FFF5F5':'#FFF0F0'):(i%2===0?'#fff':T.rowAlt)}}>
-                    <span style={{fontSize:11,color:T.light}}>{sess?.date||'—'}</span>
+                    background:isSel?T.goldBg:c.diff_status===''?(i%2===0?'#FFF5F5':'#FFF0F0'):(i%2===0?'#fff':T.rowAlt)}}>
+                    {/* Checkbox */}
+                    <input type="checkbox" checked={isSel}
+                      onChange={() => setSelectedChecks(prev => {
+                        const n = new Set(prev)
+                        isSel ? n.delete(c.id) : n.add(c.id)
+                        return n
+                      })} style={{cursor:'pointer'}}/>
+                    {/* Ngày KK — clickable to select all in session */}
+                    <span style={{fontSize:11,color:T.blue,cursor:'pointer',textDecoration:'underline dotted'}}
+                      title="Click để chọn tất cả mã cùng phiên KK"
+                      onClick={() => {
+                        const sameSession = filtered.filter((x: any) => x.session_id===c.session_id).map((x: any)=>x.id)
+                        const allSel = sameSession.every((id: string) => selectedChecks.has(id))
+                        setSelectedChecks(prev => {
+                          const n = new Set(prev)
+                          allSel ? sameSession.forEach((id: string) => n.delete(id)) : sameSession.forEach((id: string) => n.add(id))
+                          return n
+                        })
+                      }}>{sess?.date||'—'}</span>
                     <div>
                       <div style={{fontSize:12,fontWeight:500,color:T.dark}}>{c.product_name}</div>
                     </div>
-                    <span style={{fontSize:10,color:T.light}}>{c.product_code}</span>
+                    <span style={{fontSize:10,color:T.light,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{c.product_code}</span>
                     <span style={{fontSize:12,textAlign:'center',color:T.med}}>{c.system_qty}</span>
                     <span style={{fontSize:12,textAlign:'center',color:T.dark,fontWeight:600}}>{c.actual_qty}</span>
                     <span style={{fontSize:13,textAlign:'center',fontWeight:800,
