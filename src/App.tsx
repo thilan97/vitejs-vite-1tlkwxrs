@@ -84,6 +84,7 @@ const getPerm = (user: any) => {
     manageInventory:    isAdmin || (pos.perm_approve_leave ?? false) || (pos.perm_manage_inventory ?? false),
     resolveWrongOrder:  isAdmin || (pos.perm_approve_leave ?? false) || (pos.perm_resolve_wrong_order ?? false),
     manageExpiry:       isAdmin || (pos.perm_manage_inventory ?? false) || (pos.perm_manage_expiry ?? false),
+    managePayment:      isAdmin || (pos.perm_manage_payment ?? false),
   }
 }
 
@@ -120,8 +121,8 @@ const ALL_PERMS = [
   { key:'perm_resolve_wrong_order',  label:'Xác nhận đã xử lý đơn sai',        group:'Kho'      },
   { key:'perm_manage_inventory',     label:'Xử lý kiểm kê (QM Kho)',            group:'Kho'      },
   { key:'perm_manage_expiry',        label:'Quản lý date sản phẩm (QM Kho)',    group:'Kho'      },
-]
-// ── UTILITIES ────────────────────────────────────
+  { key:'perm_manage_payment',       label:'Quản lý lệnh chuyển khoản',         group:'Sale'     },
+] ────────────────────────────────────
 const fmtNow   = () => new Date().toLocaleString('vi-VN',{hour:'2-digit',minute:'2-digit',day:'2-digit',month:'2-digit',year:'numeric'})
 const todayStr = () => new Date().toLocaleDateString('vi-VN')
 const todayISO = () => new Date().toISOString().split('T')[0]
@@ -502,6 +503,7 @@ const NAV_GROUPS = (perm: any, deptId = '') => {
         perm.manageTemplate && { id:'templates', icon:'📋', label:'Template' },
         { id:'history',    icon:'🗂️', label:'Lịch sử'   },
         (deptId==='kho'||perm.viewAllDashboard) && { id:'inventory', icon:'📦', label:'Kiểm kê kho' },
+        (perm.managePayment||perm.viewAllDashboard) && { id:'payment', icon:'💸', label:'Lệnh CK' },
       ].filter(Boolean)
     },
     hasAttendance && {
@@ -5324,13 +5326,14 @@ function Settings({ user, setUser, settings, setSettings, onManualReset, mobile 
 
 // ── MAIN APP ──────────────────────────────────────
 // ── NOTIFICATION BANNER ─────────────────────────────
-function NotifBanner({ user, wrongOrders, returnSlips, shortageItems, batches, setPage }: any) {
+function NotifBanner({ user, wrongOrders, returnSlips, shortageItems, batches, paymentOrders, setPage }: any) {
   const [dismissed, setDismissed] = useState(false)
   const perm       = getPerm(user)
   const isSale     = user.dept_id === 'sale'
   const isAdmin    = perm.viewAllDashboard
   const isMgrSale  = isSale && perm.approveLeave
   const canManageExp = perm.manageExpiry || perm.manageInventory || isAdmin
+  const canPay     = perm.managePayment || isAdmin
 
   // NV Sale: đơn sai pending của họ
   const pendingWO  = (isSale && !isAdmin) ? wrongOrders.filter((r: any) =>
@@ -5361,8 +5364,11 @@ function NotifBanner({ user, wrongOrders, returnSlips, shortageItems, batches, s
     return lastUpd < staleThreshold
   }) : []
 
+  // Admin/canPay: lệnh CK đang chờ
+  const pendingPayments = canPay ? (paymentOrders||[]).filter((o: any) => o.status === 'pending') : []
+
   const totalPending = pendingWO.length + pendingRet.length + pendingShortage.length
-    + expiryAlertSale.length + staleBatches.length
+    + expiryAlertSale.length + staleBatches.length + pendingPayments.length
   if (dismissed || totalPending === 0) return null
 
   const hasWO    = pendingWO.length > 0
@@ -5370,7 +5376,8 @@ function NotifBanner({ user, wrongOrders, returnSlips, shortageItems, batches, s
   const hasSh    = pendingShortage.length > 0
   const hasExp   = expiryAlertSale.length > 0
   const hasStale = staleBatches.length > 0
-  const accent   = hasWO ? T.red : hasRet ? T.amber : hasExp ? T.red : T.blue
+  const hasPay   = pendingPayments.length > 0
+  const accent   = hasWO ? T.red : hasRet ? T.amber : hasExp ? T.red : hasPay ? T.blue : T.blue
 
   return (
     <div style={{ position:'fixed', top:16, left:'50%', transform:'translateX(-50%)',
@@ -5440,6 +5447,20 @@ function NotifBanner({ user, wrongOrders, returnSlips, shortageItems, batches, s
               </div>
             </div>
           )}
+          {hasPay && (
+            <div style={{ paddingTop:(hasWO||hasRet||hasSh||hasExp||hasStale)?8:0,
+              borderTop:(hasWO||hasRet||hasSh||hasExp||hasStale)?`1px solid ${T.border}`:'', marginBottom:6 }}>
+              <div style={{ fontSize:11, fontWeight:700, color:T.blue, marginBottom:3 }}>
+                💸 {pendingPayments.length} lệnh chuyển khoản chờ thực hiện
+              </div>
+              {pendingPayments.slice(0,2).map((o: any) => (
+                <div key={o.id} style={{ fontSize:11, color:T.med }}>
+                  • {o.supplier_name} — {o.amount?.toLocaleString('vi-VN')}
+                </div>
+              ))}
+              {pendingPayments.length>2 && <div style={{ fontSize:11, color:T.light }}>...+{pendingPayments.length-2} lệnh nữa</div>}
+            </div>
+          )}
           <div style={{ display:'flex', gap:8, marginTop:12, flexWrap:'wrap' }}>
             {hasWO && (
               <button onClick={() => { setPage('wrongord'); setDismissed(true) }}
@@ -5467,6 +5488,13 @@ function NotifBanner({ user, wrongOrders, returnSlips, shortageItems, batches, s
                 style={{ padding:'5px 13px', borderRadius:20, border:'none', background:T.red,
                   color:'#fff', cursor:'pointer', fontFamily:'inherit', fontSize:11, fontWeight:700 }}>
                 Xem Date SP →
+              </button>
+            )}
+            {hasPay && (
+              <button onClick={() => { setPage('payment'); setDismissed(true) }}
+                style={{ padding:'5px 13px', borderRadius:20, border:'none', background:T.blue,
+                  color:'#fff', cursor:'pointer', fontFamily:'inherit', fontSize:11, fontWeight:700 }}>
+                Xem lệnh CK →
               </button>
             )}
             <button onClick={() => setDismissed(true)}
@@ -5521,6 +5549,7 @@ export default function App() {
   const [shortageNoti, setShortageNoti] = useState<any[]>([])
   const [invSessions, setInvSessions] = useState<any[]>([])
   const [batches, setBatches]         = useState<any[]>([])
+  const [paymentOrders, setPaymentOrders] = useState<any[]>([])
   const [loading, setLoading]       = useState(false)
   const width   = useWindowWidth()
   const mobile  = width < 768
@@ -5679,6 +5708,9 @@ export default function App() {
         .then(({data}) => { if (data) setShortageNoti(data) })
       db.from('product_batches').select('*').order('expiry_date', { ascending:true })
         .then(({data}) => { if (data) setBatches(data) })
+      db.from('payment_orders').select('id,supplier_name,amount,status,created_at')
+        .eq('is_history',false).eq('status','pending').order('created_at',{ascending:false}).limit(50)
+        .then(({data}) => { if (data) setPaymentOrders(data) })
       // Fetch return slips for notifications (last 30 days)
       const thirtyAgo = new Date(Date.now()-30*86400000).toISOString().split('T')[0]
       db.from('return_items').select('id,slip_id,sale_id,created_at,created_by,date')
@@ -5792,13 +5824,14 @@ export default function App() {
           {validPage==='returns'    && <ReturnItems {...pp} products={products}/>}
           {validPage==='wrongord'   && <WrongOrders {...pp} wrongOrders={wrongOrders} setWrongOrders={setWrongOrders} allUsers={allUsers}/>}
           {validPage==='expiry'     && <ExpiryModule {...pp} products={products} batches={batches} setBatches={setBatches}/>}
+          {validPage==='payment'    && <PaymentModule {...pp}/>}
           {validPage==='settings'   && <Settings {...pp} setUser={setUser} settings={settings} setSettings={setSettings} onManualReset={manualReset}/>}
         </main>
         {mobile && <BottomNav user={user} page={validPage} setPage={setPage} pendingLeave={pendingLeave} pendingOT={pendingOT} onLogout={() => { localStorage.removeItem('la_user'); setUser(null); setAllUsers([]); setChecklist([]) }}/>}
         {/* Sticky Note — floating for all users */}
         {user && <StickyNote user={user}/>}
         {/* Notification Banner — wrong orders pending */}
-        {user && <NotifBanner user={user} wrongOrders={wrongOrders} returnSlips={returnSlips} shortageItems={shortageNoti} batches={batches} setPage={setPage}/>}
+        {user && <NotifBanner user={user} wrongOrders={wrongOrders} returnSlips={returnSlips} shortageItems={shortageNoti} batches={batches} paymentOrders={paymentOrders} setPage={setPage}/>}
         {user && <SaturdayBanner user={user}/>}
       </div>
      )
@@ -8584,11 +8617,10 @@ function BatchForm({ edit, products, onSave, onClose, saving, mobile }: any) {
   })
   const [searchProd, setSearchProd] = useState('')
 
-  const normStr = (s: string) => (s||'').toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g,'').replace(/đ/g,'d')
+  const normBF = (s: string) => (s||'').toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g,'').replace(/đ/g,'d')
   const filteredProds = products.filter((p: any) => {
     if (!searchProd) return true
-    const hay = normStr(p.code + ' ' + p.name + ' ' + (p.unit||''))
-    return normStr(searchProd).split(/\s+/).filter(Boolean).every((t: string) => hay.includes(t))
+    return normBF(p.code + ' ' + p.name).includes(normBF(searchProd))
   }).slice(0, 20)
 
   const selectProd = (p: any) => {
@@ -8603,7 +8635,7 @@ function BatchForm({ edit, products, onSave, onClose, saving, mobile }: any) {
     <div style={{ position:'fixed', inset:0, background:'rgba(0,0,0,0.55)', zIndex:3000,
       display:'flex', alignItems:'center', justifyContent:'center', padding:16 }}>
       <div style={{ background:'#fff', borderRadius:16, width:'100%', maxWidth:480,
-        maxHeight:'90vh', overflowY:'auto', padding:'20px 24px', boxSizing:'border-box' as any }}>
+        maxHeight:'90vh', overflowY:'auto', padding:'20px 24px', boxSizing:'border-box' }}>
         <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:18 }}>
           <div style={{ fontSize:15, fontWeight:700, color:T.dark }}>
             {edit ? '✏️ Sửa lô hàng' : '➕ Thêm lô hàng mới'}
@@ -8632,22 +8664,23 @@ function BatchForm({ edit, products, onSave, onClose, saving, mobile }: any) {
             <div>
               <input value={searchProd} onChange={e => setSearchProd(e.target.value)}
                 placeholder="Gõ mã hoặc tên SP để tìm..."
-                style={{ width:'100%', padding:'9px 12px', border:`1px solid ${T.border}`,
-                  borderRadius:10, fontSize:12, fontFamily:'inherit', outline:'none',
-                  color:T.dark, background:'#fff', boxSizing:'border-box' as any }}/>
+                style={{ width:'100%', padding:'8px 11px', border:`1px solid ${T.border}`,
+                  borderRadius:8, fontSize:13, fontFamily:'inherit', outline:'none',
+                  color:T.dark, background:'#fff', boxSizing:'border-box' }}/>
               {searchProd && (
-                <div style={{ border:`1px solid ${T.border}`, borderRadius:10, marginTop:4,
+                <div style={{ border:`1px solid ${T.border}`, borderRadius:8, marginTop:4,
                   maxHeight:200, overflowY:'auto', background:'#fff',
                   boxShadow:'0 4px 12px rgba(0,0,0,0.08)' }}>
                   {filteredProds.map((p: any) => (
                     <div key={p.code} onClick={() => selectProd(p)}
                       style={{ padding:'9px 12px', cursor:'pointer',
                         borderBottom:`1px solid ${T.border}`,
-                        display:'flex', justifyContent:'space-between', alignItems:'center' }}
+                        display:'flex', justifyContent:'space-between', alignItems:'center',
+                        background:'#fff' }}
                       onMouseEnter={e => { (e.currentTarget as HTMLElement).style.background = T.bg }}
                       onMouseLeave={e => { (e.currentTarget as HTMLElement).style.background = '#fff' }}>
-                      <span style={{ fontSize:12, color:T.dark }}>{p.name}</span>
-                      <span style={{ fontSize:10, color:T.light, flexShrink:0 }}>{p.code}</span>
+                      <span style={{ fontSize:13, color:T.dark }}>{p.name}</span>
+                      <span style={{ fontSize:11, color:T.light, flexShrink:0, marginLeft:8 }}>{p.code}</span>
                     </div>
                   ))}
                   {filteredProds.length === 0 && (
@@ -9268,6 +9301,1343 @@ function ExpiryModule({ user, mobile, products, batches, setBatches }: any) {
           saving={saving}
           mobile={mobile}
         />
+      )}
+    </div>
+  )
+}
+// ══ PAYMENT MODULE — Lệnh Chuyển Khoản ══════════════════════
+
+const fmtMoney = (n: any) => {
+  const num = Number(String(n).replace(/[^0-9]/g,''))
+  if (!num) return ''
+  return num.toLocaleString('vi-VN')
+}
+const parseMoney = (s: string) => {
+  const n = parseInt(String(s).replace(/[^0-9]/g,''), 10)
+  return isNaN(n) ? 0 : n
+}
+const normPay = (s: string) =>
+  (s||'').toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g,'').replace(/đ/g,'d')
+
+const PAYMENT_STATUS: any = {
+  draft:     { label:'📝 Nháp',       color:'#854D0E', bg:'#FEF9C3', short:'Nháp'    },
+  pending:   { label:'⏳ Chờ CK',     color:T.blue,   bg:T.blueBg,  short:'Chờ CK'  },
+  paid:      { label:'✅ Đã CK',      color:'#15803D', bg:'#DCFCE7', short:'Đã CK'   },
+  completed: { label:'🏁 Hoàn thành', color:T.teal,   bg:T.tealBg,  short:'Xong'    },
+}
+
+function CopyBtn({ value, label }: any) {
+  const [copied, setCopied] = useState(false)
+  const copy = () => {
+    navigator.clipboard.writeText(String(value||'')).then(() => {
+      setCopied(true); setTimeout(() => setCopied(false), 1500)
+    })
+  }
+  return (
+    <button onClick={copy}
+      style={{ padding:'3px 9px', borderRadius:6, border:`1px solid ${T.border}`,
+        background: copied ? T.greenBg : '#fff', color: copied ? T.green : T.med,
+        cursor:'pointer', fontFamily:'inherit', fontSize:11, flexShrink:0,
+        transition:'all .15s' }}>
+      {copied ? '✓' : '📋'} {label||'Copy'}
+    </button>
+  )
+}
+
+// ── Form tạo/sửa lệnh ──────────────────────────────────────
+function PaymentOrderForm({ suppliers, accounts, onSave, onClose, edit, mobile }: any) {
+  const [mode, setMode]           = useState<'stk'|'ncc'>('ncc')
+  const [stkInput, setStkInput]   = useState(edit?.account_number || '')
+  const [nccSearch, setNccSearch] = useState(edit?.supplier_name  || '')
+  const [selSup, setSelSup]       = useState<any>(edit ? { id: edit.supplier_id, name: edit.supplier_name } : null)
+  const [selAcc, setSelAcc]       = useState<any>(edit ? {
+    id: edit.account_id, account_number: edit.account_number,
+    account_name: edit.account_name, bank_name: edit.bank_name
+  } : null)
+  const [amount, setAmount]       = useState(edit ? fmtMoney(edit.amount) : '')
+  const [content, setContent]     = useState(edit?.transfer_content || 'CONG TY TNHH THUONG MAI LA GLOBAL BEAUTY Chuyen tien')
+  const [purpose, setPurpose]     = useState(edit?.purpose || 'Thanh toán công nợ')
+  const [note, setNote]           = useState(edit?.note || '')
+  const [orderRef, setOrderRef]   = useState(edit?.order_ref || '')
+  const [status, setStatus]       = useState(edit?.status || 'pending')
+  const [confirmMulti, setConfirmMulti] = useState(false)
+  const [saving, setSaving]       = useState(false)
+  const [newStkPrompt, setNewStkPrompt] = useState(false)
+  const [newStkSupMode, setNewStkSupMode] = useState<'existing'|'new'>('existing')
+  const [newStkNccSearch, setNewStkNccSearch] = useState('')
+  const [newStkSelSup, setNewStkSelSup] = useState<any>(null)
+  const [newStkNewName, setNewStkNewName] = useState('')
+
+  // Approved accounts only
+  const approvedAccounts = accounts.filter((a: any) => a.status === 'approved' && a.active)
+
+  // STK mode: match by full exact number after strip
+  const stkClean = stkInput.replace(/[^0-9]/g,'')
+  const stkMatches = stkClean.length >= 6
+    ? approvedAccounts.filter((a: any) => a.account_number.replace(/[^0-9]/g,'') === stkClean)
+    : []
+
+  // NCC fuzzy search
+  const nccFiltered = nccSearch
+    ? suppliers.filter((s: any) =>
+        s.active && normPay(s.name).includes(normPay(nccSearch)))
+    : suppliers.filter((s: any) => s.active)
+
+  // Accounts of selected supplier
+  const supAccounts = selSup
+    ? approvedAccounts.filter((a: any) => a.supplier_id === selSup.id)
+    : []
+
+  const isValid = selSup && selAcc && parseMoney(amount) > 0
+
+  const handleSelectSup = (sup: any) => {
+    setSelSup(sup); setNccSearch(sup.name); setSelAcc(null)
+    const accs = approvedAccounts.filter((a: any) => a.supplier_id === sup.id)
+    if (accs.length === 1) { setSelAcc(accs[0]) }
+    else if (accs.length > 1) { setConfirmMulti(true) }
+  }
+
+  const handleStkMatch = (acc: any) => {
+    const sup = suppliers.find((s: any) => s.id === acc.supplier_id)
+    setSelAcc(acc); setSelSup(sup || null)
+    if (sup) setNccSearch(sup.name)
+    const supAccs = approvedAccounts.filter((a: any) => a.supplier_id === acc.supplier_id)
+    if (supAccs.length > 1) setConfirmMulti(true)
+  }
+
+  const handleSubmit = async () => {
+    if (!isValid) return
+    setSaving(true)
+
+    // Check if STK is new
+    const isNewStk = !accounts.find((a: any) => a.account_number === selAcc.account_number)
+    await onSave({
+      supplier_id: selSup.id, supplier_name: selSup.name,
+      account_id: selAcc.id, account_number: selAcc.account_number,
+      account_name: selAcc.account_name, bank_name: selAcc.bank_name,
+      amount: parseMoney(amount), transfer_content: content,
+      purpose, note, order_ref: orderRef, status,
+      _isNewStk: isNewStk, _newStkData: isNewStk ? selAcc : null,
+    })
+    setSaving(false)
+  }
+
+  const p = mobile ? 16 : 24
+
+  return (
+    <div style={{ position:'fixed', inset:0, background:'rgba(0,0,0,0.55)', zIndex:3000,
+      display:'flex', alignItems:'center', justifyContent:'center', padding:16 }}>
+      <div style={{ background:'#fff', borderRadius:16, width:'100%', maxWidth:560,
+        maxHeight:'92vh', overflowY:'auto', display:'flex', flexDirection:'column' }}>
+
+        {/* Header */}
+        <div style={{ padding:'16px 20px', borderBottom:`1px solid ${T.border}`,
+          display:'flex', justifyContent:'space-between', alignItems:'center', flexShrink:0 }}>
+          <div style={{ fontWeight:700, fontSize:15, color:T.dark }}>
+            {edit ? '✏️ Sửa lệnh' : '💸 Tạo lệnh chuyển khoản'}
+          </div>
+          <button onClick={onClose}
+            style={{ background:'none', border:'none', fontSize:20, cursor:'pointer', color:T.light }}>✕</button>
+        </div>
+
+        <div style={{ padding:'16px 20px', overflowY:'auto', flex:1 }}>
+
+          {/* Mode switch */}
+          {!edit && (
+            <div style={{ display:'flex', gap:6, marginBottom:16 }}>
+              {[['ncc','🏢 Tìm theo NCC'],['stk','🔢 Nhập số tài khoản']].map(([m,l]) => (
+                <button key={m} onClick={() => { setMode(m as any); setSelSup(null); setSelAcc(null); setStkInput(''); setNccSearch('') }}
+                  style={{ padding:'6px 14px', borderRadius:20, cursor:'pointer', fontFamily:'inherit', fontSize:12,
+                    border:`1.5px solid ${mode===m?T.gold:T.border}`,
+                    background:mode===m?T.goldBg:'#fff', color:mode===m?T.goldText:T.med, fontWeight:mode===m?700:400 }}>
+                  {l}
+                </button>
+              ))}
+            </div>
+          )}
+
+          {/* STK mode */}
+          {mode === 'stk' && !edit && (
+            <div style={{ marginBottom:14 }}>
+              <label style={{ fontSize:11, fontWeight:600, color:T.med, textTransform:'uppercase',
+                letterSpacing:.5, display:'block', marginBottom:6 }}>Số tài khoản *</label>
+              <input value={stkInput} onChange={e => { setStkInput(e.target.value); setSelAcc(null); setSelSup(null) }}
+                placeholder="Paste hoặc nhập STK (chỉ số, không dấu cách)..."
+                style={{ width:'100%', padding:'8px 11px', border:`1px solid ${T.border}`, borderRadius:8,
+                  fontSize:13, fontFamily:'inherit', outline:'none', color:T.dark, background:'#fff', boxSizing:'border-box' }}/>
+              {stkInput && stkClean.length < 6 && (
+                <div style={{ fontSize:11, color:T.amber, marginTop:4 }}>
+                  ⚠️ Nhập đủ số tài khoản để gợi ý NCC
+                </div>
+              )}
+              {stkClean.length >= 6 && stkMatches.length > 0 && !selAcc && (
+                <div style={{ border:`1px solid ${T.border}`, borderRadius:8, marginTop:4,
+                  background:'#fff', boxShadow:'0 4px 12px rgba(0,0,0,0.08)' }}>
+                  {stkMatches.map((a: any) => {
+                    const sup = suppliers.find((s: any) => s.id === a.supplier_id)
+                    return (
+                      <div key={a.id} onClick={() => handleStkMatch(a)}
+                        style={{ padding:'10px 12px', cursor:'pointer', borderBottom:`1px solid ${T.border}`,
+                          display:'flex', justifyContent:'space-between', alignItems:'center' }}
+                        onMouseEnter={e => { (e.currentTarget as HTMLElement).style.background = T.bg }}
+                        onMouseLeave={e => { (e.currentTarget as HTMLElement).style.background = '#fff' }}>
+                        <div>
+                          <div style={{ fontSize:13, fontWeight:600, color:T.dark }}>{sup?.name || '?'}</div>
+                          <div style={{ fontSize:11, color:T.light }}>{a.account_name} · {a.bank_name}</div>
+                        </div>
+                        <div style={{ fontSize:11, color:T.green, fontWeight:600 }}>✓ Khớp</div>
+                      </div>
+                    )
+                  })}
+                </div>
+              )}
+              {stkClean.length >= 6 && stkMatches.length === 0 && (
+                <div style={{ marginTop:6, padding:'10px 12px', background:T.amberBg,
+                  border:`1px solid ${T.amber}`, borderRadius:8, fontSize:12, color:T.amber }}>
+                  ⚠️ STK này chưa có trong danh mục. Điền thông tin NCC bên dưới để tiếp tục.
+                  {!selSup && (
+                    <div style={{ marginTop:8 }}>
+                      <input value={nccSearch} onChange={e => setNccSearch(e.target.value)}
+                        placeholder="Gõ tên NCC..."
+                        style={{ width:'100%', padding:'7px 10px', border:`1px solid ${T.border}`,
+                          borderRadius:8, fontSize:12, fontFamily:'inherit', outline:'none', boxSizing:'border-box' }}/>
+                      {nccSearch && !selSup && (
+                        <div style={{ border:`1px solid ${T.border}`, borderRadius:8, marginTop:4, maxHeight:160, overflowY:'auto', background:'#fff' }}>
+                          {nccFiltered.slice(0,8).map((s: any) => (
+                            <div key={s.id} onClick={() => { setSelSup(s); setNccSearch(s.name) }}
+                              style={{ padding:'8px 12px', cursor:'pointer', fontSize:12, color:T.dark,
+                                borderBottom:`1px solid ${T.border}` }}
+                              onMouseEnter={e => { (e.currentTarget as HTMLElement).style.background = T.bg }}
+                              onMouseLeave={e => { (e.currentTarget as HTMLElement).style.background = '#fff' }}>
+                              {s.name}
+                            </div>
+                          ))}
+                          <div onClick={() => { setSelSup({ id:'__new__', name: nccSearch }); }}
+                            style={{ padding:'8px 12px', cursor:'pointer', fontSize:12,
+                              color:T.blue, borderTop:`1px solid ${T.border}` }}>
+                            + Tạo NCC mới: "{nccSearch}"
+                          </div>
+                        </div>
+                      )}
+                    </div>
+                  )}
+                  {selSup && (
+                    <div style={{ marginTop:8, display:'flex', alignItems:'center', gap:8 }}>
+                      <span style={{ fontSize:12, fontWeight:600, color:T.dark }}>{selSup.name}</span>
+                      <button onClick={() => { setSelSup(null); setNccSearch('') }}
+                        style={{ background:'none', border:'none', cursor:'pointer', color:T.light, fontSize:14 }}>✕</button>
+                    </div>
+                  )}
+                </div>
+              )}
+            </div>
+          )}
+
+          {/* NCC mode */}
+          {(mode === 'ncc' || edit) && !selSup && (
+            <div style={{ marginBottom:14 }}>
+              <label style={{ fontSize:11, fontWeight:600, color:T.med, textTransform:'uppercase',
+                letterSpacing:.5, display:'block', marginBottom:6 }}>Nhà cung cấp *</label>
+              <input value={nccSearch} onChange={e => setNccSearch(e.target.value)}
+                placeholder="Gõ tên NCC để tìm..."
+                style={{ width:'100%', padding:'8px 11px', border:`1px solid ${T.border}`, borderRadius:8,
+                  fontSize:13, fontFamily:'inherit', outline:'none', color:T.dark, background:'#fff', boxSizing:'border-box' }}/>
+              {nccSearch && (
+                <div style={{ border:`1px solid ${T.border}`, borderRadius:8, marginTop:4,
+                  maxHeight:200, overflowY:'auto', background:'#fff', boxShadow:'0 4px 12px rgba(0,0,0,0.08)' }}>
+                  {nccFiltered.slice(0,10).map((s: any) => (
+                    <div key={s.id} onClick={() => handleSelectSup(s)}
+                      style={{ padding:'9px 12px', cursor:'pointer', borderBottom:`1px solid ${T.border}`,
+                        display:'flex', justifyContent:'space-between', alignItems:'center' }}
+                      onMouseEnter={e => { (e.currentTarget as HTMLElement).style.background = T.bg }}
+                      onMouseLeave={e => { (e.currentTarget as HTMLElement).style.background = '#fff' }}>
+                      <span style={{ fontSize:13, color:T.dark }}>{s.name}</span>
+                      <span style={{ fontSize:10, color:T.light }}>
+                        {approvedAccounts.filter((a: any) => a.supplier_id === s.id).length} STK
+                      </span>
+                    </div>
+                  ))}
+                  {nccFiltered.length === 0 && (
+                    <div style={{ padding:'10px 12px', fontSize:12, color:T.light }}>Không tìm thấy NCC</div>
+                  )}
+                </div>
+              )}
+            </div>
+          )}
+
+          {/* Selected NCC chip */}
+          {selSup && (
+            <div style={{ marginBottom:14, padding:'10px 14px', background:T.goldBg,
+              border:`1px solid ${T.goldBorder}`, borderRadius:10,
+              display:'flex', justifyContent:'space-between', alignItems:'center' }}>
+              <div>
+                <div style={{ fontSize:13, fontWeight:700, color:T.dark }}>{selSup.name}</div>
+                {selAcc && (
+                  <div style={{ fontSize:11, color:T.goldText, marginTop:2 }}>
+                    STK: {selAcc.account_number} · {selAcc.account_name} · {selAcc.bank_name}
+                  </div>
+                )}
+              </div>
+              {!edit && (
+                <button onClick={() => { setSelSup(null); setSelAcc(null); setNccSearch(''); setConfirmMulti(false) }}
+                  style={{ background:'none', border:'none', cursor:'pointer', color:T.light, fontSize:18 }}>✕</button>
+              )}
+            </div>
+          )}
+
+          {/* Multi-STK confirm */}
+          {confirmMulti && selSup && !selAcc && (
+            <div style={{ marginBottom:14 }}>
+              <div style={{ fontSize:12, fontWeight:600, color:T.amber, marginBottom:8 }}>
+                ⚠️ {selSup.name} có {supAccounts.length} tài khoản — chọn STK cần chuyển:
+              </div>
+              <div style={{ border:`1px solid ${T.border}`, borderRadius:10, overflow:'hidden' }}>
+                {supAccounts.map((a: any, i: number) => (
+                  <div key={a.id} onClick={() => { setSelAcc(a); setConfirmMulti(false) }}
+                    style={{ padding:'10px 14px', cursor:'pointer',
+                      borderBottom: i < supAccounts.length-1 ? `1px solid ${T.border}` : 'none',
+                      background: i%2===0?'#fff':T.rowAlt, display:'flex', justifyContent:'space-between' }}
+                    onMouseEnter={e => { (e.currentTarget as HTMLElement).style.background = T.goldBg }}
+                    onMouseLeave={e => { (e.currentTarget as HTMLElement).style.background = i%2===0?'#fff':T.rowAlt }}>
+                    <div>
+                      <div style={{ fontSize:13, fontWeight:600, color:T.dark }}>{a.account_number}</div>
+                      <div style={{ fontSize:11, color:T.light }}>{a.account_name}</div>
+                    </div>
+                    <div style={{ fontSize:11, color:T.med, fontWeight:600 }}>{a.bank_name}</div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {/* Amount */}
+          <div style={{ marginBottom:13 }}>
+            <label style={{ fontSize:11, fontWeight:600, color:T.med, textTransform:'uppercase',
+              letterSpacing:.5, display:'block', marginBottom:6 }}>Số tiền *</label>
+            <input value={amount}
+              onChange={e => setAmount(fmtMoney(e.target.value))}
+              placeholder="VD: 1.500.000"
+              style={{ width:'100%', padding:'8px 11px', border:`1px solid ${T.border}`, borderRadius:8,
+                fontSize:13, fontFamily:'inherit', outline:'none', color:T.dark, background:'#fff', boxSizing:'border-box' }}/>
+            {amount && (
+              <div style={{ fontSize:11, color:T.green, marginTop:3 }}>
+                = {parseMoney(amount).toLocaleString('vi-VN')} ₫
+              </div>
+            )}
+          </div>
+
+          {/* Transfer content */}
+          <div style={{ marginBottom:13 }}>
+            <label style={{ fontSize:11, fontWeight:600, color:T.med, textTransform:'uppercase',
+              letterSpacing:.5, display:'block', marginBottom:6 }}>Nội dung chuyển khoản</label>
+            <input value={content} onChange={e => setContent(e.target.value)}
+              style={{ width:'100%', padding:'8px 11px', border:`1px solid ${T.border}`, borderRadius:8,
+                fontSize:12, fontFamily:'inherit', outline:'none', color:T.dark, background:'#fff', boxSizing:'border-box' }}/>
+          </div>
+
+          {/* Purpose */}
+          <div style={{ marginBottom:13 }}>
+            <label style={{ fontSize:11, fontWeight:600, color:T.med, textTransform:'uppercase',
+              letterSpacing:.5, display:'block', marginBottom:6 }}>Mục đích</label>
+            <div style={{ display:'flex', gap:8 }}>
+              {['Thanh toán công nợ','Lấy hàng'].map(p => (
+                <button key={p} onClick={() => setPurpose(p)}
+                  style={{ flex:1, padding:'8px', borderRadius:8, cursor:'pointer', fontFamily:'inherit', fontSize:12,
+                    border:`1.5px solid ${purpose===p?T.gold:T.border}`,
+                    background:purpose===p?T.goldBg:'#fff', color:purpose===p?T.goldText:T.med,
+                    fontWeight:purpose===p?700:400 }}>
+                  {p}
+                </button>
+              ))}
+            </div>
+          </div>
+
+          {/* Order ref + Note */}
+          <Inp label="Mã đơn hàng / Tham chiếu (tùy chọn)" value={orderRef}
+            onChange={setOrderRef} placeholder="VD: HD001"/>
+          <Inp label="Ghi chú (tùy chọn)" value={note} onChange={setNote}/>
+
+          {/* Status if edit */}
+          {edit && (
+            <div style={{ marginBottom:13 }}>
+              <label style={{ fontSize:11, fontWeight:600, color:T.med, textTransform:'uppercase',
+                letterSpacing:.5, display:'block', marginBottom:6 }}>Trạng thái</label>
+              <select value={status} onChange={e => setStatus(e.target.value)}
+                style={{ width:'100%', padding:'8px 11px', border:`1px solid ${T.border}`, borderRadius:8,
+                  fontSize:13, fontFamily:'inherit', color:T.dark, background:'#fff', outline:'none' }}>
+                {Object.entries(PAYMENT_STATUS).map(([k,v]: any) => (
+                  <option key={k} value={k}>{v.label}</option>
+                ))}
+              </select>
+            </div>
+          )}
+        </div>
+
+        <div style={{ padding:'12px 20px', borderTop:`1px solid ${T.border}`,
+          display:'flex', gap:10, flexShrink:0 }}>
+          <GoldBtn onClick={handleSubmit} disabled={!isValid || saving}>
+            {saving ? 'Đang lưu...' : edit ? 'Cập nhật' : status==='draft'?'Lưu nháp':'Tạo lệnh'}
+          </GoldBtn>
+          {!edit && status !== 'draft' && (
+            <button onClick={() => { setStatus('draft'); setTimeout(handleSubmit, 100) }}
+              style={{ padding:'8px 16px', borderRadius:8, border:`1px solid ${T.border}`,
+                background:'transparent', color:T.med, cursor:'pointer', fontFamily:'inherit', fontSize:12 }}>
+              💾 Lưu nháp
+            </button>
+          )}
+          <button onClick={onClose}
+            style={{ padding:'8px 16px', borderRadius:8, border:`1px solid ${T.border}`,
+              background:'transparent', color:T.med, cursor:'pointer', fontFamily:'inherit', fontSize:12 }}>
+            Hủy
+          </button>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+// ── Supplier Manager Tab ────────────────────────────────────
+function SupplierManagerTab({ suppliers, setSuppliers, accounts, setAccounts, user, mobile }: any) {
+  const [search, setSearch]       = useState('')
+  const [showAddSup, setShowAddSup] = useState(false)
+  const [editSup, setEditSup]     = useState<any>(null)
+  const [expandedSup, setExpandedSup] = useState<string|null>(null)
+  const [showAddAcc, setShowAddAcc]   = useState<string|null>(null)
+  const [supForm, setSupForm]     = useState({ name:'', short_name:'', note:'' })
+  const [accForm, setAccForm]     = useState({ account_number:'', account_name:'', bank_name:'' })
+  const [saving, setSaving]       = useState(false)
+
+  const filtered = suppliers.filter((s: any) =>
+    !search || normPay(s.name + ' ' + (s.short_name||'')).includes(normPay(search))
+  )
+
+  const getAccounts = (supId: string) =>
+    accounts.filter((a: any) => a.supplier_id === supId && a.active)
+
+  const saveSup = async () => {
+    if (!supForm.name.trim()) return
+    setSaving(true)
+    const now = new Date().toISOString()
+    if (editSup) {
+      const upd = { name:supForm.name, short_name:supForm.short_name, note:supForm.note }
+      await db.from('suppliers').update(upd).eq('id', editSup.id)
+      setSuppliers((prev: any[]) => prev.map((s: any) => s.id===editSup.id ? {...s,...upd} : s))
+    } else {
+      const newS = { id:'sup_'+Date.now()+'_'+Math.random().toString(36).slice(2,5),
+        name:supForm.name, short_name:supForm.short_name, note:supForm.note,
+        active:true, created_at:now, created_by:user.id }
+      await db.from('suppliers').insert(newS)
+      setSuppliers((prev: any[]) => [...prev, newS])
+    }
+    setSaving(false); setShowAddSup(false); setEditSup(null)
+    setSupForm({ name:'', short_name:'', note:'' })
+  }
+
+  const saveAcc = async (supId: string) => {
+    if (!accForm.account_number.trim()) return
+    setSaving(true)
+    const now = new Date().toISOString()
+    const newA = { id:'acc_'+Date.now()+'_'+Math.random().toString(36).slice(2,5),
+      supplier_id:supId, account_number:accForm.account_number.replace(/[^0-9]/g,''),
+      account_name:accForm.account_name, bank_name:accForm.bank_name.toUpperCase(),
+      status:'pending', active:true, created_at:now, created_by:user.id }
+    await db.from('supplier_accounts').insert(newA)
+    setAccounts((prev: any[]) => [...prev, newA])
+    setSaving(false); setShowAddAcc(null)
+    setAccForm({ account_number:'', account_name:'', bank_name:'' })
+  }
+
+  const toggleActive = async (s: any) => {
+    await db.from('suppliers').update({ active: !s.active }).eq('id', s.id)
+    setSuppliers((prev: any[]) => prev.map((x: any) => x.id===s.id ? {...x, active:!x.active} : x))
+  }
+
+  const deleteAcc = async (accId: string) => {
+    if (!confirm('Xóa tài khoản này?')) return
+    await db.from('supplier_accounts').update({ active:false }).eq('id', accId)
+    setAccounts((prev: any[]) => prev.map((a: any) => a.id===accId ? {...a,active:false} : a))
+  }
+
+  return (
+    <div>
+      <div style={{ display:'flex', gap:8, marginBottom:14, alignItems:'center' }}>
+        <input value={search} onChange={e => setSearch(e.target.value)}
+          placeholder="🔍 Tìm NCC..."
+          style={{ flex:1, padding:'7px 12px', border:`1px solid ${T.border}`, borderRadius:20,
+            fontSize:12, fontFamily:'inherit', outline:'none', color:T.dark, background:'#fff' }}/>
+        <GoldBtn small onClick={() => { setShowAddSup(true); setEditSup(null); setSupForm({name:'',short_name:'',note:''}) }}>
+          + Thêm NCC
+        </GoldBtn>
+      </div>
+
+      {(showAddSup || editSup) && (
+        <div style={{ marginBottom:16, padding:'16px', background:T.goldBg,
+          border:`1px solid ${T.goldBorder}`, borderRadius:12 }}>
+          <div style={{ fontWeight:700, color:T.dark, marginBottom:12 }}>
+            {editSup ? '✏️ Sửa NCC' : '➕ Thêm NCC mới'}
+          </div>
+          <Inp label="Tên NCC *" value={supForm.name}
+            onChange={(v: string) => setSupForm(f => ({...f, name:v}))} placeholder="VD: Bioderma"/>
+          <Inp label="Tên viết tắt" value={supForm.short_name}
+            onChange={(v: string) => setSupForm(f => ({...f, short_name:v}))} placeholder="VD: BDM"/>
+          <Inp label="Ghi chú" value={supForm.note}
+            onChange={(v: string) => setSupForm(f => ({...f, note:v}))}/>
+          <div style={{ display:'flex', gap:8 }}>
+            <GoldBtn small onClick={saveSup} disabled={saving || !supForm.name.trim()}>
+              {saving ? '...' : 'Lưu'}
+            </GoldBtn>
+            <button onClick={() => { setShowAddSup(false); setEditSup(null) }}
+              style={{ padding:'6px 14px', borderRadius:8, border:`1px solid ${T.border}`,
+                background:'transparent', color:T.med, cursor:'pointer', fontFamily:'inherit', fontSize:12 }}>
+              Hủy
+            </button>
+          </div>
+        </div>
+      )}
+
+      <div style={{ background:T.card, borderRadius:12, border:`1px solid ${T.border}`, overflow:'hidden' }}>
+        {filtered.map((s: any, i: number) => {
+          const accs = getAccounts(s.id)
+          const isExpanded = expandedSup === s.id
+          return (
+            <div key={s.id} style={{ borderBottom: i < filtered.length-1 ? `1px solid ${T.border}` : 'none' }}>
+              {/* NCC row */}
+              <div style={{ display:'flex', alignItems:'center', gap:10, padding:'10px 14px',
+                background: isExpanded ? T.goldBg : (i%2===0?'#fff':T.rowAlt),
+                cursor:'pointer' }}
+                onClick={() => setExpandedSup(isExpanded ? null : s.id)}>
+                <span style={{ fontSize:14 }}>{isExpanded?'▼':'▶'}</span>
+                <div style={{ flex:1 }}>
+                  <span style={{ fontSize:13, fontWeight:600, color: s.active?T.dark:T.light }}>
+                    {s.name}
+                    {!s.active && <span style={{ fontSize:10, color:T.light, marginLeft:6 }}>(Đã ẩn)</span>}
+                  </span>
+                  {s.short_name && <span style={{ fontSize:11, color:T.light, marginLeft:8 }}>{s.short_name}</span>}
+                </div>
+                <span style={{ fontSize:11, color:T.light }}>{accs.length} STK</span>
+                <button onClick={e => { e.stopPropagation(); setEditSup(s); setSupForm({name:s.name,short_name:s.short_name||'',note:s.note||''}); setShowAddSup(true) }}
+                  style={{ padding:'3px 10px', borderRadius:6, border:`1px solid ${T.border}`,
+                    background:'#fff', cursor:'pointer', fontSize:11, fontFamily:'inherit', color:T.med }}>
+                  Sửa
+                </button>
+                <button onClick={e => { e.stopPropagation(); toggleActive(s) }}
+                  style={{ padding:'3px 10px', borderRadius:6, fontSize:11, fontFamily:'inherit', cursor:'pointer',
+                    border:`1px solid ${s.active?T.amber:T.green}`, background:'transparent',
+                    color:s.active?T.amber:T.green }}>
+                  {s.active?'Ẩn':'Hiện'}
+                </button>
+              </div>
+
+              {/* Expanded accounts */}
+              {isExpanded && (
+                <div style={{ background:T.bg, padding:'8px 14px 12px 32px' }}>
+                  {accs.map((a: any) => (
+                    <div key={a.id} style={{ display:'flex', alignItems:'center', gap:8,
+                      padding:'8px 12px', background:'#fff', borderRadius:8,
+                      border:`1px solid ${T.border}`, marginBottom:6 }}>
+                      <div style={{ flex:1 }}>
+                        <div style={{ fontSize:13, fontWeight:700, color:T.dark, display:'flex', alignItems:'center', gap:6 }}>
+                          {a.account_number}
+                          {a.status === 'pending' && (
+                            <span style={{ fontSize:10, padding:'1px 6px', borderRadius:10,
+                              background:T.amberBg, color:T.amber, fontWeight:600 }}>Chờ duyệt</span>
+                          )}
+                        </div>
+                        <div style={{ fontSize:11, color:T.light }}>
+                          {a.account_name} · {a.bank_name}
+                        </div>
+                      </div>
+                      <CopyBtn value={a.account_number} label="Copy STK"/>
+                      <button onClick={() => deleteAcc(a.id)}
+                        style={{ padding:'3px 8px', borderRadius:6, border:`1px solid ${T.red}`,
+                          background:'transparent', color:T.red, cursor:'pointer', fontSize:11, fontFamily:'inherit' }}>
+                        ✕
+                      </button>
+                    </div>
+                  ))}
+
+                  {/* Add account */}
+                  {showAddAcc === s.id ? (
+                    <div style={{ padding:'12px', background:'#fff', borderRadius:8,
+                      border:`1px solid ${T.goldBorder}`, marginTop:4 }}>
+                      <div style={{ fontSize:12, fontWeight:600, color:T.dark, marginBottom:8 }}>
+                        Thêm STK mới (sẽ chờ Admin duyệt)
+                      </div>
+                      <Inp label="Số tài khoản *" value={accForm.account_number}
+                        onChange={(v: string) => setAccForm(f => ({...f, account_number:v}))}
+                        placeholder="Chỉ nhập số"/>
+                      <Inp label="Tên tài khoản (tên công ty)" value={accForm.account_name}
+                        onChange={(v: string) => setAccForm(f => ({...f, account_name:v}))}/>
+                      <Inp label="Ngân hàng" value={accForm.bank_name}
+                        onChange={(v: string) => setAccForm(f => ({...f, bank_name:v}))}
+                        placeholder="VD: VCB, ACB, MB..."/>
+                      <div style={{ display:'flex', gap:8, marginTop:8 }}>
+                        <GoldBtn small onClick={() => saveAcc(s.id)}
+                          disabled={saving || !accForm.account_number.trim()}>
+                          {saving?'...':'Lưu STK'}
+                        </GoldBtn>
+                        <button onClick={() => setShowAddAcc(null)}
+                          style={{ padding:'5px 12px', borderRadius:8, border:`1px solid ${T.border}`,
+                            background:'transparent', color:T.med, cursor:'pointer', fontFamily:'inherit', fontSize:12 }}>
+                          Hủy
+                        </button>
+                      </div>
+                    </div>
+                  ) : (
+                    <button onClick={() => { setShowAddAcc(s.id); setAccForm({account_number:'',account_name:'',bank_name:''}) }}
+                      style={{ padding:'5px 14px', borderRadius:8, border:`1.5px dashed ${T.border}`,
+                        background:'transparent', color:T.med, cursor:'pointer', fontFamily:'inherit', fontSize:11,
+                        marginTop:4, width:'100%' }}>
+                      + Thêm STK
+                    </button>
+                  )}
+                </div>
+              )}
+            </div>
+          )
+        })}
+        {filtered.length === 0 && (
+          <div style={{ padding:'32px', textAlign:'center', color:T.light, fontSize:13 }}>
+            {search ? 'Không tìm thấy NCC' : 'Chưa có NCC nào'}
+          </div>
+        )}
+      </div>
+    </div>
+  )
+}
+
+// ── STK Approval Tab (Admin only) ──────────────────────────
+function STKApprovalTab({ accounts, setAccounts, suppliers, user, mobile }: any) {
+  const pending = accounts.filter((a: any) => a.status === 'pending' && a.active)
+
+  const approve = async (acc: any) => {
+    const now = new Date().toISOString()
+    await db.from('supplier_accounts').update({ status:'approved', approved_at:now, approved_by:user.id }).eq('id', acc.id)
+    setAccounts((prev: any[]) => prev.map((a: any) => a.id===acc.id
+      ? {...a, status:'approved', approved_at:now, approved_by:user.id} : a))
+  }
+
+  const reject = async (acc: any) => {
+    if (!confirm('Từ chối và xóa STK này?')) return
+    await db.from('supplier_accounts').update({ active:false }).eq('id', acc.id)
+    setAccounts((prev: any[]) => prev.map((a: any) => a.id===acc.id ? {...a, active:false} : a))
+  }
+
+  if (pending.length === 0) return (
+    <div style={{ textAlign:'center', padding:'56px', color:T.green, fontWeight:600, fontSize:14 }}>
+      ✅ Không có STK nào chờ duyệt
+    </div>
+  )
+
+  return (
+    <div>
+      <div style={{ padding:'10px 14px', marginBottom:12, background:T.amberBg,
+        border:`1px solid ${T.amber}`, borderRadius:10, fontSize:12, color:T.amber, fontWeight:600 }}>
+        ⏳ {pending.length} tài khoản ngân hàng mới chờ xác nhận
+      </div>
+      <div style={{ background:T.card, borderRadius:12, border:`1px solid ${T.border}`, overflow:'hidden' }}>
+        {!mobile && (
+          <div style={{ display:'grid', gridTemplateColumns:'1fr 150px 80px 80px',
+            padding:'7px 14px', background:T.bg, borderBottom:`2px solid ${T.border}`,
+            fontSize:10, fontWeight:700, color:T.light, textTransform:'uppercase', letterSpacing:.6, gap:8 }}>
+            <span>NCC · Số tài khoản · Tên công ty</span>
+            <span>Ngân hàng</span>
+            <span>Người thêm</span>
+            <span style={{ textAlign:'center' }}>Thao tác</span>
+          </div>
+        )}
+        {pending.map((a: any, i: number) => {
+          const sup = suppliers.find((s: any) => s.id === a.supplier_id)
+          const creator = a.created_by ? `${a.created_by}` : '—'
+          return (
+            <div key={a.id} style={{
+              display: mobile ? 'block' : 'grid',
+              gridTemplateColumns:'1fr 150px 80px 80px',
+              padding:'10px 14px', gap:8, alignItems:'center',
+              borderBottom: i < pending.length-1 ? `1px solid ${T.border}` : 'none',
+              background: i%2===0?'#fff':T.rowAlt }}>
+              {mobile ? (
+                <div>
+                  <div style={{ fontSize:13, fontWeight:600, color:T.dark }}>{sup?.name || '?'}</div>
+                  <div style={{ fontSize:12, color:T.med }}>{a.account_number} · {a.bank_name}</div>
+                  <div style={{ fontSize:11, color:T.light, marginBottom:8 }}>{a.account_name}</div>
+                  <div style={{ display:'flex', gap:8 }}>
+                    <GoldBtn small onClick={() => approve(a)}>✅ Duyệt</GoldBtn>
+                    <GoldBtn small danger onClick={() => reject(a)}>✕ Từ chối</GoldBtn>
+                  </div>
+                </div>
+              ) : (
+                <>
+                  <div>
+                    <div style={{ fontSize:12, fontWeight:700, color:T.dark }}>{sup?.name || '?'}</div>
+                    <div style={{ fontSize:13, color:T.blue, fontWeight:600 }}>{a.account_number}</div>
+                    <div style={{ fontSize:11, color:T.light }}>{a.account_name}</div>
+                  </div>
+                  <span style={{ fontSize:12, fontWeight:600, color:T.med }}>{a.bank_name}</span>
+                  <span style={{ fontSize:11, color:T.light }}>{creator}</span>
+                  <div style={{ display:'flex', gap:4, justifyContent:'center' }}>
+                    <GoldBtn small onClick={() => approve(a)}>✅</GoldBtn>
+                    <GoldBtn small danger onClick={() => reject(a)}>✕</GoldBtn>
+                  </div>
+                </>
+              )}
+            </div>
+          )
+        })}
+      </div>
+    </div>
+  )
+}
+
+// ── Main PaymentModule ──────────────────────────────────────
+function PaymentModule({ user, mobile, allUsers }: any) {
+  const perm       = getPerm(user)
+  const canCreate  = perm.managePayment || perm.viewAllDashboard
+  const canPay     = perm.managePayment || perm.viewAllDashboard
+  const canKiot    = perm.managePayment || perm.viewAllDashboard
+  const canManage  = perm.managePayment || perm.viewAllDashboard
+  const canApprove = perm.viewAllDashboard
+
+  const [tab, setTab]       = useState<'list'|'history'|'suppliers'|'approve'>('list')
+  const [orders, setOrders] = useState<any[]>([])
+  const [suppliers, setSuppliers]   = useState<any[]>([])
+  const [accounts, setAccounts]     = useState<any[]>([])
+  const [loading, setLoading]       = useState(true)
+  const [showForm, setShowForm]     = useState(false)
+  const [editOrder, setEditOrder]   = useState<any>(null)
+  const [filterStatus, setFilterStatus] = useState('pending')
+  const [expanded, setExpanded]     = useState<string|null>(null)
+  const [newStkPrompt, setNewStkPrompt] = useState<any>(null)
+  const [newStkSupMode, setNewStkSupMode] = useState<'existing'|'new'>('existing')
+  const [newStkNccSearch, setNewStkNccSearch] = useState('')
+  const [newStkSelSup, setNewStkSelSup] = useState<any>(null)
+  const [newStkNewName, setNewStkNewName] = useState('')
+  const [savingNewStk, setSavingNewStk] = useState(false)
+
+  // History tab state
+  const [histMonth, setHistMonth]   = useState(() => {
+    const n = new Date(); return `${n.getFullYear()}-${String(n.getMonth()+1).padStart(2,'0')}`
+  })
+  const [histSort, setHistSort]     = useState<'date_desc'|'date_asc'|'amount_desc'|'ncc'>('date_desc')
+  const [histSearch, setHistSearch] = useState('')
+
+  const pad = mobile ? '16px' : '24px'
+
+  // ── Load data ──
+  useEffect(() => {
+    Promise.all([
+      db.from('suppliers').select('*').eq('active',true).order('name'),
+      db.from('supplier_accounts').select('*').eq('active',true).order('created_at'),
+      db.from('payment_orders').select('*').eq('is_history',false).order('created_at',{ascending:false}).limit(500),
+    ]).then(([sup, acc, ord]) => {
+      setSuppliers(sup.data||[])
+      setAccounts(acc.data||[])
+      setOrders(ord.data||[])
+      setLoading(false)
+    })
+  }, [])
+
+  // ── History data ──
+  const [histOrders, setHistOrders] = useState<any[]>([])
+  const [histLoading, setHistLoading] = useState(false)
+  useEffect(() => {
+    if (tab !== 'history') return
+    setHistLoading(true)
+    const [yyyy, mm] = histMonth.split('-')
+    const start = `${yyyy}-${mm}-01`
+    const endDate = new Date(Number(yyyy), Number(mm), 0)
+    const end = `${yyyy}-${mm}-${String(endDate.getDate()).padStart(2,'0')}`
+    db.from('payment_orders').select('*')
+      .gte('paid_at', start).lte('paid_at', end + 'T23:59:59')
+      .order('paid_at', {ascending:false}).limit(500)
+      .then(({data}) => { setHistOrders(data||[]); setHistLoading(false) })
+  }, [tab, histMonth])
+
+  // ── Save order ──
+  const saveOrder = async (form: any) => {
+    const now = new Date().toISOString()
+    const newO = {
+      id: 'pay_' + Date.now() + '_' + Math.random().toString(36).slice(2,6),
+      supplier_id: form.supplier_id, supplier_name: form.supplier_name,
+      account_id: form.account_id, account_number: form.account_number,
+      account_name: form.account_name, bank_name: form.bank_name,
+      amount: form.amount, transfer_content: form.transfer_content,
+      purpose: form.purpose, note: form.note, order_ref: form.order_ref,
+      status: form.status, created_by: user.id, created_at: now,
+      paid_at:'', paid_by:'', kiot_at:'', kiot_by:'', is_history:false,
+    }
+    await db.from('payment_orders').insert(newO)
+    setOrders(prev => [newO, ...prev])
+    setShowForm(false)
+
+    // Gợi ý lưu STK mới
+    if (form._isNewStk && form._newStkData) {
+      setNewStkPrompt({ order: newO, stkData: form._newStkData })
+    }
+  }
+
+  const updateOrder = async (form: any) => {
+    if (!editOrder) return
+    const upd = {
+      supplier_id: form.supplier_id, supplier_name: form.supplier_name,
+      account_id: form.account_id, account_number: form.account_number,
+      account_name: form.account_name, bank_name: form.bank_name,
+      amount: form.amount, transfer_content: form.transfer_content,
+      purpose: form.purpose, note: form.note, order_ref: form.order_ref,
+      status: form.status,
+    }
+    await db.from('payment_orders').update(upd).eq('id', editOrder.id)
+    setOrders(prev => prev.map(o => o.id===editOrder.id ? {...o,...upd} : o))
+    setEditOrder(null); setShowForm(false)
+  }
+
+  const tickPaid = async (o: any) => {
+    const now = new Date().toISOString()
+    const upd = { status:'paid', paid_at:now, paid_by:user.id }
+    await db.from('payment_orders').update(upd).eq('id', o.id)
+    setOrders(prev => prev.map(x => x.id===o.id ? {...x,...upd} : x))
+  }
+
+  const tickKiot = async (o: any) => {
+    const now = new Date().toISOString()
+    const upd = { status:'completed', kiot_at:now, kiot_by:user.id }
+    await db.from('payment_orders').update(upd).eq('id', o.id)
+    setOrders(prev => prev.map(x => x.id===o.id ? {...x,...upd} : x))
+  }
+
+  const deleteOrder = async (id: string) => {
+    if (!confirm('Xóa lệnh này?')) return
+    await db.from('payment_orders').delete().eq('id', id)
+    setOrders(prev => prev.filter(o => o.id !== id))
+  }
+
+  const promoteOrder = async (o: any) => {
+    const upd = { status:'pending' }
+    await db.from('payment_orders').update(upd).eq('id', o.id)
+    setOrders(prev => prev.map(x => x.id===o.id ? {...x,...upd} : x))
+  }
+
+  // Save new STK after order
+  const saveNewStk = async () => {
+    if (!newStkPrompt) return
+    setSavingNewStk(true)
+    const now = new Date().toISOString()
+    const { stkData } = newStkPrompt
+
+    let supId = newStkSelSup?.id
+    if (newStkSupMode === 'new' && newStkNewName.trim()) {
+      const newSup = { id:'sup_'+Date.now()+'_'+Math.random().toString(36).slice(2,5),
+        name:newStkNewName.trim(), short_name:'', note:'', active:true, created_at:now, created_by:user.id }
+      await db.from('suppliers').insert(newSup)
+      setSuppliers(prev => [...prev, newSup])
+      supId = newSup.id
+    }
+
+    if (supId) {
+      const newA = { id:'acc_'+Date.now()+'_'+Math.random().toString(36).slice(2,5),
+        supplier_id:supId, account_number:stkData.account_number,
+        account_name:stkData.account_name||'', bank_name:stkData.bank_name||'',
+        status:'pending', active:true, created_at:now, created_by:user.id }
+      await db.from('supplier_accounts').insert(newA)
+      setAccounts(prev => [...prev, newA])
+    }
+    setSavingNewStk(false); setNewStkPrompt(null)
+  }
+
+  // ── Filtered orders ──
+  const filteredOrders = orders.filter((o: any) => {
+    if (filterStatus === 'all') return true
+    return o.status === filterStatus
+  })
+
+  // Counts for filter badges
+  const countByStatus = orders.reduce((acc: any, o: any) => {
+    acc[o.status] = (acc[o.status]||0)+1; return acc
+  }, {} as Record<string,number>)
+
+  // Sorted history
+  const histFiltered = histOrders.filter((o: any) => {
+    if (!histSearch) return true
+    return normPay(o.supplier_name + o.account_number).includes(normPay(histSearch))
+  }).sort((a: any, b: any) => {
+    if (histSort==='date_asc')     return (a.paid_at||'').localeCompare(b.paid_at||'')
+    if (histSort==='amount_desc')  return b.amount - a.amount
+    if (histSort==='ncc')          return (a.supplier_name||'').localeCompare(b.supplier_name||'')
+    return (b.paid_at||'').localeCompare(a.paid_at||'')
+  })
+
+  const histTotal = histFiltered.reduce((s: number, o: any) => s + (o.amount||0), 0)
+
+  const pendingSTKCount = accounts.filter((a: any) => a.status==='pending' && a.active).length
+
+  const tabs = [
+    { id:'list',      icon:'📋', label:'Danh sách' },
+    { id:'history',   icon:'📜', label:'Lịch sử' },
+    canManage && { id:'suppliers', icon:'🏢', label:'Nhà cung cấp' },
+    canApprove && { id:'approve',  icon:'✅', label:`Duyệt STK${pendingSTKCount>0?` (${pendingSTKCount})`:''}` },
+  ].filter(Boolean) as any[]
+
+  if (loading) return (
+    <div style={{ padding:pad, color:T.light, fontSize:13 }}>Đang tải...</div>
+  )
+
+  return (
+    <div style={{ padding:pad, paddingBottom: mobile ? 90 : pad }}>
+      <Topbar mobile={mobile}
+        title="💸 Lệnh Chuyển Khoản"
+        subtitle="Quản lý lệnh bank cho nhà cung cấp"
+        action={canCreate ? (
+          <GoldBtn small onClick={() => { setEditOrder(null); setShowForm(true) }}>
+            + Tạo lệnh
+          </GoldBtn>
+        ) : undefined}
+      />
+
+      {/* Tab bar */}
+      <div style={{ display:'flex', gap:4, marginBottom:16, flexWrap:'wrap' }}>
+        {tabs.map((t: any) => (
+          <button key={t.id} onClick={() => setTab(t.id)}
+            style={{ padding:'7px 16px', borderRadius:20,
+              border:`1.5px solid ${tab===t.id?T.gold:T.border}`,
+              background:tab===t.id?T.goldBg:'#fff', color:tab===t.id?T.goldText:T.med,
+              cursor:'pointer', fontFamily:'inherit', fontSize:12, fontWeight:tab===t.id?700:400 }}>
+            {t.icon} {t.label}
+          </button>
+        ))}
+      </div>
+
+      {/* ════ Tab: Danh sách ════ */}
+      {tab === 'list' && (
+        <div>
+          {/* Status filter */}
+          <div style={{ display:'flex', gap:4, marginBottom:12, flexWrap:'wrap' }}>
+            {[
+              ['all',       '📂 Tất cả'],
+              ['draft',     '📝 Nháp'],
+              ['pending',   '⏳ Chờ CK'],
+              ['paid',      '✅ Đã CK'],
+              ['completed', '🏁 Xong'],
+            ].map(([s,l]) => {
+              const cnt = s==='all' ? orders.length : (countByStatus[s]||0)
+              return (
+                <button key={s} onClick={() => setFilterStatus(s)}
+                  style={{ padding:'5px 12px', borderRadius:20, cursor:'pointer',
+                    fontFamily:'inherit', fontSize:11,
+                    border:`1.5px solid ${filterStatus===s?T.gold:T.border}`,
+                    background:filterStatus===s?T.goldBg:'#fff',
+                    color:filterStatus===s?T.goldText:T.med }}>
+                  {l} {cnt>0?`(${cnt})`:''}
+                </button>
+              )
+            })}
+          </div>
+
+          {/* Order list */}
+          <div style={{ background:T.card, borderRadius:12, border:`1px solid ${T.border}`, overflow:'hidden' }}>
+            {!mobile && (
+              <div style={{ display:'grid', gridTemplateColumns:'1fr 120px 110px 100px 100px',
+                padding:'8px 14px', background:T.bg, borderBottom:`2px solid ${T.border}`,
+                fontSize:10, fontWeight:700, color:T.light, textTransform:'uppercase',
+                letterSpacing:.6, position:'sticky', top:0, zIndex:2, gap:8 }}>
+                <span>NCC · Tài khoản</span>
+                <span style={{ textAlign:'right' }}>Số tiền</span>
+                <span style={{ textAlign:'center' }}>Mục đích</span>
+                <span style={{ textAlign:'center' }}>Trạng thái</span>
+                <span style={{ textAlign:'center' }}>Thao tác</span>
+              </div>
+            )}
+
+            {filteredOrders.map((o: any, i: number) => {
+              const st   = PAYMENT_STATUS[o.status] || PAYMENT_STATUS.draft
+              const isEx = expanded === o.id
+              const creator = allUsers?.find((u: any) => u.id === o.created_by)
+              const payer   = allUsers?.find((u: any) => u.id === o.paid_by)
+              const kioter  = allUsers?.find((u: any) => u.id === o.kiot_by)
+
+              return (
+                <div key={o.id} style={{ borderBottom: i < filteredOrders.length-1 ? `1px solid ${T.border}` : 'none' }}>
+                  {/* Main row */}
+                  <div style={{ display:'flex', alignItems:'center', gap:8, padding:'10px 14px',
+                    background: isEx ? T.goldBg : (i%2===0?'#fff':T.rowAlt),
+                    cursor:'pointer', transition:'background .1s' }}
+                    onClick={() => setExpanded(isEx ? null : o.id)}>
+
+                    {mobile ? (
+                      <>
+                        <div style={{ flex:1, minWidth:0 }}>
+                          <div style={{ display:'flex', alignItems:'center', gap:6 }}>
+                            <span style={{ fontSize:13, fontWeight:700, color:T.dark,
+                              overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap' }}>
+                              {o.supplier_name}
+                            </span>
+                            <span style={{ fontSize:10, padding:'1px 6px', borderRadius:10, flexShrink:0,
+                              background:st.bg, color:st.color, fontWeight:600 }}>
+                              {st.short}
+                            </span>
+                          </div>
+                          <div style={{ fontSize:11, color:T.med }}>
+                            {fmtMoney(o.amount)} · {o.purpose}
+                          </div>
+                        </div>
+                        <span style={{ fontSize:16, color:T.light, flexShrink:0 }}>{isEx?'▲':'▼'}</span>
+                      </>
+                    ) : (
+                      <>
+                        <div style={{ flex:1, minWidth:0 }}>
+                          <div style={{ fontSize:13, fontWeight:600, color:T.dark,
+                            overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap' }}>
+                            {o.supplier_name}
+                          </div>
+                          <div style={{ fontSize:11, color:T.light }}>
+                            {o.account_number} · {o.bank_name}
+                          </div>
+                        </div>
+                        <span style={{ fontSize:13, fontWeight:700, textAlign:'right', color:T.dark, minWidth:120 }}>
+                          {fmtMoney(o.amount)}
+                        </span>
+                        <span style={{ fontSize:11, textAlign:'center', minWidth:110,
+                          padding:'2px 8px', borderRadius:10, display:'block',
+                          background: o.purpose==='Lấy hàng'?T.blueBg:T.grayBg,
+                          color: o.purpose==='Lấy hàng'?T.blue:T.gray }}>
+                          {o.purpose}
+                        </span>
+                        <span style={{ fontSize:11, textAlign:'center', minWidth:100,
+                          padding:'2px 8px', borderRadius:10, display:'block',
+                          background:st.bg, color:st.color, fontWeight:600 }}>
+                          {st.short}
+                        </span>
+                        <div style={{ display:'flex', gap:4, justifyContent:'center', minWidth:100 }}>
+                          {o.status==='draft' && canCreate && (
+                            <button onClick={e => { e.stopPropagation(); promoteOrder(o) }}
+                              style={{ padding:'4px 10px', borderRadius:6, border:`1px solid ${T.blue}`,
+                                background:T.blueBg, color:T.blue, cursor:'pointer', fontSize:11, fontFamily:'inherit' }}>
+                              Gửi
+                            </button>
+                          )}
+                          {o.status==='pending' && canPay && (
+                            <button onClick={e => { e.stopPropagation(); tickPaid(o) }}
+                              style={{ padding:'4px 10px', borderRadius:6, border:`1px solid ${T.green}`,
+                                background:T.greenBg, color:T.green, cursor:'pointer', fontSize:11, fontFamily:'inherit' }}>
+                              Đã CK
+                            </button>
+                          )}
+                          {o.status==='paid' && canKiot && (
+                            <button onClick={e => { e.stopPropagation(); tickKiot(o) }}
+                              style={{ padding:'4px 10px', borderRadius:6, border:`1px solid ${T.teal}`,
+                                background:T.tealBg, color:T.teal, cursor:'pointer', fontSize:11, fontFamily:'inherit' }}>
+                              Nhập KV
+                            </button>
+                          )}
+                          {canCreate && o.status==='draft' && (
+                            <button onClick={e => { e.stopPropagation(); deleteOrder(o.id) }}
+                              style={{ padding:'4px 8px', borderRadius:6, border:`1px solid ${T.red}`,
+                                background:'transparent', color:T.red, cursor:'pointer', fontSize:11, fontFamily:'inherit' }}>
+                              ✕
+                            </button>
+                          )}
+                        </div>
+                      </>
+                    )}
+                  </div>
+
+                  {/* Expanded detail */}
+                  {isEx && (
+                    <div style={{ padding:'12px 20px 16px', background: mobile?T.goldBg:'#FFFDF8',
+                      borderTop:`1px solid ${T.goldBorder}` }}>
+                      <div style={{ display:'grid', gridTemplateColumns: mobile?'1fr':'1fr 1fr', gap:12, marginBottom:12 }}>
+                        <div>
+                          <div style={{ fontSize:10, color:T.light, textTransform:'uppercase', letterSpacing:.5, marginBottom:3 }}>
+                            Thông tin CK
+                          </div>
+                          <div style={{ display:'flex', alignItems:'center', gap:6, marginBottom:6 }}>
+                            <span style={{ fontSize:12, color:T.med }}>STK:</span>
+                            <span style={{ fontSize:13, fontWeight:700, color:T.dark }}>{o.account_number}</span>
+                            <CopyBtn value={o.account_number} label="Copy"/>
+                          </div>
+                          <div style={{ display:'flex', alignItems:'center', gap:6, marginBottom:6 }}>
+                            <span style={{ fontSize:12, color:T.med }}>Số tiền:</span>
+                            <span style={{ fontSize:13, fontWeight:700, color:T.dark }}>{fmtMoney(o.amount)}</span>
+                            <CopyBtn value={fmtMoney(o.amount)} label="Copy"/>
+                          </div>
+                          <div style={{ display:'flex', alignItems:'center', gap:6, marginBottom:4 }}>
+                            <span style={{ fontSize:12, color:T.med }}>Nội dung:</span>
+                            <span style={{ fontSize:11, color:T.dark, flex:1 }}>{o.transfer_content}</span>
+                            <CopyBtn value={o.transfer_content} label="Copy"/>
+                          </div>
+                          <div style={{ fontSize:11, color:T.light, marginTop:4 }}>
+                            Tên TK: {o.account_name} · NH: {o.bank_name}
+                          </div>
+                        </div>
+                        <div>
+                          <div style={{ fontSize:10, color:T.light, textTransform:'uppercase', letterSpacing:.5, marginBottom:6 }}>
+                            Lịch sử xử lý
+                          </div>
+                          <div style={{ fontSize:11, color:T.med, marginBottom:3 }}>
+                            📝 Tạo: {creator?.name||o.created_by||'?'} · {fmtDate(o.created_at)}
+                          </div>
+                          {o.paid_at && (
+                            <div style={{ fontSize:11, color:T.green, marginBottom:3 }}>
+                              ✅ Đã CK: {payer?.name||o.paid_by||'?'} · {fmtDate(o.paid_at)}
+                            </div>
+                          )}
+                          {o.kiot_at && (
+                            <div style={{ fontSize:11, color:T.teal }}>
+                              🏁 Nhập KV: {kioter?.name||o.kiot_by||'?'} · {fmtDate(o.kiot_at)}
+                            </div>
+                          )}
+                          {o.note && (
+                            <div style={{ fontSize:11, color:T.light, marginTop:6, fontStyle:'italic' }}>
+                              Ghi chú: {o.note}
+                            </div>
+                          )}
+                          {o.order_ref && (
+                            <div style={{ fontSize:11, color:T.light }}>Ref: {o.order_ref}</div>
+                          )}
+                        </div>
+                      </div>
+
+                      {/* Mobile actions */}
+                      {mobile && (
+                        <div style={{ display:'flex', gap:8, flexWrap:'wrap', marginTop:8 }}>
+                          {o.status==='draft' && canCreate && (
+                            <GoldBtn small onClick={() => promoteOrder(o)}>📤 Gửi Admin</GoldBtn>
+                          )}
+                          {o.status==='pending' && canPay && (
+                            <GoldBtn small onClick={() => tickPaid(o)}>✅ Đã CK</GoldBtn>
+                          )}
+                          {o.status==='paid' && canKiot && (
+                            <GoldBtn small onClick={() => tickKiot(o)}>📥 Nhập KV</GoldBtn>
+                          )}
+                          {canCreate && (
+                            <GoldBtn small outline onClick={() => { setEditOrder(o); setShowForm(true) }}>✏️ Sửa</GoldBtn>
+                          )}
+                          {o.status==='draft' && canCreate && (
+                            <GoldBtn small danger onClick={() => deleteOrder(o.id)}>✕ Xóa</GoldBtn>
+                          )}
+                        </div>
+                      )}
+                      {!mobile && canCreate && (
+                        <button onClick={() => { setEditOrder(o); setShowForm(true) }}
+                          style={{ padding:'5px 14px', borderRadius:8, border:`1px solid ${T.border}`,
+                            background:'#fff', color:T.med, cursor:'pointer', fontFamily:'inherit', fontSize:11 }}>
+                          ✏️ Sửa lệnh
+                        </button>
+                      )}
+                    </div>
+                  )}
+                </div>
+              )
+            })}
+
+            {filteredOrders.length === 0 && (
+              <div style={{ padding:'40px', textAlign:'center', color:T.light, fontSize:13 }}>
+                {filterStatus==='all' ? 'Chưa có lệnh nào' : `Không có lệnh "${PAYMENT_STATUS[filterStatus]?.short||filterStatus}"`}
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+
+      {/* ════ Tab: Lịch sử ════ */}
+      {tab === 'history' && (
+        <div>
+          <div style={{ display:'flex', gap:8, marginBottom:12, flexWrap:'wrap', alignItems:'center' }}>
+            <input type="month" value={histMonth} onChange={e => setHistMonth(e.target.value)}
+              style={{ padding:'7px 11px', border:`1px solid ${T.border}`, borderRadius:8,
+                fontSize:12, fontFamily:'inherit', color:T.dark, background:'#fff', outline:'none' }}/>
+            <select value={histSort} onChange={e => setHistSort(e.target.value as any)}
+              style={{ padding:'7px 11px', border:`1px solid ${T.border}`, borderRadius:8,
+                fontSize:12, fontFamily:'inherit', color:T.dark, background:'#fff', outline:'none', cursor:'pointer' }}>
+              <option value="date_desc">📅 Mới nhất</option>
+              <option value="date_asc">📅 Cũ nhất</option>
+              <option value="amount_desc">💰 Tiền nhiều → ít</option>
+              <option value="ncc">🏢 Theo NCC (A-Z)</option>
+            </select>
+            <input value={histSearch} onChange={e => setHistSearch(e.target.value)}
+              placeholder="🔍 Tìm NCC hoặc STK..."
+              style={{ flex:1, minWidth:150, padding:'7px 12px', border:`1px solid ${T.border}`,
+                borderRadius:20, fontSize:12, fontFamily:'inherit', outline:'none',
+                color:T.dark, background:'#fff' }}/>
+          </div>
+
+          {histLoading ? (
+            <div style={{ padding:'32px', textAlign:'center', color:T.light }}>Đang tải...</div>
+          ) : (
+            <>
+              <div style={{ display:'flex', gap:12, marginBottom:12 }}>
+                <div style={{ padding:'10px 16px', background:T.goldBg, border:`1px solid ${T.goldBorder}`,
+                  borderRadius:10, fontSize:12 }}>
+                  <span style={{ color:T.light }}>Tổng lệnh: </span>
+                  <b style={{ color:T.dark }}>{histFiltered.length}</b>
+                </div>
+                <div style={{ padding:'10px 16px', background:T.greenBg, border:`1px solid ${T.green}`,
+                  borderRadius:10, fontSize:12 }}>
+                  <span style={{ color:T.light }}>Tổng tiền: </span>
+                  <b style={{ color:T.green }}>{fmtMoney(histTotal)}</b>
+                </div>
+              </div>
+
+              <div style={{ background:T.card, borderRadius:12, border:`1px solid ${T.border}`, overflow:'hidden' }}>
+                {!mobile && (
+                  <div style={{ display:'grid', gridTemplateColumns:'90px 1fr 140px 110px 80px',
+                    padding:'7px 14px', background:T.bg, borderBottom:`2px solid ${T.border}`,
+                    fontSize:10, fontWeight:700, color:T.light, textTransform:'uppercase',
+                    letterSpacing:.6, gap:8 }}>
+                    <span>Ngày CK</span>
+                    <span>NCC · Tài khoản</span>
+                    <span>Nội dung CK</span>
+                    <span>Mục đích</span>
+                    <span style={{ textAlign:'right' }}>Số tiền</span>
+                  </div>
+                )}
+                {histFiltered.map((o: any, i: number) => (
+                  <div key={o.id} style={{
+                    display: mobile ? 'flex' : 'grid',
+                    gridTemplateColumns:'90px 1fr 140px 110px 80px',
+                    padding:'9px 14px', gap:8, alignItems:'center',
+                    borderBottom: i < histFiltered.length-1 ? `1px solid ${T.border}` : 'none',
+                    background: i%2===0?'#fff':T.rowAlt,
+                    justifyContent: mobile?'space-between':undefined }}>
+                    {mobile ? (
+                      <>
+                        <div style={{ flex:1, minWidth:0 }}>
+                          <div style={{ fontSize:12, fontWeight:600, color:T.dark,
+                            overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap' }}>
+                            {o.supplier_name}
+                          </div>
+                          <div style={{ fontSize:11, color:T.light }}>
+                            {fmtDate(o.paid_at)} · {o.account_number} · {o.bank_name}
+                          </div>
+                        </div>
+                        <div style={{ fontWeight:700, fontSize:13, color:T.dark, flexShrink:0 }}>
+                          {fmtMoney(o.amount)}
+                        </div>
+                      </>
+                    ) : (
+                      <>
+                        <span style={{ fontSize:11, color:T.med }}>{fmtDate(o.paid_at)}</span>
+                        <div>
+                          <div style={{ fontSize:12, fontWeight:600, color:T.dark }}>{o.supplier_name}</div>
+                          <div style={{ fontSize:11, color:T.light }}>{o.account_number} · {o.bank_name}</div>
+                        </div>
+                        <span style={{ fontSize:11, color:T.light, overflow:'hidden',
+                          textOverflow:'ellipsis', whiteSpace:'nowrap' }}>{o.transfer_content}</span>
+                        <span style={{ fontSize:11, padding:'2px 8px', borderRadius:10, display:'block',
+                          textAlign:'center',
+                          background:o.purpose==='Lấy hàng'?T.blueBg:T.grayBg,
+                          color:o.purpose==='Lấy hàng'?T.blue:T.gray }}>
+                          {o.purpose}
+                        </span>
+                        <span style={{ fontSize:12, fontWeight:700, textAlign:'right', color:T.dark }}>
+                          {fmtMoney(o.amount)}
+                        </span>
+                      </>
+                    )}
+                  </div>
+                ))}
+                {histFiltered.length === 0 && (
+                  <div style={{ padding:'32px', textAlign:'center', color:T.light, fontSize:13 }}>
+                    Không có lệnh nào trong tháng này
+                  </div>
+                )}
+              </div>
+            </>
+          )}
+        </div>
+      )}
+
+      {/* ════ Tab: NCC ════ */}
+      {tab === 'suppliers' && canManage && (
+        <SupplierManagerTab
+          suppliers={suppliers} setSuppliers={setSuppliers}
+          accounts={accounts} setAccounts={setAccounts}
+          user={user} mobile={mobile}/>
+      )}
+
+      {/* ════ Tab: Duyệt STK ════ */}
+      {tab === 'approve' && canApprove && (
+        <STKApprovalTab
+          accounts={accounts} setAccounts={setAccounts}
+          suppliers={suppliers} user={user} mobile={mobile}/>
+      )}
+
+      {/* Form tạo/sửa lệnh */}
+      {showForm && (
+        <PaymentOrderForm
+          suppliers={suppliers.filter((s: any) => s.active)}
+          accounts={accounts}
+          onSave={editOrder ? updateOrder : saveOrder}
+          onClose={() => { setShowForm(false); setEditOrder(null) }}
+          edit={editOrder}
+          mobile={mobile}/>
+      )}
+
+      {/* New STK prompt */}
+      {newStkPrompt && (
+        <div style={{ position:'fixed', inset:0, background:'rgba(0,0,0,0.5)', zIndex:3100,
+          display:'flex', alignItems:'center', justifyContent:'center', padding:16 }}>
+          <div style={{ background:'#fff', borderRadius:14, padding:'20px 24px', maxWidth:440, width:'100%' }}>
+            <div style={{ fontWeight:700, fontSize:14, color:T.dark, marginBottom:8 }}>
+              💾 Lưu tài khoản mới?
+            </div>
+            <div style={{ fontSize:12, color:T.med, marginBottom:16 }}>
+              STK <b>{newStkPrompt.stkData?.account_number}</b> chưa có trong danh mục.
+              Lưu lại để dùng lần sau?
+            </div>
+            <div style={{ display:'flex', gap:8, marginBottom:12 }}>
+              {['existing','new'].map(m => (
+                <button key={m} onClick={() => setNewStkSupMode(m as any)}
+                  style={{ flex:1, padding:'7px', borderRadius:8, cursor:'pointer',
+                    fontFamily:'inherit', fontSize:12,
+                    border:`1.5px solid ${newStkSupMode===m?T.gold:T.border}`,
+                    background:newStkSupMode===m?T.goldBg:'#fff',
+                    color:newStkSupMode===m?T.goldText:T.med }}>
+                  {m==='existing'?'Gán vào NCC có sẵn':'Tạo NCC mới'}
+                </button>
+              ))}
+            </div>
+            {newStkSupMode === 'existing' ? (
+              <div>
+                <input value={newStkNccSearch} onChange={e => setNewStkNccSearch(e.target.value)}
+                  placeholder="Tìm NCC..."
+                  style={{ width:'100%', padding:'8px 11px', border:`1px solid ${T.border}`,
+                    borderRadius:8, fontSize:12, fontFamily:'inherit', outline:'none',
+                    color:T.dark, background:'#fff', boxSizing:'border-box', marginBottom:6 }}/>
+                {newStkNccSearch && (
+                  <div style={{ border:`1px solid ${T.border}`, borderRadius:8,
+                    maxHeight:160, overflowY:'auto', background:'#fff', marginBottom:8 }}>
+                    {suppliers.filter((s: any) => s.active &&
+                      normPay(s.name).includes(normPay(newStkNccSearch))).slice(0,8).map((s: any) => (
+                      <div key={s.id} onClick={() => { setNewStkSelSup(s); setNewStkNccSearch(s.name) }}
+                        style={{ padding:'8px 12px', cursor:'pointer', fontSize:12, color:T.dark,
+                          background: newStkSelSup?.id===s.id?T.goldBg:'#fff',
+                          borderBottom:`1px solid ${T.border}` }}
+                        onMouseEnter={e => { (e.currentTarget as HTMLElement).style.background = T.bg }}
+                        onMouseLeave={e => { (e.currentTarget as HTMLElement).style.background = newStkSelSup?.id===s.id?T.goldBg:'#fff' }}>
+                        {s.name}
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            ) : (
+              <Inp label="Tên NCC mới *" value={newStkNewName}
+                onChange={setNewStkNewName} placeholder="VD: Bioderma"/>
+            )}
+            <div style={{ display:'flex', gap:8, marginTop:12 }}>
+              <GoldBtn small onClick={saveNewStk} disabled={savingNewStk ||
+                (newStkSupMode==='existing' && !newStkSelSup) ||
+                (newStkSupMode==='new' && !newStkNewName.trim())}>
+                {savingNewStk?'Đang lưu...':'💾 Lưu STK'}
+              </GoldBtn>
+              <button onClick={() => setNewStkPrompt(null)}
+                style={{ padding:'6px 14px', borderRadius:8, border:`1px solid ${T.border}`,
+                  background:'transparent', color:T.med, cursor:'pointer', fontFamily:'inherit', fontSize:12 }}>
+                Bỏ qua
+              </button>
+            </div>
+          </div>
+        </div>
       )}
     </div>
   )
