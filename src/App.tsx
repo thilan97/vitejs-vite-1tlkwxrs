@@ -4,8 +4,8 @@
 import React, { useState, useMemo, useEffect, useCallback, useRef } from "react"
 import { createClient } from '@supabase/supabase-js'
 
-const SUPABASE_URL = import.meta.env.VITE_SUPABASE_URL as string
-const SUPABASE_KEY = import.meta.env.VITE_SUPABASE_KEY as string
+const SUPABASE_URL = 'https://uzloxzrqtzuucxlokqfm.supabase.co'
+const SUPABASE_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InV6bG94enJxdHp1dWN4bG9rcWZtIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzU0ODAwOTYsImV4cCI6MjA5MTA1NjA5Nn0.INA68j0bmDb7kFtn4H3TiQmPzEqs67sKMsBhc--mvvo'
 const db = createClient(SUPABASE_URL, SUPABASE_KEY)
 
 // ── THEME ────────────────────────────────────────
@@ -50,9 +50,10 @@ const LEAVE_TYPE: any = {
   half:'Nghỉ nửa ngày'
 }
 const FREQ_COLOR: any = {
-  'Hàng ngày':  { color:'#1D4ED8', bg:'#DBEAFE' },
-  'Hàng tuần':  { color:'#15803D', bg:'#DCFCE7' },
-  'Hàng tháng': { color:'#B45309', bg:'#FEF3C7' },
+  'Hàng ngày':     { color:'#1D4ED8', bg:'#DBEAFE' },
+  'Hàng tuần':     { color:'#15803D', bg:'#DCFCE7' },
+  'Hàng tháng':    { color:'#B45309', bg:'#FEF3C7' },
+  'Ngày cụ thể':   { color:'#7C3AED', bg:'#EDE9FE' },
 }
 const PRI_CFG: any = {
   high: { label:'🔴 Cao',   color:T.red,   bg:T.redBg   },
@@ -86,6 +87,7 @@ const getPerm = (user: any) => {
     manageExpiry:       isAdmin || (pos.perm_manage_inventory ?? false) || (pos.perm_manage_expiry ?? false),
     managePayment:      isAdmin || (pos.perm_manage_payment ?? false),
     editReturn:         isAdmin || (pos.perm_manage_inventory ?? false) || (pos.perm_edit_return ?? false),
+    deleteInvSession:   isAdmin || (pos.perm_delete_inv_session ?? false),
   }
 }
 
@@ -122,6 +124,7 @@ const ALL_PERMS = [
   { key:'perm_resolve_wrong_order',  label:'Xác nhận đã xử lý đơn sai',        group:'Kho'      },
   { key:'perm_manage_inventory',     label:'Xử lý kiểm kê (QM Kho)',            group:'Kho'      },
   { key:'perm_manage_expiry',        label:'Quản lý date sản phẩm (QM Kho)',    group:'Kho'      },
+  { key:'perm_delete_inv_session',   label:'Xóa phiên kiểm kê',                 group:'Kho'      },
   { key:'perm_edit_return',         label:'Sửa phiếu hàng hoàn (phần kho)',    group:'Kho'      },
   { key:'perm_manage_payment',       label:'Quản lý lệnh chuyển khoản',         group:'Sale'     },
 ]
@@ -1531,7 +1534,7 @@ function Templates({ templates, setTemplates, allUsers, mobile }: any) {
   const [edit, setEdit] = useState<any>(null)
   const emptyForm = { title:'', description:'', assignee_id:'', priority:'mid',
     freq:'Hàng ngày', time_start:'08:00', time_end:'09:00',
-    day_of_month:'1', mins:'60', active:true }
+    day_of_month:'1', mins:'60', active:true, specific_date:'' }
   const [form, setForm] = useState<any>(emptyForm)
   const p = mobile ? '16px' : '24px'
   const staff = allUsers.filter((u: any) => u.id !== 'admin')
@@ -1542,12 +1545,13 @@ function Templates({ templates, setTemplates, allUsers, mobile }: any) {
     setForm({ title:t.title, description:t.description||'', assignee_id:t.assignee_id||'',
       priority:t.priority, freq:t.freq, time_start:t.time_start||'08:00',
       time_end:t.time_end||'09:00', day_of_month:String(t.day_of_month||1),
-      mins:String(t.mins||60), active:t.active })
+      mins:String(t.mins||60), active:t.active, specific_date:t.specific_date||'' })
     setShow(true)
   }
 
   const save = async () => {
     if (!form.title || !form.assignee_id) return
+    if (form.freq === 'Ngày cụ thể' && !form.specific_date) return
     const data = { ...form, mins:Number(form.mins), day_of_month:Number(form.day_of_month),
       // deadline_suggest vẫn giữ = time_end để tương thích với performReset
       deadline_suggest: form.time_end }
@@ -1610,6 +1614,11 @@ function Templates({ templates, setTemplates, allUsers, mobile }: any) {
                           {Number(tp.day_of_month)===99 ? '📅 Cuối tháng' : `📅 Ngày ${tp.day_of_month}`}
                         </div>
                       )}
+                      {tp.freq==='Ngày cụ thể' && tp.specific_date && (
+                        <div style={{ fontSize:10, color:'#7C3AED', marginTop:2, fontWeight:600 }}>
+                          📅 {new Date(tp.specific_date).toLocaleDateString('vi-VN',{day:'2-digit',month:'2-digit',year:'numeric'})}
+                        </div>
+                      )}
                     </td>
                     <td style={{ padding:'9px 13px' }}><Badge cfg={PRI_CFG[tp.priority]} small/></td>
                     <td style={{ padding:'9px 13px', fontSize:12, fontWeight:600, color:T.dark }}>
@@ -1649,7 +1658,18 @@ function Templates({ templates, setTemplates, allUsers, mobile }: any) {
               options={[{value:'',label:'— Chọn nhân viên —'},...staff.map((u: any) => ({value:u.id,label:`${u.name} — ${u.position_name||u.dept_name||''}`}))]}/>
           </div>
           <Sel label="Tần suất" value={form.freq} onChange={(v) => setForm((f: any) => ({...f, freq:v}))}
-            options={['Hàng ngày','Hàng tuần','Hàng tháng'].map(v => ({value:v,label:v}))}/>
+            options={['Hàng ngày','Hàng tuần','Hàng tháng','Ngày cụ thể'].map(v => ({value:v,label:v}))}/>
+          {form.freq === 'Ngày cụ thể' && (
+            <div style={{ gridColumn:'1/-1' }}>
+              <Inp label="📅 Ngày thực hiện *" type="date" value={form.specific_date}
+                onChange={(v) => setForm((f: any) => ({...f, specific_date:v}))}/>
+              {form.specific_date && (
+                <div style={{ fontSize:11, color:'#7C3AED', marginTop:4, fontWeight:600 }}>
+                  📅 Sẽ tạo 1 lần vào: {new Date(form.specific_date).toLocaleDateString('vi-VN',{weekday:'long',day:'2-digit',month:'2-digit',year:'numeric'})}
+                </div>
+              )}
+            </div>
+          )}
           <Sel label="Ưu tiên" value={form.priority} onChange={(v) => setForm((f: any) => ({...f, priority:v}))}
             options={[{value:'high',label:'🔴 Cao'},{value:'mid',label:'🟡 Trung bình'},{value:'low',label:'🟢 Thấp'}]}/>
           <Inp label="🕐 Giờ bắt đầu" type="time" value={form.time_start} onChange={(v) => setForm((f: any) => ({...f, time_start:v}))}/>
@@ -3679,8 +3699,9 @@ function ShortageItems({ user, allUsers, mobile, products, setProducts }: any) {
             setSyncing(true); setSyncMsg('')
             try {
               const res = await fetch('https://uzloxzrqtzuucxlokqfm.supabase.co/functions/v1/kiotviet-sync', {
-  method:'POST', headers:{'Authorization':`Bearer ${import.meta.env.VITE_SUPABASE_KEY}`}
-})
+                method:'POST',
+                headers:{ 'Authorization': 'Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InV6bG94enJxdHp1dWN4bG9rcWZtIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzU0ODAwOTYsImV4cCI6MjA5MTA1NjA5Nn0.INA68j0bmDb7kFtn4H3TiQmPzEqs67sKMsBhc--mvvo' }
+              })
               const data = await res.json()
               if (data.success) {
                 setSyncMsg(`✅ Sync ${data.synced} SP${data.shortage>0?' — ⚠️ '+data.shortage+' mã thiếu hàng':''}`)
@@ -5686,6 +5707,100 @@ function NotifBanner({ user, wrongOrders, returnSlips, shortageItems, batches, p
   )
 }
 
+// ── TaskNotifBanner — thông báo task được giao ─────────────────
+function TaskNotifBanner({ user, tasks, allUsers, setPage, onDismiss }: any) {
+  const today = new Date().toISOString().split('T')[0]
+  const in3days = new Date(Date.now() + 3*24*60*60*1000).toISOString().split('T')[0]
+
+  const myTasks = tasks.filter((t: any) =>
+    (t.assignee_id === user.id || (Array.isArray(t.assignee_ids) && t.assignee_ids.includes(user.id)))
+    && t.status !== 'done'
+  )
+
+  // Tasks mới (tạo trong 24h qua)
+  const newTasks = myTasks.filter((t: any) => {
+    if (!t.created_at) return false
+    const created = new Date(t.created_at).getTime()
+    return Date.now() - created < 24 * 60 * 60 * 1000
+  })
+
+  // Tasks sắp tới hạn (deadline trong 3 ngày tới, chưa done)
+  const nearDeadline = myTasks.filter((t: any) => {
+    if (!t.deadline) return false
+    return t.deadline >= today && t.deadline <= in3days && !newTasks.find((n: any) => n.id === t.id)
+  })
+
+  // Tasks đã quá hạn
+  const overdue = myTasks.filter((t: any) => {
+    if (!t.deadline) return false
+    return t.deadline < today
+  })
+
+  if (newTasks.length === 0 && nearDeadline.length === 0 && overdue.length === 0) return null
+
+  return (
+    <div style={{ margin:'0 0 10px', borderRadius:10, overflow:'hidden',
+      border:`1.5px solid #7C3AED`, background:'#EDE9FE' }}>
+      <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center',
+        padding:'8px 14px', background:'#7C3AED' }}>
+        <span style={{ color:'#fff', fontWeight:700, fontSize:12 }}>📌 Công việc được giao cho bạn</span>
+        <button onClick={onDismiss}
+          style={{ background:'none', border:'none', cursor:'pointer', color:'#fff', fontSize:16, padding:0, lineHeight:1 }}>✕</button>
+      </div>
+      <div style={{ padding:'8px 14px', display:'flex', flexDirection:'column', gap:5 }}>
+        {overdue.map((t: any) => {
+          const assigner = allUsers.find((u: any) => u.id === t.created_by)
+          return (
+            <div key={t.id} onClick={() => setPage('tasks')}
+              style={{ display:'flex', alignItems:'center', gap:8, cursor:'pointer',
+                padding:'5px 8px', borderRadius:7, background:'#FEE2E2' }}>
+              <span style={{ fontSize:13 }}>🔴</span>
+              <div style={{ flex:1 }}>
+                <span style={{ fontSize:12, fontWeight:600, color:'#991B1B' }}>{t.title}</span>
+                <span style={{ fontSize:10, color:'#B91C1C', marginLeft:6 }}>Quá hạn: {t.deadline}</span>
+                {assigner && <span style={{ fontSize:10, color:'#6B7280', marginLeft:6 }}>— {assigner.name} giao</span>}
+              </div>
+            </div>
+          )
+        })}
+        {nearDeadline.map((t: any) => {
+          const assigner = allUsers.find((u: any) => u.id === t.created_by)
+          const daysLeft = Math.ceil((new Date(t.deadline).getTime() - Date.now()) / 86400000)
+          return (
+            <div key={t.id} onClick={() => setPage('tasks')}
+              style={{ display:'flex', alignItems:'center', gap:8, cursor:'pointer',
+                padding:'5px 8px', borderRadius:7, background:'#FEF3C7' }}>
+              <span style={{ fontSize:13 }}>⚠️</span>
+              <div style={{ flex:1 }}>
+                <span style={{ fontSize:12, fontWeight:600, color:'#92400E' }}>{t.title}</span>
+                <span style={{ fontSize:10, color:'#B45309', marginLeft:6 }}>Còn {daysLeft} ngày ({t.deadline})</span>
+                {assigner && <span style={{ fontSize:10, color:'#6B7280', marginLeft:6 }}>— {assigner.name} giao</span>}
+              </div>
+            </div>
+          )
+        })}
+        {newTasks.map((t: any) => {
+          const assigner = allUsers.find((u: any) => u.id === t.created_by)
+          return (
+            <div key={t.id} onClick={() => setPage('tasks')}
+              style={{ display:'flex', alignItems:'center', gap:8, cursor:'pointer',
+                padding:'5px 8px', borderRadius:7, background:'#F3F0FF' }}>
+              <span style={{ fontSize:13 }}>🆕</span>
+              <div style={{ flex:1 }}>
+                <span style={{ fontSize:12, fontWeight:600, color:'#5B21B6' }}>{t.title}</span>
+                {t.deadline && <span style={{ fontSize:10, color:'#6B7280', marginLeft:6 }}>Deadline: {t.deadline}</span>}
+                {assigner && <span style={{ fontSize:10, color:'#6B7280', marginLeft:6 }}>— {assigner.name} giao</span>}
+              </div>
+              <span style={{ fontSize:9, padding:'2px 6px', borderRadius:10,
+                background:'#7C3AED', color:'#fff', fontWeight:700 }}>MỚI</span>
+            </div>
+          )
+        })}
+      </div>
+    </div>
+  )
+}
+
 export default function App() {
   // Inject global CSS để đảm bảo full màn hình
   useEffect(() => {
@@ -5724,7 +5839,7 @@ export default function App() {
   const [invSessions, setInvSessions] = useState<any[]>([])
   const [batches, setBatches]         = useState<any[]>([])
   const [paymentOrders, setPaymentOrders] = useState<any[]>([])
-  const [loading, setLoading]       = useState(false)
+  const [taskNotiDismissed, setTaskNotiDismissed] = useState(false)  const [loading, setLoading]       = useState(false)
   const width   = useWindowWidth()
   const mobile  = width < 768
 
@@ -5765,7 +5880,19 @@ export default function App() {
 
     const r_monthly = monthlyTmplDue.length > 0
 
-    if (!r_daily && !r_weekly && !r_monthly) return false
+    // ── Specific-date templates ───────────────────────────
+    const specificDueTmpl = tmpl.filter(t => {
+      if (t.freq !== 'Ngày cụ thể' || !t.active || !t.specific_date) return false
+      const specKey = `${t.id}_done`
+      try {
+        const done = JSON.parse(s.monthly_done || '{}')
+        if (done[specKey]) return false // đã tạo rồi
+      } catch {}
+      const specDate = t.specific_date.split('T')[0] // lấy phần YYYY-MM-DD
+      return manual || today >= specDate  // đến ngày hoặc qua ngày
+    })
+
+    if (!r_daily && !r_weekly && !r_monthly && specificDueTmpl.length === 0) return false
 
     // ── Archive history ───────────────────────────────────
     if (curCl.length > 0) {
@@ -5793,7 +5920,7 @@ export default function App() {
 
     // ── Tạo checklist mới ─────────────────────────────────
     const dailyWeeklyTmpl = tmpl.filter(t => t.active && freqs.includes(t.freq))
-    const allNewTmpl = [...dailyWeeklyTmpl, ...monthlyTmplDue]
+    const allNewTmpl = [...dailyWeeklyTmpl, ...monthlyTmplDue, ...specificDueTmpl]
 
     const newItems = allNewTmpl.map(t => ({
       id:`cl_${t.id}_${Date.now()}_${Math.random().toString(36).slice(2,5)}`,
@@ -5817,6 +5944,10 @@ export default function App() {
     const updatedMonthlyDone = { ...monthlyDone }
     for (const t of monthlyTmplDue) {
       updatedMonthlyDone[`${t.id}_${monthKey}`] = true
+    }
+    // Ghi nhận specific-date templates đã tạo (chỉ tạo 1 lần)
+    for (const t of specificDueTmpl) {
+      updatedMonthlyDone[`${t.id}_done`] = true
     }
     // Dọn key cũ (> 2 tháng) để tránh phình to
     const cutoff = `${new Date(now.getFullYear(), now.getMonth()-1, 1).getMonth()}-${new Date(now.getFullYear(), now.getMonth()-1, 1).getFullYear()}`
@@ -6006,6 +6137,7 @@ export default function App() {
         {user && <StickyNote user={user}/>}
         {/* Notification Banner — wrong orders pending */}
         {user && <NotifBanner user={user} wrongOrders={wrongOrders} returnSlips={returnSlips} shortageItems={shortageNoti} batches={batches} paymentOrders={paymentOrders} setPage={setPage}/>}
+        {user && !taskNotiDismissed && <TaskNotifBanner user={user} tasks={tasks} allUsers={allUsers} setPage={setPage} onDismiss={() => setTaskNotiDismissed(true)}/>}
         {user && <SaturdayBanner user={user}/>}
       </div>
      )
@@ -6974,8 +7106,8 @@ function InventoryModule({ user, allUsers, products, invSessions, setInvSessions
     setKvSyncing(true)
     try {
       const res = await fetch('https://uzloxzrqtzuucxlokqfm.supabase.co/functions/v1/kiotviet-sync', {
-  method:'POST', headers:{'Authorization':`Bearer ${import.meta.env.VITE_SUPABASE_KEY}`}
-})
+        method:'POST', headers:{'Authorization':'Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InV6bG94enJxdHp1dWN4bG9rcWZtIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzU0ODAwOTYsImV4cCI6MjA5MTA1NjA5Nn0.INA68j0bmDb7kFtn4H3TiQmPzEqs67sKMsBhc--mvvo'}
+      })
       const now = new Date().toISOString()
       await db.from('settings').update({last_kv_sync:now}).eq('id','main')
       setLastKvSync(now)
@@ -7371,7 +7503,7 @@ function InventoryModule({ user, allUsers, products, invSessions, setInvSessions
                                 background:T.amberBg,cursor:'pointer',fontSize:10,fontFamily:'inherit',
                                 color:T.amber,fontWeight:700}}>Chốt</button>
                           )}
-                          {perm.viewAllDashboard && (
+                          {perm.deleteInvSession && (
                             <button onClick={async () => {
                               if (!confirm('Xóa phiên này và toàn bộ dữ liệu KK?')) return
                               await db.from('inventory_checks').delete().eq('session_id',s.id)
@@ -8672,6 +8804,27 @@ function SessionCreateWizard({ products, checks, allUsers, user, excludedCodes, 
 // ── NVCheckGroup subcomponent (avoid useState in map) ─────
 function NVCheckGroup({ nv, nvChecks, nvDone }: any) {
   const [expNV, setExpNV] = useState(false)
+  const [notes, setNotes] = useState<Record<string,string>>({})
+  const [savingNote, setSavingNote] = useState<string|null>(null)
+
+  const saveNote = async (checkId: string, note: string) => {
+    setSavingNote(checkId)
+    await db.from('inventory_checks').update({ diff_note: note }).eq('id', checkId)
+    setSavingNote(null)
+  }
+
+  // Mã lệch lên trước, sau đó chưa KK, sau đó OK
+  const sorted = [...nvChecks].sort((a: any, b: any) => {
+    const rank = (c: any) => {
+      if (c.diff != null && c.diff !== 0) return 0   // lệch → lên đầu
+      if (c.actual_qty == null) return 1              // chưa KK
+      return 2                                        // OK
+    }
+    return rank(a) - rank(b)
+  })
+
+  const lechs = nvChecks.filter((c: any) => c.diff != null && c.diff !== 0).length
+
   return (
     <div style={{marginBottom:8,borderRadius:8,border:`1px solid ${T.border}`,overflow:'hidden'}}>
       <div onClick={() => setExpNV(v=>!v)}
@@ -8683,6 +8836,10 @@ function NVCheckGroup({ nv, nvChecks, nvDone }: any) {
           {nv?.ini||'?'}
         </div>
         <span style={{flex:1,fontSize:12,fontWeight:600,color:T.dark}}>{nv?.name||'NV không xác định'}</span>
+        {lechs > 0 && (
+          <span style={{fontSize:10,padding:'2px 7px',borderRadius:10,
+            background:T.redBg,color:T.red,fontWeight:700}}>⚠️ {lechs} lệch</span>
+        )}
         <span style={{fontSize:11,color:T.blue}}>{nvDone}/{nvChecks.length} mã</span>
         <div style={{height:6,width:80,background:T.border,borderRadius:3}}>
           <div style={{height:'100%',borderRadius:3,
@@ -8693,36 +8850,60 @@ function NVCheckGroup({ nv, nvChecks, nvDone }: any) {
       </div>
       {expNV && (
         <div style={{borderTop:`1px solid ${T.border}`}}>
-          <div style={{display:'grid',gridTemplateColumns:'1fr 65px 65px 65px',
+          {lechs > 0 && (
+            <div style={{padding:'4px 12px',background:'#FFF7ED',borderBottom:`1px solid ${T.border}`,
+              fontSize:10,color:T.amber,fontWeight:700}}>
+              ⚠️ {lechs} mã lệch kho — hiển thị ở trên cùng
+            </div>
+          )}
+          <div style={{display:'grid',gridTemplateColumns:'1fr 60px 60px 55px 1fr',
             padding:'5px 12px',background:T.bg,fontSize:9,fontWeight:700,
             color:T.light,textTransform:'uppercase',letterSpacing:.5,gap:6}}>
             <span>Sản phẩm</span>
             <span style={{textAlign:'center'}}>Tồn HT</span>
             <span style={{textAlign:'center'}}>Tồn TT</span>
             <span style={{textAlign:'center'}}>Lệch</span>
+            <span>Ghi chú</span>
           </div>
-          {nvChecks.map((c: any, ci: number) => (
-            <div key={c.id} style={{display:'grid',
-              gridTemplateColumns:'1fr 65px 65px 65px',
-              padding:'6px 12px',gap:6,alignItems:'center',
-              borderTop:`1px solid ${T.border}`,
-              background:ci%2===0?'#fff':T.rowAlt}}>
-              <div>
-                <div style={{fontSize:11,color:T.dark,lineHeight:1.3}}>{c.product_name}</div>
-                <div style={{fontSize:9,color:T.light}}>{c.product_code}</div>
+          {sorted.map((c: any, ci: number) => {
+            const isLech = c.diff != null && c.diff !== 0
+            const noteVal = notes[c.id] !== undefined ? notes[c.id] : (c.diff_note || '')
+            return (
+              <div key={c.id} style={{display:'grid',
+                gridTemplateColumns:'1fr 60px 60px 55px 1fr',
+                padding:'6px 12px',gap:6,alignItems:'center',
+                borderTop:`1px solid ${T.border}`,
+                background: isLech ? '#FFF7ED' : ci%2===0?'#fff':T.rowAlt}}>
+                <div>
+                  <div style={{fontSize:11,color:isLech?T.amber:T.dark,lineHeight:1.3,fontWeight:isLech?700:400}}>
+                    {isLech && '⚠️ '}{c.product_name}
+                  </div>
+                  <div style={{fontSize:9,color:T.light}}>{c.product_code}</div>
+                </div>
+                <span style={{textAlign:'center',fontSize:11,color:T.med}}>{c.system_qty??'—'}</span>
+                <span style={{textAlign:'center',fontSize:11,
+                  fontWeight:c.actual_qty!=null?700:400,
+                  color:c.actual_qty!=null?T.dark:T.light}}>
+                  {c.actual_qty??'Chưa KK'}
+                </span>
+                <span style={{textAlign:'center',fontSize:12,fontWeight:700,
+                  color:c.diff==null?T.light:c.diff===0?T.green:c.diff>0?T.blue:T.red}}>
+                  {c.diff==null?'—':c.diff===0?'✓':c.diff>0?'+'+c.diff:c.diff}
+                </span>
+                <div style={{display:'flex',gap:4,alignItems:'center'}}>
+                  <input
+                    value={noteVal}
+                    onChange={e => setNotes(prev => ({...prev, [c.id]: e.target.value}))}
+                    onBlur={e => saveNote(c.id, e.target.value)}
+                    placeholder="Ghi chú..."
+                    style={{flex:1,fontSize:10,padding:'3px 6px',border:`1px solid ${T.border}`,
+                      borderRadius:5,fontFamily:'inherit',color:T.dark,background:'#fff',outline:'none',
+                      minWidth:0}}/>
+                  {savingNote===c.id && <span style={{fontSize:9,color:T.light}}>💾</span>}
+                </div>
               </div>
-              <span style={{textAlign:'center',fontSize:11,color:T.med}}>{c.system_qty??'—'}</span>
-              <span style={{textAlign:'center',fontSize:11,
-                fontWeight:c.actual_qty!=null?700:400,
-                color:c.actual_qty!=null?T.dark:T.light}}>
-                {c.actual_qty??'Chưa KK'}
-              </span>
-              <span style={{textAlign:'center',fontSize:12,fontWeight:700,
-                color:c.diff==null?T.light:c.diff===0?T.green:c.diff>0?T.blue:T.red}}>
-                {c.diff==null?'—':c.diff===0?'✓':c.diff>0?'+'+c.diff:c.diff}
-              </span>
-            </div>
-          ))}
+            )
+          })}
         </div>
       )}
     </div>
@@ -9764,9 +9945,10 @@ function PaymentOrderForm({ suppliers, accounts, onSave, onClose, edit, mobile }
     if (supAccs.length > 1) setConfirmMulti(true)
   }
 
-  const handleSubmit = async () => {
+  const handleSubmit = async (forceStatus?: string) => {
     if (!isValid) return
     setSaving(true)
+    const finalStatus = forceStatus ?? status
 
     // Nếu NCC mới (id='__new__'), tạo supplier trước rồi mới save order
     let finalSupId = selSup.id
@@ -9793,7 +9975,7 @@ function PaymentOrderForm({ suppliers, accounts, onSave, onClose, edit, mobile }
       account_number: selAcc.account_number,
       account_name: selAcc.account_name, bank_name: selAcc.bank_name,
       amount: parseMoney(amount), transfer_content: content,
-      purpose, note, order_ref: orderRef, status,
+      purpose, note, order_ref: orderRef, status: finalStatus,
       _isNewStk: isNewStk,
       _newStkData: isNewStk ? { ...selAcc, supplier_id: finalSupId } : null,
     })
@@ -10079,7 +10261,7 @@ function PaymentOrderForm({ suppliers, accounts, onSave, onClose, edit, mobile }
             {saving ? 'Đang lưu...' : edit ? 'Cập nhật' : status==='draft'?'Lưu nháp':'Tạo lệnh'}
           </GoldBtn>
           {!edit && status !== 'draft' && (
-            <button onClick={() => { setStatus('draft'); setTimeout(handleSubmit, 100) }}
+            <button onClick={() => handleSubmit('draft')}
               style={{ padding:'8px 16px', borderRadius:8, border:`1px solid ${T.border}`,
                 background:'transparent', color:T.med, cursor:'pointer', fontFamily:'inherit', fontSize:12 }}>
               💾 Lưu nháp
