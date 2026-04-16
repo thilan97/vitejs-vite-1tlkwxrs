@@ -5328,49 +5328,61 @@ function Settings({ user, setUser, settings, setSettings, onManualReset, mobile 
 // ── MAIN APP ──────────────────────────────────────
 // ── NOTIFICATION BANNER ─────────────────────────────
 function NotifBanner({ user, wrongOrders, returnSlips, shortageItems, batches, paymentOrders, setPage }: any) {
-  const [dismissed, setDismissed] = useState(false)
-  const perm       = getPerm(user)
-  const isSale     = user.dept_id === 'sale'
-  const isAdmin    = perm.viewAllDashboard
-  const isMgrSale  = isSale && perm.approveLeave
+  const [dismissedCats, setDismissedCats] = useState<Set<string>>(new Set())
+  const dismiss = (cat: string) => setDismissedCats(prev => new Set([...prev, cat]))
+  const isDismissed = (cat: string) => dismissedCats.has(cat)
+
+  const perm         = getPerm(user)
+  const isSale       = user.dept_id === 'sale'
+  const isAdmin      = perm.viewAllDashboard
+  const isMgrSale    = isSale && perm.approveLeave
   const canManageExp = perm.manageExpiry || perm.manageInventory || isAdmin
-  const canPay     = perm.managePayment || isAdmin
+  const canPay       = perm.managePayment || isAdmin
+  const canKiot      = perm.managePayment || isAdmin
 
   // NV Sale: đơn sai pending của họ
-  const pendingWO  = (isSale && !isAdmin) ? wrongOrders.filter((r: any) =>
+  const pendingWO  = (!isDismissed('wo') && isSale && !isAdmin) ? wrongOrders.filter((r: any) =>
     r.status==='pending' && (r.sale_id===user.id || !r.sale_id)
   ) : []
   // NV Sale: phiếu hoàn chưa điền
-  const pendingRet = (isSale && !isAdmin) ? (returnSlips||[]).filter((r: any) => !r.sale_id) : []
+  const pendingRet = (!isDismissed('ret') && isSale && !isAdmin) ? (returnSlips||[]).filter((r: any) => !r.sale_id) : []
   // QM Sale: hàng thiếu mới chờ xử lý
-  const pendingShortage = isMgrSale ? (shortageItems||[]).filter((r: any) =>
+  const pendingShortage = (!isDismissed('shortage') && isMgrSale) ? (shortageItems||[]).filter((r: any) =>
     r.status==='pending' && !r.manager_note
   ) : []
 
   // Sale (tất cả): lô <6 tháng còn tồn
   const today = new Date()
   const allBatches = batches || []
-  const expiryAlertSale = isSale ? allBatches.filter((b: any) => {
+  const expiryAlertSale = (!isDismissed('expiry') && isSale) ? allBatches.filter((b: any) => {
     if (!b.expiry_date || (b.qty_remaining||0) <= 0) return false
     const exp = new Date(b.expiry_date)
     const ml  = (exp.getFullYear() - today.getFullYear()) * 12 + (exp.getMonth() - today.getMonth())
     return ml < 6
   }) : []
 
-  // QM Kho: lô chưa update quá 7 ngày còn tồn
+  // QM Kho: lô chưa update quá 7 ngày
   const staleThreshold = new Date(Date.now() - 7 * 86400000).toISOString()
-  const staleBatches = canManageExp ? allBatches.filter((b: any) => {
+  const staleBatches = (!isDismissed('stale') && canManageExp) ? allBatches.filter((b: any) => {
     if ((b.qty_remaining||0) <= 0) return false
     const lastUpd = b.last_updated_at || b.created_at || ''
     return lastUpd < staleThreshold
   }) : []
 
-  // Admin/canPay: lệnh CK đang chờ
-  const pendingPayments = canPay ? (paymentOrders||[]).filter((o: any) => o.status === 'pending') : []
+  // Admin/canPay: lệnh CK đang chờ chuyển khoản
+  const pendingPayments = (!isDismissed('pay') && canPay) ? (paymentOrders||[]).filter((o: any) =>
+    o.status === 'pending'
+  ) : []
+
+  // QM Sale: lệnh của mình đã CK xong, chờ nhập KiotViet
+  const myKiotPending = (!isDismissed('kiot') && isSale && !isAdmin) ? (paymentOrders||[]).filter((o: any) =>
+    o.status === 'paid' && o.created_by === user.id
+  ) : []
 
   const totalPending = pendingWO.length + pendingRet.length + pendingShortage.length
-    + expiryAlertSale.length + staleBatches.length + pendingPayments.length
-  if (dismissed || totalPending === 0) return null
+    + expiryAlertSale.length + staleBatches.length + pendingPayments.length + myKiotPending.length
+
+  if (totalPending === 0) return null
 
   const hasWO    = pendingWO.length > 0
   const hasRet   = pendingRet.length > 0
@@ -5378,7 +5390,14 @@ function NotifBanner({ user, wrongOrders, returnSlips, shortageItems, batches, p
   const hasExp   = expiryAlertSale.length > 0
   const hasStale = staleBatches.length > 0
   const hasPay   = pendingPayments.length > 0
-  const accent   = hasWO ? T.red : hasRet ? T.amber : hasExp ? T.red : hasPay ? T.blue : T.blue
+  const hasKiot  = myKiotPending.length > 0
+  const accent   = hasWO ? T.red : hasRet ? T.amber : hasExp ? T.red : hasPay ? T.blue : T.teal
+
+  const DismissBtn = ({ cat }: any) => (
+    <button onClick={() => dismiss(cat)}
+      style={{ background:'none', border:'none', cursor:'pointer', color:T.light, fontSize:13, padding:0, flexShrink:0 }}>✕</button>
+  )
+  const sep = (prev: boolean) => prev ? `1px solid ${T.border}` : 'none'
 
   return (
     <div style={{ position:'fixed', top:16, left:'50%', transform:'translateX(-50%)',
@@ -5386,15 +5405,16 @@ function NotifBanner({ user, wrongOrders, returnSlips, shortageItems, batches, p
       borderRadius:14, boxShadow:`0 8px 32px rgba(0,0,0,0.14)`,
       padding:'14px 18px', maxWidth:440, width:'calc(100vw - 32px)' }}>
       <div style={{ display:'flex', alignItems:'flex-start', gap:12 }}>
-        <span style={{ fontSize:22, flexShrink:0 }}>{hasWO?'⚠️':hasExp?'📅':'🔄'}</span>
+        <span style={{ fontSize:22, flexShrink:0 }}>{hasWO?'⚠️':hasKiot?'📥':hasExp?'📅':'🔔'}</span>
         <div style={{ flex:1 }}>
           <div style={{ fontSize:13, fontWeight:700, color:accent, marginBottom:8 }}>
             {totalPending} việc cần xử lý
           </div>
           {hasWO && (
             <div style={{ marginBottom:6 }}>
-              <div style={{ fontSize:11, fontWeight:700, color:T.red, marginBottom:4 }}>
-                ⚠️ {pendingWO.length} đơn sai chờ bạn điền
+              <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:3 }}>
+                <div style={{ fontSize:11, fontWeight:700, color:T.red }}>⚠️ {pendingWO.length} đơn sai chờ bạn điền</div>
+                <DismissBtn cat="wo"/>
               </div>
               {pendingWO.slice(0,2).map((r: any) => (
                 <div key={r.id} style={{ fontSize:11, color:T.med }}>• {r.order_code} — {r.customer_name||'?'}</div>
@@ -5403,109 +5423,90 @@ function NotifBanner({ user, wrongOrders, returnSlips, shortageItems, batches, p
             </div>
           )}
           {hasRet && (
-            <div style={{ paddingTop:hasWO?8:0, borderTop:hasWO?`1px solid ${T.border}`:'', marginBottom:6 }}>
-              <div style={{ fontSize:11, fontWeight:700, color:T.amber, marginBottom:3 }}>
-                🔄 {pendingRet.length} phiếu hoàn chờ điền thông tin
-              </div>
-              <div style={{ fontSize:11, color:T.light, fontStyle:'italic' }}>
-                Vào Báo cáo → Hàng hoàn để điền KH và lý do
+            <div style={{ paddingTop:hasWO?8:0, borderTop:sep(hasWO), marginBottom:6 }}>
+              <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center' }}>
+                <div style={{ fontSize:11, fontWeight:700, color:T.amber }}>🔄 {pendingRet.length} phiếu hoàn chờ điền thông tin</div>
+                <DismissBtn cat="ret"/>
               </div>
             </div>
           )}
           {hasSh && (
-            <div style={{ paddingTop:(hasWO||hasRet)?8:0, borderTop:(hasWO||hasRet)?`1px solid ${T.border}`:'', marginBottom:6 }}>
-              <div style={{ fontSize:11, fontWeight:700, color:T.blue, marginBottom:3 }}>
-                📦 {pendingShortage.length} mã thiếu hàng chưa được xử lý
+            <div style={{ paddingTop:(hasWO||hasRet)?8:0, borderTop:sep(hasWO||hasRet), marginBottom:6 }}>
+              <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:3 }}>
+                <div style={{ fontSize:11, fontWeight:700, color:T.blue }}>📦 {pendingShortage.length} mã thiếu hàng chưa xử lý</div>
+                <DismissBtn cat="shortage"/>
               </div>
               {pendingShortage.slice(0,2).map((r: any) => (
                 <div key={r.id} style={{ fontSize:11, color:T.med }}>• {r.product_name}</div>
               ))}
-              {pendingShortage.length>2 && <div style={{ fontSize:11, color:T.light }}>...+{pendingShortage.length-2} mã nữa</div>}
+              {pendingShortage.length>2 && <div style={{ fontSize:11, color:T.light }}>...+{pendingShortage.length-2} nữa</div>}
             </div>
           )}
           {hasExp && (
-            <div style={{ paddingTop:(hasWO||hasRet||hasSh)?8:0,
-              borderTop:(hasWO||hasRet||hasSh)?`1px solid ${T.border}`:'', marginBottom:6 }}>
-              <div style={{ fontSize:11, fontWeight:700, color:T.red, marginBottom:3 }}>
-                📅 {expiryAlertSale.length} lô hàng dưới 6 tháng cần đẩy
+            <div style={{ paddingTop:(hasWO||hasRet||hasSh)?8:0, borderTop:sep(hasWO||hasRet||hasSh), marginBottom:6 }}>
+              <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:3 }}>
+                <div style={{ fontSize:11, fontWeight:700, color:T.red }}>📅 {expiryAlertSale.length} lô hàng dưới 6 tháng cần đẩy</div>
+                <DismissBtn cat="expiry"/>
               </div>
               {expiryAlertSale.slice(0,2).map((b: any) => (
-                <div key={b.id} style={{ fontSize:11, color:T.med }}>
-                  • {b.product_name} (tồn: {b.qty_remaining})
-                </div>
+                <div key={b.id} style={{ fontSize:11, color:T.med }}>• {b.product_name} (tồn: {b.qty_remaining})</div>
               ))}
               {expiryAlertSale.length>2 && <div style={{ fontSize:11, color:T.light }}>...+{expiryAlertSale.length-2} lô nữa</div>}
             </div>
           )}
           {hasStale && (
-            <div style={{ paddingTop:(hasWO||hasRet||hasSh||hasExp)?8:0,
-              borderTop:(hasWO||hasRet||hasSh||hasExp)?`1px solid ${T.border}`:'', marginBottom:6 }}>
-              <div style={{ fontSize:11, fontWeight:700, color:T.amber, marginBottom:3 }}>
-                ⏰ {staleBatches.length} lô chưa cập nhật tồn quá 7 ngày
-              </div>
-              <div style={{ fontSize:11, color:T.light, fontStyle:'italic' }}>
-                Vào Báo cáo → Date SP để cập nhật
+            <div style={{ paddingTop:(hasWO||hasRet||hasSh||hasExp)?8:0, borderTop:sep(hasWO||hasRet||hasSh||hasExp), marginBottom:6 }}>
+              <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center' }}>
+                <div style={{ fontSize:11, fontWeight:700, color:T.amber }}>⏰ {staleBatches.length} lô chưa cập nhật tồn quá 7 ngày</div>
+                <DismissBtn cat="stale"/>
               </div>
             </div>
           )}
           {hasPay && (
-            <div style={{ paddingTop:(hasWO||hasRet||hasSh||hasExp||hasStale)?8:0,
-              borderTop:(hasWO||hasRet||hasSh||hasExp||hasStale)?`1px solid ${T.border}`:'', marginBottom:6 }}>
-              <div style={{ fontSize:11, fontWeight:700, color:T.blue, marginBottom:3 }}>
-                💸 {pendingPayments.length} lệnh chuyển khoản chờ thực hiện
+            <div style={{ paddingTop:(hasWO||hasRet||hasSh||hasExp||hasStale)?8:0, borderTop:sep(hasWO||hasRet||hasSh||hasExp||hasStale), marginBottom:6 }}>
+              <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:3 }}>
+                <div style={{ fontSize:11, fontWeight:700, color:T.blue }}>💸 {pendingPayments.length} lệnh chuyển khoản chờ thực hiện</div>
+                <DismissBtn cat="pay"/>
               </div>
               {pendingPayments.slice(0,2).map((o: any) => (
-                <div key={o.id} style={{ fontSize:11, color:T.med }}>
-                  • {o.supplier_name} — {o.amount?.toLocaleString('vi-VN')}
-                </div>
+                <div key={o.id} style={{ fontSize:11, color:T.med }}>• {o.supplier_name} — {(o.amount||0).toLocaleString('vi-VN')}</div>
               ))}
               {pendingPayments.length>2 && <div style={{ fontSize:11, color:T.light }}>...+{pendingPayments.length-2} lệnh nữa</div>}
             </div>
           )}
+          {hasKiot && (
+            <div style={{ paddingTop:(hasWO||hasRet||hasSh||hasExp||hasStale||hasPay)?8:0, borderTop:sep(hasWO||hasRet||hasSh||hasExp||hasStale||hasPay), marginBottom:6 }}>
+              <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:3 }}>
+                <div style={{ fontSize:11, fontWeight:700, color:T.teal }}>📥 {myKiotPending.length} lệnh đã CK — chờ bạn nhập KiotViet</div>
+                <DismissBtn cat="kiot"/>
+              </div>
+              {myKiotPending.slice(0,2).map((o: any) => (
+                <div key={o.id} style={{ fontSize:11, color:T.med }}>• {o.supplier_name} — {(o.amount||0).toLocaleString('vi-VN')}</div>
+              ))}
+            </div>
+          )}
           <div style={{ display:'flex', gap:8, marginTop:12, flexWrap:'wrap' }}>
-            {hasWO && (
-              <button onClick={() => { setPage('wrongord'); setDismissed(true) }}
-                style={{ padding:'5px 13px', borderRadius:20, border:'none', background:T.red,
-                  color:'#fff', cursor:'pointer', fontFamily:'inherit', fontSize:11, fontWeight:700 }}>
-                Xem đơn sai →
-              </button>
-            )}
-            {hasRet && (
-              <button onClick={() => { setPage('returns'); setDismissed(true) }}
-                style={{ padding:'5px 13px', borderRadius:20, border:'none', background:T.amber,
-                  color:'#fff', cursor:'pointer', fontFamily:'inherit', fontSize:11, fontWeight:700 }}>
-                Xem phiếu hoàn →
-              </button>
-            )}
-            {hasSh && (
-              <button onClick={() => { setPage('shortage'); setDismissed(true) }}
-                style={{ padding:'5px 13px', borderRadius:20, border:'none', background:T.blue,
-                  color:'#fff', cursor:'pointer', fontFamily:'inherit', fontSize:11, fontWeight:700 }}>
-                Xem hàng thiếu →
-              </button>
-            )}
-            {(hasExp || hasStale) && (
-              <button onClick={() => { setPage('expiry'); setDismissed(true) }}
-                style={{ padding:'5px 13px', borderRadius:20, border:'none', background:T.red,
-                  color:'#fff', cursor:'pointer', fontFamily:'inherit', fontSize:11, fontWeight:700 }}>
-                Xem Date SP →
-              </button>
-            )}
-            {hasPay && (
-              <button onClick={() => { setPage('payment'); setDismissed(true) }}
-                style={{ padding:'5px 13px', borderRadius:20, border:'none', background:T.blue,
-                  color:'#fff', cursor:'pointer', fontFamily:'inherit', fontSize:11, fontWeight:700 }}>
-                Xem lệnh CK →
-              </button>
-            )}
-            <button onClick={() => setDismissed(true)}
-              style={{ padding:'5px 12px', borderRadius:20, border:`1px solid ${T.border}`,
-                background:'transparent', color:T.light, cursor:'pointer', fontFamily:'inherit', fontSize:11 }}>
-              Bỏ qua
-            </button>
+            {hasWO && <button onClick={() => { setPage('wrongord'); dismiss('wo') }}
+              style={{ padding:'5px 13px', borderRadius:20, border:'none', background:T.red,
+                color:'#fff', cursor:'pointer', fontFamily:'inherit', fontSize:11, fontWeight:700 }}>Xem đơn sai →</button>}
+            {hasRet && <button onClick={() => { setPage('returns'); dismiss('ret') }}
+              style={{ padding:'5px 13px', borderRadius:20, border:'none', background:T.amber,
+                color:'#fff', cursor:'pointer', fontFamily:'inherit', fontSize:11, fontWeight:700 }}>Xem phiếu hoàn →</button>}
+            {hasSh && <button onClick={() => { setPage('shortage'); dismiss('shortage') }}
+              style={{ padding:'5px 13px', borderRadius:20, border:'none', background:T.blue,
+                color:'#fff', cursor:'pointer', fontFamily:'inherit', fontSize:11, fontWeight:700 }}>Xem hàng thiếu →</button>}
+            {(hasExp||hasStale) && <button onClick={() => { setPage('expiry'); dismiss('expiry'); dismiss('stale') }}
+              style={{ padding:'5px 13px', borderRadius:20, border:'none', background:T.red,
+                color:'#fff', cursor:'pointer', fontFamily:'inherit', fontSize:11, fontWeight:700 }}>Xem Date SP →</button>}
+            {hasPay && <button onClick={() => { setPage('payment'); dismiss('pay') }}
+              style={{ padding:'5px 13px', borderRadius:20, border:'none', background:T.blue,
+                color:'#fff', cursor:'pointer', fontFamily:'inherit', fontSize:11, fontWeight:700 }}>Xem lệnh CK →</button>}
+            {hasKiot && <button onClick={() => { setPage('payment'); dismiss('kiot') }}
+              style={{ padding:'5px 13px', borderRadius:20, border:'none', background:T.teal,
+                color:'#fff', cursor:'pointer', fontFamily:'inherit', fontSize:11, fontWeight:700 }}>Nhập KiotViet →</button>}
           </div>
         </div>
-        <button onClick={() => setDismissed(true)}
+        <button onClick={() => setDismissedCats(new Set(['wo','ret','shortage','expiry','stale','pay','kiot']))}
           style={{ background:'none', border:'none', cursor:'pointer', color:T.light,
             fontSize:18, padding:0, lineHeight:1, flexShrink:0 }}>✕</button>
       </div>
@@ -6558,10 +6559,19 @@ function CheckListRow({ check, isActive, onSelect, onConfirm, onSkip, idx, total
   )
 }
 
-function MobileCheckInput({ session, myChecks, user, allUsers, products, onUpdate, onBack }: any) {
+function MobileCheckInput({ session, myChecks, allChecks, user, allUsers, products, onUpdate, onBack }: any) {
   const [activeId, setActiveId] = useState<string|null>(null)
   const [sortBy, setSortBy] = useState<'alpha'|'stock'>('alpha')
-  const done = myChecks.filter((c: any) => c.actual_qty != null).length
+  const [showDC, setShowDC] = useState(true)
+
+  // Double-check items: mã được giao DC cho user này, chưa nhập
+  const dcItems = (allChecks||[]).filter((c: any) =>
+    c.session_id === session.id &&
+    c.double_check_by === user.id &&
+    c.double_actual_qty == null
+  )
+
+  const done    = myChecks.filter((c: any) => c.actual_qty != null).length
   const pending = myChecks.filter((c: any) => c.actual_qty == null).length
 
   const sorted = [...myChecks].sort((a: any, b: any) => {
@@ -6571,9 +6581,15 @@ function MobileCheckInput({ session, myChecks, user, allUsers, products, onUpdat
 
   const handleConfirm = (id: string, upd: any) => {
     onUpdate(id, upd)
-    // Auto-advance to next pending
     const nextPending = sorted.find((c: any) => c.id !== id && c.actual_qty == null && c.id !== activeId)
     setActiveId(nextPending?.id || null)
+  }
+
+  const handleDCConfirm = async (check: any, val: string) => {
+    const actual = Number(val)
+    const upd = { double_actual_qty: actual, double_checked_at: new Date().toISOString() }
+    await db.from('inventory_checks').update(upd).eq('id', check.id)
+    onUpdate(check.id, upd)
   }
 
   return (
@@ -6597,7 +6613,6 @@ function MobileCheckInput({ session, myChecks, user, allUsers, products, onUpdat
             {done}/{myChecks.length}
           </span>
         </div>
-        {/* Sort options */}
         <div style={{ display:'flex', gap:6, alignItems:'center' }}>
           <span style={{ fontSize:11, color:T.light }}>Sắp xếp:</span>
           {([['alpha','A → Z'],['stock','Tồn kho']] as [string,string][]).map(([val,label]) => (
@@ -6611,16 +6626,37 @@ function MobileCheckInput({ session, myChecks, user, allUsers, products, onUpdat
             </button>
           ))}
           {pending > 0 && (
-            <span style={{ marginLeft:'auto', fontSize:11, color:T.amber }}>
-              ⏳ {pending} chưa KK
-            </span>
+            <span style={{ marginLeft:'auto', fontSize:11, color:T.amber }}>⏳ {pending} chưa KK</span>
           )}
         </div>
       </div>
 
       {/* Scrollable list */}
       <div style={{ flex:1, overflowY:'auto', background:'#fff', paddingBottom:80 }}>
-        {done === myChecks.length && (
+
+        {/* ── Double-check section ── */}
+        {dcItems.length > 0 && (
+          <div style={{ margin:'12px 12px 0', padding:'12px 14px',
+            background:'#EDE9FE', border:`1.5px solid ${T.purple}`, borderRadius:12 }}>
+            <div style={{ display:'flex', alignItems:'center', justifyContent:'space-between', marginBottom:8 }}>
+              <div style={{ fontSize:12, fontWeight:700, color:T.purple }}>
+                🔁 Double-check — {dcItems.length} mã cần xác nhận lại
+              </div>
+              <button onClick={() => setShowDC(v => !v)}
+                style={{ background:'none', border:'none', cursor:'pointer', fontSize:11, color:T.purple }}>
+                {showDC ? 'Thu gọn ▲' : 'Mở rộng ▼'}
+              </button>
+            </div>
+            <div style={{ fontSize:11, color:'#7C3AED', marginBottom: showDC ? 10 : 0 }}>
+              Những mã này được giao để kiểm lại do lệch kho — nhập số tồn thực tế của bạn.
+            </div>
+            {showDC && dcItems.map((c: any) => (
+              <DCInputRow key={c.id} check={c} onConfirm={handleDCConfirm}/>
+            ))}
+          </div>
+        )}
+
+        {done === myChecks.length && dcItems.length === 0 && (
           <div style={{ padding:'40px 24px', textAlign:'center' }}>
             <div style={{ fontSize:44, marginBottom:12 }}>🎉</div>
             <div style={{ fontSize:16, fontWeight:700, color:T.green, marginBottom:6 }}>Hoàn thành!</div>
@@ -6642,6 +6678,56 @@ function MobileCheckInput({ session, myChecks, user, allUsers, products, onUpdat
               setActiveId(next?.id || null)
             }}/>
         ))}
+      </div>
+    </div>
+  )
+}
+
+// ── DCInputRow — 1 dòng nhập double-check ─────────────────
+function DCInputRow({ check, onConfirm }: any) {
+  const [val, setVal] = useState('')
+  const [done, setDone] = useState(check.double_actual_qty != null)
+  const diff = val !== '' ? Number(val) - (check.actual_qty || 0) : null
+
+  if (done) return (
+    <div style={{ display:'flex', alignItems:'center', gap:10, padding:'8px 0',
+      borderBottom:`1px solid #DDD8FF` }}>
+      <div style={{ flex:1 }}>
+        <div style={{ fontSize:12, fontWeight:600, color:'#4C1D95' }}>{check.product_name}</div>
+        <div style={{ fontSize:10, color:'#7C3AED' }}>{check.product_code}</div>
+      </div>
+      <div style={{ fontSize:11, color:T.green, fontWeight:700 }}>✅ Đã nhập: {check.double_actual_qty}</div>
+    </div>
+  )
+
+  return (
+    <div style={{ padding:'10px 0', borderBottom:`1px solid #DDD8FF` }}>
+      <div style={{ fontSize:12, fontWeight:700, color:'#4C1D95', marginBottom:4 }}>{check.product_name}</div>
+      <div style={{ display:'flex', gap:8, alignItems:'center', fontSize:11, color:T.med, marginBottom:8 }}>
+        <span>KK lần 1: <b>{check.actual_qty}</b></span>
+        <span>Tồn HT: <b>{check.system_qty}</b></span>
+        <span style={{ color:check.diff!==0?T.red:T.green }}>Lệch: {check.diff>0?'+':''}{check.diff}</span>
+      </div>
+      <div style={{ display:'flex', gap:8, alignItems:'center' }}>
+        <input type="number" value={val} onChange={e => setVal(e.target.value)}
+          placeholder="Nhập tồn thực tế..."
+          style={{ flex:1, padding:'8px 11px', border:`1.5px solid ${T.purple}`,
+            borderRadius:8, fontSize:13, fontFamily:'inherit', outline:'none',
+            color:'#4C1D95', background:'#F5F3FF' }}/>
+        {diff !== null && (
+          <span style={{ fontSize:13, fontWeight:700, color:diff===0?T.green:T.red, flexShrink:0 }}>
+            {diff===0?'✅ Khớp':diff>0?`+${diff}`:diff}
+          </span>
+        )}
+        <button onClick={async () => {
+          if (val==='') return
+          await onConfirm(check, val)
+          setDone(true)
+        }}
+          style={{ padding:'8px 14px', borderRadius:8, border:'none', background:T.purple,
+            color:'#fff', cursor:'pointer', fontFamily:'inherit', fontSize:12, fontWeight:700 }}>
+          ✓ Xác nhận
+        </button>
       </div>
     </div>
   )
@@ -6853,7 +6939,7 @@ function InventoryModule({ user, allUsers, products, invSessions, setInvSessions
 
   // Mobile check mode
   if (mobileCheck && openSession && myChecks.length > 0) return (
-    <MobileCheckInput session={openSession} myChecks={myChecks} user={user}
+    <MobileCheckInput session={openSession} myChecks={myChecks} allChecks={checks} user={user}
       allUsers={allUsers} products={products}
       onUpdate={updateCheck} onBack={() => setMobileCheck(false)}/>
   )
@@ -6863,7 +6949,7 @@ function InventoryModule({ user, allUsers, products, invSessions, setInvSessions
       {id:'overview',    label:'📊 Tổng quan'},
       {id:'sessions',    label:'📋 Phiên KK'},
     ] : []),
-    {id:'check',         label:`✅ Nhập liệu${openSession?` (${myChecks.filter((c: any)=>c.actual_qty==null).length})`:''}`},
+    {id:'check',         label:`✅ Nhập liệu${openSession?` (${myChecks.filter((c: any)=>c.actual_qty==null).length + checks.filter((c: any)=>c.session_id===openSession?.id&&c.double_check_by===user.id&&c.double_actual_qty==null).length})`:''}`},
     {id:'discrepancy',   label:`⚠️ Lệch kho${discrepancies.length?` (${discrepancies.length})`:''}`},
     {id:'monthly',       label:'📈 Cuối tháng'},
     ...(canManage ? [{id:'excluded', label:`🚫 Mã không KK${excludedCodes.size?` (${excludedCodes.size})`:''}`}] : []),
@@ -7356,7 +7442,7 @@ function InventoryModule({ user, allUsers, products, invSessions, setInvSessions
                     {/* ── Date group header ── */}
                     <div style={{display:'flex',alignItems:'center',gap:10,
                       padding:'8px 12px',background:T.bg,borderBottom:`1px solid ${T.border}`,
-                      borderTop:`2px solid ${T.border}`,position:'sticky',top:0,zIndex:1}}>
+                      borderTop:`2px solid ${T.border}`,position:'sticky',top: mobile ? 48 : 0,zIndex:1}}>
                       {canManage && (
                         <input type="checkbox"
                           checked={allDateSel && dateIds.length>0}
@@ -7404,22 +7490,40 @@ function InventoryModule({ user, allUsers, products, invSessions, setInvSessions
                             color:dsc.color,background:dsc.bg,whiteSpace:'nowrap'}}>{dsc.label}</span>
                           <div style={{display:'flex',flexDirection:'column',gap:3,alignItems:'flex-end'}}>
                             {canManage ? (
-                              <select value={c.diff_status||''} onChange={async e => {
-                                const val = e.target.value
-                                const now = new Date().toISOString()
-                                const upd: any = {diff_status:val}
-                                if (val) { upd.resolved_by = user.id; upd.resolved_at = now }
-                                await db.from('inventory_checks').update(upd).eq('id',c.id)
-                                updateCheck(c.id, upd)
-                              }}
-                                style={{padding:'3px 6px',borderRadius:8,border:`1px solid ${T.border}`,
-                                  fontSize:10,fontFamily:'inherit',color:T.dark,background:T.bg,cursor:'pointer'}}>
-                                <option value="">⏳ Chưa XL</option>
-                                <option value="found">✅ Tìm được hàng</option>
-                                <option value="reason">🔍 Tìm được NN</option>
-                                <option value="no_reason">❌ Không tìm được</option>
-                                <option value="resolved">✔️ Đã xử lý</option>
-                              </select>
+                              <>
+                                <select value={c.diff_status||''} onChange={async e => {
+                                  const val = e.target.value
+                                  const now = new Date().toISOString()
+                                  const upd: any = {diff_status:val}
+                                  if (val) { upd.resolved_by = user.id; upd.resolved_at = now }
+                                  await db.from('inventory_checks').update(upd).eq('id',c.id)
+                                  updateCheck(c.id, upd)
+                                }}
+                                  style={{padding:'3px 6px',borderRadius:8,border:`1px solid ${T.border}`,
+                                    fontSize:10,fontFamily:'inherit',color:T.dark,background:T.bg,cursor:'pointer'}}>
+                                  <option value="">⏳ Chưa XL</option>
+                                  <option value="found">✅ Tìm được hàng</option>
+                                  <option value="reason">🔍 Tìm được NN</option>
+                                  <option value="no_reason">❌ Không tìm được</option>
+                                  <option value="resolved">✔️ Đã xử lý</option>
+                                </select>
+                                {/* Nút giao double-check */}
+                                {c.diff_status === '' && (
+                                  <DoubleCheckAssign
+                                    check={c} allUsers={allUsers}
+                                    onAssign={async (nvId: string) => {
+                                      const upd = { double_check_by: nvId }
+                                      await db.from('inventory_checks').update(upd).eq('id', c.id)
+                                      updateCheck(c.id, upd)
+                                    }}/>
+                                )}
+                                {c.double_check_by && (
+                                  <div style={{fontSize:9,color:T.purple,textAlign:'right'}}>
+                                    🔁 DC: {allUsers.find((u: any)=>u.id===c.double_check_by)?.name||'?'}
+                                    {c.double_actual_qty!=null && ` → ${c.double_actual_qty}`}
+                                  </div>
+                                )}
+                              </>
                             ) : (
                               <span style={{fontSize:10,padding:'2px 7px',borderRadius:20,
                                 color:dsc.color,background:dsc.bg,whiteSpace:'nowrap'}}>{dsc.label}</span>
@@ -7769,7 +7873,54 @@ function AssignModal({ session, products, allUsers, user, checks, onAssigned, on
   )
 }
 
-// ── DoubleCheckBanner — hiện trong MobileCheckInput khi có mã cần double-check ──
+// ── DoubleCheckAssign — nút giao KK lại cho NV khác ─────────
+function DoubleCheckAssign({ check, allUsers, onAssign }: any) {
+  const [open, setOpen] = useState(false)
+  const khoUsers = allUsers.filter((u: any) => u.dept_id === 'kho' && u.id !== check.assigned_to && u.active !== false)
+
+  if (khoUsers.length === 0) return null
+
+  return (
+    <div style={{ position:'relative' }}>
+      <button onClick={() => setOpen(v => !v)}
+        style={{ padding:'2px 8px', borderRadius:8, border:`1px solid ${T.purple}`,
+          background: check.double_check_by ? '#EDE9FE' : 'transparent',
+          color:T.purple, cursor:'pointer', fontSize:9, fontFamily:'inherit',
+          whiteSpace:'nowrap' }}>
+        {check.double_check_by ? '🔁 Đổi DC' : '🔁 Giao DC'}
+      </button>
+      {open && (
+        <div style={{ position:'absolute', right:0, top:'100%', marginTop:4,
+          background:'#fff', border:`1px solid ${T.border}`, borderRadius:10,
+          boxShadow:'0 4px 16px rgba(0,0,0,0.12)', zIndex:100, minWidth:160, overflow:'hidden' }}>
+          <div style={{ padding:'6px 10px', fontSize:9, fontWeight:700, color:T.light,
+            textTransform:'uppercase', letterSpacing:.5, background:T.bg,
+            borderBottom:`1px solid ${T.border}` }}>
+            Giao KK lại cho:
+          </div>
+          {khoUsers.map((u: any) => (
+            <div key={u.id} onClick={() => { onAssign(u.id); setOpen(false) }}
+              style={{ padding:'8px 12px', cursor:'pointer', fontSize:12, color:T.dark,
+                borderBottom:`1px solid ${T.border}`,
+                background: check.double_check_by === u.id ? '#EDE9FE' : '#fff' }}
+              onMouseEnter={e => { (e.currentTarget as HTMLElement).style.background = T.bg }}
+              onMouseLeave={e => { (e.currentTarget as HTMLElement).style.background = check.double_check_by === u.id ? '#EDE9FE' : '#fff' }}>
+              {u.name}
+              {check.double_check_by === u.id && <span style={{ fontSize:9, color:T.purple, marginLeft:4 }}>✓ Đang DC</span>}
+            </div>
+          ))}
+          <div onClick={() => { onAssign(''); setOpen(false) }}
+            style={{ padding:'6px 12px', cursor:'pointer', fontSize:11, color:T.light,
+              borderTop:`1px solid ${T.border}` }}>
+            ✕ Hủy giao DC
+          </div>
+        </div>
+      )}
+    </div>
+  )
+}
+
+// ── DoubleCheckNotice — hiện trong MobileCheckInput khi có mã cần double-check ──
 function DoubleCheckNotice({ checks, sessionId, userId }: any) {
   const mine = checks.filter((c: any) =>
     c.session_id===sessionId && c.double_check_by===userId && c.double_actual_qty==null
@@ -9072,8 +9223,14 @@ function ExpiryModule({ user, mobile, products, batches, setBatches }: any) {
               )
             })}
             {Object.keys(batchTotalByCode).length === 0 && (
-              <div style={{ padding:'32px', textAlign:'center', color:T.light, fontSize:13 }}>
-                Chưa có lô hàng nào. Nhấn "+ Thêm lô" hoặc Import Excel.
+              <div style={{ padding:'32px 24px', textAlign:'center' }}>
+                <div style={{ fontSize:32, marginBottom:12 }}>📦</div>
+                <div style={{ fontSize:14, fontWeight:600, color:T.dark, marginBottom:8 }}>
+                  Chưa có lô hàng nào
+                </div>
+                <div style={{ fontSize:12, color:T.light, lineHeight:1.6 }}>
+                  Nhấn <b>+ Thêm lô</b> để thêm thủ công, hoặc dùng <b>📤 Import Excel</b> để import hàng loạt từ file mẫu.
+                </div>
               </div>
             )}
           </div>
@@ -9373,6 +9530,9 @@ function PaymentOrderForm({ suppliers, accounts, onSave, onClose, edit, mobile }
   const [newStkNccSearch, setNewStkNccSearch] = useState('')
   const [newStkSelSup, setNewStkSelSup] = useState<any>(null)
   const [newStkNewName, setNewStkNewName] = useState('')
+  // Thông tin STK mới (khi chưa có trong danh mục)
+  const [newStkAccName, setNewStkAccName] = useState('')
+  const [newStkBankName, setNewStkBankName] = useState('')
 
   // Approved accounts only
   const approvedAccounts = accounts.filter((a: any) => a.status === 'approved' && a.active)
@@ -9394,7 +9554,8 @@ function PaymentOrderForm({ suppliers, accounts, onSave, onClose, edit, mobile }
     ? approvedAccounts.filter((a: any) => a.supplier_id === selSup.id)
     : []
 
-  const isValid = selSup && selAcc && parseMoney(amount) > 0
+  const isValid = selSup && selAcc && parseMoney(amount) > 0 &&
+    (!selAcc.id?.startsWith('acc_new_') || !!selAcc.bank_name?.trim())
 
   const handleSelectSup = (sup: any) => {
     setSelSup(sup); setNccSearch(sup.name); setSelAcc(null)
@@ -9415,15 +9576,34 @@ function PaymentOrderForm({ suppliers, accounts, onSave, onClose, edit, mobile }
     if (!isValid) return
     setSaving(true)
 
-    // Check if STK is new
-    const isNewStk = !accounts.find((a: any) => a.account_number === selAcc.account_number)
+    // Nếu NCC mới (id='__new__'), tạo supplier trước rồi mới save order
+    let finalSupId = selSup.id
+    let finalSupName = selSup.name
+    if (selSup.id === '__new__') {
+      const now = new Date().toISOString()
+      const newSup = {
+        id: 'sup_' + Date.now() + '_' + Math.random().toString(36).slice(2,5),
+        name: selSup.name, short_name: '', note: '', active: true,
+        created_at: now, created_by: ''
+      }
+      await db.from('suppliers').insert(newSup)
+      finalSupId = newSup.id
+      finalSupName = newSup.name
+    }
+
+    // Check if STK is new (chưa có trong accounts)
+    const isNewStk = !accounts.find((a: any) =>
+      a.account_number.replace(/[^0-9]/g,'') === (selAcc.account_number||'').replace(/[^0-9]/g,'')
+    )
     await onSave({
-      supplier_id: selSup.id, supplier_name: selSup.name,
-      account_id: selAcc.id, account_number: selAcc.account_number,
+      supplier_id: finalSupId, supplier_name: finalSupName,
+      account_id: selAcc.id || 'acc_new_' + Date.now(),
+      account_number: selAcc.account_number,
       account_name: selAcc.account_name, bank_name: selAcc.bank_name,
       amount: parseMoney(amount), transfer_content: content,
       purpose, note, order_ref: orderRef, status,
-      _isNewStk: isNewStk, _newStkData: isNewStk ? selAcc : null,
+      _isNewStk: isNewStk,
+      _newStkData: isNewStk ? { ...selAcc, supplier_id: finalSupId } : null,
     })
     setSaving(false)
   }
@@ -9489,7 +9669,8 @@ function PaymentOrderForm({ suppliers, accounts, onSave, onClose, edit, mobile }
                         onMouseLeave={e => { (e.currentTarget as HTMLElement).style.background = '#fff' }}>
                         <div>
                           <div style={{ fontSize:13, fontWeight:600, color:T.dark }}>{sup?.name || '?'}</div>
-                          <div style={{ fontSize:11, color:T.light }}>{a.account_name} · {a.bank_name}</div>
+                          <div style={{ fontSize:12, fontWeight:700, color:T.blue }}>{a.bank_name||'—'}</div>
+                          <div style={{ fontSize:11, color:T.light }}>{a.account_name}</div>
                         </div>
                         <div style={{ fontSize:11, color:T.green, fontWeight:600 }}>✓ Khớp</div>
                       </div>
@@ -9500,33 +9681,51 @@ function PaymentOrderForm({ suppliers, accounts, onSave, onClose, edit, mobile }
               {stkClean.length >= 6 && stkMatches.length === 0 && (
                 <div style={{ marginTop:6, padding:'10px 12px', background:T.amberBg,
                   border:`1px solid ${T.amber}`, borderRadius:8, fontSize:12, color:T.amber }}>
-                  ⚠️ STK này chưa có trong danh mục. Điền thông tin NCC bên dưới để tiếp tục.
-                  {!selSup && (
-                    <div style={{ marginTop:8 }}>
-                      <input value={nccSearch} onChange={e => setNccSearch(e.target.value)}
-                        placeholder="Gõ tên NCC..."
-                        style={{ width:'100%', padding:'7px 10px', border:`1px solid ${T.border}`,
-                          borderRadius:8, fontSize:12, fontFamily:'inherit', outline:'none', boxSizing:'border-box' }}/>
-                      {nccSearch && !selSup && (
-                        <div style={{ border:`1px solid ${T.border}`, borderRadius:8, marginTop:4, maxHeight:160, overflowY:'auto', background:'#fff' }}>
-                          {nccFiltered.slice(0,8).map((s: any) => (
-                            <div key={s.id} onClick={() => { setSelSup(s); setNccSearch(s.name) }}
-                              style={{ padding:'8px 12px', cursor:'pointer', fontSize:12, color:T.dark,
-                                borderBottom:`1px solid ${T.border}` }}
-                              onMouseEnter={e => { (e.currentTarget as HTMLElement).style.background = T.bg }}
-                              onMouseLeave={e => { (e.currentTarget as HTMLElement).style.background = '#fff' }}>
-                              {s.name}
-                            </div>
-                          ))}
-                          <div onClick={() => { setSelSup({ id:'__new__', name: nccSearch }); }}
-                            style={{ padding:'8px 12px', cursor:'pointer', fontSize:12,
-                              color:T.blue, borderTop:`1px solid ${T.border}` }}>
-                            + Tạo NCC mới: "{nccSearch}"
+                  ⚠️ STK này chưa có trong danh mục. Điền thêm thông tin để tiếp tục.
+                  <div style={{ marginTop:8, display:'flex', flexDirection:'column', gap:6 }}>
+                    <input value={newStkAccName} onChange={e => {
+                        setNewStkAccName(e.target.value)
+                        setSelAcc((prev: any) => prev ? {...prev, account_name:e.target.value} :
+                          { id:'acc_new_'+Date.now(), account_number:stkInput.replace(/[^0-9]/g,''), account_name:e.target.value, bank_name:newStkBankName })
+                      }}
+                      placeholder="Tên tài khoản (tên công ty)..."
+                      style={{ width:'100%', padding:'7px 10px', border:`1px solid ${T.border}`,
+                        borderRadius:8, fontSize:12, fontFamily:'inherit', outline:'none',
+                        background:'#fff', color:T.dark, boxSizing:'border-box' as any }}/>
+                    <input value={newStkBankName} onChange={e => {
+                        setNewStkBankName(e.target.value)
+                        setSelAcc((prev: any) => prev ? {...prev, bank_name:e.target.value} :
+                          { id:'acc_new_'+Date.now(), account_number:stkInput.replace(/[^0-9]/g,''), account_name:newStkAccName, bank_name:e.target.value })
+                      }}
+                      placeholder="Ngân hàng * (VD: VCB, ACB, MB...)"
+                      style={{ width:'100%', padding:'7px 10px', border:`1px solid ${T.amber}`,
+                        borderRadius:8, fontSize:12, fontFamily:'inherit', outline:'none',
+                        background:'#fff', color:T.dark, boxSizing:'border-box' as any }}/>
+                  </div>
+                  <div style={{ marginTop:8 }}>
+                    <input value={nccSearch} onChange={e => setNccSearch(e.target.value)}
+                      placeholder="Gõ tên NCC..."
+                      style={{ width:'100%', padding:'7px 10px', border:`1px solid ${T.border}`,
+                        borderRadius:8, fontSize:12, fontFamily:'inherit', outline:'none', boxSizing:'border-box' as any }}/>
+                    {nccSearch && !selSup && (
+                      <div style={{ border:`1px solid ${T.border}`, borderRadius:8, marginTop:4, maxHeight:160, overflowY:'auto', background:'#fff' }}>
+                        {nccFiltered.slice(0,8).map((s: any) => (
+                          <div key={s.id} onClick={() => { setSelSup(s); setNccSearch(s.name) }}
+                            style={{ padding:'8px 12px', cursor:'pointer', fontSize:12, color:T.dark,
+                              borderBottom:`1px solid ${T.border}` }}
+                            onMouseEnter={e => { (e.currentTarget as HTMLElement).style.background = T.bg }}
+                            onMouseLeave={e => { (e.currentTarget as HTMLElement).style.background = '#fff' }}>
+                            {s.name}
                           </div>
+                        ))}
+                        <div onClick={() => { setSelSup({ id:'__new__', name: nccSearch }); }}
+                          style={{ padding:'8px 12px', cursor:'pointer', fontSize:12,
+                            color:T.blue, borderTop:`1px solid ${T.border}` }}>
+                          + Tạo NCC mới: "{nccSearch}"
                         </div>
-                      )}
-                    </div>
-                  )}
+                      </div>
+                    )}
+                  </div>
                   {selSup && (
                     <div style={{ marginTop:8, display:'flex', alignItems:'center', gap:8 }}>
                       <span style={{ fontSize:12, fontWeight:600, color:T.dark }}>{selSup.name}</span>
@@ -9579,8 +9778,11 @@ function PaymentOrderForm({ suppliers, accounts, onSave, onClose, edit, mobile }
               <div>
                 <div style={{ fontSize:13, fontWeight:700, color:T.dark }}>{selSup.name}</div>
                 {selAcc && (
-                  <div style={{ fontSize:11, color:T.goldText, marginTop:2 }}>
-                    STK: {selAcc.account_number} · {selAcc.account_name} · {selAcc.bank_name}
+                  <div style={{ marginTop:4 }}>
+                    <div style={{ fontSize:12, fontWeight:700, color:T.blue }}>{selAcc.bank_name||'—'}</div>
+                    <div style={{ fontSize:11, color:T.goldText }}>
+                      STK: {selAcc.account_number} · {selAcc.account_name}
+                    </div>
                   </div>
                 )}
               </div>
@@ -9999,8 +10201,8 @@ function STKApprovalTab({ accounts, setAccounts, suppliers, user, mobile }: any)
 function PaymentModule({ user, mobile, allUsers }: any) {
   const perm       = getPerm(user)
   const canCreate  = perm.managePayment || perm.viewAllDashboard
-  const canPay     = perm.managePayment || perm.viewAllDashboard
-  const canKiot    = perm.managePayment || perm.viewAllDashboard
+  const canPay     = perm.viewAllDashboard   // Chỉ Admin/GĐ tích "Đã CK"
+  const canKiot    = perm.managePayment || perm.viewAllDashboard  // QM + Admin tích "Nhập KV"
   const canManage  = perm.managePayment || perm.viewAllDashboard
   const canApprove = perm.viewAllDashboard
 
@@ -10356,22 +10558,26 @@ function PaymentModule({ user, mobile, allUsers }: any) {
                             Thông tin CK
                           </div>
                           <div style={{ display:'flex', alignItems:'center', gap:6, marginBottom:6 }}>
+                            <span style={{ fontSize:12, color:T.med }}>Ngân hàng:</span>
+                            <span style={{ fontSize:13, fontWeight:700, color:T.blue }}>{o.bank_name||'—'}</span>
+                          </div>
+                          <div style={{ display:'flex', alignItems:'center', gap:6, marginBottom:6 }}>
                             <span style={{ fontSize:12, color:T.med }}>STK:</span>
                             <span style={{ fontSize:13, fontWeight:700, color:T.dark }}>{o.account_number}</span>
                             <CopyBtn value={o.account_number} label="Copy"/>
                           </div>
+                          <div style={{ fontSize:11, color:T.light, marginBottom:6 }}>
+                            Tên TK: {o.account_name||'—'}
+                          </div>
                           <div style={{ display:'flex', alignItems:'center', gap:6, marginBottom:6 }}>
                             <span style={{ fontSize:12, color:T.med }}>Số tiền:</span>
                             <span style={{ fontSize:13, fontWeight:700, color:T.dark }}>{fmtMoney(o.amount)}</span>
-                            <CopyBtn value={fmtMoney(o.amount)} label="Copy"/>
+                            <CopyBtn value={String(parseMoney(o.amount)||o.amount)} label="Copy"/>
                           </div>
                           <div style={{ display:'flex', alignItems:'center', gap:6, marginBottom:4 }}>
                             <span style={{ fontSize:12, color:T.med }}>Nội dung:</span>
                             <span style={{ fontSize:11, color:T.dark, flex:1 }}>{o.transfer_content}</span>
                             <CopyBtn value={o.transfer_content} label="Copy"/>
-                          </div>
-                          <div style={{ fontSize:11, color:T.light, marginTop:4 }}>
-                            Tên TK: {o.account_name} · NH: {o.bank_name}
                           </div>
                         </div>
                         <div>
