@@ -5448,6 +5448,135 @@ function PositionsManagement({ positions, setPositions, mobile }: any) {
 }
 
 // ── SETTINGS ──────────────────────────────────────
+// ── Export Data Card ─────────────────────────────────────────
+function ExportDataCard() {
+  const [exporting, setExporting] = useState<string|null>(null)
+  const [msg, setMsg] = useState('')
+
+  const tables = [
+    { key:'payment_orders',     label:'Lệnh chuyển khoản',       icon:'💸', query: () => db.from('payment_orders').select('*').order('created_at',{ascending:false}) },
+    { key:'brand_programs',     label:'Chương trình nhãn hàng',   icon:'🎯', query: () => db.from('brand_programs').select('*').order('created_at',{ascending:false}) },
+    { key:'price_configs',      label:'Báo giá sản phẩm',         icon:'💰', query: () => db.from('price_configs').select('*') },
+    { key:'price_tiers',        label:'Mốc giá theo SL',          icon:'📊', query: () => db.from('price_tiers').select('*') },
+    { key:'checklist_templates',label:'Template checklist',        icon:'📋', query: () => db.from('checklist_templates').select('*') },
+    { key:'users',              label:'Danh sách nhân viên',       icon:'👥', query: () => db.from('users').select('id,name,dept_id,position_id,role,active,birthday') },
+    { key:'product_batches',    label:'Date sản phẩm (HSD)',       icon:'📅', query: () => db.from('product_batches').select('*').order('expiry_date',{ascending:true}) },
+    { key:'suppliers',          label:'Nhà cung cấp',              icon:'🏢', query: () => db.from('suppliers').select('*') },
+  ]
+
+  const toCSV = (rows: any[]) => {
+    if (!rows || rows.length === 0) return ''
+    const headers = Object.keys(rows[0])
+    const escape = (v: any) => {
+      const s = v === null || v === undefined ? '' : String(v)
+      return s.includes(',') || s.includes('"') || s.includes('\n')
+        ? `"${s.replace(/"/g, '""')}"` : s
+    }
+    return [
+      headers.join(','),
+      ...rows.map(r => headers.map(h => escape(r[h])).join(','))
+    ].join('\n')
+  }
+
+  const downloadCSV = (csv: string, filename: string) => {
+    const blob = new Blob(['\uFEFF' + csv], { type: 'text/csv;charset=utf-8' })
+    const url  = URL.createObjectURL(blob)
+    const a    = document.createElement('a')
+    a.href = url; a.download = filename; a.click()
+    URL.revokeObjectURL(url)
+  }
+
+  const exportOne = async (t: typeof tables[0]) => {
+    setExporting(t.key); setMsg('')
+    try {
+      const { data, error } = await t.query()
+      if (error) throw new Error(error.message)
+      if (!data || data.length === 0) { setMsg(`⚠️ ${t.label}: Không có dữ liệu`); return }
+      const date = new Date().toISOString().split('T')[0]
+      downloadCSV(toCSV(data), `${t.key}_${date}.csv`)
+      setMsg(`✅ Đã xuất ${data.length} dòng — ${t.label}`)
+    } catch(e: any) {
+      setMsg(`❌ Lỗi: ${e.message}`)
+    } finally {
+      setExporting(null)
+      setTimeout(() => setMsg(''), 4000)
+    }
+  }
+
+  const exportAll = async () => {
+    setExporting('all'); setMsg('⏳ Đang xuất tất cả...')
+    const date = new Date().toISOString().split('T')[0]
+    let total = 0
+    for (const t of tables) {
+      try {
+        const { data } = await t.query()
+        if (data && data.length > 0) {
+          downloadCSV(toCSV(data), `${t.key}_${date}.csv`)
+          total += data.length
+          await new Promise(r => setTimeout(r, 300)) // tránh download quá nhanh
+        }
+      } catch {}
+    }
+    setMsg(`✅ Đã xuất ${tables.length} file — tổng ${total} dòng`)
+    setExporting(null)
+    setTimeout(() => setMsg(''), 5000)
+  }
+
+  return (
+    <Card>
+      <div style={{ display:'flex', alignItems:'center', justifyContent:'space-between', marginBottom:14, flexWrap:'wrap', gap:8 }}>
+        <div>
+          <div style={{ fontSize:13, fontWeight:700, color:T.dark }}>💾 Xuất dữ liệu (Backup CSV)</div>
+          <div style={{ fontSize:11, color:T.light, marginTop:2 }}>
+            Download file CSV để lưu trữ dự phòng. Nên xuất định kỳ hàng tuần.
+          </div>
+        </div>
+        <button onClick={exportAll} disabled={!!exporting}
+          style={{ padding:'7px 16px', borderRadius:8, border:`1.5px solid ${T.gold}`,
+            background: exporting ? T.bg : T.goldBg, color: exporting ? T.light : T.goldText,
+            cursor: exporting ? 'not-allowed' : 'pointer', fontFamily:'inherit',
+            fontSize:12, fontWeight:700, display:'flex', alignItems:'center', gap:6 }}>
+          {exporting === 'all' ? '⏳ Đang xuất...' : '📦 Xuất tất cả'}
+        </button>
+      </div>
+
+      <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:8 }}>
+        {tables.map(t => (
+          <button key={t.key} onClick={() => exportOne(t)} disabled={!!exporting}
+            style={{ display:'flex', alignItems:'center', gap:8, padding:'8px 12px',
+              borderRadius:8, border:`1px solid ${T.border}`,
+              background: exporting===t.key ? T.goldBg : '#fff',
+              cursor: exporting ? 'not-allowed' : 'pointer', fontFamily:'inherit',
+              transition:'all .15s', textAlign:'left' as any }}>
+            <span style={{ fontSize:16 }}>{t.icon}</span>
+            <div style={{ flex:1, minWidth:0 }}>
+              <div style={{ fontSize:12, fontWeight:600, color:T.dark }}>{t.label}</div>
+              <div style={{ fontSize:10, color:T.light }}>{t.key}.csv</div>
+            </div>
+            {exporting===t.key
+              ? <span style={{ fontSize:11, color:T.gold }}>⏳</span>
+              : <span style={{ fontSize:11, color:T.light }}>↓</span>}
+          </button>
+        ))}
+      </div>
+
+      {msg && (
+        <div style={{ marginTop:10, padding:'7px 12px', borderRadius:8, fontSize:12, fontWeight:600,
+          color: msg.startsWith('✅') ? T.green : msg.startsWith('❌') ? T.red : T.amber,
+          background: msg.startsWith('✅') ? T.greenBg : msg.startsWith('❌') ? T.redBg : T.amberBg }}>
+          {msg}
+        </div>
+      )}
+
+      <div style={{ marginTop:12, padding:'8px 12px', borderRadius:8, background:T.bg,
+        fontSize:11, color:T.light, lineHeight:1.6 }}>
+        💡 <b>Lưu ý:</b> File có BOM UTF-8 — mở bằng Excel đọc được tiếng Việt.
+        Nên upload vào Google Drive sau khi tải về.
+      </div>
+    </Card>
+  )
+}
+
 function Settings({ user, setUser, settings, setSettings, onManualReset, mobile }: any) {
   const [oldPw, setOldPw]     = useState('')
   const [newPw, setNewPw]     = useState('')
@@ -5518,6 +5647,11 @@ function Settings({ user, setUser, settings, setSettings, onManualReset, mobile 
               </GoldBtn>
             </div>
           </Card>
+        )}
+
+        {/* Export Data */}
+        {getPerm(user).viewAllDashboard && (
+          <ExportDataCard/>
         )}
       </div>
     </div>
