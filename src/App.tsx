@@ -9321,12 +9321,8 @@ function PriceListTab({ user, mobile, products, allUsers,
   // Tiers edit
   const [tiersForm, setTiersForm] = useState<any[]>([])
 
-  // Extract brands from product category or code prefix
-  const getBrand = (prod: any) => {
-    if (prod.category_name) return prod.category_name
-    // Fallback: group by first word of name
-    return prod.name?.split(' ')[0] || 'Khác'
-  }
+  // Lấy nhãn hàng từ field trademark (KiotViet Brand)
+  const getBrand = (prod: any) => prod.trademark || prod.brand || 'Chưa phân nhãn'
 
   // Get config for a product
   const getCfg = (code: string) => priceConfigs.find((c: any) => c.product_code === code)
@@ -9733,8 +9729,8 @@ function BrandProgramsTab({ user, mobile, products, allUsers,
   const today = new Date().toISOString().split('T')[0]
   const in7d  = new Date(Date.now()+7*86400000).toISOString().split('T')[0]
 
-  // Extract unique brands from products
-  const brands = [...new Set(products.map((p: any) => p.category_name || p.name?.split(' ')[0] || 'Khác'))].sort()
+  // Lấy danh sách nhãn hàng từ field trademark của KiotViet
+  const brands = [...new Set(products.map((p: any) => p.trademark || p.brand || '').filter(Boolean))].sort()
 
   const emptyForm: any = {
     brand_name:'', program_name:'', start_date:'', end_date:'', open_ended:false,
