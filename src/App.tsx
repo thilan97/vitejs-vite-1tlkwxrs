@@ -9258,9 +9258,6 @@ function BatchForm({ edit, products, onSave, onClose, saving, mobile }: any) {
   )
 }
 
-  )
-}
-
 // ══ PRICE MODULE — Báo giá & Chương trình nhãn hàng ═══════════
 function PriceModule({ user, mobile, products, allUsers,
   priceConfigs, setPriceConfigs, priceTiers, setPriceTiers,
