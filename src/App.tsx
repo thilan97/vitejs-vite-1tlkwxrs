@@ -7217,7 +7217,7 @@ function InventoryModule({ user, allUsers, products, invSessions, setInvSessions
       {tab==='discrepancy' && (
         <div style={{display:'flex',flexDirection:'column',gap:12}}>
           {/* Bulk action bar */}
-          {selectedChecks.size > 0 && (
+          {selectedChecks.size > 0 && canManage && (
             <div style={{display:'flex',gap:8,alignItems:'center',padding:'10px 14px',
               background:T.goldBg,borderRadius:10,border:`1.5px solid ${T.gold}`,flexWrap:'wrap'}}>
               <span style={{fontSize:12,fontWeight:700,color:T.goldText,flexShrink:0}}>
@@ -7295,11 +7295,11 @@ function InventoryModule({ user, allUsers, products, invSessions, setInvSessions
           {/* Discrepancy table */}
           <div style={{background:T.card,borderRadius:12,border:`1px solid ${T.border}`,overflow:'hidden',boxShadow:'0 1px 4px rgba(0,0,0,0.06)'}}>
             {!mobile && (
-              <div style={{display:'grid',gridTemplateColumns:'28px 1fr 90px 60px 60px 60px 150px 120px',
+              <div style={{display:'grid',gridTemplateColumns: canManage ? '28px 1fr 90px 60px 60px 60px 150px 120px' : '1fr 90px 60px 60px 60px 150px 120px',
                 padding:'8px 12px',background:T.bg,borderBottom:`2px solid ${T.border}`,
                 fontSize:10,fontWeight:700,color:T.light,textTransform:'uppercase',letterSpacing:.5,gap:8,
                 alignItems:'center'}}>
-                <span></span>
+                {canManage && <span></span>}
                 <span>Sản phẩm</span>
                 <span style={{textAlign:'center'}}>Tồn HT</span>
                 <span style={{textAlign:'center'}}>Tồn TT</span>
@@ -7356,14 +7356,16 @@ function InventoryModule({ user, allUsers, products, invSessions, setInvSessions
                     <div style={{display:'flex',alignItems:'center',gap:10,
                       padding:'8px 12px',background:T.bg,borderBottom:`1px solid ${T.border}`,
                       borderTop:`2px solid ${T.border}`,position:'sticky',top:0,zIndex:1}}>
-                      <input type="checkbox"
-                        checked={allDateSel && dateIds.length>0}
-                        onChange={() => setSelectedChecks(prev => {
-                          const n = new Set(prev)
-                          allDateSel ? dateIds.forEach((id: string) => n.delete(id))
-                                     : dateIds.forEach((id: string) => n.add(id))
-                          return n
-                        })} style={{cursor:'pointer'}}/>
+                      {canManage && (
+                        <input type="checkbox"
+                          checked={allDateSel && dateIds.length>0}
+                          onChange={() => setSelectedChecks(prev => {
+                            const n = new Set(prev)
+                            allDateSel ? dateIds.forEach((id: string) => n.delete(id))
+                                       : dateIds.forEach((id: string) => n.add(id))
+                            return n
+                          })} style={{cursor:'pointer'}}/>
+                      )}
                       <span style={{fontSize:12,fontWeight:700,color:T.dark}}>📅 {date}</span>
                       <span style={{fontSize:11,color:T.blue}}>{dateItems.length} mã lệch</span>
                       {lech>0 && <span style={{fontSize:11,color:T.red}}>⚠️ {lech} chưa xử lý</span>}
@@ -7374,18 +7376,20 @@ function InventoryModule({ user, allUsers, products, invSessions, setInvSessions
                       const isSel = selectedChecks.has(c.id)
                       return (
                         <div key={c.id} style={{display:'grid',
-                          gridTemplateColumns:'28px 1fr 90px 60px 60px 60px 150px 120px',
+                          gridTemplateColumns: canManage ? '28px 1fr 90px 60px 60px 60px 150px 120px' : '1fr 90px 60px 60px 60px 150px 120px',
                           padding:'8px 12px 8px 28px',gap:8,alignItems:'center',
                           borderBottom:i<dateItems.length-1?`1px solid ${T.border}`:'none',
                           borderLeft:`3px solid ${isSel?T.gold:T.border}`,
                           marginLeft:16,
                           background:isSel?T.goldBg:c.diff_status===''?(i%2===0?'#FFF5F5':'#FFF0F0'):(i%2===0?'#fff':T.rowAlt)}}>
-                          <input type="checkbox" checked={isSel}
-                            onChange={() => setSelectedChecks(prev => {
-                              const n = new Set(prev)
-                              isSel ? n.delete(c.id) : n.add(c.id)
-                              return n
-                            })} style={{cursor:'pointer'}}/>
+                          {canManage && (
+                            <input type="checkbox" checked={isSel}
+                              onChange={() => setSelectedChecks(prev => {
+                                const n = new Set(prev)
+                                isSel ? n.delete(c.id) : n.add(c.id)
+                                return n
+                              })} style={{cursor:'pointer'}}/>
+                          )}
                           <div>
                             <div style={{fontSize:12,fontWeight:500,color:T.dark,lineHeight:1.3}}>{c.product_name}</div>
                             <div style={{fontSize:10,color:T.light}}>{c.product_code}</div>
