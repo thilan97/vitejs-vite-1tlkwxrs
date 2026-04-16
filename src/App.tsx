@@ -85,6 +85,7 @@ const getPerm = (user: any) => {
     resolveWrongOrder:  isAdmin || (pos.perm_approve_leave ?? false) || (pos.perm_resolve_wrong_order ?? false),
     manageExpiry:       isAdmin || (pos.perm_manage_inventory ?? false) || (pos.perm_manage_expiry ?? false),
     managePayment:      isAdmin || (pos.perm_manage_payment ?? false),
+    editReturn:         isAdmin || (pos.perm_manage_inventory ?? false) || (pos.perm_edit_return ?? false),
   }
 }
 
@@ -121,6 +122,7 @@ const ALL_PERMS = [
   { key:'perm_resolve_wrong_order',  label:'Xác nhận đã xử lý đơn sai',        group:'Kho'      },
   { key:'perm_manage_inventory',     label:'Xử lý kiểm kê (QM Kho)',            group:'Kho'      },
   { key:'perm_manage_expiry',        label:'Quản lý date sản phẩm (QM Kho)',    group:'Kho'      },
+  { key:'perm_edit_return',         label:'Sửa phiếu hàng hoàn (phần kho)',    group:'Kho'      },
   { key:'perm_manage_payment',       label:'Quản lý lệnh chuyển khoản',         group:'Sale'     },
 ]
 // ── UTILITIES ────────────────────────────────────
@@ -3936,11 +3938,128 @@ function ReturnSaleForm({ item, allUsers, saleUsers, onSave, onClose }: any) {
   )
 }
 
+// ── ReturnKhoEditForm — Kho sửa phần kho của phiếu hoàn ──────
+function ReturnKhoEditForm({ slip, products, onSave, onClose }: any) {
+  const CONDITIONS = ['Bình thường', 'Móp', 'Rách', 'Hỏng', 'Khác']
+  const [date, setDate] = useState(slip.date || '')
+  const [returnCode, setReturnCode] = useState(slip.return_order_code || '')
+  const [lines, setLines] = useState<any[]>(
+    slip.lines.map((l: any) => ({
+      id: l.id,
+      product_name: l.product_name,
+      quantity: l.quantity || 1,
+      condition: l.condition || 'Bình thường',
+      ship_fee: l.ship_fee || 0,
+      _search: l.product_name || '',
+    }))
+  )
+  const [searchStates, setSearchStates] = useState<Record<string,any[]>>({})
+
+  const updateLine = (lid: string, field: string, val: any) =>
+    setLines(prev => prev.map(l => l.id===lid ? {...l,[field]:val} : l))
+
+  const searchProds = (lid: string, q: string) => {
+    updateLine(lid, '_search', q)
+    updateLine(lid, 'product_name', q)
+    if (!q.trim() || !products) { setSearchStates(s => ({...s,[lid]:[]})); return }
+    const n = (s: string) => (s||'').toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g,'').replace(/đ/g,'d')
+    const results = products.filter((p: any) =>
+      n(q).split(/\s+/).every((t: string) => n((p.name||'')+' '+(p.code||'')).includes(t))
+    ).slice(0,7)
+    setSearchStates(s => ({...s,[lid]:results}))
+  }
+
+  return (
+    <div>
+      <div style={{ padding:'8px 12px', background:'#EFF6FF', borderRadius:8, marginBottom:14,
+        fontSize:12, color:T.blue, border:`1px solid ${T.blue}` }}>
+        ℹ️ Chỉ chỉnh sửa thông tin kho nhập liệu. Thông tin sale (KH, ĐH gốc, lý do...) giữ nguyên.
+      </div>
+
+      <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:12, marginBottom:14 }}>
+        <Inp label="Ngày hoàn *" type="date" value={date} onChange={setDate}/>
+        <Inp label="Mã đơn hoàn" value={returnCode} onChange={setReturnCode} placeholder="VD: HV001234"/>
+      </div>
+
+      <div style={{ fontSize:12, fontWeight:600, color:T.dark, marginBottom:8 }}>Sản phẩm</div>
+      {lines.map((line, li) => (
+        <div key={line.id} style={{ background:T.bg, borderRadius:10, padding:'10px 12px',
+          marginBottom:8, border:`1px solid ${T.border}` }}>
+          <div style={{ display:'flex', alignItems:'center', gap:8, marginBottom:8 }}>
+            <span style={{ fontSize:12, fontWeight:700, color:T.light }}>#{li+1}</span>
+            <div style={{ flex:1, position:'relative' }}>
+              <input value={line._search} onChange={e => searchProds(line.id, e.target.value)}
+                placeholder="Tên hoặc mã SP..."
+                style={{ width:'100%', padding:'7px 10px', border:`1px solid ${T.border}`, borderRadius:8,
+                  fontSize:12, fontFamily:'inherit', color:T.dark, background:'#fff',
+                  boxSizing:'border-box' as any, outline:'none' }}/>
+              {(searchStates[line.id]||[]).length > 0 && (
+                <div style={{ position:'absolute', top:'100%', left:0, right:0, background:'#fff',
+                  border:`1px solid ${T.border}`, borderRadius:8, zIndex:10, maxHeight:160, overflowY:'auto',
+                  boxShadow:'0 4px 12px rgba(0,0,0,0.1)' }}>
+                  {(searchStates[line.id]||[]).map((p: any) => (
+                    <div key={p.code} onClick={() => {
+                      updateLine(line.id, 'product_name', p.name)
+                      updateLine(line.id, '_search', p.name)
+                      setSearchStates(s => ({...s,[line.id]:[]}))
+                    }}
+                      style={{ padding:'8px 12px', cursor:'pointer', fontSize:12,
+                        borderBottom:`1px solid ${T.border}`, color:T.dark }}
+                      onMouseEnter={e => (e.currentTarget as HTMLElement).style.background=T.bg}
+                      onMouseLeave={e => (e.currentTarget as HTMLElement).style.background='#fff'}>
+                      <span style={{ fontWeight:500 }}>{p.name}</span>
+                      <span style={{ fontSize:10, color:T.light, marginLeft:8 }}>{p.code}</span>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          </div>
+          <div style={{ display:'grid', gridTemplateColumns:'80px 1fr 80px', gap:8, alignItems:'end' }}>
+            <div>
+              <div style={{ fontSize:11, color:T.med, marginBottom:4 }}>Số lượng</div>
+              <input type="number" min={1} value={line.quantity}
+                onChange={e => updateLine(line.id, 'quantity', Number(e.target.value)||1)}
+                style={{ width:'100%', padding:'7px 10px', border:`1px solid ${T.border}`, borderRadius:8,
+                  fontSize:12, fontFamily:'inherit', color:T.dark, background:'#fff', outline:'none' }}/>
+            </div>
+            <div>
+              <div style={{ fontSize:11, color:T.med, marginBottom:4 }}>Tình trạng</div>
+              <select value={line.condition} onChange={e => updateLine(line.id, 'condition', e.target.value)}
+                style={{ width:'100%', padding:'7px 10px', border:`1px solid ${T.border}`, borderRadius:8,
+                  fontSize:12, fontFamily:'inherit', color:T.dark, background:'#fff', cursor:'pointer' }}>
+                {CONDITIONS.map(c => <option key={c} value={c}>{c}</option>)}
+              </select>
+            </div>
+            <div>
+              <div style={{ fontSize:11, color:T.med, marginBottom:4 }}>Ship {li>0?'':'(đ)'}</div>
+              <input type="number" min={0} value={li===0?line.ship_fee:0} disabled={li>0}
+                onChange={e => updateLine(line.id, 'ship_fee', Number(e.target.value)||0)}
+                style={{ width:'100%', padding:'7px 10px', border:`1px solid ${T.border}`, borderRadius:8,
+                  fontSize:12, fontFamily:'inherit', color:li>0?T.light:T.dark,
+                  background:li>0?T.bg:'#fff', outline:'none' }}/>
+            </div>
+          </div>
+        </div>
+      ))}
+
+      <div style={{ display:'flex', justifyContent:'flex-end', gap:10, marginTop:16 }}>
+        <GoldBtn outline small onClick={onClose}>Hủy</GoldBtn>
+        <GoldBtn small onClick={() => {
+          if (!date) return
+          onSave({ date, return_order_code: returnCode }, lines)
+        }}>💾 Lưu</GoldBtn>
+      </div>
+    </div>
+  )
+}
+
 // ── RETURN ITEMS (Báo cáo hàng hoàn) ─────────────────
 function ReturnItems({ user, allUsers, products, mobile }: any) {
   const [items,       setItems]     = React.useState<any[]>([])
   const [showAdd,     setShowAdd]   = React.useState(false)
   const [showEdit,    setShowEdit]  = React.useState<any>(null)
+  const [showEditKho, setShowEditKho] = React.useState<any>(null)
   const [expandedSlip, setExpandedSlip] = React.useState<string|null>(null)
   const [tab,         setTab]       = React.useState<'list'|'stats'>('list')
   const [monthFilter, setMonthFilter] = React.useState(() => {
@@ -3951,8 +4070,10 @@ function ReturnItems({ user, allUsers, products, mobile }: any) {
   const perm  = getPerm(user)
   const isKho  = user.dept_id === 'kho'
   const isSale = user.dept_id === 'sale'
-  const canAdd  = isKho || perm.viewAllDashboard
-  const canKiot = perm.viewAllDashboard || perm.enterKiot
+  const canAdd      = isKho || perm.viewAllDashboard
+  const canKiot     = perm.viewAllDashboard || perm.enterKiot
+  // canEditKho: Admin, QM Kho (manageInventory), hoặc user được cấp perm_edit_return
+  const canEditKhoAny = perm.viewAllDashboard || perm.editReturn
 
   const norm = (s: string) => (s||'')    .toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g,'').replace(/đ/g,'d')
 
@@ -4109,6 +4230,26 @@ function ReturnItems({ user, allUsers, products, mobile }: any) {
       await db.from('return_items').update(saleData).eq('id', id)
     }
     setShowEdit(null)
+  }
+
+  // ── Kho edit: only kho-side fields (date, return_order_code, lines) ───────
+  const updateSlipKho = async (slip_id: string, khoData: any, updatedLines: any[]) => {
+    const slipLineIds = items.filter((i: any) => (i.slip_id||i.id)===slip_id).map((i: any) => i.id)
+    // Update header fields on all rows
+    const headerUpd = { date: khoData.date, return_order_code: khoData.return_order_code }
+    setItems(prev => prev.map(i => {
+      if (!slipLineIds.includes(i.id)) return i
+      const lineUpd = updatedLines.find((l: any) => l.id === i.id)
+      return { ...i, ...headerUpd, ...(lineUpd ? { product_name:lineUpd.product_name, quantity:lineUpd.quantity, condition:lineUpd.condition, ship_fee:lineUpd.ship_fee } : {}) }
+    }))
+    for (const id of slipLineIds) {
+      const lineUpd = updatedLines.find((l: any) => l.id === id)
+      await db.from('return_items').update({
+        ...headerUpd,
+        ...(lineUpd ? { product_name:lineUpd.product_name, quantity:lineUpd.quantity, condition:lineUpd.condition, ship_fee:lineUpd.ship_fee } : {})
+      }).eq('id', id)
+    }
+    setShowEditKho(null)
   }
 
   const delSlip = async (slip_id: string) => {
@@ -4284,13 +4425,13 @@ function ReturnItems({ user, allUsers, products, mobile }: any) {
           {/* ── Sticky table header ── */}
           {!mobile && (
             <div style={{ display:'grid',
-              gridTemplateColumns:'44px 72px 90px 1fr 48px 80px 95px 95px 150px 110px',
+              gridTemplateColumns:'44px 72px 100px 1fr 48px 80px 90px 90px 130px 120px',
               padding:'8px 12px', background:T.bg, borderBottom:`2px solid ${T.border}`,
               fontSize:10, fontWeight:700, color:T.light, textTransform:'uppercase',
               letterSpacing:.6, gap:8, alignItems:'center', position:'sticky', top:0, zIndex:2 }}>
               <span style={{ textAlign:'center', color:T.green }}>KV</span>
               <span>Ngày</span>
-              <span>Mã hoàn</span>
+              <span>Mã hoàn / ĐH gốc</span>
               <span>Sản phẩm</span>
               <span style={{ textAlign:'center' }}>SL</span>
               <span style={{ textAlign:'right' }}>Ship</span>
@@ -4309,7 +4450,10 @@ function ReturnItems({ user, allUsers, products, mobile }: any) {
           ) : slips.map((slip: any, si: number) => {
             const saleUser     = allUsers.find((u: any) => u.id===slip.sale_id)
             const violatorUser = allUsers.find((u: any) => u.id===slip.violator_id)
+            // canEdit: Admin xóa bất kỳ; Kho xóa phiếu do chính mình tạo
             const canEdit      = perm.viewAllDashboard || (isKho && slip.created_by===user.id)
+            // canEditKho: Admin, QM Kho, hoặc Kho NV được cấp perm_edit_return → sửa trường kho
+            const canEditKho   = canEditKhoAny || (isKho && slip.created_by===user.id)
             const canFillSale  = isSale || perm.viewAllDashboard
             const hasSaleInfo  = slip.customer_name || slip.original_order_code
             const isOpen       = expandedSlip === slip.slip_id
@@ -4344,7 +4488,8 @@ function ReturnItems({ user, allUsers, products, mobile }: any) {
                       <div style={{ flex:1 }}>
                         <div style={{ fontSize:12,fontWeight:700,color:T.dark }}>
                           {slip.date?new Date(slip.date).toLocaleDateString('vi-VN',{day:'2-digit',month:'2-digit'}):'—'}
-                          {slip.return_order_code&&<span style={{ fontSize:10,color:T.gold,marginLeft:8 }}>#{slip.return_order_code}</span>}
+                          {slip.return_order_code&&<span style={{ fontSize:10,color:T.gold,marginLeft:6 }}>#{slip.return_order_code}</span>}
+                          {slip.original_order_code&&<span style={{ fontSize:10,color:T.blue,marginLeft:6 }}>↩{slip.original_order_code}</span>}
                           <span style={{ fontSize:11,color:T.blue,marginLeft:8 }}>SL: {slip.total_qty}</span>
                         </div>
                         <div style={{ fontSize:11,color:T.med,marginTop:2 }}>
@@ -4352,9 +4497,14 @@ function ReturnItems({ user, allUsers, products, mobile }: any) {
                           {slip.lines.length>1&&<span style={{ color:T.light }}> +{slip.lines.length-1} SP</span>}
                         </div>
                       </div>
-                      <div style={{ display:'flex',gap:6,alignItems:'center' }}>
+                      <div style={{ display:'flex',gap:6,alignItems:'center' }} onClick={e=>e.stopPropagation()}>
+                        {canEditKho && (
+                          <button onClick={() => setShowEditKho(slip)}
+                            style={{ padding:'3px 8px',borderRadius:20,border:`1px solid ${T.blue}`,
+                              background:'#EFF6FF',cursor:'pointer',fontSize:10,fontFamily:'inherit',color:T.blue }}>Kho sửa</button>
+                        )}
                         {canEdit && (
-                          <button onClick={e => { e.stopPropagation(); delSlip(slip.slip_id) }}
+                          <button onClick={() => delSlip(slip.slip_id)}
                             style={{ padding:'3px 8px',borderRadius:20,border:`1px solid ${T.redBg}`,
                               background:T.redBg,cursor:'pointer',fontSize:10,fontFamily:'inherit',color:T.red }}>✕</button>
                         )}
@@ -4365,7 +4515,7 @@ function ReturnItems({ user, allUsers, products, mobile }: any) {
                 ) : (
                   /* Desktop: full table row */
                   <div style={{ display:'grid',
-                    gridTemplateColumns:'44px 72px 90px 1fr 48px 80px 95px 95px 150px 110px',
+                    gridTemplateColumns:'44px 72px 100px 1fr 48px 80px 90px 90px 130px 120px',
                     padding:'9px 12px', gap:8, alignItems:'start',
                     cursor:'pointer' }}
                     onClick={() => setExpandedSlip(isOpen?null:slip.slip_id)}>
@@ -4394,11 +4544,20 @@ function ReturnItems({ user, allUsers, products, mobile }: any) {
                       {slip.date?new Date(slip.date).toLocaleDateString('vi-VN',{day:'2-digit',month:'2-digit'}):'—'}
                     </span>
 
-                    {/* Mã hoàn */}
-                    <span style={{ fontSize:11,color:T.gold,
-                      overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap' }}>
-                      {slip.return_order_code?'#'+slip.return_order_code:'—'}
-                    </span>
+                    {/* Mã hoàn + ĐH gốc */}
+                    <div style={{ lineHeight:1.5 }}>
+                      <div style={{ fontSize:11,color:T.gold,fontWeight:600,
+                        overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap' }}>
+                        {slip.return_order_code?'#'+slip.return_order_code:'—'}
+                      </div>
+                      {slip.original_order_code ? (
+                        <div style={{ fontSize:10,color:T.blue,whiteSpace:'nowrap',overflow:'hidden',textOverflow:'ellipsis' }}>
+                          ↩ {slip.original_order_code}
+                        </div>
+                      ) : (
+                        <div style={{ fontSize:10,color:T.light,fontStyle:'italic' }}>chưa có ĐH gốc</div>
+                      )}
+                    </div>
 
                     {/* Sản phẩm */}
                     <div style={{ lineHeight:1.4 }}>
@@ -4443,7 +4602,7 @@ function ReturnItems({ user, allUsers, products, mobile }: any) {
                     </span>
 
                     {/* Thao tác */}
-                    <div style={{ display:'flex',gap:5,justifyContent:'flex-end',alignItems:'center' }}
+                    <div style={{ display:'flex',gap:5,justifyContent:'flex-end',alignItems:'center',flexWrap:'wrap' }}
                       onClick={e => e.stopPropagation()}>
                       {!hasSaleInfo && canFillSale && (
                         <button onClick={() => setShowEdit(slip)}
@@ -4454,7 +4613,13 @@ function ReturnItems({ user, allUsers, products, mobile }: any) {
                       {hasSaleInfo && (canFillSale||canEdit) && (
                         <button onClick={() => setShowEdit(slip)}
                           style={{ padding:'3px 9px',borderRadius:20,border:`1px solid ${T.border}`,
-                            background:'transparent',cursor:'pointer',fontSize:10,fontFamily:'inherit',color:T.med }}>Sửa</button>
+                            background:'transparent',cursor:'pointer',fontSize:10,fontFamily:'inherit',color:T.med }}>Sale sửa</button>
+                      )}
+                      {canEditKho && (
+                        <button onClick={() => setShowEditKho(slip)}
+                          style={{ padding:'3px 9px',borderRadius:20,border:`1px solid ${T.blue}`,
+                            background:T.blueBg||'#EFF6FF',cursor:'pointer',fontSize:10,fontFamily:'inherit',
+                            color:T.blue,fontWeight:600,whiteSpace:'nowrap' }}>Kho sửa</button>
                       )}
                       {canEdit && (
                         <button onClick={() => delSlip(slip.slip_id)}
@@ -4618,6 +4783,14 @@ function ReturnItems({ user, allUsers, products, mobile }: any) {
           item={showEdit} allUsers={allUsers} saleUsers={saleUsers}
           onSave={(data: any) => updateSlipSale(showEdit.slip_id, data)}
           onClose={() => setShowEdit(null)}/>}
+      </Modal>
+
+      <Modal open={!!showEditKho} onClose={() => setShowEditKho(null)}
+        title="📦 Kho sửa phiếu hoàn" wide>
+        {showEditKho && <ReturnKhoEditForm
+          slip={showEditKho} products={products}
+          onSave={(khoData: any, lines: any[]) => updateSlipKho(showEditKho.slip_id, khoData, lines)}
+          onClose={() => setShowEditKho(null)}/>}
       </Modal>
     </div>
   )
