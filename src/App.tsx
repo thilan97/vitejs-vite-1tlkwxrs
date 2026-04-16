@@ -134,6 +134,7 @@ const ALL_PERMS = [
 ]
 // ── UTILITIES ────────────────────────────────────
 const fmtNow   = () => new Date().toLocaleString('vi-VN',{hour:'2-digit',minute:'2-digit',day:'2-digit',month:'2-digit',year:'numeric'})
+const fmtDateTime = (d: string) => { try { return new Date(d).toLocaleString('vi-VN',{hour:'2-digit',minute:'2-digit',day:'2-digit',month:'2-digit',year:'numeric'}) } catch { return d } }
 const todayStr = () => new Date().toLocaleDateString('vi-VN')
 const todayISO = () => new Date().toISOString().split('T')[0]
 const fmtDate  = (d: string) => { try { return new Date(d).toLocaleDateString('vi-VN') } catch { return d } }
@@ -9324,17 +9325,21 @@ function PriceListTab({ user, mobile, products, allUsers,
   // Lấy nhãn hàng từ field trademark (KiotViet Brand)
   const getBrand = (prod: any) => prod.trademark || prod.brand || 'Chưa phân nhãn'
 
+  // KiotViet lưu giá / 1000 → nhân lại để hiển thị đúng
+  const realPrice = (p: number) => (p || 0) * 1000
+
   // Get config for a product
   const getCfg = (code: string) => priceConfigs.find((c: any) => c.product_code === code)
 
   // Computed sell price
   const getSellPrice = (prod: any) => {
     const cfg = getCfg(prod.code)
-    if (!cfg) return prod.base_price || 0
+    const listP = realPrice(prod.base_price)
+    if (!cfg) return listP
     if (cfg.pricing_type === 'discount') {
-      return Math.round((prod.base_price || 0) * (1 - cfg.discount_pct / 100))
+      return Math.round(listP * (1 - cfg.discount_pct / 100))
     }
-    return cfg.fixed_price || prod.base_price || 0
+    return cfg.fixed_price || listP
   }
 
   const norm = (s: string) => (s||'').toLowerCase().normalize('NFD')
@@ -9356,13 +9361,13 @@ function PriceListTab({ user, mobile, products, allUsers,
     const cfg = getCfg(prod.code)
     setEditForm({
       pricing_type: cfg?.pricing_type || 'fixed',
-      fixed_price:  String(cfg?.fixed_price || prod.base_price || ''),
+      fixed_price:  String(cfg?.fixed_price || realPrice(prod.base_price) || ''),
       discount_pct: String(cfg?.discount_pct || ''),
-      list_price:   String(prod.base_price || '')
+      list_price:   String(realPrice(prod.base_price) || '')
     })
     const myTiers = priceTiers.filter((t: any) => t.product_code === prod.code)
     setTiersForm(myTiers.length > 0 ? myTiers.map((t: any) => ({...t}))
-      : [{ id:'', product_code: prod.code, min_qty:1, price: prod.base_price||0, note:'' }])
+      : [{ id:'', product_code: prod.code, min_qty:1, price: realPrice(prod.base_price)||0, note:'' }])
     setEditCode(prod.code)
   }
 
@@ -9376,7 +9381,7 @@ function PriceListTab({ user, mobile, products, allUsers,
       id: oldCfg?.id || 'pc_'+prod.code,
       product_code: prod.code, product_name: prod.name,
       brand: getBrand(prod),
-      list_price: Number(editForm.list_price) || prod.base_price || 0,
+      list_price: Number(editForm.list_price) || realPrice(prod.base_price) || 0,
       pricing_type: editForm.pricing_type,
       fixed_price: editForm.pricing_type==='fixed' ? Number(editForm.fixed_price)||0 : 0,
       discount_pct: editForm.pricing_type==='discount' ? Number(editForm.discount_pct)||0 : 0,
@@ -9387,8 +9392,8 @@ function PriceListTab({ user, mobile, products, allUsers,
     const hist = {
       id: 'ph_'+Date.now()+'_'+Math.random().toString(36).slice(2,5),
       product_code: prod.code, product_name: prod.name,
-      old_price: oldCfg?.fixed_price || prod.base_price || 0,
-      new_price: newCfg.pricing_type==='fixed' ? newCfg.fixed_price : Math.round((prod.base_price||0)*(1-newCfg.discount_pct/100)),
+      old_price: oldCfg?.fixed_price || realPrice(prod.base_price) || 0,
+      new_price: newCfg.pricing_type==='fixed' ? newCfg.fixed_price : Math.round(realPrice(prod.base_price)*(1-newCfg.discount_pct/100)),
       pricing_type: newCfg.pricing_type, discount_pct: newCfg.discount_pct,
       changed_at: now, changed_by: user.id,
       changed_by_name: allUsers.find((u: any) => u.id===user.id)?.name || user.name
@@ -9473,15 +9478,13 @@ function PriceListTab({ user, mobile, products, allUsers,
 
           {/* Table header */}
           <div style={{ display:'grid',
-            gridTemplateColumns: mobile ? '1fr 70px 70px 36px' : '180px 1fr 100px 110px 110px 80px 60px',
+            gridTemplateColumns: mobile ? '1fr 80px 80px 36px' : '1fr 90px 120px 130px 36px',
             padding:'6px 14px', background:T.bg, fontSize:9, fontWeight:700,
             color:T.light, textTransform:'uppercase', letterSpacing:.5, gap:6 }}>
-            <span>Sản phẩm</span>
-            {!mobile && <span>Mã</span>}
-            {!mobile && <span>Giá niêm yết</span>}
+            <span>Sản phẩm · Mốc giá</span>
+            {!mobile && <span style={{ textAlign:'right' }}>Niêm yết</span>}
             <span style={{ textAlign:'center' }}>Loại giá</span>
             <span style={{ textAlign:'right' }}>Giá bán</span>
-            {!mobile && <span style={{ textAlign:'center' }}>Mốc SL</span>}
             <span></span>
           </div>
 
@@ -9492,42 +9495,67 @@ function PriceListTab({ user, mobile, products, allUsers,
             const hist  = myHistory(prod.code)
             const isExp = expandCode === prod.code
             const isEd  = editCode === prod.code
+            const sortedTiers = [...tiers].sort((a: any, b: any) => a.min_qty - b.min_qty)
 
             return (
               <div key={prod.code} style={{ borderTop:`1px solid ${T.border}` }}>
                 {/* Main row */}
                 <div style={{ display:'grid',
-                  gridTemplateColumns: mobile ? '1fr 70px 70px 36px' : '180px 1fr 100px 110px 110px 80px 60px',
-                  padding:'8px 14px', gap:6, alignItems:'center',
+                  gridTemplateColumns: mobile ? '1fr 80px 80px 36px' : '1fr 90px 120px 130px 36px',
+                  padding:'8px 14px', gap:6, alignItems:'flex-start',
                   background: pi%2===0 ? '#fff' : T.rowAlt }}>
+
+                  {/* Product name + code + inline tiers */}
                   <div>
-                    <div style={{ fontSize:12, fontWeight:600, color:T.dark, lineHeight:1.3 }}>{prod.name}</div>
-                    {mobile && <div style={{ fontSize:9, color:T.light }}>{prod.code}</div>}
+                    <div style={{ fontSize:12, fontWeight:600, color:T.dark, lineHeight:1.4 }}>{prod.name}</div>
+                    <div style={{ fontSize:10, color:T.light, marginBottom: sortedTiers.length>0 ? 5 : 0 }}>
+                      {prod.code}
+                    </div>
+                    {/* Inline price tiers */}
+                    {sortedTiers.length > 0 && (
+                      <div style={{ display:'flex', gap:5, flexWrap:'wrap', marginTop:3 }}>
+                        {sortedTiers.map((t: any, ti: number) => (
+                          <div key={ti} style={{ display:'flex', alignItems:'center', gap:3,
+                            background:T.blueBg, borderRadius:6, padding:'2px 7px' }}>
+                            <span style={{ fontSize:9, color:T.light }}>≥{t.min_qty}</span>
+                            <span style={{ fontSize:10, fontWeight:700, color:T.blue }}>{Number(t.price).toLocaleString()}đ</span>
+                            {t.note && <span style={{ fontSize:9, color:T.light }}>({t.note})</span>}
+                          </div>
+                        ))}
+                      </div>
+                    )}
                   </div>
-                  {!mobile && <span style={{ fontSize:11, color:T.light }}>{prod.code}</span>}
-                  {!mobile && <span style={{ fontSize:12, color:T.med }}>{(prod.base_price||0).toLocaleString()}đ</span>}
-                  <div style={{ textAlign:'center' }}>
+
+                  {!mobile && (
+                    <span style={{ fontSize:11, color:T.med, textAlign:'right', paddingTop:2 }}>
+                      {realPrice(prod.base_price).toLocaleString()}đ
+                    </span>
+                  )}
+
+                  <div style={{ textAlign:'center', paddingTop:2 }}>
                     <span style={{ fontSize:9, padding:'2px 7px', borderRadius:10, fontWeight:700,
                       background: cfg?.pricing_type==='discount' ? T.amberBg : T.blueBg,
                       color: cfg?.pricing_type==='discount' ? T.amber : T.blue }}>
                       {!cfg ? 'Chưa có' : cfg.pricing_type==='discount' ? `CK ${cfg.discount_pct}%` : 'Cố định'}
                     </span>
                   </div>
-                  <span style={{ textAlign:'right', fontSize:13, fontWeight:700,
-                    color: !cfg ? T.light : cfg.pricing_type==='discount' ? T.amber : T.blue }}>
-                    {sell > 0 ? sell.toLocaleString()+'đ' : '—'}
-                  </span>
-                  {!mobile && (
-                    <span style={{ textAlign:'center', fontSize:11, color:T.med }}>
-                      {tiers.length > 0 ? `${tiers.length} mốc` : '—'}
+
+                  <div style={{ textAlign:'right', paddingTop:2 }}>
+                    <span style={{ fontSize:13, fontWeight:700,
+                      color: !cfg ? T.light : cfg.pricing_type==='discount' ? T.amber : T.blue }}>
+                      {sell > 0 ? sell.toLocaleString()+'đ' : '—'}
                     </span>
-                  )}
-                  <div style={{ display:'flex', gap:4, justifyContent:'flex-end' }}>
-                    <button onClick={() => setExpandCode(isExp ? null : prod.code)}
-                      style={{ padding:'3px 7px', borderRadius:6, border:`1px solid ${T.border}`,
-                        background:'transparent', cursor:'pointer', fontSize:10, color:T.med, fontFamily:'inherit' }}>
-                      {isExp ? '▲' : '▼'}
-                    </button>
+                  </div>
+
+                  <div style={{ display:'flex', flexDirection:'column', gap:4, alignItems:'flex-end' }}>
+                    {/* History expand */}
+                    {hist.length > 0 && (
+                      <button onClick={() => setExpandCode(isExp ? null : prod.code)}
+                        style={{ padding:'2px 6px', borderRadius:5, border:`1px solid ${T.border}`,
+                          background:'transparent', cursor:'pointer', fontSize:9, color:T.light, fontFamily:'inherit' }}>
+                        🕐{isExp ? '▲' : '▼'}
+                      </button>
+                    )}
                     {canEdit && (
                       <button onClick={() => isEd ? setEditCode(null) : openEdit(prod)}
                         style={{ padding:'3px 7px', borderRadius:6, border:'none',
@@ -9586,12 +9614,12 @@ function PriceListTab({ user, mobile, products, allUsers,
                         <div style={{ fontSize:10, color:T.goldText }}>Giá bán sau chiết khấu</div>
                         <div style={{ fontSize:18, fontWeight:700, color:T.goldText }}>
                           {editForm.pricing_type==='discount'
-                            ? Math.round((prod.base_price||0)*(1-(Number(editForm.discount_pct)||0)/100)).toLocaleString()+'đ'
+                            ? Math.round(realPrice(prod.base_price)*(1-(Number(editForm.discount_pct)||0)/100)).toLocaleString()+'đ'
                             : (Number(editForm.fixed_price)||0).toLocaleString()+'đ'}
                         </div>
                         {editForm.pricing_type==='discount' && (
                           <div style={{ fontSize:10, color:T.goldText }}>
-                            NL: {(prod.base_price||0).toLocaleString()}đ × {100-(Number(editForm.discount_pct)||0)}%
+                            NL: {realPrice(prod.base_price).toLocaleString()}đ × {100-(Number(editForm.discount_pct)||0)}%
                           </div>
                         )}
                       </div>
@@ -9640,56 +9668,31 @@ function PriceListTab({ user, mobile, products, allUsers,
                   </div>
                 )}
 
-                {/* Expanded: tiers + history */}
-                {isExp && (
+                {/* Expanded: history only (tiers shown inline above) */}
+                {isExp && hist.length > 0 && (
                   <div style={{ background:T.bg, borderTop:`1px dashed ${T.border}`, padding:'10px 16px' }}>
-                    {tiers.length > 0 && (
-                      <div style={{ marginBottom:10 }}>
-                        <div style={{ fontSize:10, fontWeight:700, color:T.med, marginBottom:6, textTransform:'uppercase', letterSpacing:.5 }}>
-                          📊 Bảng mốc giá
-                        </div>
-                        <div style={{ display:'flex', gap:6, flexWrap:'wrap' }}>
-                          {[...tiers].sort((a: any,b: any) => a.min_qty-b.min_qty).map((t: any, ti: number) => (
-                            <div key={ti} style={{ background:'#fff', border:`1px solid ${T.border}`,
-                              borderRadius:8, padding:'6px 12px', minWidth:100 }}>
-                              <div style={{ fontSize:9, color:T.light }}>Từ {t.min_qty} sản phẩm</div>
-                              <div style={{ fontSize:13, fontWeight:700, color:T.blue }}>{Number(t.price).toLocaleString()}đ</div>
-                              {t.note && <div style={{ fontSize:9, color:T.light }}>{t.note}</div>}
-                            </div>
-                          ))}
-                        </div>
+                    <div style={{ fontSize:10, fontWeight:700, color:T.med, marginBottom:6, textTransform:'uppercase', letterSpacing:.5 }}>
+                      🕐 Lịch sử thay đổi giá
+                    </div>
+                    {hist.map((h: any) => (
+                      <div key={h.id} style={{ display:'flex', alignItems:'center', gap:10, marginBottom:5,
+                        padding:'5px 10px', background:'#fff', borderRadius:7, border:`1px solid ${T.border}` }}>
+                        <span style={{ fontSize:10, color:T.light, minWidth:110 }}>
+                          {h.changed_at ? new Date(h.changed_at).toLocaleString('vi-VN',{day:'2-digit',month:'2-digit',hour:'2-digit',minute:'2-digit'}) : '—'}
+                        </span>
+                        <span style={{ fontSize:11, color:T.light, textDecoration:'line-through' }}>
+                          {(h.old_price||0).toLocaleString()}đ
+                        </span>
+                        <span style={{ fontSize:11 }}>→</span>
+                        <span style={{ fontSize:12, fontWeight:700, color:T.blue }}>{(h.new_price||0).toLocaleString()}đ</span>
+                        {h.pricing_type==='discount' && (
+                          <span style={{ fontSize:9, padding:'1px 5px', borderRadius:8, background:T.amberBg, color:T.amber }}>
+                            CK {h.discount_pct}%
+                          </span>
+                        )}
+                        <span style={{ fontSize:10, color:T.light, marginLeft:'auto' }}>bởi {h.changed_by_name||'—'}</span>
                       </div>
-                    )}
-
-                    {hist.length > 0 && (
-                      <div>
-                        <div style={{ fontSize:10, fontWeight:700, color:T.med, marginBottom:6, textTransform:'uppercase', letterSpacing:.5 }}>
-                          🕐 Lịch sử thay đổi giá
-                        </div>
-                        {hist.map((h: any) => (
-                          <div key={h.id} style={{ display:'flex', alignItems:'center', gap:10, marginBottom:5,
-                            padding:'5px 10px', background:'#fff', borderRadius:7, border:`1px solid ${T.border}` }}>
-                            <span style={{ fontSize:10, color:T.light, minWidth:110 }}>
-                              {h.changed_at ? new Date(h.changed_at).toLocaleString('vi-VN',{day:'2-digit',month:'2-digit',hour:'2-digit',minute:'2-digit'}) : '—'}
-                            </span>
-                            <span style={{ fontSize:11, color:T.light, textDecoration:'line-through' }}>
-                              {(h.old_price||0).toLocaleString()}đ
-                            </span>
-                            <span style={{ fontSize:11 }}>→</span>
-                            <span style={{ fontSize:12, fontWeight:700, color:T.blue }}>{(h.new_price||0).toLocaleString()}đ</span>
-                            {h.pricing_type==='discount' && (
-                              <span style={{ fontSize:9, padding:'1px 5px', borderRadius:8, background:T.amberBg, color:T.amber }}>
-                                CK {h.discount_pct}%
-                              </span>
-                            )}
-                            <span style={{ fontSize:10, color:T.light, marginLeft:'auto' }}>bởi {h.changed_by_name||'—'}</span>
-                          </div>
-                        ))}
-                      </div>
-                    )}
-                    {tiers.length===0 && hist.length===0 && (
-                      <div style={{ fontSize:12, color:T.light, textAlign:'center', padding:'8px' }}>Chưa có mốc giá hay lịch sử thay đổi</div>
-                    )}
+                    ))}
                   </div>
                 )}
               </div>
@@ -9734,6 +9737,7 @@ function BrandProgramsTab({ user, mobile, products, allUsers,
 
   const emptyForm: any = {
     brand_name:'', program_name:'', start_date:'', end_date:'', open_ended:false,
+    is_fixed_annual:false,
     discount_type:'discount', discount_detail:'', condition_text:'',
     reward_monthly:'', reward_quarterly:'', reward_yearly:'',
     current_revenue:0, revenue_note:'',
@@ -9926,9 +9930,69 @@ function BrandProgramsTab({ user, mobile, products, allUsers,
               {/* Expanded details */}
               {isExp && (
                 <div style={{ background:T.bg, borderTop:`1px dashed ${T.border}`, padding:'12px 16px' }}>
+
+                  {/* Fixed annual program: monthly breakdown */}
+                  {prog.is_fixed_annual && (
+                    <div style={{ marginBottom:14 }}>
+                      <div style={{ fontSize:11, fontWeight:700, color:'#7C3AED', marginBottom:8 }}>
+                        📅 Theo dõi theo tháng (Chương trình cố định cả năm)
+                      </div>
+                      <div style={{ display:'grid', gridTemplateColumns: mobile ? 'repeat(3,1fr)' : 'repeat(6,1fr)', gap:6 }}>
+                        {['T1','T2','T3','T4','T5','T6','T7','T8','T9','T10','T11','T12'].map((month, mi) => {
+                          const key = `month_${mi+1}`
+                          const monthData = prog[key] ? JSON.parse(prog[key]) : { revenue:0, reward_status:'pending' }
+                          const mStatus = monthData.reward_status || 'pending'
+                          const mRS = REWARD_STATUS[mStatus] || REWARD_STATUS.pending
+                          return (
+                            <div key={month} style={{ background:'#fff', borderRadius:8, padding:'8px 10px',
+                              border:`1.5px solid ${mStatus==='done'?T.green:mStatus==='partial'?T.blue:T.border}` }}>
+                              <div style={{ fontSize:10, fontWeight:700, color:T.med, marginBottom:4 }}>{month}</div>
+                              {canEdit ? (
+                                <input type="number" placeholder="Doanh số"
+                                  defaultValue={monthData.revenue||''}
+                                  onBlur={async e => {
+                                    const val = Number(e.target.value)||0
+                                    const updated = { ...monthData, revenue: val }
+                                    await db.from('brand_programs').update({ [key]: JSON.stringify(updated) }).eq('id', prog.id)
+                                    setBrandPrograms((prev: any[]) => prev.map((p: any) => p.id===prog.id ? {...p, [key]: JSON.stringify(updated)} : p))
+                                  }}
+                                  style={{ width:'100%', padding:'4px 6px', border:`1px solid ${T.border}`,
+                                    borderRadius:5, fontSize:11, fontFamily:'inherit', color:T.dark,
+                                    background:'#fff', outline:'none', boxSizing:'border-box' as any, marginBottom:4 }}/>
+                              ) : (
+                                <div style={{ fontSize:11, fontWeight:600, color:T.dark, marginBottom:4 }}>
+                                  {monthData.revenue > 0 ? Number(monthData.revenue).toLocaleString()+'đ' : '—'}
+                                </div>
+                              )}
+                              {canEdit && (
+                                <select value={mStatus}
+                                  onChange={async e => {
+                                    const updated = { ...monthData, reward_status: e.target.value }
+                                    await db.from('brand_programs').update({ [key]: JSON.stringify(updated) }).eq('id', prog.id)
+                                    setBrandPrograms((prev: any[]) => prev.map((p: any) => p.id===prog.id ? {...p, [key]: JSON.stringify(updated)} : p))
+                                  }}
+                                  style={{ width:'100%', padding:'3px 4px', border:`1px solid ${T.border}`,
+                                    borderRadius:5, fontSize:9, fontFamily:'inherit', color:mRS.color,
+                                    background:mRS.bg, outline:'none' }}>
+                                  <option value="pending">Chưa trả</option>
+                                  <option value="partial">Trả 1 phần</option>
+                                  <option value="done">Đã trả đủ</option>
+                                </select>
+                              )}
+                              {!canEdit && (
+                                <span style={{ fontSize:9, padding:'1px 5px', borderRadius:8,
+                                  background:mRS.bg, color:mRS.color, fontWeight:700 }}>{mRS.label}</span>
+                              )}
+                            </div>
+                          )
+                        })}
+                      </div>
+                    </div>
+                  )}
+
                   <div style={{ display:'grid', gridTemplateColumns: mobile ? '1fr' : '1fr 1fr', gap:14 }}>
                     {/* Doanh số update */}
-                    {canEdit && subTab==='active' && (
+                    {canEdit && subTab==='active' && !prog.is_fixed_annual && (
                       <div style={{ background:'#fff', borderRadius:9, padding:'10px 12px', border:`1px solid ${T.border}` }}>
                         <div style={{ fontSize:11, fontWeight:700, color:T.med, marginBottom:8 }}>📊 Cập nhật doanh số</div>
                         <input type="number" defaultValue={prog.current_revenue||''}
@@ -10054,6 +10118,25 @@ function BrandProgramsTab({ user, mobile, products, allUsers,
             </select>
           </div>
           <Inp label="Tên chương trình *" value={form.program_name} onChange={v => F('program_name',v)} placeholder="VD: Chương trình đại lý Q1/2026"/>
+
+          {/* Fixed annual toggle */}
+          <div style={{ gridColumn: mobile ? '1' : '1/-1' }}>
+            <label style={{ display:'flex', alignItems:'center', gap:8, cursor:'pointer',
+              padding:'8px 12px', borderRadius:8,
+              background: form.is_fixed_annual ? '#EDE9FE' : T.bg,
+              border: `1.5px solid ${form.is_fixed_annual ? '#7C3AED' : T.border}` }}>
+              <input type="checkbox" checked={form.is_fixed_annual}
+                onChange={e => F('is_fixed_annual', e.target.checked)}/>
+              <div>
+                <div style={{ fontSize:12, fontWeight:700, color: form.is_fixed_annual ? '#7C3AED' : T.dark }}>
+                  📅 Chương trình cố định cả năm
+                </div>
+                <div style={{ fontSize:10, color:T.light }}>
+                  Khi expand sẽ hiển thị theo dõi doanh số + trạng thái trả thưởng từng tháng
+                </div>
+              </div>
+            </label>
+          </div>
 
           {/* Dates */}
           <Inp label="📅 Ngày bắt đầu" type="date" value={form.start_date} onChange={v => F('start_date',v)}/>
@@ -10866,9 +10949,11 @@ function PaymentOrderForm({ suppliers, accounts, onSave, onClose, edit, mobile }
   }
 
   const handleSubmit = async (forceStatus?: string) => {
-    if (!isValid) return
-    setSaving(true)
     const finalStatus = forceStatus ?? status
+    // Draft không yêu cầu điền đủ thông tin
+    if (finalStatus !== 'draft' && !isValid) return
+    if (!selSup) return  // Ít nhất phải có NCC
+    setSaving(true)
 
     // Nếu NCC mới (id='__new__'), tạo supplier trước rồi mới save order
     let finalSupId = selSup.id
@@ -11552,8 +11637,11 @@ function PaymentModule({ user, mobile, allUsers }: any) {
       status: form.status, created_by: user.id, created_at: now,
       paid_at:'', paid_by:'', kiot_at:'', kiot_by:'', is_history:false,
     }
-    await db.from('payment_orders').insert(newO)
+    const { error } = await db.from('payment_orders').insert(newO)
+    if (error) { alert('❌ Lỗi lưu lệnh: ' + error.message); return }
     setOrders(prev => [newO, ...prev])
+    // Nếu lưu nháp → tự switch filter sang 'draft' để thấy ngay
+    if (form.status === 'draft') setFilterStatus('draft')
     setShowForm(false)
 
     // Gợi ý lưu STK mới
@@ -11730,13 +11818,14 @@ function PaymentModule({ user, mobile, allUsers }: any) {
           {/* Order list */}
           <div style={{ background:T.card, borderRadius:12, border:`1px solid ${T.border}`, overflow:'hidden' }}>
             {!mobile && (
-              <div style={{ display:'grid', gridTemplateColumns:'1fr 120px 110px 100px 100px',
+              <div style={{ display:'grid', gridTemplateColumns:'1fr 120px 110px 100px 90px 100px',
                 padding:'8px 14px', background:T.bg, borderBottom:`2px solid ${T.border}`,
                 fontSize:10, fontWeight:700, color:T.light, textTransform:'uppercase',
                 letterSpacing:.6, position:'sticky', top:0, zIndex:2, gap:8 }}>
                 <span>NCC · Tài khoản</span>
                 <span style={{ textAlign:'right' }}>Số tiền</span>
                 <span style={{ textAlign:'center' }}>Mục đích</span>
+                <span style={{ textAlign:'center' }}>Người tạo</span>
                 <span style={{ textAlign:'center' }}>Trạng thái</span>
                 <span style={{ textAlign:'center' }}>Thao tác</span>
               </div>
@@ -11795,6 +11884,10 @@ function PaymentModule({ user, mobile, allUsers }: any) {
                           background: o.purpose==='Lấy hàng'?T.blueBg:T.grayBg,
                           color: o.purpose==='Lấy hàng'?T.blue:T.gray }}>
                           {o.purpose}
+                        </span>
+                        <span style={{ fontSize:11, textAlign:'center', minWidth:90, color:T.med }}>
+                          {creator?.ini || creator?.name?.split(' ').pop() || '—'}
+                          <div style={{ fontSize:9, color:T.light }}>{fmtDateTime(o.created_at).split(',')[0]}</div>
                         </span>
                         <span style={{ fontSize:11, textAlign:'center', minWidth:100,
                           padding:'2px 8px', borderRadius:10, display:'block',
@@ -11872,16 +11965,16 @@ function PaymentModule({ user, mobile, allUsers }: any) {
                             Lịch sử xử lý
                           </div>
                           <div style={{ fontSize:11, color:T.med, marginBottom:3 }}>
-                            📝 Tạo: {creator?.name||o.created_by||'?'} · {fmtDate(o.created_at)}
+                            📝 Tạo: {creator?.name||o.created_by||'?'} · {fmtDateTime(o.created_at)}
                           </div>
                           {o.paid_at && (
                             <div style={{ fontSize:11, color:T.green, marginBottom:3 }}>
-                              ✅ Đã CK: {payer?.name||o.paid_by||'?'} · {fmtDate(o.paid_at)}
+                              ✅ Đã CK: {payer?.name||o.paid_by||'?'} · {fmtDateTime(o.paid_at)}
                             </div>
                           )}
                           {o.kiot_at && (
                             <div style={{ fontSize:11, color:T.teal }}>
-                              🏁 Nhập KV: {kioter?.name||o.kiot_by||'?'} · {fmtDate(o.kiot_at)}
+                              🏁 Nhập KV: {kioter?.name||o.kiot_by||'?'} · {fmtDateTime(o.kiot_at)}
                             </div>
                           )}
                           {o.note && (
