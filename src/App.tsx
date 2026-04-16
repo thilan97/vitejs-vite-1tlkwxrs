@@ -9404,12 +9404,21 @@ function ExpiryModule({ user, mobile, products, batches, setBatches }: any) {
     if (!importPreview) return
     setSaving(true)
     const now = new Date().toISOString()
-    const newBatches = importPreview.map(b => ({
-      id: 'bat_' + Date.now() + '_' + Math.random().toString(36).slice(2,7),
-      ...b, last_updated_at: now, last_updated_by: user.id,
-      created_by: user.id, created_at: now
-    }))
-    await db.from('product_batches').insert(newBatches)
+    const newBatches = importPreview.map((b, idx) => {
+      // Loại bỏ _disp (chỉ dùng cho UI, không có trong DB)
+      const { _disp, ...dbFields } = b
+      return {
+        id: 'bat_' + (Date.now() + idx) + '_' + Math.random().toString(36).slice(2,7),
+        ...dbFields, last_updated_at: now, last_updated_by: user.id,
+        created_by: user.id, created_at: now
+      }
+    })
+    const { error } = await db.from('product_batches').insert(newBatches)
+    if (error) {
+      alert(`❌ Lỗi khi lưu vào DB: ${error.message}\n\nVui lòng thử lại hoặc liên hệ Admin.`)
+      setSaving(false)
+      return
+    }
     setBatches((prev: any[]) => [...newBatches, ...prev])
     setImportPreview(null); setSaving(false); setTab('list')
   }
