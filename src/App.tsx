@@ -1956,7 +1956,7 @@ function Attendance({ user, allUsers, leaveRequests, attendance, setAttendance, 
       <div>
         <div style={{ display:'flex', justifyContent:'flex-end', marginBottom:14 }}>
           <input type="month" value={monthYear} onChange={e => setMonthYear(e.target.value)}
-            style={{ padding:'7px 11px', border:`1px solid ${T.border}`, borderRadius:8, fontSize:13, fontFamily:'inherit', color:T.dark, background:T.bg, cursor:'pointer' }}/>
+            style={{ padding:'7px 11px', border:`1px solid ${T.border}`, borderRadius:8, fontSize:13, fontFamily:'inherit', color:T.dark, background:'#fff',colorScheme:'light', cursor:'pointer' }}/>
         </div>
         {deptGroups.map(group => (
           <div key={group.dept} style={{ marginBottom:20 }}>
@@ -2159,7 +2159,7 @@ function Overtime({ user, allUsers, mobile }: any) {
         <div>
           <div style={{ display:'flex', justifyContent:'flex-end', marginBottom:14 }}>
             <input type="month" value={monthFilter} onChange={e => setMonthFilter(e.target.value)}
-              style={{ padding:'7px 11px', border:`1px solid ${T.border}`, borderRadius:8, fontSize:13, fontFamily:'inherit', color:T.dark, background:T.bg, cursor:'pointer' }}/>
+              style={{ padding:'7px 11px', border:`1px solid ${T.border}`, borderRadius:8, fontSize:13, fontFamily:'inherit', color:T.dark, background:'#fff',colorScheme:'light', cursor:'pointer' }}/>
           </div>
           {otByUser.length===0 ? (
             <Card style={{ textAlign:'center', padding:'40px', color:T.light }}>
@@ -4160,7 +4160,7 @@ function ReturnItems({ user, allUsers, products, mobile }: any) {
               ))}
               <input type="month" value={monthFilter} onChange={e => setMonthFilter(e.target.value)}
                 style={{ padding:'5px 9px', border:`1px solid ${T.border}`, borderRadius:8,
-                  fontSize:11, fontFamily:'inherit', color:T.dark, background:T.bg, cursor:'pointer' }}/>
+                  fontSize:11, fontFamily:'inherit', color:T.dark, background:'#fff', colorScheme:'light', cursor:'pointer' }}/>
             </>)
           })()}
         </div>
@@ -5984,7 +5984,7 @@ function WrongOrders({ user, allUsers, wrongOrders, setWrongOrders, mobile }: an
               ))}
               <input type="month" value={monthFilter} onChange={e => setMonthFilter(e.target.value)}
                 style={{ padding:'5px 9px', border:`1px solid ${T.border}`, borderRadius:8,
-                  fontSize:11, fontFamily:'inherit', color:T.dark, background:T.bg, cursor:'pointer' }}/>
+                  fontSize:11, fontFamily:'inherit', color:T.dark, background:'#fff', colorScheme:'light', cursor:'pointer' }}/>
             </>)
           })()}
         </div>
@@ -7275,7 +7275,8 @@ function InventoryModule({ user, allUsers, products, invSessions, setInvSessions
                   <span style={{fontSize:11,color:T.light}}>Tùy chọn:</span>
                   <input type="month" value={monthFilter} onChange={e => setMonthFilter(e.target.value)}
                     style={{padding:'5px 9px',border:`1px solid ${T.border}`,borderRadius:8,
-                      fontSize:12,fontFamily:'inherit',color:T.dark,background:T.bg}}/>
+                      fontSize:12,fontFamily:'inherit',color:T.dark,background:'#fff',
+                      colorScheme:'light'}}/>
                 </div>
                 <div style={{marginLeft:'auto',display:'flex',gap:6}}>
                   {(['all','neg','pos'] as const).map(f => (
@@ -7446,7 +7447,7 @@ function InventoryModule({ user, allUsers, products, invSessions, setInvSessions
           <div style={{display:'flex',gap:8,alignItems:'center',flexWrap:'wrap',marginBottom:4}}>
             <input type="month" value={monthFilter} onChange={e => setMonthFilter(e.target.value)}
               style={{padding:'6px 10px',border:`1px solid ${T.border}`,borderRadius:8,
-                fontSize:12,fontFamily:'inherit',color:T.dark,background:T.bg}}/>
+                fontSize:12,fontFamily:'inherit',color:T.dark,background:'#fff', colorScheme:'light'}}/>
             <span style={{fontSize:12,color:T.light}}>Chỉ tính mã có trạng thái "Không tìm được nguyên nhân"</span>
           </div>
           {(() => {
