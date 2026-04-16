@@ -88,6 +88,8 @@ const getPerm = (user: any) => {
     managePayment:      isAdmin || (pos.perm_manage_payment ?? false),
     editReturn:         isAdmin || (pos.perm_manage_inventory ?? false) || (pos.perm_edit_return ?? false),
     deleteInvSession:   isAdmin || (pos.perm_delete_inv_session ?? false),
+    editPrice:          isAdmin || (pos.perm_edit_price ?? false),
+    managePrograms:     isAdmin || (pos.perm_manage_programs ?? false),
   }
 }
 
@@ -127,6 +129,8 @@ const ALL_PERMS = [
   { key:'perm_delete_inv_session',   label:'Xóa phiên kiểm kê',                 group:'Kho'      },
   { key:'perm_edit_return',         label:'Sửa phiếu hàng hoàn (phần kho)',    group:'Kho'      },
   { key:'perm_manage_payment',       label:'Quản lý lệnh chuyển khoản',         group:'Sale'     },
+  { key:'perm_edit_price',           label:'Sửa báo giá sản phẩm',              group:'Sale'     },
+  { key:'perm_manage_programs',      label:'Quản lý chương trình nhãn hàng',    group:'Sale'     },
 ]
 // ── UTILITIES ────────────────────────────────────
 const fmtNow   = () => new Date().toLocaleString('vi-VN',{hour:'2-digit',minute:'2-digit',day:'2-digit',month:'2-digit',year:'numeric'})
@@ -535,7 +539,8 @@ const NAV_GROUPS = (perm: any, deptId = '') => {
         { id:'returns',  icon:'🔄', label:'Hàng hoàn'   },
         { id:'wrongord', icon:'⚠️', label:'Đơn sai'     },
         { id:'expiry',   icon:'📅', label:'Date SP'      },
-      ].filter(p => p.id!=='shortage' || deptId==='sale' || perm.viewAllDashboard)
+        (deptId==='sale' || perm.viewAllDashboard || perm.editPrice || perm.managePrograms) && { id:'pricelist', icon:'💰', label:'Báo giá & CTKM' },
+      ].filter(Boolean)
        .filter(p => p.id!=='expiry'   || deptId==='sale' || deptId==='kho' || perm.viewAllDashboard)
     },
     {
@@ -5840,6 +5845,10 @@ export default function App() {
   const [batches, setBatches]         = useState<any[]>([])
   const [paymentOrders, setPaymentOrders] = useState<any[]>([])
   const [taskNotiDismissed, setTaskNotiDismissed] = useState(false)
+  const [priceConfigs, setPriceConfigs]   = useState<any[]>([])
+  const [priceTiers, setPriceTiers]       = useState<any[]>([])
+  const [priceHistory, setPriceHistory]   = useState<any[]>([])
+  const [brandPrograms, setBrandPrograms] = useState<any[]>([])
   const [loading, setLoading]       = useState(false)
   const width   = useWindowWidth()
   const mobile  = width < 768
@@ -6017,6 +6026,14 @@ export default function App() {
       db.from('payment_orders').select('id,supplier_name,amount,status,created_at')
         .eq('is_history',false).eq('status','pending').order('created_at',{ascending:false}).limit(50)
         .then(({data}) => { if (data) setPaymentOrders(data) })
+      db.from('price_configs').select('*')
+        .then(({data}) => { if (data) setPriceConfigs(data) })
+      db.from('price_tiers').select('*').order('min_qty',{ascending:true})
+        .then(({data}) => { if (data) setPriceTiers(data) })
+      db.from('price_history').select('*').order('changed_at',{ascending:false}).limit(500)
+        .then(({data}) => { if (data) setPriceHistory(data) })
+      db.from('brand_programs').select('*').order('created_at',{ascending:false})
+        .then(({data}) => { if (data) setBrandPrograms(data) })
       // Fetch return slips for notifications (last 30 days)
       const thirtyAgo = new Date(Date.now()-30*86400000).toISOString().split('T')[0]
       db.from('return_items').select('id,slip_id,sale_id,created_at,created_by,date')
@@ -6131,6 +6148,7 @@ export default function App() {
           {validPage==='wrongord'   && <WrongOrders {...pp} wrongOrders={wrongOrders} setWrongOrders={setWrongOrders} allUsers={allUsers}/>}
           {validPage==='expiry'     && <ExpiryModule {...pp} products={products} batches={batches} setBatches={setBatches}/>}
           {validPage==='payment'    && <PaymentModule {...pp}/>}
+          {validPage==='pricelist'  && <PriceModule {...pp} products={products} priceConfigs={priceConfigs} setPriceConfigs={setPriceConfigs} priceTiers={priceTiers} setPriceTiers={setPriceTiers} priceHistory={priceHistory} setPriceHistory={setPriceHistory} brandPrograms={brandPrograms} setBrandPrograms={setBrandPrograms}/>}
           {validPage==='settings'   && <Settings {...pp} setUser={setUser} settings={settings} setSettings={setSettings} onManualReset={manualReset}/>}
         </main>
         {mobile && <BottomNav user={user} page={validPage} setPage={setPage} pendingLeave={pendingLeave} pendingOT={pendingOT} onLogout={() => { localStorage.removeItem('la_user'); setUser(null); setAllUsers([]); setChecklist([]) }}/>}
@@ -9236,6 +9254,905 @@ function BatchForm({ edit, products, onSave, onClose, saving, mobile }: any) {
           </button>
         </div>
       </div>
+    </div>
+  )
+}
+
+  )
+}
+
+// ══ PRICE MODULE — Báo giá & Chương trình nhãn hàng ═══════════
+function PriceModule({ user, mobile, products, allUsers,
+  priceConfigs, setPriceConfigs, priceTiers, setPriceTiers,
+  priceHistory, setPriceHistory, brandPrograms, setBrandPrograms }: any) {
+  const [tab, setTab] = useState<'price'|'programs'>('price')
+  const perm = getPerm(user)
+  const canEditPrice    = perm.editPrice || perm.viewAllDashboard
+  const canEditPrograms = perm.managePrograms || perm.viewAllDashboard
+  const p = mobile ? '12px' : '24px'
+
+  return (
+    <div style={{ padding:`0 ${p} ${mobile?'80px':p}` }}>
+      <Topbar mobile={mobile} title="Báo giá & Chương trình nhãn hàng"
+        subtitle="Bảng giá sản phẩm và theo dõi CTKM từng nhãn hàng"/>
+
+      {/* Tab switcher */}
+      <div style={{ display:'flex', gap:0, marginBottom:16, border:`1px solid ${T.border}`,
+        borderRadius:10, overflow:'hidden', background:'#fff', width:'fit-content' }}>
+        {([['price','💰 Báo giá'],['programs','🎯 Chương trình nhãn hàng']] as [string,string][]).map(([id,label]) => (
+          <button key={id} onClick={() => setTab(id as any)}
+            style={{ padding:'9px 20px', border:'none', cursor:'pointer', fontFamily:'inherit',
+              fontSize:13, fontWeight:tab===id?700:400,
+              background:tab===id?T.gold:'transparent',
+              color:tab===id?'#fff':T.med, transition:'all .15s' }}>
+            {label}
+          </button>
+        ))}
+      </div>
+
+      {tab==='price' && (
+        <PriceListTab user={user} mobile={mobile} products={products} allUsers={allUsers}
+          priceConfigs={priceConfigs} setPriceConfigs={setPriceConfigs}
+          priceTiers={priceTiers} setPriceTiers={setPriceTiers}
+          priceHistory={priceHistory} setPriceHistory={setPriceHistory}
+          canEdit={canEditPrice}/>
+      )}
+      {tab==='programs' && (
+        <BrandProgramsTab user={user} mobile={mobile} products={products} allUsers={allUsers}
+          brandPrograms={brandPrograms} setBrandPrograms={setBrandPrograms}
+          canEdit={canEditPrograms}/>
+      )}
+    </div>
+  )
+}
+
+// ── PART 1: Price List Tab ─────────────────────────────────────
+function PriceListTab({ user, mobile, products, allUsers,
+  priceConfigs, setPriceConfigs, priceTiers, setPriceTiers,
+  priceHistory, setPriceHistory, canEdit }: any) {
+
+  const [search, setSearch]       = useState('')
+  const [editCode, setEditCode]   = useState<string|null>(null)
+  const [expandCode, setExpandCode] = useState<string|null>(null)
+  const [saving, setSaving]       = useState(false)
+  const [showConfirmAll, setShowConfirmAll] = useState<any>(null)
+
+  // Edit form state
+  const [editForm, setEditForm]   = useState<any>({
+    pricing_type:'fixed', fixed_price:'', discount_pct:'', list_price:''
+  })
+  // Tiers edit
+  const [tiersForm, setTiersForm] = useState<any[]>([])
+
+  // Extract brands from product category or code prefix
+  const getBrand = (prod: any) => {
+    if (prod.category_name) return prod.category_name
+    // Fallback: group by first word of name
+    return prod.name?.split(' ')[0] || 'Khác'
+  }
+
+  // Get config for a product
+  const getCfg = (code: string) => priceConfigs.find((c: any) => c.product_code === code)
+
+  // Computed sell price
+  const getSellPrice = (prod: any) => {
+    const cfg = getCfg(prod.code)
+    if (!cfg) return prod.base_price || 0
+    if (cfg.pricing_type === 'discount') {
+      return Math.round((prod.base_price || 0) * (1 - cfg.discount_pct / 100))
+    }
+    return cfg.fixed_price || prod.base_price || 0
+  }
+
+  const norm = (s: string) => (s||'').toLowerCase().normalize('NFD')
+    .replace(/[\u0300-\u036f]/g,'').replace(/đ/g,'d')
+
+  const filtered = products.filter((p: any) =>
+    !search.trim() || norm(p.name+' '+p.code).includes(norm(search))
+  )
+
+  // Group by brand
+  const groups: Record<string,any[]> = {}
+  filtered.forEach((p: any) => {
+    const brand = getBrand(p)
+    if (!groups[brand]) groups[brand] = []
+    groups[brand].push(p)
+  })
+
+  const openEdit = (prod: any) => {
+    const cfg = getCfg(prod.code)
+    setEditForm({
+      pricing_type: cfg?.pricing_type || 'fixed',
+      fixed_price:  String(cfg?.fixed_price || prod.base_price || ''),
+      discount_pct: String(cfg?.discount_pct || ''),
+      list_price:   String(prod.base_price || '')
+    })
+    const myTiers = priceTiers.filter((t: any) => t.product_code === prod.code)
+    setTiersForm(myTiers.length > 0 ? myTiers.map((t: any) => ({...t}))
+      : [{ id:'', product_code: prod.code, min_qty:1, price: prod.base_price||0, note:'' }])
+    setEditCode(prod.code)
+  }
+
+  const savePrice = async (prod: any, applyAll = false) => {
+    setSaving(true)
+    const now = new Date().toISOString()
+    const oldCfg = getCfg(prod.code)
+    const oldPrice = oldCfg?.fixed_price || oldCfg?.discount_pct || prod.base_price
+
+    const newCfg = {
+      id: oldCfg?.id || 'pc_'+prod.code,
+      product_code: prod.code, product_name: prod.name,
+      brand: getBrand(prod),
+      list_price: Number(editForm.list_price) || prod.base_price || 0,
+      pricing_type: editForm.pricing_type,
+      fixed_price: editForm.pricing_type==='fixed' ? Number(editForm.fixed_price)||0 : 0,
+      discount_pct: editForm.pricing_type==='discount' ? Number(editForm.discount_pct)||0 : 0,
+      updated_at: now, updated_by: user.id
+    }
+
+    // Save history
+    const hist = {
+      id: 'ph_'+Date.now()+'_'+Math.random().toString(36).slice(2,5),
+      product_code: prod.code, product_name: prod.name,
+      old_price: oldCfg?.fixed_price || prod.base_price || 0,
+      new_price: newCfg.pricing_type==='fixed' ? newCfg.fixed_price : Math.round((prod.base_price||0)*(1-newCfg.discount_pct/100)),
+      pricing_type: newCfg.pricing_type, discount_pct: newCfg.discount_pct,
+      changed_at: now, changed_by: user.id,
+      changed_by_name: allUsers.find((u: any) => u.id===user.id)?.name || user.name
+    }
+
+    await db.from('price_configs').upsert(newCfg)
+    await db.from('price_history').insert(hist)
+
+    // Save tiers
+    const oldTierIds = priceTiers.filter((t: any) => t.product_code===prod.code).map((t: any) => t.id)
+    for (const id of oldTierIds) await db.from('price_tiers').delete().eq('id', id)
+    const newTiers = tiersForm.filter((t: any) => t.min_qty && t.price)
+      .map((t: any, i: number) => ({
+        id: 'pt_'+prod.code+'_'+i+'_'+Date.now(),
+        product_code: prod.code,
+        min_qty: Number(t.min_qty), price: Number(t.price), note: t.note||''
+      }))
+    if (newTiers.length > 0) await db.from('price_tiers').insert(newTiers)
+
+    // Apply discount to all products in brand?
+    if (applyAll && editForm.pricing_type === 'discount') {
+      const brandProducts = products.filter((p2: any) => getBrand(p2) === getBrand(prod) && p2.code !== prod.code)
+      for (const bp of brandProducts) {
+        const bpCfg = { id:'pc_'+bp.code, product_code:bp.code, product_name:bp.name, brand:getBrand(bp),
+          list_price:bp.base_price||0, pricing_type:'discount',
+          fixed_price:0, discount_pct: newCfg.discount_pct, updated_at:now, updated_by:user.id }
+        await db.from('price_configs').upsert(bpCfg)
+      }
+      setPriceConfigs((prev: any[]) => {
+        const updated = [...prev.filter((c: any) => getBrand(products.find((p: any) => p.code===c.product_code))!==getBrand(prod)), newCfg,
+          ...brandProducts.map((bp: any) => ({id:'pc_'+bp.code,product_code:bp.code,product_name:bp.name,brand:getBrand(bp),list_price:bp.base_price||0,pricing_type:'discount',fixed_price:0,discount_pct:newCfg.discount_pct,updated_at:now,updated_by:user.id}))]
+        return updated
+      })
+    } else {
+      setPriceConfigs((prev: any[]) => {
+        const ex = prev.find((c: any) => c.product_code===prod.code)
+        return ex ? prev.map((c: any) => c.product_code===prod.code ? newCfg : c) : [...prev, newCfg]
+      })
+    }
+
+    setPriceTiers((prev: any[]) => [
+      ...prev.filter((t: any) => t.product_code!==prod.code), ...newTiers
+    ])
+    setPriceHistory((prev: any[]) => [hist, ...prev])
+    setSaving(false)
+    setEditCode(null)
+    setShowConfirmAll(null)
+  }
+
+  const handleSaveClick = (prod: any) => {
+    if (editForm.pricing_type === 'discount') {
+      setShowConfirmAll({ prod })
+    } else {
+      savePrice(prod, false)
+    }
+  }
+
+  const myHistory = (code: string) => priceHistory.filter((h: any) => h.product_code===code).slice(0,5)
+  const myTiers   = (code: string) => priceTiers.filter((t: any) => t.product_code===code)
+
+  return (
+    <div>
+      {/* Search */}
+      <Card style={{ padding:'10px 14px', marginBottom:12, display:'flex', gap:10, alignItems:'center' }}>
+        <span style={{ fontSize:14 }}>🔍</span>
+        <input value={search} onChange={e => setSearch(e.target.value)}
+          placeholder="Tìm theo tên hoặc mã sản phẩm..."
+          style={{ flex:1, border:'none', outline:'none', fontSize:13, fontFamily:'inherit', color:T.dark, background:'transparent' }}/>
+        {search && <button onClick={() => setSearch('')}
+          style={{ border:'none', background:'none', cursor:'pointer', color:T.light, fontSize:14 }}>✕</button>}
+      </Card>
+
+      {Object.entries(groups).map(([brand, prods]) => (
+        <Card key={brand} style={{ padding:0, overflow:'hidden', marginBottom:14 }}>
+          {/* Brand header */}
+          <div style={{ background:`linear-gradient(90deg,${T.goldBg},#fff)`, padding:'10px 16px',
+            borderBottom:`1px solid ${T.border}`, display:'flex', alignItems:'center', gap:10 }}>
+            <span style={{ fontSize:16 }}>🏷️</span>
+            <span style={{ fontWeight:700, fontSize:14, color:T.goldText }}>{brand}</span>
+            <span style={{ fontSize:11, color:T.light }}>— {prods.length} sản phẩm</span>
+          </div>
+
+          {/* Table header */}
+          <div style={{ display:'grid',
+            gridTemplateColumns: mobile ? '1fr 70px 70px 36px' : '180px 1fr 100px 110px 110px 80px 60px',
+            padding:'6px 14px', background:T.bg, fontSize:9, fontWeight:700,
+            color:T.light, textTransform:'uppercase', letterSpacing:.5, gap:6 }}>
+            <span>Sản phẩm</span>
+            {!mobile && <span>Mã</span>}
+            {!mobile && <span>Giá niêm yết</span>}
+            <span style={{ textAlign:'center' }}>Loại giá</span>
+            <span style={{ textAlign:'right' }}>Giá bán</span>
+            {!mobile && <span style={{ textAlign:'center' }}>Mốc SL</span>}
+            <span></span>
+          </div>
+
+          {prods.map((prod: any, pi: number) => {
+            const cfg   = getCfg(prod.code)
+            const sell  = getSellPrice(prod)
+            const tiers = myTiers(prod.code)
+            const hist  = myHistory(prod.code)
+            const isExp = expandCode === prod.code
+            const isEd  = editCode === prod.code
+
+            return (
+              <div key={prod.code} style={{ borderTop:`1px solid ${T.border}` }}>
+                {/* Main row */}
+                <div style={{ display:'grid',
+                  gridTemplateColumns: mobile ? '1fr 70px 70px 36px' : '180px 1fr 100px 110px 110px 80px 60px',
+                  padding:'8px 14px', gap:6, alignItems:'center',
+                  background: pi%2===0 ? '#fff' : T.rowAlt }}>
+                  <div>
+                    <div style={{ fontSize:12, fontWeight:600, color:T.dark, lineHeight:1.3 }}>{prod.name}</div>
+                    {mobile && <div style={{ fontSize:9, color:T.light }}>{prod.code}</div>}
+                  </div>
+                  {!mobile && <span style={{ fontSize:11, color:T.light }}>{prod.code}</span>}
+                  {!mobile && <span style={{ fontSize:12, color:T.med }}>{(prod.base_price||0).toLocaleString()}đ</span>}
+                  <div style={{ textAlign:'center' }}>
+                    <span style={{ fontSize:9, padding:'2px 7px', borderRadius:10, fontWeight:700,
+                      background: cfg?.pricing_type==='discount' ? T.amberBg : T.blueBg,
+                      color: cfg?.pricing_type==='discount' ? T.amber : T.blue }}>
+                      {!cfg ? 'Chưa có' : cfg.pricing_type==='discount' ? `CK ${cfg.discount_pct}%` : 'Cố định'}
+                    </span>
+                  </div>
+                  <span style={{ textAlign:'right', fontSize:13, fontWeight:700,
+                    color: !cfg ? T.light : cfg.pricing_type==='discount' ? T.amber : T.blue }}>
+                    {sell > 0 ? sell.toLocaleString()+'đ' : '—'}
+                  </span>
+                  {!mobile && (
+                    <span style={{ textAlign:'center', fontSize:11, color:T.med }}>
+                      {tiers.length > 0 ? `${tiers.length} mốc` : '—'}
+                    </span>
+                  )}
+                  <div style={{ display:'flex', gap:4, justifyContent:'flex-end' }}>
+                    <button onClick={() => setExpandCode(isExp ? null : prod.code)}
+                      style={{ padding:'3px 7px', borderRadius:6, border:`1px solid ${T.border}`,
+                        background:'transparent', cursor:'pointer', fontSize:10, color:T.med, fontFamily:'inherit' }}>
+                      {isExp ? '▲' : '▼'}
+                    </button>
+                    {canEdit && (
+                      <button onClick={() => isEd ? setEditCode(null) : openEdit(prod)}
+                        style={{ padding:'3px 7px', borderRadius:6, border:'none',
+                          background: isEd ? T.redBg : T.goldBg, cursor:'pointer',
+                          fontSize:10, color: isEd ? T.red : T.goldText, fontFamily:'inherit', fontWeight:700 }}>
+                        {isEd ? '✕' : '✏️'}
+                      </button>
+                    )}
+                  </div>
+                </div>
+
+                {/* Edit form */}
+                {isEd && (
+                  <div style={{ padding:'12px 16px', background:'#FEFCE8', borderTop:`1px dashed ${T.gold}` }}>
+                    <div style={{ fontSize:11, fontWeight:700, color:T.goldText, marginBottom:10 }}>
+                      ✏️ Chỉnh giá — {prod.name}
+                    </div>
+                    <div style={{ display:'grid', gridTemplateColumns: mobile ? '1fr' : '1fr 1fr 1fr', gap:10, marginBottom:12 }}>
+                      {/* Loại giá */}
+                      <div>
+                        <div style={{ fontSize:11, color:T.med, marginBottom:5, fontWeight:600 }}>Loại giá</div>
+                        <div style={{ display:'flex', gap:6 }}>
+                          {[['fixed','Cố định'],['discount','Chiết khấu %']].map(([v,l]) => (
+                            <button key={v} type="button"
+                              onClick={() => setEditForm((f: any) => ({...f, pricing_type:v}))}
+                              style={{ flex:1, padding:'7px', borderRadius:7, cursor:'pointer',
+                                fontFamily:'inherit', fontSize:12, border:'none', fontWeight:editForm.pricing_type===v?700:400,
+                                background: editForm.pricing_type===v ? T.gold : T.bg,
+                                color: editForm.pricing_type===v ? '#fff' : T.dark }}>
+                              {l}
+                            </button>
+                          ))}
+                        </div>
+                      </div>
+                      {/* Giá */}
+                      {editForm.pricing_type==='fixed' ? (
+                        <div>
+                          <div style={{ fontSize:11, color:T.med, marginBottom:5, fontWeight:600 }}>Giá bán cố định (đ)</div>
+                          <input type="number" value={editForm.fixed_price}
+                            onChange={e => setEditForm((f: any) => ({...f, fixed_price:e.target.value}))}
+                            style={{ width:'100%', padding:'7px 10px', border:`1px solid ${T.border}`,
+                              borderRadius:7, fontSize:13, fontFamily:'inherit', color:T.dark, background:'#fff', outline:'none', boxSizing:'border-box' as any }}/>
+                        </div>
+                      ) : (
+                        <div>
+                          <div style={{ fontSize:11, color:T.med, marginBottom:5, fontWeight:600 }}>Chiết khấu (%)</div>
+                          <input type="number" min="0" max="100" value={editForm.discount_pct}
+                            onChange={e => setEditForm((f: any) => ({...f, discount_pct:e.target.value}))}
+                            style={{ width:'100%', padding:'7px 10px', border:`1px solid ${T.border}`,
+                              borderRadius:7, fontSize:13, fontFamily:'inherit', color:T.dark, background:'#fff', outline:'none', boxSizing:'border-box' as any }}/>
+                        </div>
+                      )}
+                      {/* Preview */}
+                      <div style={{ background:T.goldBg, borderRadius:8, padding:'7px 10px',
+                        display:'flex', flexDirection:'column', justifyContent:'center' }}>
+                        <div style={{ fontSize:10, color:T.goldText }}>Giá bán sau chiết khấu</div>
+                        <div style={{ fontSize:18, fontWeight:700, color:T.goldText }}>
+                          {editForm.pricing_type==='discount'
+                            ? Math.round((prod.base_price||0)*(1-(Number(editForm.discount_pct)||0)/100)).toLocaleString()+'đ'
+                            : (Number(editForm.fixed_price)||0).toLocaleString()+'đ'}
+                        </div>
+                        {editForm.pricing_type==='discount' && (
+                          <div style={{ fontSize:10, color:T.goldText }}>
+                            NL: {(prod.base_price||0).toLocaleString()}đ × {100-(Number(editForm.discount_pct)||0)}%
+                          </div>
+                        )}
+                      </div>
+                    </div>
+
+                    {/* Price tiers */}
+                    <div style={{ marginBottom:12 }}>
+                      <div style={{ fontSize:11, color:T.med, marginBottom:7, fontWeight:700 }}>
+                        📊 Mốc giá theo số lượng
+                      </div>
+                      {tiersForm.map((tier, ti) => (
+                        <div key={ti} style={{ display:'flex', gap:6, alignItems:'center', marginBottom:6 }}>
+                          <div style={{ fontSize:10, color:T.light, width:50, flexShrink:0 }}>Từ SL:</div>
+                          <input type="number" value={tier.min_qty}
+                            onChange={e => setTiersForm(prev => prev.map((t, i) => i===ti ? {...t, min_qty:e.target.value} : t))}
+                            style={{ width:55, padding:'5px 7px', border:`1px solid ${T.border}`, borderRadius:6,
+                              fontSize:12, fontFamily:'inherit', color:T.dark, background:'#fff', outline:'none' }}/>
+                          <div style={{ fontSize:10, color:T.light }}>Giá:</div>
+                          <input type="number" value={tier.price}
+                            onChange={e => setTiersForm(prev => prev.map((t, i) => i===ti ? {...t, price:e.target.value} : t))}
+                            style={{ width:90, padding:'5px 7px', border:`1px solid ${T.border}`, borderRadius:6,
+                              fontSize:12, fontFamily:'inherit', color:T.dark, background:'#fff', outline:'none' }}/>
+                          <input value={tier.note} placeholder="Ghi chú..."
+                            onChange={e => setTiersForm(prev => prev.map((t, i) => i===ti ? {...t, note:e.target.value} : t))}
+                            style={{ flex:1, padding:'5px 7px', border:`1px solid ${T.border}`, borderRadius:6,
+                              fontSize:11, fontFamily:'inherit', color:T.dark, background:'#fff', outline:'none' }}/>
+                          <button type="button" onClick={() => setTiersForm(prev => prev.filter((_,i) => i!==ti))}
+                            style={{ border:'none', background:T.redBg, color:T.red, borderRadius:5,
+                              cursor:'pointer', padding:'4px 7px', fontSize:11, fontFamily:'inherit' }}>✕</button>
+                        </div>
+                      ))}
+                      <button type="button"
+                        onClick={() => setTiersForm(prev => [...prev, { id:'', product_code:prod.code, min_qty:'', price:'', note:'' }])}
+                        style={{ fontSize:11, padding:'4px 10px', borderRadius:6, border:`1px dashed ${T.border}`,
+                          background:'transparent', cursor:'pointer', color:T.med, fontFamily:'inherit' }}>
+                        + Thêm mốc giá
+                      </button>
+                    </div>
+
+                    <div style={{ display:'flex', gap:8 }}>
+                      <GoldBtn small onClick={() => handleSaveClick(prod)} disabled={saving}>
+                        {saving ? '⏳ Đang lưu...' : '💾 Lưu giá'}
+                      </GoldBtn>
+                      <GoldBtn outline small onClick={() => setEditCode(null)}>Hủy</GoldBtn>
+                    </div>
+                  </div>
+                )}
+
+                {/* Expanded: tiers + history */}
+                {isExp && (
+                  <div style={{ background:T.bg, borderTop:`1px dashed ${T.border}`, padding:'10px 16px' }}>
+                    {tiers.length > 0 && (
+                      <div style={{ marginBottom:10 }}>
+                        <div style={{ fontSize:10, fontWeight:700, color:T.med, marginBottom:6, textTransform:'uppercase', letterSpacing:.5 }}>
+                          📊 Bảng mốc giá
+                        </div>
+                        <div style={{ display:'flex', gap:6, flexWrap:'wrap' }}>
+                          {[...tiers].sort((a: any,b: any) => a.min_qty-b.min_qty).map((t: any, ti: number) => (
+                            <div key={ti} style={{ background:'#fff', border:`1px solid ${T.border}`,
+                              borderRadius:8, padding:'6px 12px', minWidth:100 }}>
+                              <div style={{ fontSize:9, color:T.light }}>Từ {t.min_qty} sản phẩm</div>
+                              <div style={{ fontSize:13, fontWeight:700, color:T.blue }}>{Number(t.price).toLocaleString()}đ</div>
+                              {t.note && <div style={{ fontSize:9, color:T.light }}>{t.note}</div>}
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    )}
+
+                    {hist.length > 0 && (
+                      <div>
+                        <div style={{ fontSize:10, fontWeight:700, color:T.med, marginBottom:6, textTransform:'uppercase', letterSpacing:.5 }}>
+                          🕐 Lịch sử thay đổi giá
+                        </div>
+                        {hist.map((h: any) => (
+                          <div key={h.id} style={{ display:'flex', alignItems:'center', gap:10, marginBottom:5,
+                            padding:'5px 10px', background:'#fff', borderRadius:7, border:`1px solid ${T.border}` }}>
+                            <span style={{ fontSize:10, color:T.light, minWidth:110 }}>
+                              {h.changed_at ? new Date(h.changed_at).toLocaleString('vi-VN',{day:'2-digit',month:'2-digit',hour:'2-digit',minute:'2-digit'}) : '—'}
+                            </span>
+                            <span style={{ fontSize:11, color:T.light, textDecoration:'line-through' }}>
+                              {(h.old_price||0).toLocaleString()}đ
+                            </span>
+                            <span style={{ fontSize:11 }}>→</span>
+                            <span style={{ fontSize:12, fontWeight:700, color:T.blue }}>{(h.new_price||0).toLocaleString()}đ</span>
+                            {h.pricing_type==='discount' && (
+                              <span style={{ fontSize:9, padding:'1px 5px', borderRadius:8, background:T.amberBg, color:T.amber }}>
+                                CK {h.discount_pct}%
+                              </span>
+                            )}
+                            <span style={{ fontSize:10, color:T.light, marginLeft:'auto' }}>bởi {h.changed_by_name||'—'}</span>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                    {tiers.length===0 && hist.length===0 && (
+                      <div style={{ fontSize:12, color:T.light, textAlign:'center', padding:'8px' }}>Chưa có mốc giá hay lịch sử thay đổi</div>
+                    )}
+                  </div>
+                )}
+              </div>
+            )
+          })}
+        </Card>
+      ))}
+
+      {/* Confirm apply discount to all modal */}
+      {showConfirmAll && (
+        <Modal open title="Áp dụng chiết khấu cho toàn nhãn hàng?" onClose={() => setShowConfirmAll(null)}>
+          <div style={{ fontSize:13, color:T.dark, marginBottom:16 }}>
+            Bạn có muốn áp dụng mức chiết khấu <b>{editForm.discount_pct}%</b> cho tất cả sản phẩm
+            nhãn hàng <b>{getBrand(showConfirmAll.prod)}</b> không?
+          </div>
+          <div style={{ display:'flex', gap:10, justifyContent:'flex-end' }}>
+            <GoldBtn outline small onClick={() => savePrice(showConfirmAll.prod, false)}>Chỉ SP này</GoldBtn>
+            <GoldBtn small onClick={() => savePrice(showConfirmAll.prod, true)}>Áp dụng cả nhãn hàng</GoldBtn>
+          </div>
+        </Modal>
+      )}
+    </div>
+  )
+}
+
+// ── PART 2: Brand Programs Tab ─────────────────────────────────
+function BrandProgramsTab({ user, mobile, products, allUsers,
+  brandPrograms, setBrandPrograms, canEdit }: any) {
+
+  const [subTab, setSubTab]   = useState<'active'|'history'>('active')
+  const [showForm, setShowForm] = useState(false)
+  const [editProg, setEditProg] = useState<any>(null)
+  const [saving, setSaving]   = useState(false)
+  const [expandId, setExpandId] = useState<string|null>(null)
+  const [showRewardConfirm, setShowRewardConfirm] = useState<any>(null)
+
+  const today = new Date().toISOString().split('T')[0]
+  const in7d  = new Date(Date.now()+7*86400000).toISOString().split('T')[0]
+
+  // Extract unique brands from products
+  const brands = [...new Set(products.map((p: any) => p.category_name || p.name?.split(' ')[0] || 'Khác'))].sort()
+
+  const emptyForm: any = {
+    brand_name:'', program_name:'', start_date:'', end_date:'', open_ended:false,
+    discount_type:'discount', discount_detail:'', condition_text:'',
+    reward_monthly:'', reward_quarterly:'', reward_yearly:'',
+    current_revenue:0, revenue_note:'',
+    reward_status:'pending',
+    exchange_amount:'', exchange_type:'cash', exchange_detail:'', exchange_date:'',
+  }
+  const [form, setForm] = useState<any>(emptyForm)
+  const F = (k: string, v: any) => setForm((f: any) => ({...f, [k]:v}))
+
+  const activeProgs  = brandPrograms.filter((p: any) => p.status==='active')
+  const historyProgs = brandPrograms.filter((p: any) => p.status==='history')
+
+  // Programs expiring within 7 days
+  const expiringSoon = activeProgs.filter((p: any) =>
+    !p.open_ended && p.end_date && p.end_date >= today && p.end_date <= in7d
+  )
+
+  const openCreate = () => { setEditProg(null); setForm(emptyForm); setShowForm(true) }
+  const openEdit = (prog: any) => {
+    setEditProg(prog)
+    setForm({ ...prog, end_date: prog.open_ended ? '' : (prog.end_date||'') })
+    setShowForm(true)
+  }
+
+  const saveProg = async () => {
+    if (!form.brand_name || !form.program_name) return
+    setSaving(true)
+    const now = new Date().toISOString()
+    const data = {
+      ...form,
+      current_revenue: Number(form.current_revenue)||0,
+      exchange_amount: form.exchange_amount ? Number(form.exchange_amount) : null,
+      status: editProg ? editProg.status : 'active',
+      created_at: editProg ? editProg.created_at : now,
+      created_by: editProg ? editProg.created_by : user.id,
+    }
+    if (editProg) {
+      const updated = {...editProg, ...data}
+      await db.from('brand_programs').upsert(updated)
+      setBrandPrograms((prev: any[]) => prev.map((p: any) => p.id===editProg.id ? updated : p))
+    } else {
+      const newP = { id:'bp_'+Date.now()+'_'+Math.random().toString(36).slice(2,5), ...data }
+      await db.from('brand_programs').insert(newP)
+      setBrandPrograms((prev: any[]) => [newP, ...prev])
+    }
+    setSaving(false); setShowForm(false)
+  }
+
+  const updateRewardStatus = async (prog: any, newStatus: string) => {
+    if (newStatus === 'done') {
+      setShowRewardConfirm(prog); return
+    }
+    const updated = {...prog, reward_status: newStatus}
+    await db.from('brand_programs').update({reward_status: newStatus}).eq('id', prog.id)
+    setBrandPrograms((prev: any[]) => prev.map((p: any) => p.id===prog.id ? updated : p))
+  }
+
+  const moveToHistory = async (prog: any) => {
+    const updated = {...prog, reward_status:'done', status:'history'}
+    await db.from('brand_programs').update({reward_status:'done', status:'history'}).eq('id', prog.id)
+    setBrandPrograms((prev: any[]) => prev.map((p: any) => p.id===prog.id ? updated : p))
+    setShowRewardConfirm(null)
+  }
+
+  const renewProgram = async (prog: any) => {
+    const updated = {...prog, status:'active'}
+    await db.from('brand_programs').update({status:'active'}).eq('id', prog.id)
+    setBrandPrograms((prev: any[]) => prev.map((p: any) => p.id===prog.id ? updated : p))
+  }
+
+  const deleteProg = async (id: string) => {
+    if (!confirm('Xóa chương trình này?')) return
+    await db.from('brand_programs').delete().eq('id', id)
+    setBrandPrograms((prev: any[]) => prev.filter((p: any) => p.id!==id))
+  }
+
+  const REWARD_STATUS: any = {
+    pending: { label:'Chưa trả thưởng', color:T.amber,   bg:T.amberBg },
+    partial: { label:'Đã trả 1 phần',   color:T.blue,    bg:T.blueBg  },
+    done:    { label:'Đã trả đủ',        color:T.green,   bg:T.greenBg },
+  }
+
+  const renderProgTable = (progs: any[]) => {
+    if (progs.length === 0) return (
+      <div style={{ textAlign:'center', padding:'40px', color:T.light, fontSize:13 }}>
+        {subTab==='active' ? 'Chưa có chương trình nào đang áp dụng' : 'Chưa có chương trình nào trong lịch sử'}
+      </div>
+    )
+
+    // Group by brand
+    const byBrand: Record<string,any[]> = {}
+    progs.forEach((p: any) => {
+      if (!byBrand[p.brand_name]) byBrand[p.brand_name] = []
+      byBrand[p.brand_name].push(p)
+    })
+
+    return Object.entries(byBrand).map(([brand, items]) => (
+      <Card key={brand} style={{ padding:0, overflow:'hidden', marginBottom:14 }}>
+        <div style={{ background:`linear-gradient(90deg,${T.blueBg},#fff)`, padding:'10px 16px',
+          borderBottom:`1px solid ${T.border}`, display:'flex', alignItems:'center', gap:10 }}>
+          <span style={{ fontSize:15 }}>🏢</span>
+          <span style={{ fontWeight:700, fontSize:14, color:T.blue }}>{brand}</span>
+          <span style={{ fontSize:11, color:T.light }}>— {items.length} chương trình</span>
+        </div>
+
+        {items.map((prog: any, pi: number) => {
+          const isExp = expandId === prog.id
+          const rs = REWARD_STATUS[prog.reward_status] || REWARD_STATUS.pending
+          const daysLeft = prog.end_date && !prog.open_ended
+            ? Math.ceil((new Date(prog.end_date).getTime()-Date.now())/86400000) : null
+          const isExpiring = daysLeft !== null && daysLeft >= 0 && daysLeft <= 7
+          const isOverdue  = daysLeft !== null && daysLeft < 0
+
+          return (
+            <div key={prog.id} style={{ borderTop:`1px solid ${T.border}`,
+              background: isExpiring ? '#FFFBEB' : isOverdue ? '#FEF2F2' : pi%2===0?'#fff':T.rowAlt }}>
+              {/* Row */}
+              <div style={{ padding:'10px 14px' }}>
+                <div style={{ display:'flex', alignItems:'flex-start', justifyContent:'space-between', gap:10, flexWrap:'wrap' }}>
+                  <div style={{ flex:1, minWidth:200 }}>
+                    <div style={{ display:'flex', alignItems:'center', gap:7, flexWrap:'wrap', marginBottom:4 }}>
+                      <span style={{ fontSize:13, fontWeight:700, color:T.dark }}>{prog.program_name}</span>
+                      {isExpiring && <span style={{ fontSize:9, padding:'1px 6px', borderRadius:8, background:'#FEF3C7', color:'#92400E', fontWeight:700 }}>⚠️ Còn {daysLeft} ngày</span>}
+                      {isOverdue  && <span style={{ fontSize:9, padding:'1px 6px', borderRadius:8, background:T.redBg, color:T.red, fontWeight:700 }}>⏰ Hết hạn</span>}
+                    </div>
+                    <div style={{ display:'flex', gap:10, flexWrap:'wrap', fontSize:11, color:T.med }}>
+                      <span>📅 {prog.start_date||'?'} → {prog.open_ended ? '(Chưa rõ)' : (prog.end_date||'?')}</span>
+                      <span>{prog.discount_type==='discount' ? '💸' : '🎁'} {prog.discount_detail||'—'}</span>
+                    </div>
+                    {prog.condition_text && (
+                      <div style={{ fontSize:11, color:T.light, marginTop:3 }}>📋 ĐK: {prog.condition_text}</div>
+                    )}
+                  </div>
+
+                  {/* Reward columns */}
+                  <div style={{ display:'flex', gap:6, flexWrap:'wrap', alignItems:'center' }}>
+                    {[['monthly','Tháng'], ['quarterly','Quý'], ['yearly','Năm']].map(([k,l]) => {
+                      const val = prog[`reward_${k}`]
+                      if (!val) return null
+                      return (
+                        <div key={k} style={{ background:'#fff', border:`1px solid ${T.border}`,
+                          borderRadius:8, padding:'4px 10px', minWidth:80, textAlign:'center' }}>
+                          <div style={{ fontSize:9, color:T.light }}>Thưởng {l}</div>
+                          <div style={{ fontSize:12, fontWeight:700, color:T.goldText }}>{val}</div>
+                        </div>
+                      )
+                    })}
+                  </div>
+
+                  {/* Revenue + status */}
+                  <div style={{ display:'flex', alignItems:'center', gap:8, flexWrap:'wrap' }}>
+                    <div style={{ background:T.bg, borderRadius:8, padding:'4px 10px', textAlign:'center' }}>
+                      <div style={{ fontSize:9, color:T.light }}>Doanh số</div>
+                      <div style={{ fontSize:12, fontWeight:700, color:T.dark }}>
+                        {prog.current_revenue > 0 ? Number(prog.current_revenue).toLocaleString()+'đ' : '—'}
+                      </div>
+                    </div>
+                    <span style={{ fontSize:10, padding:'3px 9px', borderRadius:10, fontWeight:700,
+                      background:rs.bg, color:rs.color }}>{rs.label}</span>
+                  </div>
+
+                  {/* Actions */}
+                  <div style={{ display:'flex', gap:5, alignItems:'center' }}>
+                    <button onClick={() => setExpandId(isExp ? null : prog.id)}
+                      style={{ padding:'3px 7px', borderRadius:6, border:`1px solid ${T.border}`,
+                        background:'transparent', cursor:'pointer', fontSize:10, color:T.med, fontFamily:'inherit' }}>
+                      {isExp ? '▲' : '▼'}
+                    </button>
+                    {canEdit && (
+                      <>
+                        <button onClick={() => openEdit(prog)}
+                          style={{ padding:'3px 7px', borderRadius:6, border:'none',
+                            background:T.goldBg, cursor:'pointer', fontSize:10, color:T.goldText, fontFamily:'inherit' }}>✏️</button>
+                        {subTab==='history' && (
+                          <button onClick={() => renewProgram(prog)}
+                            style={{ padding:'3px 8px', borderRadius:6, border:`1px solid ${T.green}`,
+                              background:T.greenBg, cursor:'pointer', fontSize:10, color:T.green, fontFamily:'inherit', fontWeight:700 }}>
+                            ↩ Gia hạn
+                          </button>
+                        )}
+                        <button onClick={() => deleteProg(prog.id)}
+                          style={{ padding:'3px 7px', borderRadius:6, border:'none',
+                            background:T.redBg, cursor:'pointer', fontSize:10, color:T.red, fontFamily:'inherit' }}>✕</button>
+                      </>
+                    )}
+                  </div>
+                </div>
+              </div>
+
+              {/* Expanded details */}
+              {isExp && (
+                <div style={{ background:T.bg, borderTop:`1px dashed ${T.border}`, padding:'12px 16px' }}>
+                  <div style={{ display:'grid', gridTemplateColumns: mobile ? '1fr' : '1fr 1fr', gap:14 }}>
+                    {/* Doanh số update */}
+                    {canEdit && subTab==='active' && (
+                      <div style={{ background:'#fff', borderRadius:9, padding:'10px 12px', border:`1px solid ${T.border}` }}>
+                        <div style={{ fontSize:11, fontWeight:700, color:T.med, marginBottom:8 }}>📊 Cập nhật doanh số</div>
+                        <input type="number" defaultValue={prog.current_revenue||''}
+                          onBlur={async e => {
+                            const val = Number(e.target.value)||0
+                            await db.from('brand_programs').update({current_revenue:val}).eq('id',prog.id)
+                            setBrandPrograms((prev: any[]) => prev.map((p: any) => p.id===prog.id ? {...p,current_revenue:val} : p))
+                          }}
+                          style={{ width:'100%', padding:'7px 10px', border:`1px solid ${T.border}`,
+                            borderRadius:7, fontSize:13, fontFamily:'inherit', color:T.dark, background:'#fff',
+                            outline:'none', boxSizing:'border-box' as any, marginBottom:6 }}/>
+                        <div style={{ fontSize:10, color:T.light }}>(Nhập doanh số hiện tại, blur để lưu)</div>
+                      </div>
+                    )}
+
+                    {/* Trạng thái trả thưởng */}
+                    {canEdit && subTab==='active' && (
+                      <div style={{ background:'#fff', borderRadius:9, padding:'10px 12px', border:`1px solid ${T.border}` }}>
+                        <div style={{ fontSize:11, fontWeight:700, color:T.med, marginBottom:8 }}>🎁 Trạng thái trả thưởng</div>
+                        <div style={{ display:'flex', gap:6, flexWrap:'wrap' }}>
+                          {[['pending','Chưa trả'],['partial','Đã trả 1 phần'],['done','Đã trả đủ']].map(([v,l]) => (
+                            <button key={v} type="button"
+                              onClick={() => updateRewardStatus(prog, v)}
+                              style={{ padding:'5px 10px', borderRadius:7, border:'none', cursor:'pointer',
+                                fontFamily:'inherit', fontSize:11, fontWeight:prog.reward_status===v?700:400,
+                                background: prog.reward_status===v ? (REWARD_STATUS[v]?.bg||T.bg) : T.bg,
+                                color: prog.reward_status===v ? (REWARD_STATUS[v]?.color||T.med) : T.med }}>
+                              {l}
+                            </button>
+                          ))}
+                        </div>
+                      </div>
+                    )}
+
+                    {/* Quy đổi thưởng */}
+                    <div style={{ background:'#fff', borderRadius:9, padding:'10px 12px', border:`1px solid ${T.border}` }}>
+                      <div style={{ fontSize:11, fontWeight:700, color:T.med, marginBottom:6 }}>💰 Quy đổi thưởng</div>
+                      {prog.exchange_amount ? (
+                        <div style={{ fontSize:12, color:T.dark }}>
+                          <span style={{ fontWeight:700 }}>{Number(prog.exchange_amount).toLocaleString()}đ</span>
+                          <span style={{ color:T.light, marginLeft:6 }}>
+                            {prog.exchange_type==='cash' ? '(Tiền mặt)' : '(Hàng hóa)'}
+                          </span>
+                          {prog.exchange_detail && <div style={{ color:T.light, fontSize:11, marginTop:3 }}>{prog.exchange_detail}</div>}
+                          {prog.exchange_date && <div style={{ color:T.light, fontSize:11 }}>📅 Ngày đổi: {prog.exchange_date}</div>}
+                        </div>
+                      ) : (
+                        <div style={{ color:T.light, fontSize:11 }}>Chưa có thông tin quy đổi</div>
+                      )}
+                    </div>
+                  </div>
+                </div>
+              )}
+            </div>
+          )
+        })}
+      </Card>
+    ))
+  }
+
+  return (
+    <div>
+      {/* Expiry warning banner */}
+      {expiringSoon.length > 0 && (
+        <div style={{ background:'#FFFBEB', border:`1.5px solid ${T.amber}`, borderRadius:10,
+          padding:'10px 16px', marginBottom:14, display:'flex', alignItems:'center', gap:10 }}>
+          <span style={{ fontSize:16 }}>⚠️</span>
+          <span style={{ fontSize:12, color:'#92400E', fontWeight:600 }}>
+            {expiringSoon.length} chương trình sắp hết hạn (trong 7 ngày tới): {' '}
+            {expiringSoon.map((p: any) => p.program_name).join(', ')}
+          </span>
+        </div>
+      )}
+
+      {/* Top bar */}
+      <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:12, flexWrap:'wrap', gap:8 }}>
+        <div style={{ display:'flex', gap:0, border:`1px solid ${T.border}`, borderRadius:8, overflow:'hidden', background:'#fff' }}>
+          {([['active','🟢 Đang áp dụng'],['history','🗂️ Lịch sử']] as [string,string][]).map(([id,label]) => (
+            <button key={id} onClick={() => setSubTab(id as any)}
+              style={{ padding:'7px 16px', border:'none', cursor:'pointer', fontFamily:'inherit',
+                fontSize:12, fontWeight:subTab===id?700:400,
+                background:subTab===id?T.blue:'transparent',
+                color:subTab===id?'#fff':T.med }}>
+              {label}
+            </button>
+          ))}
+        </div>
+        {canEdit && <GoldBtn small onClick={openCreate}>+ Thêm chương trình</GoldBtn>}
+      </div>
+
+      {renderProgTable(subTab==='active' ? activeProgs : historyProgs)}
+
+      {/* Move to history confirm */}
+      {showRewardConfirm && (
+        <Modal open title="Đã trả thưởng toàn bộ?" onClose={() => setShowRewardConfirm(null)}>
+          <div style={{ fontSize:13, color:T.dark, marginBottom:16 }}>
+            Chuyển chương trình <b>{showRewardConfirm.program_name}</b> sang tab Lịch sử?
+          </div>
+          <div style={{ display:'flex', gap:10, justifyContent:'flex-end' }}>
+            <GoldBtn outline small onClick={async () => {
+              await db.from('brand_programs').update({reward_status:'done'}).eq('id',showRewardConfirm.id)
+              setBrandPrograms((prev: any[]) => prev.map((p: any) => p.id===showRewardConfirm.id ? {...p,reward_status:'done'} : p))
+              setShowRewardConfirm(null)
+            }}>Giữ lại tab hiện tại</GoldBtn>
+            <GoldBtn small onClick={() => moveToHistory(showRewardConfirm)}>Chuyển sang Lịch sử</GoldBtn>
+          </div>
+        </Modal>
+      )}
+
+      {/* Add/Edit form modal */}
+      <Modal open={showForm} onClose={() => setShowForm(false)}
+        title={editProg ? 'Sửa chương trình' : 'Thêm chương trình nhãn hàng'} wide>
+        <div style={{ display:'grid', gridTemplateColumns: mobile ? '1fr' : '1fr 1fr', gap:12 }}>
+          {/* Brand */}
+          <div>
+            <div style={{ fontSize:11, fontWeight:600, color:T.med, marginBottom:5 }}>Nhãn hàng *</div>
+            <select value={form.brand_name} onChange={e => F('brand_name', e.target.value)}
+              style={{ width:'100%', padding:'8px 10px', border:`1px solid ${T.border}`,
+                borderRadius:7, fontSize:13, fontFamily:'inherit', color:T.dark, background:'#fff',
+                outline:'none', boxSizing:'border-box' as any }}>
+              <option value="">— Chọn nhãn hàng —</option>
+              {brands.map((b: any) => <option key={b} value={b}>{b}</option>)}
+            </select>
+          </div>
+          <Inp label="Tên chương trình *" value={form.program_name} onChange={v => F('program_name',v)} placeholder="VD: Chương trình đại lý Q1/2026"/>
+
+          {/* Dates */}
+          <Inp label="📅 Ngày bắt đầu" type="date" value={form.start_date} onChange={v => F('start_date',v)}/>
+          <div>
+            <div style={{ fontSize:11, fontWeight:600, color:T.med, marginBottom:5 }}>📅 Ngày kết thúc</div>
+            <div style={{ display:'flex', gap:6, alignItems:'center' }}>
+              <input type="date" value={form.open_ended ? '' : (form.end_date||'')}
+                disabled={form.open_ended}
+                onChange={e => F('end_date', e.target.value)}
+                style={{ flex:1, padding:'7px 10px', border:`1px solid ${T.border}`,
+                  borderRadius:7, fontSize:12, fontFamily:'inherit', color:T.dark, background:'#fff',
+                  outline:'none', opacity: form.open_ended ? .4 : 1 }}/>
+              <label style={{ display:'flex', alignItems:'center', gap:4, fontSize:11, color:T.med, whiteSpace:'nowrap', cursor:'pointer' }}>
+                <input type="checkbox" checked={form.open_ended} onChange={e => F('open_ended', e.target.checked)}/>
+                Chưa rõ
+              </label>
+            </div>
+          </div>
+
+          {/* Discount type */}
+          <div style={{ gridColumn: mobile ? '1' : '1/-1' }}>
+            <div style={{ fontSize:11, fontWeight:600, color:T.med, marginBottom:5 }}>Chiết khấu / Quà tặng</div>
+            <div style={{ display:'flex', gap:6, marginBottom:7 }}>
+              {[['discount','💸 Chiết khấu'],['gift','🎁 Quà tặng']].map(([v,l]) => (
+                <button key={v} type="button" onClick={() => F('discount_type',v)}
+                  style={{ padding:'6px 14px', borderRadius:7, border:'none', cursor:'pointer',
+                    fontFamily:'inherit', fontSize:12, fontWeight:form.discount_type===v?700:400,
+                    background: form.discount_type===v ? T.gold : T.bg,
+                    color: form.discount_type===v ? '#fff' : T.med }}>
+                  {l}
+                </button>
+              ))}
+            </div>
+            <input value={form.discount_detail} onChange={e => F('discount_detail',e.target.value)}
+              placeholder={form.discount_type==='discount' ? 'VD: CK thẳng 35% sau CK 30tr' : 'VD: Tặng 1 hộp sản phẩm mẫu'}
+              style={{ width:'100%', padding:'7px 10px', border:`1px solid ${T.border}`,
+                borderRadius:7, fontSize:12, fontFamily:'inherit', color:T.dark, background:'#fff',
+                outline:'none', boxSizing:'border-box' as any }}/>
+          </div>
+
+          <div style={{ gridColumn: mobile ? '1' : '1/-1' }}>
+            <Inp label="📋 Điều kiện áp dụng" value={form.condition_text}
+              onChange={v => F('condition_text',v)}
+              placeholder="VD: Doanh số tháng sau CK 30tr, Doanh số Quý 130tr"/>
+          </div>
+
+          {/* Rewards */}
+          <div style={{ gridColumn: mobile ? '1' : '1/-1' }}>
+            <div style={{ fontSize:11, fontWeight:600, color:T.med, marginBottom:7 }}>🏆 Mức thưởng</div>
+            <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr 1fr', gap:8 }}>
+              <Inp label="Thưởng tháng" value={form.reward_monthly}
+                onChange={v => F('reward_monthly',v)} placeholder="VD: 5%" />
+              <Inp label="Thưởng quý" value={form.reward_quarterly}
+                onChange={v => F('reward_quarterly',v)} placeholder="VD: 5%" />
+              <Inp label="Thưởng năm" value={form.reward_yearly}
+                onChange={v => F('reward_yearly',v)} placeholder="VD: —" />
+            </div>
+          </div>
+
+          {/* Quy đổi */}
+          <div style={{ gridColumn: mobile ? '1' : '1/-1' }}>
+            <div style={{ fontSize:11, fontWeight:600, color:T.med, marginBottom:7 }}>💰 Quy đổi thưởng</div>
+            <div style={{ display:'grid', gridTemplateColumns: mobile ? '1fr' : '1fr 1fr 1fr', gap:8 }}>
+              <div>
+                <div style={{ fontSize:11, color:T.light, marginBottom:4 }}>Hình thức</div>
+                <select value={form.exchange_type} onChange={e => F('exchange_type',e.target.value)}
+                  style={{ width:'100%', padding:'7px 10px', border:`1px solid ${T.border}`,
+                    borderRadius:7, fontSize:12, fontFamily:'inherit', color:T.dark, background:'#fff', outline:'none' }}>
+                  <option value="cash">Tiền mặt</option>
+                  <option value="goods">Hàng hóa</option>
+                </select>
+              </div>
+              <Inp label="Số tiền / Giá trị" type="number" value={form.exchange_amount}
+                onChange={v => F('exchange_amount',v)} placeholder="0"/>
+              <Inp label="Ngày quy đổi" type="date" value={form.exchange_date}
+                onChange={v => F('exchange_date',v)}/>
+            </div>
+            <div style={{ marginTop:7 }}>
+              <Inp label="Chi tiết quy đổi" value={form.exchange_detail}
+                onChange={v => F('exchange_detail',v)}
+                placeholder="VD: Đã đổi b5 Candid 11/7, lấy re 0.5% đã trả 29/1/2026..."/>
+            </div>
+          </div>
+        </div>
+
+        <div style={{ display:'flex', justifyContent:'flex-end', gap:10, marginTop:16 }}>
+          <GoldBtn outline small onClick={() => setShowForm(false)}>Hủy</GoldBtn>
+          <GoldBtn small onClick={saveProg} disabled={saving || !form.brand_name || !form.program_name}>
+            {saving ? '⏳ Đang lưu...' : '💾 Lưu chương trình'}
+          </GoldBtn>
+        </div>
+      </Modal>
     </div>
   )
 }
