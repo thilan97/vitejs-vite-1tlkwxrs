@@ -5453,16 +5453,47 @@ function ExportDataCard() {
   const [exporting, setExporting] = useState<string|null>(null)
   const [msg, setMsg] = useState('')
 
-  const tables = [
-    { key:'payment_orders',     label:'Lệnh chuyển khoản',       icon:'💸', query: () => db.from('payment_orders').select('*').order('created_at',{ascending:false}) },
-    { key:'brand_programs',     label:'Chương trình nhãn hàng',   icon:'🎯', query: () => db.from('brand_programs').select('*').order('created_at',{ascending:false}) },
-    { key:'price_configs',      label:'Báo giá sản phẩm',         icon:'💰', query: () => db.from('price_configs').select('*') },
-    { key:'price_tiers',        label:'Mốc giá theo SL',          icon:'📊', query: () => db.from('price_tiers').select('*') },
-    { key:'checklist_templates',label:'Template checklist',        icon:'📋', query: () => db.from('checklist_templates').select('*') },
-    { key:'users',              label:'Danh sách nhân viên',       icon:'👥', query: () => db.from('users').select('id,name,dept_id,position_id,role,active,birthday') },
-    { key:'product_batches',    label:'Date sản phẩm (HSD)',       icon:'📅', query: () => db.from('product_batches').select('*').order('expiry_date',{ascending:true}) },
-    { key:'suppliers',          label:'Nhà cung cấp',              icon:'🏢', query: () => db.from('suppliers').select('*') },
+  const tableGroups = [
+    {
+      group: '💰 Tài chính & Kinh doanh',
+      color: '#FEF3C7',
+      tables: [
+        { key:'payment_orders',     label:'Lệnh chuyển khoản',    icon:'💸', query: () => db.from('payment_orders').select('*').order('created_at',{ascending:false}) },
+        { key:'brand_programs',     label:'Chương trình nhãn hàng',icon:'🎯', query: () => db.from('brand_programs').select('*').order('created_at',{ascending:false}) },
+        { key:'price_configs',      label:'Báo giá sản phẩm',     icon:'💰', query: () => db.from('price_configs').select('*') },
+        { key:'price_tiers',        label:'Mốc giá theo SL',      icon:'📊', query: () => db.from('price_tiers').select('*') },
+        { key:'suppliers',          label:'Nhà cung cấp',         icon:'🏢', query: () => db.from('suppliers').select('*') },
+        { key:'supplier_accounts',  label:'Tài khoản NCC',        icon:'🏦', query: () => db.from('supplier_accounts').select('*') },
+      ]
+    },
+    {
+      group: '📦 Kho & Sản phẩm',
+      color: '#DCFCE7',
+      tables: [
+        { key:'return_items',       label:'Hàng hoàn',            icon:'🔄', query: () => db.from('return_items').select('*').order('date',{ascending:false}) },
+        { key:'wrong_orders',       label:'Đơn sai',              icon:'⚠️', query: () => db.from('wrong_orders').select('*').order('created_at',{ascending:false}) },
+        { key:'shortage_items',     label:'Hàng thiếu',           icon:'📦', query: () => db.from('shortage_items').select('*').order('created_at',{ascending:false}) },
+        { key:'inventory_sessions', label:'Phiên kiểm kê',        icon:'🗂️', query: () => db.from('inventory_sessions').select('*').order('date',{ascending:false}) },
+        { key:'inventory_checks',   label:'Chi tiết kiểm kê',     icon:'✅', query: () => db.from('inventory_checks').select('*').order('session_id') },
+        { key:'product_batches',    label:'Date sản phẩm (HSD)',  icon:'📅', query: () => db.from('product_batches').select('*').order('expiry_date',{ascending:true}) },
+      ]
+    },
+    {
+      group: '👥 Nhân sự & Công việc',
+      color: '#DBEAFE',
+      tables: [
+        { key:'users',              label:'Danh sách nhân viên',  icon:'👤', query: () => db.from('users').select('id,name,dept_id,position_id,role,active,birthday') },
+        { key:'attendance',         label:'Chấm công',            icon:'🕐', query: () => db.from('attendance').select('*').order('date',{ascending:false}).limit(3000) },
+        { key:'leave_requests',     label:'Đơn nghỉ phép',        icon:'🏖️', query: () => db.from('leave_requests').select('*').order('created_at',{ascending:false}) },
+        { key:'overtime_requests',  label:'Đăng ký OT',           icon:'⏰', query: () => db.from('overtime_requests').select('*').order('created_at',{ascending:false}) },
+        { key:'tasks',              label:'Giao việc',            icon:'📌', query: () => db.from('tasks').select('*').order('created_at',{ascending:false}) },
+        { key:'history',            label:'Lịch sử checklist',    icon:'📜', query: () => db.from('history').select('*').order('date',{ascending:false}).limit(5000) },
+        { key:'checklist_templates',label:'Template checklist',   icon:'📋', query: () => db.from('checklist_templates').select('*') },
+      ]
+    },
   ]
+
+  const allTables = tableGroups.flatMap(g => g.tables)
 
   const toCSV = (rows: any[]) => {
     if (!rows || rows.length === 0) return ''
@@ -5486,7 +5517,7 @@ function ExportDataCard() {
     URL.revokeObjectURL(url)
   }
 
-  const exportOne = async (t: typeof tables[0]) => {
+  const exportOne = async (t: typeof allTables[0]) => {
     setExporting(t.key); setMsg('')
     try {
       const { data, error } = await t.query()
@@ -5494,7 +5525,7 @@ function ExportDataCard() {
       if (!data || data.length === 0) { setMsg(`⚠️ ${t.label}: Không có dữ liệu`); return }
       const date = new Date().toISOString().split('T')[0]
       downloadCSV(toCSV(data), `${t.key}_${date}.csv`)
-      setMsg(`✅ Đã xuất ${data.length} dòng — ${t.label}`)
+      setMsg(`✅ Đã xuất ${data.length.toLocaleString()} dòng — ${t.label}`)
     } catch(e: any) {
       setMsg(`❌ Lỗi: ${e.message}`)
     } finally {
@@ -5504,22 +5535,24 @@ function ExportDataCard() {
   }
 
   const exportAll = async () => {
-    setExporting('all'); setMsg('⏳ Đang xuất tất cả...')
+    setExporting('all'); setMsg('⏳ Đang xuất tất cả bảng...')
     const date = new Date().toISOString().split('T')[0]
-    let total = 0
-    for (const t of tables) {
+    let totalRows = 0, totalFiles = 0
+    for (const t of allTables) {
       try {
         const { data } = await t.query()
         if (data && data.length > 0) {
           downloadCSV(toCSV(data), `${t.key}_${date}.csv`)
-          total += data.length
-          await new Promise(r => setTimeout(r, 300)) // tránh download quá nhanh
+          totalRows += data.length
+          totalFiles++
+          setMsg(`⏳ Đang xuất... (${totalFiles}/${allTables.length}) — ${t.label}`)
+          await new Promise(r => setTimeout(r, 400))
         }
       } catch {}
     }
-    setMsg(`✅ Đã xuất ${tables.length} file — tổng ${total} dòng`)
+    setMsg(`✅ Hoàn tất! ${totalFiles} file — ${totalRows.toLocaleString()} dòng`)
     setExporting(null)
-    setTimeout(() => setMsg(''), 5000)
+    setTimeout(() => setMsg(''), 6000)
   }
 
   return (
@@ -5528,40 +5561,49 @@ function ExportDataCard() {
         <div>
           <div style={{ fontSize:13, fontWeight:700, color:T.dark }}>💾 Xuất dữ liệu (Backup CSV)</div>
           <div style={{ fontSize:11, color:T.light, marginTop:2 }}>
-            Download file CSV để lưu trữ dự phòng. Nên xuất định kỳ hàng tuần.
+            Download toàn bộ dữ liệu để lưu trữ dự phòng. Nên xuất định kỳ hàng tuần.
           </div>
         </div>
         <button onClick={exportAll} disabled={!!exporting}
-          style={{ padding:'7px 16px', borderRadius:8, border:`1.5px solid ${T.gold}`,
-            background: exporting ? T.bg : T.goldBg, color: exporting ? T.light : T.goldText,
+          style={{ padding:'8px 18px', borderRadius:8, border:`1.5px solid ${T.gold}`,
+            background: exporting ? T.bg : T.gold, color: exporting ? T.light : '#fff',
             cursor: exporting ? 'not-allowed' : 'pointer', fontFamily:'inherit',
             fontSize:12, fontWeight:700, display:'flex', alignItems:'center', gap:6 }}>
           {exporting === 'all' ? '⏳ Đang xuất...' : '📦 Xuất tất cả'}
         </button>
       </div>
 
-      <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:8 }}>
-        {tables.map(t => (
-          <button key={t.key} onClick={() => exportOne(t)} disabled={!!exporting}
-            style={{ display:'flex', alignItems:'center', gap:8, padding:'8px 12px',
-              borderRadius:8, border:`1px solid ${T.border}`,
-              background: exporting===t.key ? T.goldBg : '#fff',
-              cursor: exporting ? 'not-allowed' : 'pointer', fontFamily:'inherit',
-              transition:'all .15s', textAlign:'left' as any }}>
-            <span style={{ fontSize:16 }}>{t.icon}</span>
-            <div style={{ flex:1, minWidth:0 }}>
-              <div style={{ fontSize:12, fontWeight:600, color:T.dark }}>{t.label}</div>
-              <div style={{ fontSize:10, color:T.light }}>{t.key}.csv</div>
-            </div>
-            {exporting===t.key
-              ? <span style={{ fontSize:11, color:T.gold }}>⏳</span>
-              : <span style={{ fontSize:11, color:T.light }}>↓</span>}
-          </button>
-        ))}
-      </div>
+      {tableGroups.map(group => (
+        <div key={group.group} style={{ marginBottom:14 }}>
+          <div style={{ fontSize:11, fontWeight:700, color:T.med, marginBottom:7,
+            padding:'4px 10px', borderRadius:6, background:group.color, display:'inline-block' }}>
+            {group.group}
+          </div>
+          <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:6 }}>
+            {group.tables.map(t => (
+              <button key={t.key} onClick={() => exportOne(t)} disabled={!!exporting}
+                style={{ display:'flex', alignItems:'center', gap:8, padding:'8px 12px',
+                  borderRadius:8, border:`1px solid ${exporting===t.key ? T.gold : T.border}`,
+                  background: exporting===t.key ? T.goldBg : '#fff',
+                  cursor: exporting ? 'not-allowed' : 'pointer', fontFamily:'inherit',
+                  transition:'all .15s', textAlign:'left' as any }}>
+                <span style={{ fontSize:15, flexShrink:0 }}>{t.icon}</span>
+                <div style={{ flex:1, minWidth:0 }}>
+                  <div style={{ fontSize:11, fontWeight:600, color:T.dark,
+                    overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap' }}>{t.label}</div>
+                  <div style={{ fontSize:9, color:T.light }}>{t.key}.csv</div>
+                </div>
+                {exporting===t.key
+                  ? <span style={{ fontSize:11, color:T.gold, flexShrink:0 }}>⏳</span>
+                  : <span style={{ fontSize:11, color:T.light, flexShrink:0 }}>↓</span>}
+              </button>
+            ))}
+          </div>
+        </div>
+      ))}
 
       {msg && (
-        <div style={{ marginTop:10, padding:'7px 12px', borderRadius:8, fontSize:12, fontWeight:600,
+        <div style={{ marginTop:10, padding:'8px 12px', borderRadius:8, fontSize:12, fontWeight:600,
           color: msg.startsWith('✅') ? T.green : msg.startsWith('❌') ? T.red : T.amber,
           background: msg.startsWith('✅') ? T.greenBg : msg.startsWith('❌') ? T.redBg : T.amberBg }}>
           {msg}
@@ -5569,9 +5611,10 @@ function ExportDataCard() {
       )}
 
       <div style={{ marginTop:12, padding:'8px 12px', borderRadius:8, background:T.bg,
-        fontSize:11, color:T.light, lineHeight:1.6 }}>
-        💡 <b>Lưu ý:</b> File có BOM UTF-8 — mở bằng Excel đọc được tiếng Việt.
-        Nên upload vào Google Drive sau khi tải về.
+        fontSize:11, color:T.light, lineHeight:1.7 }}>
+        💡 File CSV có BOM UTF-8 — mở bằng Excel đọc được tiếng Việt.<br/>
+        📁 Nên tạo folder Google Drive theo tháng để lưu trữ có tổ chức.<br/>
+        🕙 n8n tự động backup hàng đêm sẽ thay thế việc xuất thủ công.
       </div>
     </Card>
   )
