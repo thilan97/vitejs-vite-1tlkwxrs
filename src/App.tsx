@@ -9000,18 +9000,38 @@ function ExpiryModule({ user, mobile, products, batches, setBatches }: any) {
     const dataRows = rows.slice(1).filter((r: any[]) => r[0] || r[1] || r[2])
     const errors: string[] = []
     const preview: any[]   = []
+
+    // Convert Excel serial date → MM/YYYY
+    const excelSerialToMMYYYY = (val: any): string | null => {
+      const n = Number(val)
+      if (!isNaN(n) && n > 30000 && n < 80000) {
+        // Excel epoch: 1900-01-01 = 1 (with leap year bug)
+        const d = new Date(Date.UTC(1899, 11, 30) + n * 86400000)
+        const mm = String(d.getUTCMonth() + 1).padStart(2, '0')
+        const yyyy = String(d.getUTCFullYear())
+        return `${mm}/${yyyy}`
+      }
+      return null
+    }
+
     dataRows.forEach((r: any[], i: number) => {
       const codeRaw   = String(r[0] || '').trim().toUpperCase()
-      const expiryRaw = String(r[1] || '').trim()
+      let   expiryRaw = String(r[1] || '').trim()
       const qty       = Number(r[2]) || 0
       const note      = String(r[3] || '').trim()
       const lineNum   = i + 2
+
       if (!codeRaw) { errors.push(`Dòng ${lineNum}: Thiếu Mã SP`); return }
       const prod = products.find((pp: any) => pp.code.toUpperCase() === codeRaw)
       if (!prod) {
         errors.push(`Dòng ${lineNum}: Mã SP "${codeRaw}" không tồn tại. Vui lòng kiểm tra lại đúng theo Mã SP hoặc Tên SP trong KiotViet.`)
         return
       }
+
+      // Auto-convert Excel serial date nếu cần
+      const converted = excelSerialToMMYYYY(expiryRaw)
+      if (converted) expiryRaw = converted
+
       const match = expiryRaw.match(/^(\d{1,2})\/(\d{4})$/)
       if (!match) { errors.push(`Dòng ${lineNum}: Ngày HSD "${expiryRaw}" sai định dạng — cần MM/YYYY (VD: 06/2026)`); return }
       const [, mm, yyyy] = match
@@ -9948,7 +9968,7 @@ function SupplierManagerTab({ suppliers, setSuppliers, accounts, setAccounts, us
     const newA = { id:'acc_'+Date.now()+'_'+Math.random().toString(36).slice(2,5),
       supplier_id:supId, account_number:accForm.account_number.replace(/[^0-9]/g,''),
       account_name:accForm.account_name, bank_name:accForm.bank_name.toUpperCase(),
-      status:'pending', active:true, created_at:now, created_by:user.id }
+      status:'approved', active:true, created_at:now, created_by:user.id }
     await db.from('supplier_accounts').insert(newA)
     setAccounts((prev: any[]) => [...prev, newA])
     setSaving(false); setShowAddAcc(null)
@@ -10114,65 +10134,52 @@ function SupplierManagerTab({ suppliers, setSuppliers, accounts, setAccounts, us
   )
 }
 
-// ── STK Approval Tab (Admin only) ──────────────────────────
-function STKApprovalTab({ accounts, setAccounts, suppliers, user, mobile }: any) {
-  const pending = accounts.filter((a: any) => a.status === 'pending' && a.active)
+// ── STK Approval Tab (Admin only) — xem STK mới, không cần duyệt ──
+function STKApprovalTab({ accounts, suppliers, mobile }: any) {
+  // Hiện tất cả STK đã được thêm trong 30 ngày gần đây (status='approved' nhưng mới)
+  const thirtyAgo = new Date(Date.now() - 30 * 86400000).toISOString()
+  const recentNew = accounts.filter((a: any) =>
+    a.active && a.created_at > thirtyAgo
+  ).sort((x: any, y: any) => (y.created_at||'').localeCompare(x.created_at||''))
 
-  const approve = async (acc: any) => {
-    const now = new Date().toISOString()
-    await db.from('supplier_accounts').update({ status:'approved', approved_at:now, approved_by:user.id }).eq('id', acc.id)
-    setAccounts((prev: any[]) => prev.map((a: any) => a.id===acc.id
-      ? {...a, status:'approved', approved_at:now, approved_by:user.id} : a))
-  }
-
-  const reject = async (acc: any) => {
-    if (!confirm('Từ chối và xóa STK này?')) return
-    await db.from('supplier_accounts').update({ active:false }).eq('id', acc.id)
-    setAccounts((prev: any[]) => prev.map((a: any) => a.id===acc.id ? {...a, active:false} : a))
-  }
-
-  if (pending.length === 0) return (
+  if (recentNew.length === 0) return (
     <div style={{ textAlign:'center', padding:'56px', color:T.green, fontWeight:600, fontSize:14 }}>
-      ✅ Không có STK nào chờ duyệt
+      ✅ Không có STK nào mới được thêm trong 30 ngày qua
     </div>
   )
 
   return (
     <div>
-      <div style={{ padding:'10px 14px', marginBottom:12, background:T.amberBg,
-        border:`1px solid ${T.amber}`, borderRadius:10, fontSize:12, color:T.amber, fontWeight:600 }}>
-        ⏳ {pending.length} tài khoản ngân hàng mới chờ xác nhận
+      <div style={{ padding:'10px 14px', marginBottom:12, background:T.blueBg,
+        border:`1px solid ${T.blue}`, borderRadius:10, fontSize:12, color:T.blue, fontWeight:600 }}>
+        ℹ️ {recentNew.length} tài khoản ngân hàng mới được thêm trong 30 ngày qua (tự động được duyệt)
       </div>
       <div style={{ background:T.card, borderRadius:12, border:`1px solid ${T.border}`, overflow:'hidden' }}>
         {!mobile && (
-          <div style={{ display:'grid', gridTemplateColumns:'1fr 150px 80px 80px',
+          <div style={{ display:'grid', gridTemplateColumns:'1fr 160px 80px 90px',
             padding:'7px 14px', background:T.bg, borderBottom:`2px solid ${T.border}`,
             fontSize:10, fontWeight:700, color:T.light, textTransform:'uppercase', letterSpacing:.6, gap:8 }}>
             <span>NCC · Số tài khoản · Tên công ty</span>
             <span>Ngân hàng</span>
             <span>Người thêm</span>
-            <span style={{ textAlign:'center' }}>Thao tác</span>
+            <span>Ngày thêm</span>
           </div>
         )}
-        {pending.map((a: any, i: number) => {
+        {recentNew.map((a: any, i: number) => {
           const sup = suppliers.find((s: any) => s.id === a.supplier_id)
-          const creator = a.created_by ? `${a.created_by}` : '—'
           return (
             <div key={a.id} style={{
               display: mobile ? 'block' : 'grid',
-              gridTemplateColumns:'1fr 150px 80px 80px',
+              gridTemplateColumns:'1fr 160px 80px 90px',
               padding:'10px 14px', gap:8, alignItems:'center',
-              borderBottom: i < pending.length-1 ? `1px solid ${T.border}` : 'none',
+              borderBottom: i < recentNew.length-1 ? `1px solid ${T.border}` : 'none',
               background: i%2===0?'#fff':T.rowAlt }}>
               {mobile ? (
                 <div>
                   <div style={{ fontSize:13, fontWeight:600, color:T.dark }}>{sup?.name || '?'}</div>
                   <div style={{ fontSize:12, color:T.med }}>{a.account_number} · {a.bank_name}</div>
-                  <div style={{ fontSize:11, color:T.light, marginBottom:8 }}>{a.account_name}</div>
-                  <div style={{ display:'flex', gap:8 }}>
-                    <GoldBtn small onClick={() => approve(a)}>✅ Duyệt</GoldBtn>
-                    <GoldBtn small danger onClick={() => reject(a)}>✕ Từ chối</GoldBtn>
-                  </div>
+                  <div style={{ fontSize:11, color:T.light }}>{a.account_name}</div>
+                  <div style={{ fontSize:10, color:T.light, marginTop:2 }}>{fmtDate(a.created_at)} · {a.created_by}</div>
                 </div>
               ) : (
                 <>
@@ -10182,11 +10189,8 @@ function STKApprovalTab({ accounts, setAccounts, suppliers, user, mobile }: any)
                     <div style={{ fontSize:11, color:T.light }}>{a.account_name}</div>
                   </div>
                   <span style={{ fontSize:12, fontWeight:600, color:T.med }}>{a.bank_name}</span>
-                  <span style={{ fontSize:11, color:T.light }}>{creator}</span>
-                  <div style={{ display:'flex', gap:4, justifyContent:'center' }}>
-                    <GoldBtn small onClick={() => approve(a)}>✅</GoldBtn>
-                    <GoldBtn small danger onClick={() => reject(a)}>✕</GoldBtn>
-                  </div>
+                  <span style={{ fontSize:11, color:T.light }}>{a.created_by}</span>
+                  <span style={{ fontSize:11, color:T.light }}>{fmtDate(a.created_at)}</span>
                 </>
               )}
             </div>
@@ -10345,9 +10349,17 @@ function PaymentModule({ user, mobile, allUsers }: any) {
       const newA = { id:'acc_'+Date.now()+'_'+Math.random().toString(36).slice(2,5),
         supplier_id:supId, account_number:stkData.account_number,
         account_name:stkData.account_name||'', bank_name:stkData.bank_name||'',
-        status:'pending', active:true, created_at:now, created_by:user.id }
+        status:'approved', active:true, created_at:now, created_by:user.id }
       await db.from('supplier_accounts').insert(newA)
       setAccounts(prev => [...prev, newA])
+      // Tạo thông báo cho Admin về STK mới
+      const sup = suppliers.find((s: any) => s.id === supId)
+      await db.from('announcements').insert({
+        id:'ann_stk_'+Date.now(), type:'system',
+        title:`STK mới: ${sup?.name || 'NCC mới'}`,
+        content:`${user.name||user.id} vừa thêm STK ${stkData.account_number} (${stkData.bank_name||'?'}) cho NCC "${sup?.name||newStkNewName||'?'}". Đã tự động duyệt.`,
+        created_at:now, created_by:user.id, target_dept:'admin'
+      }).select()
     }
     setSavingNewStk(false); setNewStkPrompt(null)
   }
@@ -10376,13 +10388,14 @@ function PaymentModule({ user, mobile, allUsers }: any) {
 
   const histTotal = histFiltered.reduce((s: number, o: any) => s + (o.amount||0), 0)
 
-  const pendingSTKCount = accounts.filter((a: any) => a.status==='pending' && a.active).length
+  const thirtyAgo = new Date(Date.now() - 30 * 86400000).toISOString()
+  const recentSTKCount = accounts.filter((a: any) => a.active && a.created_at > thirtyAgo).length
 
   const tabs = [
     { id:'list',      icon:'📋', label:'Danh sách' },
     { id:'history',   icon:'📜', label:'Lịch sử' },
     canManage && { id:'suppliers', icon:'🏢', label:'Nhà cung cấp' },
-    canApprove && { id:'approve',  icon:'✅', label:`Duyệt STK${pendingSTKCount>0?` (${pendingSTKCount})`:''}` },
+    canApprove && { id:'approve',  icon:'📋', label:`STK mới${recentSTKCount>0?` (${recentSTKCount})`:''}` },
   ].filter(Boolean) as any[]
 
   if (loading) return (
@@ -10769,8 +10782,8 @@ function PaymentModule({ user, mobile, allUsers }: any) {
       {/* ════ Tab: Duyệt STK ════ */}
       {tab === 'approve' && canApprove && (
         <STKApprovalTab
-          accounts={accounts} setAccounts={setAccounts}
-          suppliers={suppliers} user={user} mobile={mobile}/>
+          accounts={accounts}
+          suppliers={suppliers} mobile={mobile}/>
       )}
 
       {/* Form tạo/sửa lệnh */}
