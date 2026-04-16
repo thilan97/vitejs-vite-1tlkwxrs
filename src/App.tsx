@@ -4,8 +4,8 @@
 import React, { useState, useMemo, useEffect, useCallback, useRef } from "react"
 import { createClient } from '@supabase/supabase-js'
 
-const SUPABASE_URL = 'https://uzloxzrqtzuucxlokqfm.supabase.co'
-const SUPABASE_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InV6bG94enJxdHp1dWN4bG9rcWZtIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzU0ODAwOTYsImV4cCI6MjA5MTA1NjA5Nn0.INA68j0bmDb7kFtn4H3TiQmPzEqs67sKMsBhc--mvvo'
+const SUPABASE_URL = import.meta.env.VITE_SUPABASE_URL as string
+const SUPABASE_KEY = import.meta.env.VITE_SUPABASE_KEY as string
 const db = createClient(SUPABASE_URL, SUPABASE_KEY)
 
 // ── THEME ────────────────────────────────────────
@@ -3679,9 +3679,8 @@ function ShortageItems({ user, allUsers, mobile, products, setProducts }: any) {
             setSyncing(true); setSyncMsg('')
             try {
               const res = await fetch('https://uzloxzrqtzuucxlokqfm.supabase.co/functions/v1/kiotviet-sync', {
-                method:'POST',
-                headers:{ 'Authorization': 'Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InV6bG94enJxdHp1dWN4bG9rcWZtIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzU0ODAwOTYsImV4cCI6MjA5MTA1NjA5Nn0.INA68j0bmDb7kFtn4H3TiQmPzEqs67sKMsBhc--mvvo' }
-              })
+  method:'POST', headers:{'Authorization':`Bearer ${import.meta.env.VITE_SUPABASE_KEY}`}
+})
               const data = await res.json()
               if (data.success) {
                 setSyncMsg(`✅ Sync ${data.synced} SP${data.shortage>0?' — ⚠️ '+data.shortage+' mã thiếu hàng':''}`)
@@ -6975,8 +6974,8 @@ function InventoryModule({ user, allUsers, products, invSessions, setInvSessions
     setKvSyncing(true)
     try {
       const res = await fetch('https://uzloxzrqtzuucxlokqfm.supabase.co/functions/v1/kiotviet-sync', {
-        method:'POST', headers:{'Authorization':'Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InV6bG94enJxdHp1dWN4bG9rcWZtIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzU0ODAwOTYsImV4cCI6MjA5MTA1NjA5Nn0.INA68j0bmDb7kFtn4H3TiQmPzEqs67sKMsBhc--mvvo'}
-      })
+  method:'POST', headers:{'Authorization':`Bearer ${import.meta.env.VITE_SUPABASE_KEY}`}
+})
       const now = new Date().toISOString()
       await db.from('settings').update({last_kv_sync:now}).eq('id','main')
       setLastKvSync(now)
