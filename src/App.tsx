@@ -83,7 +83,7 @@ const getPerm = (user: any) => {
     resetChecklist:     isAdmin || (pos.perm_reset_checklist      ?? false),
     viewBirthday:       isAdmin || (pos.perm_approve_leave ?? false) || (pos.perm_view_birthday ?? false),
     enterKiot:          isAdmin || (pos.perm_enter_kiot ?? false),
-    manageInventory:    isAdmin || (pos.perm_approve_leave ?? false) || (pos.perm_manage_inventory ?? false),
+    manageInventory:    isAdmin || (pos.perm_manage_inventory ?? false),
     resolveWrongOrder:  isAdmin || (pos.perm_approve_leave ?? false) || (pos.perm_resolve_wrong_order ?? false),
     manageExpiry:       isAdmin || (pos.perm_manage_inventory ?? false) || (pos.perm_manage_expiry ?? false),
     managePayment:      isAdmin || (pos.perm_manage_payment ?? false),
@@ -2097,7 +2097,7 @@ function Overtime({ user, allUsers, mobile }: any) {
   const dids = allUsers.filter((u: any) => u.dept_id === user.dept_id).map((u: any) => u.id)
 
   useEffect(() => {
-    db.from('overtime_requests').select('*').order('created_at', { ascending:false })
+    db.from('overtime_requests').select('*').order('created_at', { ascending:false }).limit(3000)
       .then(({ data }) => setRequests(data || []))
   }, [])
 
@@ -3090,7 +3090,7 @@ function ShortageItems({ user, allUsers, mobile, products, setProducts }: any) {
   const [lastKvSync, setLastKvSync] = useState<string>('')
 
   useEffect(() => {
-    db.from('shortage_items').select('*').order('created_at', { ascending:false })
+    db.from('shortage_items').select('*').order('created_at', { ascending:false }).limit(3000)
       .then(({ data }) => { if (data) setItems(data) })
     db.from('settings').select('last_kv_sync').eq('id','main').maybeSingle()
       .then(({ data: st }) => { if (st?.last_kv_sync) setLastKvSync(st.last_kv_sync) })
@@ -4105,7 +4105,7 @@ function ReturnItems({ user, allUsers, products, mobile }: any) {
   const norm = (s: string) => (s||'')    .toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g,'').replace(/đ/g,'d')
 
   useEffect(() => {
-    db.from('return_items').select('*').order('date', { ascending:true })
+    db.from('return_items').select('*').order('date', { ascending:true }).limit(5000)
       .then(({ data }) => setItems(data||[]))
   }, [])
 
@@ -5472,7 +5472,7 @@ function ExportDataCard() {
       color: '#DCFCE7',
       tables: [
         { key:'return_items',       label:'Hàng hoàn',            icon:'🔄', query: () => db.from('return_items').select('*').order('date',{ascending:false}) },
-        { key:'wrong_orders',       label:'Đơn sai',              icon:'⚠️', query: () => db.from('wrong_orders').select('*').order('created_at',{ascending:false}) },
+        { key:'wrong_orders',       label:'Đơn sai',              icon:'⚠️', query: () => db.from('wrong_orders').select('*').order('created_at',{ascending:false}).limit(3000) },
         { key:'shortage_items',     label:'Hàng thiếu',           icon:'📦', query: () => db.from('shortage_items').select('*').order('created_at',{ascending:false}) },
         { key:'inventory_sessions', label:'Phiên kiểm kê',        icon:'🗂️', query: () => db.from('inventory_sessions').select('*').order('date',{ascending:false}) },
         { key:'inventory_checks',   label:'Chi tiết kiểm kê',     icon:'✅', query: () => db.from('inventory_checks').select('*').order('session_id') },
@@ -6157,14 +6157,14 @@ export default function App() {
     Promise.all([
       db.from('departments').select('*'),
     db.from('users').select('*').eq('active', true),
-      db.from('checklist_templates').select('*').eq('active', true),
-      db.from('checklist').select('*'),
-      db.from('tasks').select('*'),
-      db.from('history').select('*').order('date'),
+      db.from('checklist_templates').select('*').eq('active', true).limit(5000),
+      db.from('checklist').select('*').limit(5000),
+      db.from('tasks').select('*').limit(5000),
+      db.from('history').select('*').order('date').limit(10000),
       db.from('settings').select('*').eq('id','main').single(),
-      db.from('attendance').select('*').gte('date', new Date(Date.now()-30*86400000).toISOString().split('T')[0]),
-      db.from('leave_requests').select('*').order('created_at', { ascending:false }),
-      db.from('positions').select('*'),
+      db.from('attendance').select('*').gte('date', new Date(Date.now()-30*86400000).toISOString().split('T')[0]).limit(5000),
+      db.from('leave_requests').select('*').order('created_at', { ascending:false }).limit(3000),
+      db.from('positions').select('*').limit(1000),
     ]).then(async ([depts, users, tmpl, cl, tk, hist, st, att, lr, pos]) => {
       const deptsData = depts.data || []
       const posData   = pos.data   || []
@@ -6200,7 +6200,7 @@ export default function App() {
         .then(({data}) => { if (data) setWrongOrders(data) })
       db.from('shortage_items').select('id,product_name,status,manager_note').eq('status','pending')
         .then(({data}) => { if (data) setShortageNoti(data) })
-      db.from('product_batches').select('*').order('expiry_date', { ascending:true })
+      db.from('product_batches').select('*').order('expiry_date', { ascending:true }).limit(5000)
         .then(({data}) => { if (data) setBatches(data) })
       db.from('payment_orders').select('id,supplier_name,amount,status,created_at')
         .eq('is_history',false).eq('status','pending').order('created_at',{ascending:false}).limit(50)
@@ -11810,7 +11810,7 @@ function PaymentModule({ user, mobile, allUsers }: any) {
     Promise.all([
       db.from('suppliers').select('*').eq('active',true).order('name'),
       db.from('supplier_accounts').select('*').eq('active',true).order('created_at'),
-      db.from('payment_orders').select('*').eq('is_history',false).order('created_at',{ascending:false}).limit(500),
+      db.from('payment_orders').select('*').eq('is_history',false).order('created_at',{ascending:false}).limit(2000),
     ]).then(([sup, acc, ord]) => {
       setSuppliers(sup.data||[])
       setAccounts(acc.data||[])
@@ -11829,9 +11829,11 @@ function PaymentModule({ user, mobile, allUsers }: any) {
     const start = `${yyyy}-${mm}-01`
     const endDate = new Date(Number(yyyy), Number(mm), 0)
     const end = `${yyyy}-${mm}-${String(endDate.getDate()).padStart(2,'0')}`
+    // Lịch sử: orders đã completed (is_history=true) trong tháng chọn
     db.from('payment_orders').select('*')
+      .eq('is_history', true)
       .gte('paid_at', start).lte('paid_at', end + 'T23:59:59')
-      .order('paid_at', {ascending:false}).limit(500)
+      .order('paid_at', {ascending:false}).limit(1000)
       .then(({data}) => { setHistOrders(data||[]); setHistLoading(false) })
   }, [tab, histMonth])
 
@@ -11895,21 +11897,26 @@ function PaymentModule({ user, mobile, allUsers }: any) {
   const tickPaid = async (o: any) => {
     const now = new Date().toISOString()
     const upd = { status:'paid', paid_at:now, paid_by:user.id }
-    await db.from('payment_orders').update(upd).eq('id', o.id)
+    const { error } = await db.from('payment_orders').update(upd).eq('id', o.id)
+    if (error) { alert('❌ Lỗi đánh dấu Đã CK: ' + error.message); return }
     setOrders(prev => prev.map(x => x.id===o.id ? {...x,...upd} : x))
   }
 
   const tickKiot = async (o: any) => {
     const now = new Date().toISOString()
-    const upd = { status:'completed', kiot_at:now, kiot_by:user.id }
-    await db.from('payment_orders').update(upd).eq('id', o.id)
-    setOrders(prev => prev.map(x => x.id===o.id ? {...x,...upd} : x))
+    // Đánh dấu completed + chuyển sang history để không chiếm chỗ list active
+    const upd = { status:'completed', kiot_at:now, kiot_by:user.id, is_history:true }
+    const { error } = await db.from('payment_orders').update(upd).eq('id', o.id)
+    if (error) { alert('❌ Lỗi: ' + error.message); return }
+    // Xóa khỏi list active vì đã vào lịch sử
+    setOrders(prev => prev.filter(x => x.id !== o.id))
   }
 
   const deleteOrder = async (id: string, status: string) => {
     const label = status === 'pending' ? 'lệnh chờ chuyển khoản' : 'lệnh nháp'
     if (!confirm(`Xóa ${label} này?`)) return
-    await db.from('payment_orders').delete().eq('id', id)
+    const { error } = await db.from('payment_orders').delete().eq('id', id)
+    if (error) { alert('❌ Lỗi xóa: ' + error.message); return }
     setOrders(prev => prev.filter(o => o.id !== id))
   }
 
@@ -12034,7 +12041,6 @@ function PaymentModule({ user, mobile, allUsers }: any) {
               ['draft',     '📝 Nháp'],
               ['pending',   '⏳ Chờ CK'],
               ['paid',      '✅ Đã CK'],
-              ['completed', '🏁 Xong'],
             ].map(([s,l]) => {
               const cnt = s==='all' ? orders.length : (countByStatus[s]||0)
               return (
