@@ -9,6 +9,11 @@ const SUPABASE_KEY = import.meta.env.VITE_SUPABASE_KEY as string
 const SUPABASE_ANON = import.meta.env.VITE_SUPABASE_ANON as string || SUPABASE_KEY
 const db = createClient(SUPABASE_URL, SUPABASE_KEY)
 
+// APP_VERSION — dùng để invalidate cache localStorage mỗi khi deploy version mới
+// (ngăn bug quyền user bị "reset" do cache position cũ sau deploy)
+// ⚠️ MỖI LẦN DEPLOY FEATURE MỚI CÓ PERMISSION MỚI, BUMP SỐ NÀY:
+const APP_VERSION = '2026.04.17.v6'
+
 // ── THEME ────────────────────────────────────────
 const T: any = {
   gold:'#C4973A', goldBg:'#FFF8E8', goldText:'#7A5A10', goldBorder:'#E5CFA0',
@@ -376,6 +381,7 @@ const handleLogin = async () => {
       setPendingUser(userObj); setMustChange(true); setLoading(false); return
     }
     localStorage.setItem('la_user', JSON.stringify(userObj))
+    try { localStorage.setItem('la_app_version', APP_VERSION) } catch {}
 onLogin(userObj)
   } catch(e: any) {
     setError('Lỗi: ' + (e?.message || JSON.stringify(e)))
@@ -5367,15 +5373,25 @@ function PositionsManagement({ positions, setPositions, mobile }: any) {
 
   const save = async () => {
     if (!form.name) return
-    const data = { ...form, created_at:fmtNow() }
+    // Fix: KHÔNG ghi đè created_at khi edit — chỉ set khi tạo mới
+    const data: any = { ...form }
+    delete data.created_at  // Bảo toàn created_at gốc của record
     if (edit) {
+      const { error } = await db.from('positions').update(data).eq('id', edit.id)
+      if (error) {
+        alert('❌ Lỗi lưu vị trí: ' + error.message + '\n\nCó thể do thiếu column DB. Liên hệ admin để kiểm tra migration.')
+        return
+      }
       const updated = {...edit, ...data}
       setPositions((prev: any) => prev.map((p: any) => p.id===edit.id ? updated : p))
-      await db.from('positions').update(data).eq('id', edit.id)
     } else {
-      const newPos = { id:'pos_'+Date.now(), ...data }
+      const newPos = { id:'pos_'+Date.now(), ...data, created_at:fmtNow() }
+      const { error } = await db.from('positions').insert(newPos)
+      if (error) {
+        alert('❌ Lỗi tạo vị trí: ' + error.message)
+        return
+      }
       setPositions((prev: any) => [...prev, newPos])
-      await db.from('positions').insert(newPos)
     }
     setShow(false)
   }
@@ -6446,7 +6462,16 @@ export default function App() {
   const [user, setUser] = useState<any>(() => {
   try {
     const saved = localStorage.getItem('la_user')
-    return saved ? JSON.parse(saved) : null
+    if (!saved) return null
+    const savedVer = localStorage.getItem('la_app_version')
+    const u = JSON.parse(saved)
+    // Fix "quyền bị reset": nếu APP_VERSION thay đổi (deploy mới),
+    // invalidate cached position — sẽ được fetch fresh từ DB ngay.
+    // Keep user id/ini/name để không phải re-login.
+    if (savedVer !== APP_VERSION) {
+      return { ...u, position: null, _stale: true }
+    }
+    return u
   } catch { return null }
 })
   const [page, setPage]             = useState('checklist')
@@ -6707,7 +6732,15 @@ export default function App() {
 
       // Cập nhật user hiện tại với data mới nhất
       const freshUser = usersData.find((u: any) => u.id === user.id)
-      if (freshUser) setUser(freshUser)
+      if (freshUser) {
+        setUser(freshUser)
+        // Fix: refresh localStorage + stamp APP_VERSION để lần reload sau dùng position mới nhất
+        // (trước đây cache user vẫn ở snapshot cũ → menu/quyền không update sau deploy)
+        try {
+          localStorage.setItem('la_user', JSON.stringify(freshUser))
+          localStorage.setItem('la_app_version', APP_VERSION)
+        } catch {}
+      }
 
       const wasReset = await performReset(clData, tmplData, stData)
       if (!wasReset) {
@@ -6775,7 +6808,11 @@ export default function App() {
         {!mobile && (
           <Sidebar user={user} page={validPage} setPage={setPage}
             pendingLeave={pendingLeave} pendingOT={pendingOT} notifUnread={notifUnread}
-            onLogout={() => { localStorage.removeItem('la_user'); setUser(null); setAllUsers([]); setChecklist([]) }}/>
+            onLogout={() => {
+              localStorage.removeItem('la_user')
+              localStorage.removeItem('la_app_version')
+              setUser(null); setAllUsers([]); setChecklist([])
+            }}/>
         )}
         <main style={{ flex:1, overflowY:'auto', paddingTop:4, minWidth:0 }}>
           {validPage==='dashboard' && <Dashboard {...pp} checklist={checklist} tasks={tasks} attendance={attendance} leaveRequests={leaveRequests} otRequests={[]}/>}
@@ -6802,7 +6839,11 @@ export default function App() {
           {validPage==='packing'    && <PackingModule {...pp}/>}
           {validPage==='settings'   && <Settings {...pp} setUser={setUser} settings={settings} setSettings={setSettings} onManualReset={manualReset}/>}
         </main>
-        {mobile && <BottomNav user={user} page={validPage} setPage={setPage} pendingLeave={pendingLeave} pendingOT={pendingOT} notifUnread={notifUnread} onLogout={() => { localStorage.removeItem('la_user'); setUser(null); setAllUsers([]); setChecklist([]) }}/>}
+        {mobile && <BottomNav user={user} page={validPage} setPage={setPage} pendingLeave={pendingLeave} pendingOT={pendingOT} notifUnread={notifUnread} onLogout={() => {
+          localStorage.removeItem('la_user')
+          localStorage.removeItem('la_app_version')
+          setUser(null); setAllUsers([]); setChecklist([])
+        }}/>}
         {/* Sticky Note — floating for all users */}
         {user && <StickyNote user={user}/>}
         {user && !taskNotiDismissed && <TaskNotifBanner user={user} tasks={tasks} allUsers={allUsers} setPage={setPage} onDismiss={() => setTaskNotiDismissed(true)}/>}
