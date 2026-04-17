@@ -11147,7 +11147,7 @@ function PaymentOrderForm({ suppliers, accounts, onSave, onClose, edit, mobile }
         const now = new Date().toISOString()
         const newSup = {
           id: 'sup_' + Date.now() + '_' + Math.random().toString(36).slice(2,5),
-          name: selSup.name, short_name: '', note: '', active: true,
+          name: String(selSup.name||''), short_name: '', note: '', active: true,
           created_at: now, created_by: ''
         }
         await db.from('suppliers').insert(newSup)
@@ -11155,20 +11155,37 @@ function PaymentOrderForm({ suppliers, accounts, onSave, onClose, edit, mobile }
         finalSupName = newSup.name
       }
 
-      // Check if STK is new (chưa có trong accounts) — chỉ khi có selAcc
-      const isNewStk = selAcc ? !accounts.find((a: any) =>
-        a.account_number.replace(/[^0-9]/g,'') === (selAcc.account_number||'').replace(/[^0-9]/g,'')
+      // Sanitize selAcc — chỉ lấy plain fields, tránh circular DOM refs
+      const cleanAcc = selAcc ? {
+        id:           String(selAcc.id||''),
+        account_number: String(selAcc.account_number||''),
+        account_name:   String(selAcc.account_name||''),
+        bank_name:      String(selAcc.bank_name||''),
+        supplier_id:    String(selAcc.supplier_id||''),
+      } : null
+
+      // Check if STK is new
+      const isNewStk = cleanAcc ? !accounts.find((a: any) =>
+        a.account_number.replace(/[^0-9]/g,'') === cleanAcc.account_number.replace(/[^0-9]/g,'')
       ) : false
 
       await onSave({
-        supplier_id: finalSupId, supplier_name: finalSupName,
-        account_id: selAcc?.id || 'acc_new_' + Date.now(),
-        account_number: selAcc?.account_number || '',
-        account_name: selAcc?.account_name || '', bank_name: selAcc?.bank_name || '',
-        amount: parseMoney(amount), transfer_content: content,
-        purpose, note, order_ref: orderRef, status: finalStatus,
-        _isNewStk: isNewStk,
-        _newStkData: isNewStk && selAcc ? { ...selAcc, supplier_id: finalSupId } : null,
+        supplier_id:      String(finalSupId||''),
+        supplier_name:    String(finalSupName||''),
+        account_id:       cleanAcc?.id || 'acc_new_' + Date.now(),
+        account_number:   cleanAcc?.account_number || '',
+        account_name:     cleanAcc?.account_name || '',
+        bank_name:        cleanAcc?.bank_name || '',
+        amount:           parseMoney(amount),
+        transfer_content: String(content||''),
+        purpose:          String(purpose||''),
+        note:             String(note||''),
+        order_ref:        String(orderRef||''),
+        status:           finalStatus,
+        _isNewStk:        isNewStk,
+        _newStkData:      isNewStk && cleanAcc
+          ? { ...cleanAcc, supplier_id: String(finalSupId||'') }
+          : null,
       })
     } catch (err: any) {
       alert('❌ Lỗi khi lưu: ' + (err?.message || 'Không xác định'))
