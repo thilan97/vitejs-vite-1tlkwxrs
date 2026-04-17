@@ -11838,24 +11838,29 @@ function PaymentModule({ user, mobile, allUsers }: any) {
   // ── Save order ──
   const saveOrder = async (form: any) => {
     const now = new Date().toISOString()
+    // Sanitize toàn bộ — tránh circular DOM refs
     const newO = {
       id: 'pay_' + Date.now() + '_' + Math.random().toString(36).slice(2,6),
-      supplier_id: form.supplier_id, supplier_name: form.supplier_name,
-      account_id: form.account_id, account_number: form.account_number,
-      account_name: form.account_name, bank_name: form.bank_name,
-      amount: form.amount, transfer_content: form.transfer_content,
-      purpose: form.purpose, note: form.note, order_ref: form.order_ref,
-      status: form.status, created_by: user.id, created_at: now,
+      supplier_id:      String(form.supplier_id||''),
+      supplier_name:    String(form.supplier_name||''),
+      account_id:       String(form.account_id||''),
+      account_number:   String(form.account_number||''),
+      account_name:     String(form.account_name||''),
+      bank_name:        String(form.bank_name||''),
+      amount:           Number(form.amount)||0,
+      transfer_content: String(form.transfer_content||''),
+      purpose:          String(form.purpose||''),
+      note:             String(form.note||''),
+      order_ref:        String(form.order_ref||''),
+      status:           String(form.status||'draft'),
+      created_by: user.id, created_at: now,
       paid_at:'', paid_by:'', kiot_at:'', kiot_by:'', is_history:false,
     }
     const { error } = await db.from('payment_orders').insert(newO)
     if (error) { alert('❌ Lỗi lưu lệnh: ' + error.message); return }
     setOrders(prev => [newO, ...prev])
-    // Nếu lưu nháp → tự switch filter sang 'draft' để thấy ngay
     if (form.status === 'draft') setFilterStatus('draft')
     setShowForm(false)
-
-    // Gợi ý lưu STK mới
     if (form._isNewStk && form._newStkData) {
       setNewStkPrompt({ order: newO, stkData: form._newStkData })
     }
@@ -11863,18 +11868,24 @@ function PaymentModule({ user, mobile, allUsers }: any) {
 
   const updateOrder = async (form: any) => {
     if (!editOrder) return
+    // Sanitize toàn bộ — tránh circular DOM refs
     const upd = {
-      supplier_id: form.supplier_id, supplier_name: form.supplier_name,
-      account_id: form.account_id, account_number: form.account_number,
-      account_name: form.account_name, bank_name: form.bank_name,
-      amount: form.amount, transfer_content: form.transfer_content,
-      purpose: form.purpose, note: form.note, order_ref: form.order_ref,
-      status: form.status,
+      supplier_id:      String(form.supplier_id||''),
+      supplier_name:    String(form.supplier_name||''),
+      account_id:       String(form.account_id||''),
+      account_number:   String(form.account_number||''),
+      account_name:     String(form.account_name||''),
+      bank_name:        String(form.bank_name||''),
+      amount:           Number(form.amount)||0,
+      transfer_content: String(form.transfer_content||''),
+      purpose:          String(form.purpose||''),
+      note:             String(form.note||''),
+      order_ref:        String(form.order_ref||''),
+      status:           String(form.status||''),
     }
-    const { error } = await db.from('payment_orders').update(upd).eq('id', editOrder.id)
+    const { error } = await db.from('payment_orders').update(upd).eq('id', String(editOrder.id))
     if (error) { alert('❌ Lỗi cập nhật: ' + error.message); return }
     setOrders(prev => prev.map(o => o.id===editOrder.id ? {...o,...upd} : o))
-    // Nếu chuyển từ draft → pending, switch tab để thấy ngay
     if (editOrder.status === 'draft' && form.status === 'pending') {
       setFilterStatus('pending')
     }
