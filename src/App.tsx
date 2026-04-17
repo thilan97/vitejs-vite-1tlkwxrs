@@ -12,7 +12,7 @@ const db = createClient(SUPABASE_URL, SUPABASE_KEY)
 // APP_VERSION — dùng để invalidate cache localStorage mỗi khi deploy version mới
 // (ngăn bug quyền user bị "reset" do cache position cũ sau deploy)
 // ⚠️ MỖI LẦN DEPLOY FEATURE MỚI CÓ PERMISSION MỚI, BUMP SỐ NÀY:
-const APP_VERSION = '2026.04.17.v12'
+const APP_VERSION = '2026.04.17.v13'
 
 // ════════════════════════════════════════════════════════════════
 // AUDIT LOG — ghi nhận các hành động phá hoại data để trace lại
@@ -13942,8 +13942,14 @@ function PackingModule({ user, allUsers, mobile, products }: any) {
     const { min } = photoCountRangeV2(totalItems)
     const picked = (ord.photos_picked||[]).length
     const packed = (ord.photos_packed||[]).length
-    if (picked < min || packed < min) {
-      alert(`❌ Cần tối thiểu ${min} ảnh hàng đã nhặt VÀ ${min} ảnh thùng hàng (hiện có ${picked} & ${packed}).`)
+    // Kiểm tra ảnh hàng đã nhặt — LUÔN bắt buộc
+    if (picked < min) {
+      alert(`❌ Cần tối thiểu ${min} ảnh hàng đã nhặt (hiện có ${picked}).`)
+      return
+    }
+    // Kiểm tra ảnh thùng hàng — CHỈ khi không phải đơn bookship
+    if (!ord.no_box && packed < min) {
+      alert(`❌ Cần tối thiểu ${min} ảnh thùng hàng (hiện có ${packed}).\nNếu đơn bookship không đóng thùng, hãy tick vào ô "Đơn bookship — không đóng thùng".`)
       return
     }
     const upd = {
@@ -13963,6 +13969,14 @@ function PackingModule({ user, allUsers, mobile, products }: any) {
   const updatePhotoList = async (orderCode: string, type: 'picked'|'packed', newPhotos: string[]) => {
     const col = type === 'picked' ? 'photos_picked' : 'photos_packed'
     const upd: any = { [col]: newPhotos, updated_at: new Date().toISOString() }
+    await db.from('packing_workflow').update(upd).eq('order_code', orderCode)
+    setOrders(prev => prev.map((o: any) => o.order_code === orderCode ? {...o, ...upd} : o))
+  }
+
+  const updateNoBox = async (orderCode: string, noBox: boolean) => {
+    const upd: any = { no_box: noBox, updated_at: new Date().toISOString() }
+    // Nếu tick no_box → xoá photos_packed cũ để không lẫn lộn
+    if (noBox) upd.photos_packed = []
     await db.from('packing_workflow').update(upd).eq('order_code', orderCode)
     setOrders(prev => prev.map((o: any) => o.order_code === orderCode ? {...o, ...upd} : o))
   }
@@ -14076,6 +14090,7 @@ function PackingModule({ user, allUsers, mobile, products }: any) {
             onFinish={() => finishPacking(selected.order_code)}
             onUpdatePhotos={(type: 'picked'|'packed', photos: string[]) =>
               updatePhotoList(selected.order_code, type, photos)}
+            onUpdateNoBox={(v: boolean) => updateNoBox(selected.order_code, v)}
             readOnly={selected.status === 'done' || !canPack}
           />
         )}
@@ -14084,11 +14099,18 @@ function PackingModule({ user, allUsers, mobile, products }: any) {
   )
 }
 
-function PackingDetailPanel({ ord, mobile, user, allUsers, products, onClose, onFinish, onUpdatePhotos, readOnly }: any) {
+function PackingDetailPanel({ ord, mobile, user, allUsers, products, onClose, onFinish, onUpdatePhotos, onUpdateNoBox, readOnly }: any) {
   const getName = (id: string) => allUsers.find((u: any) => u.id === id)?.name || '?'
   const totalItems = (ord.items || []).length
   const { min, max } = photoCountRangeV2(totalItems)
   const [showImgModal, setShowImgModal] = useState<string|null>(null)
+
+  // PHASE GATE: bắt buộc chụp ảnh hàng đã nhặt trước khi vào detail
+  // Nếu photos_picked đã đủ min từ trước (đơn làm dở) → vào thẳng DETAIL
+  const initialPhase = (ord.photos_picked||[]).length >= min ? 'detail' : 'gate'
+  const [phase, setPhase] = useState<'gate'|'detail'>(initialPhase)
+  // Một khi qua gate thì không quay lại, kể cả xoá ảnh
+  const [hasPassedGate, setHasPassedGate] = useState(initialPhase === 'detail')
 
   // Map product → stock realtime
   const productMap = useMemo(() => {
@@ -14102,140 +14124,254 @@ function PackingDetailPanel({ ord, mobile, user, allUsers, products, onClose, on
     return fallback || 0
   }
 
+  const pickedCount = (ord.photos_picked || []).length
+  const packedCount = (ord.photos_packed || []).length
+  const canProceedToDetail = pickedCount >= min
+
+  // Format tiền không có "đ"
+  const fmtMoney = (n: number) => Number(n||0).toLocaleString('vi-VN')
+
   return (
     <div style={{ background:T.card, borderRadius:12, border:`1px solid ${T.border}`,
-      padding:16, position: mobile ? 'static' : 'sticky', top: 0, maxHeight: mobile ? 'none' : 'calc(100vh - 40px)',
+      padding:0, position: mobile ? 'static' : 'sticky', top: 0, maxHeight: mobile ? 'none' : 'calc(100vh - 40px)',
       overflowY: 'auto', boxShadow:'0 2px 8px rgba(0,0,0,0.04)' }}>
 
-      {/* Header */}
-      <div style={{ display:'flex', alignItems:'center', justifyContent:'space-between',
-        paddingBottom:12, borderBottom:`1px solid ${T.border}`, marginBottom:12 }}>
-        <div>
-          <div style={{ fontSize:14, fontWeight:700, color:T.dark }}>
-            {ord.order_code} • {ord.customer_name}
+      {/* ══ HEADER STICKY — luôn hiển thị khi scroll trong panel ══ */}
+      <div style={{ position:'sticky', top:0, zIndex:5, background:'#fff',
+        padding:'14px 16px', borderBottom:`1px solid ${T.border}`,
+        boxShadow:'0 2px 6px rgba(0,0,0,0.04)' }}>
+        <div style={{ display:'flex', alignItems:'flex-start', justifyContent:'space-between', gap:10 }}>
+          <div style={{ flex:1, minWidth:0 }}>
+            <div style={{ display:'flex', alignItems:'center', gap:10, flexWrap:'wrap' }}>
+              <div style={{ fontSize:15, fontWeight:800, color:T.dark }}>
+                {ord.order_code}
+              </div>
+              <div style={{ fontSize:13, color:T.med, flex:1, minWidth:0,
+                whiteSpace:'nowrap', overflow:'hidden', textOverflow:'ellipsis' }}>
+                • {ord.customer_name}
+              </div>
+              <div style={{ fontSize:18, fontWeight:800, color:T.goldText,
+                background:T.goldBg, padding:'3px 12px', borderRadius:8,
+                letterSpacing:.3, whiteSpace:'nowrap' }}>
+                {fmtMoney(ord.total_amount)}
+              </div>
+            </div>
+            <div style={{ fontSize:11, color:T.light, marginTop:4, display:'flex',
+              gap:10, flexWrap:'wrap' }}>
+              <span>Sale: <b style={{ color:T.dark }}>{ord.sold_by_name||'—'}</b></span>
+              <span>• {totalItems} SP</span>
+              {ord.printed_by_name && <span>• 🖨 Người in: <b style={{ color:T.dark }}>{ord.printed_by_name}</b></span>}
+              {ord.no_box && <span style={{ color:T.amber, fontWeight:600 }}>• 📮 Bookship (không đóng thùng)</span>}
+            </div>
           </div>
-          <div style={{ fontSize:11, color:T.light, marginTop:2 }}>
-            Sale: {ord.sold_by_name||'—'} • {totalItems} SP • {Number(ord.total_amount||0).toLocaleString('vi-VN')}đ
-          </div>
+          <button onClick={onClose}
+            style={{ padding:'5px 10px', borderRadius:6, border:`1px solid ${T.border}`,
+              background:'#fff', color:T.med, cursor:'pointer', fontFamily:'inherit',
+              fontSize:11, flexShrink:0 }}>
+            ✕ Đóng
+          </button>
         </div>
-        <button onClick={onClose}
-          style={{ padding:'5px 10px', borderRadius:6, border:`1px solid ${T.border}`,
-            background:'#fff', color:T.med, cursor:'pointer', fontFamily:'inherit', fontSize:11 }}>
-          ✕ Đóng
-        </button>
       </div>
+
+      <div style={{ padding:16 }}>
 
       {ord.description_kv && (
         <div style={{ padding:'8px 12px', marginBottom:12, background:T.goldBg,
           border:`1px solid ${T.goldBorder}`, borderRadius:6, fontSize:11, color:T.dark }}>
-          {ord.description_kv}
+          📝 {ord.description_kv}
         </div>
       )}
 
-      {/* Metadata */}
-      <div style={{ padding:'8px 10px', marginBottom:12, background:T.bg, borderRadius:6,
-        fontSize:10, color:T.med, lineHeight:1.6 }}>
-        {ord.printed_by_name && <div>🖨 Người in: <b style={{ color:T.dark }}>{ord.printed_by_name}</b></div>}
-        {ord.assigned_to && <div>✋ NV nhặt: <b style={{ color:T.dark }}>{getName(ord.assigned_to)}</b></div>}
-        {ord.picked_at && <div>✓ Xong nhặt: <b style={{ color:T.dark }}>{new Date(ord.picked_at).toLocaleString('vi-VN',{hour:'2-digit',minute:'2-digit',day:'2-digit',month:'2-digit'})}</b></div>}
-        {ord.packed_by && <div>📮 Người đóng: <b style={{ color:T.green }}>{getName(ord.packed_by)}</b></div>}
-      </div>
+      {/* ══ PHASE 1: GATE — bắt buộc chụp ảnh hàng đã nhặt ══ */}
+      {phase === 'gate' && !hasPassedGate && (
+        <>
+          <div style={{ padding:'12px 14px', marginBottom:14, background:T.amberBg,
+            border:`2px solid ${T.amber}`, borderRadius:8 }}>
+            <div style={{ fontSize:14, fontWeight:800, color:T.amber, marginBottom:4 }}>
+              🚦 BƯỚC 1: Chụp ảnh hàng đã nhặt
+            </div>
+            <div style={{ fontSize:12, color:T.dark, lineHeight:1.5 }}>
+              Trước khi thấy chi tiết SP để đóng, bạn <b>BẮT BUỘC</b> phải chụp tối thiểu <b>{min} ảnh</b> hàng đã nhặt (xếp ra bàn, đầy đủ, rõ ràng).
+              Điều này đảm bảo có bằng chứng đơn hàng đúng trước khi đóng thùng.
+            </div>
+          </div>
 
-      {/* Items — Số lượng đơn này TO, tồn + thiếu nhỏ để tham khảo */}
-      <div style={{ marginBottom:14 }}>
-        <div style={{ fontSize:11, fontWeight:600, color:T.med, marginBottom:8 }}>
-          📋 {totalItems} sản phẩm trong đơn
-        </div>
-        <div style={{ maxHeight:380, overflowY:'auto', display:'flex', flexDirection:'column', gap:6 }}>
-          {(ord.items||[]).map((it: any, i: number) => {
-            const realStock = getStock(it.code, it.stock)
-            const hasShort = (it.short_qty||0) > 0
-            return (
-              <div key={i} style={{ padding:10, borderRadius:8, background:'#fff',
-                border:`1px solid ${hasShort ? T.red : T.border}`,
-                borderLeft:`4px solid ${hasShort ? T.red : T.green}` }}>
-                <div style={{ display:'flex', alignItems:'flex-start', gap:8, marginBottom:6 }}>
-                  <div style={{ flex:1, minWidth:0 }}>
-                    <div style={{ fontSize:12, fontWeight:700, color:T.dark, lineHeight:1.35 }}>
-                      {it.name}
+          <PhotoSection
+            title="📦 Ảnh hàng đã nhặt"
+            subtitle="Chụp ảnh các SP đã nhặt xếp ra bàn/khay trước khi đóng vào thùng."
+            photos={ord.photos_picked || []}
+            min={min} max={max}
+            readOnly={readOnly}
+            orderCode={ord.order_code}
+            photoType="picked"
+            onUpdate={(photos: string[]) => onUpdatePhotos('picked', photos)}
+          />
+
+          <div style={{ marginTop:16, display:'flex', gap:8 }}>
+            <button onClick={onClose}
+              style={{ flex:1, padding:'11px', borderRadius:8, border:`1px solid ${T.border}`,
+                background:'#fff', color:T.med, cursor:'pointer', fontFamily:'inherit', fontSize:13 }}>
+              ⏸ Để làm sau
+            </button>
+            <button
+              onClick={() => { setPhase('detail'); setHasPassedGate(true) }}
+              disabled={!canProceedToDetail}
+              style={{ flex:2, padding:'11px', borderRadius:8, border:'none',
+                background: canProceedToDetail
+                  ? `linear-gradient(135deg, ${T.green} 0%, #107035 100%)`
+                  : T.border,
+                color: canProceedToDetail ? '#fff' : T.light,
+                cursor: canProceedToDetail ? 'pointer' : 'not-allowed',
+                fontFamily:'inherit', fontSize:13, fontWeight:700 }}>
+              {canProceedToDetail
+                ? `✓ Tiếp tục đóng đơn → (${pickedCount}/${min} ảnh)`
+                : `🔒 Cần thêm ${min - pickedCount} ảnh để tiếp tục`}
+            </button>
+          </div>
+        </>
+      )}
+
+      {/* ══ PHASE 2: DETAIL — SP list + chụp thùng / bookship ══ */}
+      {phase === 'detail' && (
+        <>
+          {/* Metadata */}
+          <div style={{ padding:'8px 10px', marginBottom:12, background:T.bg, borderRadius:6,
+            fontSize:10, color:T.med, lineHeight:1.6 }}>
+            {ord.picked_at && <div>✓ Xong nhặt: <b style={{ color:T.dark }}>{new Date(ord.picked_at).toLocaleString('vi-VN',{hour:'2-digit',minute:'2-digit',day:'2-digit',month:'2-digit'})}</b></div>}
+            {ord.packed_by && <div>📮 Người đóng: <b style={{ color:T.green }}>{getName(ord.packed_by)}</b></div>}
+          </div>
+
+          {/* Items — Số lượng đơn này TO, tồn + thiếu nhỏ để tham khảo */}
+          <div style={{ marginBottom:14 }}>
+            <div style={{ fontSize:11, fontWeight:600, color:T.med, marginBottom:8 }}>
+              📋 {totalItems} sản phẩm trong đơn
+            </div>
+            <div style={{ maxHeight:380, overflowY:'auto', display:'flex', flexDirection:'column', gap:6 }}>
+              {(ord.items||[]).map((it: any, i: number) => {
+                const realStock = getStock(it.code, it.stock)
+                const hasShort = (it.short_qty||0) > 0
+                return (
+                  <div key={i} style={{ padding:10, borderRadius:8, background:'#fff',
+                    border:`1px solid ${hasShort ? T.red : T.border}`,
+                    borderLeft:`4px solid ${hasShort ? T.red : T.green}` }}>
+                    <div style={{ display:'flex', alignItems:'flex-start', gap:8, marginBottom:6 }}>
+                      <div style={{ flex:1, minWidth:0 }}>
+                        <div style={{ fontSize:12, fontWeight:700, color:T.dark, lineHeight:1.35 }}>
+                          {it.name}
+                        </div>
+                        <div style={{ fontSize:9, color:T.light, marginTop:2, display:'flex', gap:6, flexWrap:'wrap' }}>
+                          <span>{it.code}</span>
+                          {it.unit && <span>• {it.unit}</span>}
+                          <span>• 📦 Tồn: <b style={{ color:T.dark }}>{realStock}</b></span>
+                          {hasShort && <span style={{ color:T.red, fontWeight:700 }}>• ⚠️ Thiếu {it.short_qty}</span>}
+                        </div>
+                      </div>
+                      <button onClick={() => setShowImgModal(it.code)}
+                        style={{ padding:'5px 10px', borderRadius:6, border:`1px solid ${T.gold}`,
+                          background:T.goldBg, color:T.goldText, cursor:'pointer', fontFamily:'inherit',
+                          fontSize:10, fontWeight:600, flexShrink:0, whiteSpace:'nowrap' }}>
+                          🖼 Ảnh SP
+                      </button>
                     </div>
-                    <div style={{ fontSize:9, color:T.light, marginTop:2, display:'flex', gap:6, flexWrap:'wrap' }}>
-                      <span>{it.code}</span>
-                      {it.unit && <span>• {it.unit}</span>}
-                      <span>• 📦 Tồn: <b style={{ color:T.dark }}>{realStock}</b></span>
-                      {hasShort && <span style={{ color:T.red, fontWeight:700 }}>• ⚠️ Thiếu {it.short_qty}</span>}
+                    {/* Số lượng TO */}
+                    <div style={{ textAlign:'center', padding:'8px 0', background:T.bg, borderRadius:6,
+                      border:`1px solid ${T.border}` }}>
+                      <div style={{ fontSize:9, color:T.light, fontWeight:700, letterSpacing:.8 }}>
+                        SỐ LƯỢNG CẦN ĐÓNG
+                      </div>
+                      <div style={{ fontSize:30, fontWeight:900, color:T.dark, lineHeight:1, marginTop:2 }}>
+                        {it.qty - (it.short_qty||0)}
+                        {hasShort && (
+                          <span style={{ fontSize:14, color:T.light, fontWeight:400, marginLeft:6 }}>
+                            (đặt {it.qty})
+                          </span>
+                        )}
+                      </div>
                     </div>
                   </div>
-                  <button onClick={() => setShowImgModal(it.code)}
-                    style={{ padding:'5px 10px', borderRadius:6, border:`1px solid ${T.gold}`,
-                      background:T.goldBg, color:T.goldText, cursor:'pointer', fontFamily:'inherit',
-                      fontSize:10, fontWeight:600, flexShrink:0, whiteSpace:'nowrap' }}>
-                    🖼 Ảnh SP
-                  </button>
+                )
+              })}
+            </div>
+          </div>
+
+          {/* Ảnh hàng đã nhặt (readonly info — đã chụp ở Phase 1) */}
+          <div style={{ padding:'10px 12px', marginBottom:14, background:T.greenBg,
+            border:`1px solid ${T.green}`, borderRadius:8 }}>
+            <div style={{ fontSize:12, fontWeight:700, color:T.green, marginBottom:2 }}>
+              ✓ Đã chụp {pickedCount} ảnh hàng đã nhặt
+            </div>
+            {!readOnly && (
+              <button onClick={() => { setPhase('gate'); setHasPassedGate(false) }}
+                style={{ marginTop:6, padding:'3px 10px', borderRadius:12, border:`1px solid ${T.green}`,
+                  background:'#fff', color:T.green, cursor:'pointer', fontFamily:'inherit',
+                  fontSize:10, fontWeight:600 }}>
+                📷 Chụp thêm / xem lại
+              </button>
+            )}
+          </div>
+
+          {/* Checkbox bookship không đóng thùng */}
+          {!readOnly && (
+            <label style={{ display:'flex', alignItems:'flex-start', gap:10, padding:12, marginBottom:12,
+              background: ord.no_box ? T.amberBg : T.bg, borderRadius:8,
+              border:`2px solid ${ord.no_box ? T.amber : T.border}`, cursor:'pointer' }}>
+              <input type="checkbox" checked={!!ord.no_box}
+                onChange={e => onUpdateNoBox(e.target.checked)}
+                style={{ marginTop:2, width:18, height:18, cursor:'pointer', accentColor:T.amber }}/>
+              <div style={{ flex:1 }}>
+                <div style={{ fontSize:13, fontWeight:700, color:T.dark }}>
+                  📮 Đơn bookship — không đóng thùng
                 </div>
-                {/* Số lượng TO */}
-                <div style={{ textAlign:'center', padding:'8px 0', background:T.bg, borderRadius:6,
-                  border:`1px solid ${T.border}` }}>
-                  <div style={{ fontSize:9, color:T.light, fontWeight:700, letterSpacing:.8 }}>
-                    SỐ LƯỢNG CẦN ĐÓNG
-                  </div>
-                  <div style={{ fontSize:30, fontWeight:900, color:T.dark, lineHeight:1, marginTop:2 }}>
-                    {it.qty - (it.short_qty||0)}
-                    {hasShort && (
-                      <span style={{ fontSize:14, color:T.light, fontWeight:400, marginLeft:6 }}>
-                        (đặt {it.qty})
-                      </span>
-                    )}
-                  </div>
+                <div style={{ fontSize:11, color:T.med, marginTop:3, lineHeight:1.4 }}>
+                  Tick nếu đơn này là bookship (giao nội bộ, giao tận nơi) không cần đóng thùng. Khi tick, không cần chụp ảnh thùng hàng.
                 </div>
               </div>
-            )
-          })}
-        </div>
-      </div>
+            </label>
+          )}
 
-      {/* Section 1: Ảnh hàng đã nhặt */}
-      <PhotoSection
-        title="📦 Ảnh hàng đã nhặt (trước đóng thùng)"
-        subtitle="Chụp ảnh các SP đã nhặt xếp ra bàn/khay trước khi đóng vào thùng."
-        photos={ord.photos_picked || []}
-        min={min} max={max}
-        readOnly={readOnly}
-        orderCode={ord.order_code}
-        photoType="picked"
-        onUpdate={(photos: string[]) => onUpdatePhotos('picked', photos)}
-      />
+          {/* Section ảnh thùng hàng — ẨN khi no_box */}
+          {!ord.no_box && (
+            <PhotoSection
+              title="📮 Ảnh thùng hàng (sau khi đóng xong)"
+              subtitle="Chụp ảnh thùng hàng đã đóng kín, dán nhãn/ghi địa chỉ."
+              photos={ord.photos_packed || []}
+              min={min} max={max}
+              readOnly={readOnly}
+              orderCode={ord.order_code}
+              photoType="packed"
+              onUpdate={(photos: string[]) => onUpdatePhotos('packed', photos)}
+            />
+          )}
 
-      <div style={{ height:16 }}/>
+          {/* Thông báo nếu bookship */}
+          {ord.no_box && (
+            <div style={{ padding:'12px 14px', marginBottom:14, background:T.amberBg,
+              border:`1px solid ${T.amber}`, borderRadius:8,
+              fontSize:12, color:T.amber, fontWeight:600 }}>
+              ℹ️ Đã đánh dấu là đơn bookship — bỏ qua bước chụp ảnh thùng hàng.
+            </div>
+          )}
 
-      {/* Section 2: Ảnh thùng hàng */}
-      <PhotoSection
-        title="📮 Ảnh thùng hàng (sau khi đóng xong)"
-        subtitle="Chụp ảnh thùng hàng đã đóng kín, dán nhãn/ghi địa chỉ."
-        photos={ord.photos_packed || []}
-        min={min} max={max}
-        readOnly={readOnly}
-        orderCode={ord.order_code}
-        photoType="packed"
-        onUpdate={(photos: string[]) => onUpdatePhotos('packed', photos)}
-      />
-
-      {/* Footer */}
-      {!readOnly && (
-        <div style={{ display:'flex', gap:8, paddingTop:14, marginTop:14, borderTop:`1px solid ${T.border}` }}>
-          <button onClick={onClose}
-            style={{ flex:1, padding:'9px', borderRadius:6, border:`1px solid ${T.border}`,
-              background:'#fff', color:T.med, cursor:'pointer', fontFamily:'inherit', fontSize:12 }}>
-            ⏸ Thoát
-          </button>
-          <button onClick={onFinish}
-            style={{ flex:2, padding:'9px', borderRadius:6, border:'none',
-              background:`linear-gradient(135deg, ${T.green} 0%, #107035 100%)`, color:'#fff',
-              cursor:'pointer', fontFamily:'inherit', fontSize:12, fontWeight:700 }}>
-            ✓ Hoàn tất đóng hàng
-          </button>
-        </div>
+          {/* Footer */}
+          {!readOnly && (
+            <div style={{ display:'flex', gap:8, paddingTop:14, marginTop:14, borderTop:`1px solid ${T.border}` }}>
+              <button onClick={onClose}
+                style={{ flex:1, padding:'10px', borderRadius:8, border:`1px solid ${T.border}`,
+                  background:'#fff', color:T.med, cursor:'pointer', fontFamily:'inherit', fontSize:13 }}>
+                ⏸ Thoát
+              </button>
+              <button onClick={onFinish}
+                style={{ flex:2, padding:'10px', borderRadius:8, border:'none',
+                  background:`linear-gradient(135deg, ${T.green} 0%, #107035 100%)`, color:'#fff',
+                  cursor:'pointer', fontFamily:'inherit', fontSize:13, fontWeight:700 }}>
+                ✓ Hoàn tất đóng hàng
+              </button>
+            </div>
+          )}
+        </>
       )}
+
+      </div>
 
       {showImgModal && (
         <ProductImageModalV2 code={showImgModal} onClose={() => setShowImgModal(null)}/>
