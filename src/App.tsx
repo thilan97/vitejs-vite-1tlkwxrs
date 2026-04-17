@@ -11440,10 +11440,14 @@ function PaymentOrderForm({ suppliers, accounts, onSave, onClose, edit, mobile }
 
         <div style={{ padding:'12px 20px', borderTop:`1px solid ${T.border}`,
           display:'flex', gap:10, flexShrink:0 }}>
-          <GoldBtn onClick={handleSubmit} disabled={!isValid || saving}>
-            {saving ? 'Đang lưu...' : edit ? 'Cập nhật' : status==='draft'?'Lưu nháp':'Tạo lệnh'}
+          <GoldBtn onClick={handleSubmit}
+            disabled={(status !== 'draft' && !isValid) || saving}>
+            {saving ? 'Đang lưu...' : edit
+              ? (edit.status==='draft' && status==='pending' ? '📤 Gửi lên chờ CK' : 'Cập nhật')
+              : status==='draft' ? 'Lưu nháp' : 'Tạo lệnh'}
           </GoldBtn>
-          {!edit && status !== 'draft' && (
+          {/* Nút lưu nháp - chỉ hiện khi tạo mới hoặc edit pending->draft */}
+          {(!edit || edit.status==='draft') && status !== 'draft' && (
             <button onClick={() => handleSubmit('draft')}
               style={{ padding:'8px 16px', borderRadius:8, border:`1px solid ${T.border}`,
                 background:'transparent', color:T.med, cursor:'pointer', fontFamily:'inherit', fontSize:12 }}>
@@ -11838,8 +11842,13 @@ function PaymentModule({ user, mobile, allUsers }: any) {
       purpose: form.purpose, note: form.note, order_ref: form.order_ref,
       status: form.status,
     }
-    await db.from('payment_orders').update(upd).eq('id', editOrder.id)
+    const { error } = await db.from('payment_orders').update(upd).eq('id', editOrder.id)
+    if (error) { alert('❌ Lỗi cập nhật: ' + error.message); return }
     setOrders(prev => prev.map(o => o.id===editOrder.id ? {...o,...upd} : o))
+    // Nếu chuyển từ draft → pending, switch tab để thấy ngay
+    if (editOrder.status === 'draft' && form.status === 'pending') {
+      setFilterStatus('pending')
+    }
     setEditOrder(null); setShowForm(false)
   }
 
@@ -11857,16 +11866,24 @@ function PaymentModule({ user, mobile, allUsers }: any) {
     setOrders(prev => prev.map(x => x.id===o.id ? {...x,...upd} : x))
   }
 
-  const deleteOrder = async (id: string) => {
-    if (!confirm('Xóa lệnh này?')) return
+  const deleteOrder = async (id: string, status: string) => {
+    const label = status === 'pending' ? 'lệnh chờ chuyển khoản' : 'lệnh nháp'
+    if (!confirm(`Xóa ${label} này?`)) return
     await db.from('payment_orders').delete().eq('id', id)
     setOrders(prev => prev.filter(o => o.id !== id))
   }
 
   const promoteOrder = async (o: any) => {
+    // Kiểm tra đủ thông tin trước khi gửi
+    if (!o.supplier_name || !o.account_number || !o.amount) {
+      alert('❌ Lệnh chưa đủ thông tin (NCC, STK, Số tiền). Hãy sửa lệnh trước khi gửi.')
+      return
+    }
     const upd = { status:'pending' }
-    await db.from('payment_orders').update(upd).eq('id', o.id)
+    const { error } = await db.from('payment_orders').update(upd).eq('id', o.id)
+    if (error) { alert('❌ Lỗi: ' + error.message); return }
     setOrders(prev => prev.map(x => x.id===o.id ? {...x,...upd} : x))
+    setFilterStatus('pending')
   }
 
   // Save new STK after order
@@ -12094,8 +12111,8 @@ function PaymentModule({ user, mobile, allUsers }: any) {
                               Nhập KV
                             </button>
                           )}
-                          {canCreate && o.status==='draft' && (
-                            <button onClick={e => { e.stopPropagation(); deleteOrder(o.id) }}
+                          {canCreate && (o.status==='draft' || o.status==='pending') && (
+                            <button onClick={e => { e.stopPropagation(); deleteOrder(o.id, o.status) }}
                               style={{ padding:'4px 8px', borderRadius:6, border:`1px solid ${T.red}`,
                                 background:'transparent', color:T.red, cursor:'pointer', fontSize:11, fontFamily:'inherit' }}>
                               ✕
@@ -12181,8 +12198,8 @@ function PaymentModule({ user, mobile, allUsers }: any) {
                           {canCreate && (
                             <GoldBtn small outline onClick={() => { setEditOrder(o); setShowForm(true) }}>✏️ Sửa</GoldBtn>
                           )}
-                          {o.status==='draft' && canCreate && (
-                            <GoldBtn small danger onClick={() => deleteOrder(o.id)}>✕ Xóa</GoldBtn>
+                          {canCreate && (o.status==='draft' || o.status==='pending') && (
+                            <GoldBtn small danger onClick={() => deleteOrder(o.id, o.status)}>✕ Xóa</GoldBtn>
                           )}
                         </div>
                       )}
