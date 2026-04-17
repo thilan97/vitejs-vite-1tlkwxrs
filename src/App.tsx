@@ -12950,652 +12950,13 @@ function PaymentModule({ user, mobile, allUsers }: any) {
   )
 }
 
-// ══════════════════════════════════════════════════════════════════════
-// ══ PICKING MODULE — Nhặt Hàng (#5) ══════════════════════════════════
-// ══════════════════════════════════════════════════════════════════════
-function PickingModule({ user, allUsers, mobile }: any) {
-  const perm      = getPerm(user)
-  const canAssign = perm.assignPacking
-  const canPick   = perm.pickOrders
-  const isAdmin   = perm.viewAllDashboard
-  const p = mobile ? '16px' : '24px'
-
-  const [orders, setOrders]     = useState<any[]>([])
-  const [loading, setLoading]   = useState(true)
-  const [syncing, setSyncing]   = useState(false)
-  const [lastSync, setLastSync] = useState<Date|null>(null)
-  const [tab, setTab]           = useState<'mine'|'assign'|'all'|'done'>(canAssign ? 'assign' : 'mine')
-  const [expandedOrder, setExpandedOrder] = useState<string|null>(null)
-  const [searchQ, setSearchQ] = useState('')
-
-  // Fetch data
-  const fetchData = async (quiet=false) => {
-    if (!quiet) setSyncing(true)
-    const { data } = await db.from('packing_workflow').select('*')
-      .in('status', ['picking','packing'])
-      .order('purchase_date', { ascending: true })
-      .limit(500)
-    setOrders(data||[])
-    setLastSync(new Date())
-    if (!quiet) setSyncing(false)
-    setLoading(false)
-  }
-
-  // Sync KV (call edge function)
-  const syncKV = async () => {
-    setSyncing(true)
-    try {
-      const res = await fetch(`${SUPABASE_URL}/functions/v1/kiotviet-picking`, {
-        method: 'POST',
-        headers: { 'Authorization': `Bearer ${SUPABASE_ANON}` }
-      })
-      const json = await res.json()
-      if (json.error) alert('❌ Sync lỗi: ' + json.error)
-      await fetchData(true)
-    } catch(e: any) {
-      alert('❌ Sync lỗi: ' + e.message)
-    }
-    setSyncing(false)
-  }
-
-  // Initial load + polling 2 phút
-  useEffect(() => {
-    fetchData()
-    const interval = setInterval(() => {
-      syncKV().then(() => fetchData(true))
-    }, 120000) // 2 phút
-    return () => clearInterval(interval)
-  }, [])
-
-  const norm = (s: string) => (s||'').toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g,'').replace(/đ/g,'d').trim()
-
-  // ── Filter theo tab ──
-  const filterOrders = (orders: any[]) => {
-    const q = norm(searchQ)
-    return orders.filter((o: any) => {
-      if (!q) return true
-      const hay = norm(`${o.order_code} ${o.customer_name} ${o.sold_by_name}`)
-      return hay.includes(q)
-    })
-  }
-
-  const myOrders     = filterOrders(orders.filter((o: any) => o.assigned_to === user.id && o.status === 'picking'))
-  const unassigned   = filterOrders(orders.filter((o: any) => !o.assigned_to && o.status === 'picking'))
-  const assignedOrds = filterOrders(orders.filter((o: any) => o.assigned_to && o.status === 'picking'))
-  const packingOrds  = filterOrders(orders.filter((o: any) => o.status === 'packing'))
-
-  // Assign NV Nhặt
-  const assign = async (orderCode: string, userId: string) => {
-    const upd: any = {
-      assigned_to: userId || null,
-      assigned_by: user.id,
-      assigned_at: userId ? new Date().toISOString() : null,
-      updated_at:  new Date().toISOString(),
-    }
-    const { error } = await db.from('packing_workflow').update(upd).eq('order_code', orderCode)
-    if (error) { alert('❌ Lỗi gán: ' + error.message); return }
-    setOrders(prev => prev.map((o: any) => o.order_code === orderCode ? {...o, ...upd} : o))
-  }
-
-  // Update item picked
-  const updatePickedQty = async (orderCode: string, itemCode: string, newQty: number) => {
-    const ord = orders.find((o: any) => o.order_code === orderCode)
-    if (!ord) return
-    const newItems = (ord.items || []).map((it: any) => {
-      if (it.code === itemCode) {
-        const clamped = Math.max(0, Math.min(newQty, it.qty))
-        return { ...it, picked_qty: clamped, picked_at: clamped>0 ? new Date().toISOString() : null }
-      }
-      return it
-    })
-    const upd: any = {
-      items: newItems,
-      picking_started_at: ord.picking_started_at || new Date().toISOString(),
-      updated_at: new Date().toISOString(),
-    }
-    await db.from('packing_workflow').update(upd).eq('order_code', orderCode)
-    setOrders(prev => prev.map((o: any) => o.order_code === orderCode ? {...o, ...upd} : o))
-  }
-
-  // Report shortage
-  const reportShort = async (orderCode: string, itemCode: string, shortQty: number, note: string) => {
-    const ord = orders.find((o: any) => o.order_code === orderCode)
-    if (!ord) return
-    const newItems = (ord.items || []).map((it: any) => {
-      if (it.code === itemCode) {
-        return { ...it, short_qty: shortQty, short_note: note }
-      }
-      return it
-    })
-    await db.from('packing_workflow').update({ items: newItems, updated_at: new Date().toISOString() })
-      .eq('order_code', orderCode)
-    setOrders(prev => prev.map((o: any) => o.order_code === orderCode ? {...o, items: newItems} : o))
-    // Also insert into shortage_items
-    const item = (ord.items||[]).find((it: any) => it.code === itemCode)
-    if (item) {
-      await db.from('shortage_items').insert({
-        id: `sh_pick_${orderCode}_${itemCode}_${Date.now()}`,
-        product_code: itemCode,
-        product_name: item.name,
-        qty_short: shortQty,
-        unit: item.unit || '',
-        reported_by: user.id,
-        status: 'pending',
-        note: `Từ đơn nhặt ${orderCode}. ${note||''}`.trim(),
-        created_at: new Date().toISOString(),
-      })
-    }
-  }
-
-  // Finalize picking → chuyển sang 'packing'
-  const finishPicking = async (orderCode: string) => {
-    const ord = orders.find((o: any) => o.order_code === orderCode)
-    if (!ord) return
-    const allPicked = (ord.items||[]).every((it: any) => (it.picked_qty||0) + (it.short_qty||0) >= it.qty)
-    if (!allPicked) {
-      if (!confirm('Còn SP chưa nhặt đủ. Xác nhận hoàn tất?')) return
-    }
-    const upd = {
-      status: 'packing',
-      picked_at: new Date().toISOString(),
-      updated_at: new Date().toISOString(),
-    }
-    const { error } = await db.from('packing_workflow').update(upd).eq('order_code', orderCode)
-    if (error) { alert('❌ Lỗi: ' + error.message); return }
-    setOrders(prev => prev.map((o: any) => o.order_code === orderCode ? {...o, ...upd} : o))
-    setExpandedOrder(null)
-    alert('✅ Đã hoàn tất nhặt, chuyển sang Đóng hàng')
-  }
-
-  // NV Kho để gán (trong dept kho)
-  const khoUsers = (allUsers||[]).filter((u: any) => u.dept_id === 'kho' && u.active !== false)
-
-  // Tabs dynamically
-  const tabs: any[] = []
-  if (canPick) tabs.push({ id:'mine', label:`🎯 Của tôi${myOrders.length?` (${myOrders.length})`:''}` })
-  if (canAssign) tabs.push({ id:'assign', label:`📋 Gán NV${unassigned.length?` (${unassigned.length})`:''}` })
-  if (canAssign || isAdmin) tabs.push({ id:'all', label:`👥 Tất cả${assignedOrds.length?` (${assignedOrds.length})`:''}` })
-  tabs.push({ id:'done', label:`📦 Chuyển đóng${packingOrds.length?` (${packingOrds.length})`:''}` })
-
-  if (loading) return <div style={{ padding:p, textAlign:'center', color:T.light, paddingTop:40 }}>⏳ Đang tải...</div>
-
-  // ── Render detail picking view ──
-  if (expandedOrder) {
-    const ord = orders.find((o: any) => o.order_code === expandedOrder)
-    if (!ord) { setExpandedOrder(null); return null }
-    return (
-      <PickingDetail ord={ord} mobile={mobile}
-        onBack={() => setExpandedOrder(null)}
-        onUpdateQty={(code: string, qty: number) => updatePickedQty(ord.order_code, code, qty)}
-        onReportShort={(code: string, qty: number, note: string) => reportShort(ord.order_code, code, qty, note)}
-        onFinish={() => finishPicking(ord.order_code)}
-        canPick={canPick || isAdmin}
-      />
-    )
-  }
-
-  return (
-    <div style={{ padding:`0 ${p} ${mobile?'80px':p}` }}>
-      <Topbar mobile={mobile} title="📥 Nhặt hàng"
-        subtitle={`${orders.length} đơn chờ xử lý`}
-        action={
-          <div style={{ display:'flex', gap:8, alignItems:'center' }}>
-            {lastSync && (
-              <span style={{ fontSize:10, color:T.light }}>
-                {syncing ? '🔄 Sync...' : '✓ ' + lastSync.toLocaleTimeString('vi-VN', {hour:'2-digit',minute:'2-digit'})}
-              </span>
-            )}
-            <button onClick={syncKV} disabled={syncing}
-              style={{ padding:'5px 12px', borderRadius:20, border:`1px solid ${T.gold}`,
-                background:T.goldBg, color:T.goldText, cursor:'pointer', fontFamily:'inherit',
-                fontSize:11, fontWeight:600 }}>
-              🔄 Sync KV
-            </button>
-          </div>
-        }/>
-
-      {/* Tabs */}
-      <div style={{ display:'flex', gap:6, marginBottom:14, flexWrap:'wrap' }}>
-        {tabs.map((t: any) => (
-          <button key={t.id} onClick={() => setTab(t.id)}
-            style={{ padding:'6px 14px', borderRadius:20, cursor:'pointer', fontFamily:'inherit', fontSize:12,
-              border:`1.5px solid ${tab===t.id?T.gold:T.border}`,
-              background:tab===t.id?T.goldBg:'transparent',
-              color:tab===t.id?T.goldText:T.med, fontWeight:tab===t.id?700:400 }}>
-            {t.label}
-          </button>
-        ))}
-      </div>
-
-      {/* Search */}
-      <Card style={{ padding:10, marginBottom:12 }}>
-        <input value={searchQ} onChange={e => setSearchQ(e.target.value)}
-          placeholder="🔍 Tìm mã đơn, tên khách, sale..."
-          style={{ width:'100%', padding:'8px 12px', border:`1px solid ${T.border}`, borderRadius:8,
-            fontSize:12, fontFamily:'inherit', color:T.dark, background:'#fff', outline:'none',
-            boxSizing:'border-box' as any }}/>
-      </Card>
-
-      {/* Content theo tab */}
-      {tab === 'mine' && (
-        <PickingList orders={myOrders} onOpen={(c: string) => setExpandedOrder(c)} emptyMsg="Chưa có đơn nào được giao cho bạn." />
-      )}
-      {tab === 'assign' && canAssign && (
-        <AssignView orders={unassigned} allOrders={[...unassigned, ...assignedOrds]}
-          khoUsers={khoUsers} onAssign={assign} />
-      )}
-      {tab === 'all' && (canAssign || isAdmin) && (
-        <AllOrdersView orders={[...unassigned, ...assignedOrds]} allUsers={allUsers}
-          onOpen={(c: string) => setExpandedOrder(c)}
-          onReassign={assign} khoUsers={khoUsers} />
-      )}
-      {tab === 'done' && (
-        <PickingList orders={packingOrds} onOpen={(c: string) => setExpandedOrder(c)}
-          emptyMsg="Chưa có đơn nào chờ đóng." readOnly />
-      )}
-    </div>
-  )
-}
-
-// ── Sub component: PickingList ──
-function PickingList({ orders, onOpen, emptyMsg, readOnly }: any) {
-  if (orders.length === 0) return (
-    <div style={{ padding:'40px 20px', textAlign:'center', color:T.light, fontSize:13 }}>
-      {emptyMsg || 'Không có đơn nào.'}
-    </div>
-  )
-  return (
-    <div style={{ display:'flex', flexDirection:'column', gap:8 }}>
-      {orders.map((o: any) => {
-        const totalItems  = (o.items||[]).length
-        const pickedItems = (o.items||[]).filter((it: any) => (it.picked_qty||0) >= it.qty).length
-        const short = (o.items||[]).filter((it: any) => (it.short_qty||0) > 0).length
-        return (
-          <Card key={o.order_code} style={{ padding:12, cursor:'pointer' }}
-            onClick={() => onOpen(o.order_code)}>
-            <div style={{ display:'flex', alignItems:'center', gap:10, flexWrap:'wrap' }}>
-              <div style={{ flex:1, minWidth:200 }}>
-                <div style={{ fontSize:13, fontWeight:700, color:T.dark }}>
-                  {o.order_code} <span style={{ fontWeight:400, color:T.med }}>• {o.customer_name || 'Khách lẻ'}</span>
-                </div>
-                <div style={{ fontSize:11, color:T.light, marginTop:3 }}>
-                  Sale: {o.sold_by_name || '—'} • {totalItems} SP • {Number(o.total_amount||0).toLocaleString('vi-VN')}đ
-                  {o.closed_by_name && <> • Đóng bởi: <b style={{ color:T.dark }}>{o.closed_by_name}</b></>}
-                </div>
-                {o.description_kv && (
-                  <div style={{ fontSize:10, color:T.light, marginTop:3, fontStyle:'italic' }}>
-                    📝 {o.description_kv.slice(0, 80)}{o.description_kv.length>80?'...':''}
-                  </div>
-                )}
-              </div>
-              {totalItems>0 && (
-                <div style={{ fontSize:11, color:T.med, textAlign:'right' }}>
-                  <div>{pickedItems}/{totalItems} SP ✓</div>
-                  {short>0 && <div style={{ color:T.red, fontSize:10 }}>⚠️ {short} thiếu</div>}
-                </div>
-              )}
-              <button style={{ padding:'5px 14px', borderRadius:20, border:`1px solid ${T.gold}`,
-                background:T.goldBg, color:T.goldText, cursor:'pointer', fontFamily:'inherit',
-                fontSize:11, fontWeight:600 }}>
-                {readOnly ? 'Xem' : pickedItems>0 ? 'Tiếp tục →' : 'Bắt đầu →'}
-              </button>
-            </div>
-          </Card>
-        )
-      })}
-    </div>
-  )
-}
-
-// ── Sub component: AssignView ──
-function AssignView({ orders, khoUsers, onAssign }: any) {
-  if (orders.length === 0) return (
-    <div style={{ padding:'40px 20px', textAlign:'center', color:T.light, fontSize:13 }}>
-      🎉 Tất cả đơn đã được gán.
-    </div>
-  )
-  return (
-    <div style={{ display:'flex', flexDirection:'column', gap:8 }}>
-      {orders.map((o: any) => {
-        const totalItems = (o.items||[]).length
-        return (
-          <Card key={o.order_code} style={{ padding:12 }}>
-            <div style={{ display:'flex', alignItems:'center', gap:10, flexWrap:'wrap' }}>
-              <div style={{ flex:1, minWidth:200 }}>
-                <div style={{ fontSize:13, fontWeight:700, color:T.dark }}>
-                  {o.order_code} <span style={{ fontWeight:400, color:T.med }}>• {o.customer_name}</span>
-                </div>
-                <div style={{ fontSize:11, color:T.light, marginTop:3 }}>
-                  Sale: {o.sold_by_name||'—'} • {totalItems} SP
-                  {o.closed_by_name && <> • Đóng: <b style={{ color:T.dark }}>{o.closed_by_name}</b></>}
-                </div>
-              </div>
-              <select value="" onChange={e => e.target.value && onAssign(o.order_code, e.target.value)}
-                style={{ padding:'6px 10px', border:`1.5px solid ${T.gold}`, borderRadius:8,
-                  fontSize:12, fontFamily:'inherit', color:T.dark, background:T.goldBg, cursor:'pointer', outline:'none' }}>
-                <option value="">-- Gán cho NV --</option>
-                {khoUsers.map((u: any) => (
-                  <option key={u.id} value={u.id}>{u.name}</option>
-                ))}
-              </select>
-            </div>
-          </Card>
-        )
-      })}
-    </div>
-  )
-}
-
-// ── Sub component: AllOrdersView (Manager xem tất cả) ──
-function AllOrdersView({ orders, allUsers, onOpen, onReassign, khoUsers }: any) {
-  if (orders.length === 0) return (
-    <div style={{ padding:'40px 20px', textAlign:'center', color:T.light, fontSize:13 }}>
-      Chưa có đơn nào.
-    </div>
-  )
-  const getUserName = (id: string) => allUsers.find((u: any) => u.id === id)?.name || '?'
-  return (
-    <div style={{ display:'flex', flexDirection:'column', gap:8 }}>
-      {orders.map((o: any) => {
-        const totalItems  = (o.items||[]).length
-        const pickedItems = (o.items||[]).filter((it: any) => (it.picked_qty||0) >= it.qty).length
-        return (
-          <Card key={o.order_code} style={{ padding:12 }}>
-            <div style={{ display:'flex', alignItems:'center', gap:10, flexWrap:'wrap' }}>
-              <div style={{ flex:1, minWidth:200, cursor:'pointer' }} onClick={() => onOpen(o.order_code)}>
-                <div style={{ fontSize:13, fontWeight:700, color:T.dark }}>
-                  {o.order_code} <span style={{ fontWeight:400, color:T.med }}>• {o.customer_name}</span>
-                </div>
-                <div style={{ fontSize:11, color:T.light, marginTop:3 }}>
-                  Sale: {o.sold_by_name||'—'} • {pickedItems}/{totalItems} SP
-                  {o.assigned_to && <> • <b style={{ color:T.blue }}>Nhặt: {getUserName(o.assigned_to)}</b></>}
-                </div>
-              </div>
-              <select value={o.assigned_to || ''} onChange={e => onReassign(o.order_code, e.target.value)}
-                style={{ padding:'5px 10px', border:`1px solid ${T.border}`, borderRadius:8,
-                  fontSize:11, fontFamily:'inherit', background:'#fff', cursor:'pointer', outline:'none' }}>
-                <option value="">-- Bỏ gán --</option>
-                {khoUsers.map((u: any) => (
-                  <option key={u.id} value={u.id}>{u.name}</option>
-                ))}
-              </select>
-              <button onClick={() => onOpen(o.order_code)}
-                style={{ padding:'5px 12px', borderRadius:20, border:`1px solid ${T.border}`,
-                  background:'#fff', color:T.med, cursor:'pointer', fontFamily:'inherit', fontSize:11 }}>
-                Xem
-              </button>
-            </div>
-          </Card>
-        )
-      })}
-    </div>
-  )
-}
-
-// ── Sub component: PickingDetail (trang nhặt chi tiết) ──
-function PickingDetail({ ord, mobile, onBack, onUpdateQty, onReportShort, onFinish, canPick }: any) {
-  const p = mobile ? '16px' : '24px'
-  const [searchSP, setSearchSP] = useState('')
-  const [showShortModal, setShowShortModal] = useState<any>(null)
-  const [showImgModal, setShowImgModal] = useState<string|null>(null)
-
-  const norm = (s: string) => (s||'').toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g,'').replace(/đ/g,'d').trim()
-  const items = ord.items || []
-  const filtered = items.filter((it: any) => {
-    if (!searchSP.trim()) return true
-    const hay = norm(`${it.code} ${it.name}`)
-    return hay.includes(norm(searchSP))
-  })
-
-  const totalQty   = items.reduce((s: number, it: any) => s + it.qty, 0)
-  const pickedQty  = items.reduce((s: number, it: any) => s + (it.picked_qty||0) + (it.short_qty||0), 0)
-  const progress   = totalQty > 0 ? Math.round(pickedQty*100/totalQty) : 0
-  const pickedItems = items.filter((it: any) => (it.picked_qty||0) + (it.short_qty||0) >= it.qty).length
-
-  const isReadOnly = ord.status !== 'picking' || !canPick
-
-  return (
-    <div style={{ padding:`0 ${p} ${mobile?'80px':p}` }}>
-      <Topbar mobile={mobile}
-        title={
-          <div style={{ display:'flex', alignItems:'center', gap:8 }}>
-            <button onClick={onBack}
-              style={{ background:'transparent', border:'none', fontSize:16, cursor:'pointer', color:T.med, padding:0 }}>
-              ←
-            </button>
-            {ord.order_code}
-          </div> as any
-        }
-        subtitle={`${ord.customer_name} • ${ord.sold_by_name||'?'} • ${Number(ord.total_amount||0).toLocaleString('vi-VN')}đ`}
-      />
-
-      {ord.description_kv && (
-        <Card style={{ padding:10, marginBottom:12, background:T.goldBg, border:`1px solid ${T.gold}` }}>
-          <div style={{ fontSize:11, color:T.goldText, fontWeight:600 }}>📝 Ghi chú từ KV:</div>
-          <div style={{ fontSize:12, color:T.dark, marginTop:4 }}>{ord.description_kv}</div>
-        </Card>
-      )}
-
-      {/* Tiến độ */}
-      <Card style={{ padding:12, marginBottom:12 }}>
-        <div style={{ display:'flex', justifyContent:'space-between', marginBottom:6, fontSize:12, color:T.med }}>
-          <span>Tiến độ: <b style={{ color:T.dark }}>{pickedItems}/{items.length}</b> SP đủ</span>
-          <span>{progress}%</span>
-        </div>
-        <div style={{ height:10, background:T.border, borderRadius:5 }}>
-          <div style={{ height:'100%', borderRadius:5,
-            background: progress===100 ? T.green : T.gold,
-            width:`${progress}%`, transition:'width .3s' }}/>
-        </div>
-      </Card>
-
-      {/* Search */}
-      <Card style={{ padding:10, marginBottom:12 }}>
-        <input value={searchSP} onChange={e => setSearchSP(e.target.value)}
-          placeholder="🔍 Tìm SP trong đơn..."
-          style={{ width:'100%', padding:'7px 11px', border:`1px solid ${T.border}`, borderRadius:8,
-            fontSize:12, fontFamily:'inherit', color:T.dark, background:'#fff', outline:'none',
-            boxSizing:'border-box' as any }}/>
-      </Card>
-
-      {/* Items list */}
-      <div style={{ display:'flex', flexDirection:'column', gap:6, marginBottom:20 }}>
-        {filtered.map((it: any) => {
-          const done = (it.picked_qty||0) + (it.short_qty||0) >= it.qty
-          const hasShort = (it.short_qty||0) > 0
-          return (
-            <Card key={it.code} style={{ padding:10,
-              background: done ? (hasShort ? T.redBg : T.greenBg) : '#fff',
-              borderLeft: done ? `4px solid ${hasShort?T.red:T.green}` : `4px solid ${T.border}`
-            }}>
-              <div style={{ display:'flex', alignItems:'flex-start', gap:10, flexWrap:'wrap' }}>
-                <div style={{ flex:1, minWidth:200 }}>
-                  <div style={{ fontSize:12, fontWeight:600, color:T.dark }}>{it.name}</div>
-                  <div style={{ fontSize:10, color:T.light, marginTop:2 }}>{it.code} {it.unit?`• ${it.unit}`:''}</div>
-                  <div style={{ display:'flex', gap:8, marginTop:5, fontSize:11, flexWrap:'wrap' }}>
-                    <span style={{ color:T.med }}>📦 Tồn: <b style={{ color:T.dark }}>{it.stock||0}</b></span>
-                    <span style={{ color:T.med }}>🛒 Đặt: <b style={{ color:T.blue }}>{it.qty}</b></span>
-                    <button onClick={() => setShowImgModal(it.code)}
-                      style={{ padding:'1px 8px', borderRadius:12, border:`1px solid ${T.border}`,
-                        background:'#fff', color:T.med, cursor:'pointer', fontFamily:'inherit', fontSize:10 }}>
-                      🖼 Xem ảnh
-                    </button>
-                  </div>
-                  {hasShort && (
-                    <div style={{ fontSize:10, color:T.red, marginTop:4 }}>
-                      ⚠️ Báo thiếu: {it.short_qty}{it.short_note?` — ${it.short_note}`:''}
-                    </div>
-                  )}
-                </div>
-                {!isReadOnly && (
-                  <div style={{ display:'flex', alignItems:'center', gap:6 }}>
-                    <button onClick={() => onUpdateQty(it.code, Math.max(0, (it.picked_qty||0)-1))}
-                      disabled={(it.picked_qty||0)<=0}
-                      style={{ width:28, height:28, borderRadius:6, border:`1px solid ${T.border}`,
-                        background:'#fff', cursor:'pointer', fontSize:14, fontFamily:'inherit',
-                        color:(it.picked_qty||0)<=0?T.light:T.dark }}>−</button>
-                    <span style={{ minWidth:40, textAlign:'center', fontSize:13, fontWeight:700,
-                      color: done?T.green:T.dark }}>
-                      {it.picked_qty||0}/{it.qty}
-                    </span>
-                    <button onClick={() => onUpdateQty(it.code, (it.picked_qty||0)+1)}
-                      disabled={(it.picked_qty||0)>=it.qty}
-                      style={{ width:28, height:28, borderRadius:6, border:`1px solid ${T.border}`,
-                        background:'#fff', cursor:'pointer', fontSize:14, fontFamily:'inherit',
-                        color:(it.picked_qty||0)>=it.qty?T.light:T.dark }}>+</button>
-                    <button onClick={() => onUpdateQty(it.code, it.qty)}
-                      disabled={done && !hasShort}
-                      style={{ padding:'5px 10px', borderRadius:6, border:`1px solid ${T.green}`,
-                        background: done && !hasShort ? T.greenBg : '#fff', color:T.green,
-                        cursor:'pointer', fontFamily:'inherit', fontSize:10, fontWeight:600 }}>
-                      ✓ Đủ
-                    </button>
-                    <button onClick={() => setShowShortModal(it)}
-                      style={{ padding:'5px 10px', borderRadius:6, border:`1px solid ${T.red}`,
-                        background:hasShort?T.redBg:'#fff', color:T.red,
-                        cursor:'pointer', fontFamily:'inherit', fontSize:10, fontWeight:600 }}>
-                      ⚠️ Thiếu
-                    </button>
-                  </div>
-                )}
-              </div>
-            </Card>
-          )
-        })}
-      </div>
-
-      {/* Footer action */}
-      {!isReadOnly && (
-        <div style={{ position:'sticky', bottom:mobile?70:0, background:'#fff', padding:'12px 0',
-          borderTop:`1px solid ${T.border}`, display:'flex', gap:10 }}>
-          <button onClick={onBack}
-            style={{ flex:1, padding:'10px', borderRadius:8, border:`1px solid ${T.border}`,
-              background:'#fff', color:T.med, cursor:'pointer', fontFamily:'inherit', fontSize:13 }}>
-            ⏸ Tạm dừng
-          </button>
-          <button onClick={onFinish}
-            style={{ flex:2, padding:'10px', borderRadius:8, border:'none',
-              background:`linear-gradient(135deg, ${T.green} 0%, #107035 100%)`, color:'#fff',
-              cursor:'pointer', fontFamily:'inherit', fontSize:13, fontWeight:700 }}>
-            ✓ Hoàn tất nhặt → Chuyển đóng hàng
-          </button>
-        </div>
-      )}
-
-      {/* Modal Báo thiếu */}
-      {showShortModal && (
-        <ShortageModal item={showShortModal} onClose={() => setShowShortModal(null)}
-          onSubmit={(qty: number, note: string) => {
-            onReportShort(showShortModal.code, qty, note)
-            setShowShortModal(null)
-          }}/>
-      )}
-
-      {/* Modal xem ảnh */}
-      {showImgModal && (
-        <ProductImageModal code={showImgModal} onClose={() => setShowImgModal(null)}/>
-      )}
-    </div>
-  )
-}
-
-// ── Modal báo thiếu ──
-function ShortageModal({ item, onClose, onSubmit }: any) {
-  const [qty, setQty]   = useState(String(item.short_qty || (item.qty - (item.picked_qty||0))))
-  const [note, setNote] = useState(item.short_note || '')
-
-  return (
-    <div style={{ position:'fixed', inset:0, background:'rgba(0,0,0,0.5)', zIndex:9999,
-      display:'flex', alignItems:'center', justifyContent:'center', padding:20 }}>
-      <div style={{ background:'#fff', borderRadius:12, padding:20, maxWidth:420, width:'100%' }}>
-        <div style={{ fontSize:15, fontWeight:700, color:T.dark, marginBottom:6 }}>⚠️ Báo thiếu hàng</div>
-        <div style={{ fontSize:12, color:T.med, marginBottom:14 }}>{item.name} ({item.code})</div>
-
-        <label style={{ fontSize:11, color:T.med, fontWeight:600, display:'block', marginBottom:4 }}>
-          Số lượng thiếu (còn {item.qty} cần nhặt)
-        </label>
-        <input type="number" value={qty} onChange={e => setQty(e.target.value)} min="0" max={item.qty}
-          style={{ width:'100%', padding:'8px 11px', border:`1px solid ${T.border}`, borderRadius:6,
-            fontSize:13, fontFamily:'inherit', color:T.dark, background:'#fff', outline:'none',
-            boxSizing:'border-box' as any, marginBottom:12 }}/>
-
-        <label style={{ fontSize:11, color:T.med, fontWeight:600, display:'block', marginBottom:4 }}>
-          Ghi chú (VD: "Hết hàng", "Vỡ hỏng", ...)
-        </label>
-        <input value={note} onChange={e => setNote(e.target.value)}
-          style={{ width:'100%', padding:'8px 11px', border:`1px solid ${T.border}`, borderRadius:6,
-            fontSize:13, fontFamily:'inherit', color:T.dark, background:'#fff', outline:'none',
-            boxSizing:'border-box' as any, marginBottom:16 }}/>
-
-        <div style={{ display:'flex', gap:10 }}>
-          <button onClick={onClose}
-            style={{ flex:1, padding:'8px', borderRadius:6, border:`1px solid ${T.border}`,
-              background:'#fff', color:T.med, cursor:'pointer', fontFamily:'inherit', fontSize:12 }}>
-            Hủy
-          </button>
-          <button onClick={() => onSubmit(Number(qty)||0, note)}
-            style={{ flex:1, padding:'8px', borderRadius:6, border:'none',
-              background:T.red, color:'#fff', cursor:'pointer', fontFamily:'inherit', fontSize:12, fontWeight:600 }}>
-            📤 Báo thiếu
-          </button>
-        </div>
-      </div>
-    </div>
-  )
-}
-
-// ── Modal xem ảnh SP ──
-function ProductImageModal({ code, onClose }: any) {
-  const [product, setProduct] = useState<any>(null)
-  const [loading, setLoading] = useState(true)
-
-  useEffect(() => {
-    db.from('products').select('code,name,images,image_url').eq('code', code).maybeSingle()
-      .then(({data}) => { setProduct(data); setLoading(false) })
-  }, [code])
-
-  const imgs = product?.images || (product?.image_url ? [product.image_url] : [])
-
-  return (
-    <div style={{ position:'fixed', inset:0, background:'rgba(0,0,0,0.8)', zIndex:9999,
-      display:'flex', alignItems:'center', justifyContent:'center', padding:20 }}
-      onClick={onClose}>
-      <div style={{ background:'#fff', borderRadius:12, padding:20, maxWidth:600, width:'100%',
-        maxHeight:'90vh', overflow:'auto' }} onClick={e => e.stopPropagation()}>
-        <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:12 }}>
-          <div style={{ fontSize:14, fontWeight:700, color:T.dark }}>
-            {product?.name || code}
-          </div>
-          <button onClick={onClose}
-            style={{ background:'transparent', border:'none', fontSize:20, cursor:'pointer', color:T.med }}>
-            ×
-          </button>
-        </div>
-        {loading && <div style={{ padding:20, textAlign:'center', color:T.light }}>⏳ Đang tải...</div>}
-        {!loading && imgs.length === 0 && (
-          <div style={{ padding:40, textAlign:'center', color:T.light, fontSize:13 }}>
-            Chưa có ảnh cho SP này.
-          </div>
-        )}
-        {!loading && imgs.length > 0 && (
-          <div style={{ display:'grid', gridTemplateColumns:'1fr', gap:10 }}>
-            {imgs.map((url: string, i: number) => (
-              <img key={i} src={url} alt={product?.name}
-                style={{ width:'100%', borderRadius:8, border:`1px solid ${T.border}` }}/>
-            ))}
-          </div>
-        )}
-      </div>
-    </div>
-  )
-}
 
 // ══════════════════════════════════════════════════════════════════════
-// ══ PACKING MODULE — Đóng Đơn + Chụp Ảnh (#4A) ═══════════════════════
+// ══ PICKING MODULE v2 — Nhặt Hàng (redesign desktop-friendly) ════════
 // ══════════════════════════════════════════════════════════════════════
 
-// Helper: Compress image client-side
-async function compressImage(file: File, maxW = 1920, quality = 0.82): Promise<Blob> {
+// Shared: compress image (dùng cho cả Picking + Packing)
+async function compressImageV2(file: File, maxW = 1920, quality = 0.82): Promise<Blob> {
   return new Promise((resolve, reject) => {
     const img = new Image()
     const reader = new FileReader()
@@ -13622,25 +12983,533 @@ async function compressImage(file: File, maxW = 1920, quality = 0.82): Promise<B
   })
 }
 
-// Helper: Tính min/max ảnh theo số SP
-function photoCountRange(totalItems: number) {
+function photoCountRangeV2(totalItems: number) {
   const min = Math.max(1, Math.ceil(totalItems / 20))
   const max = Math.min(10, Math.max(3, Math.ceil(totalItems / 10)))
   return { min, max }
 }
 
-// Export riêng nếu cần dùng ở chỗ khác (em giữ inline dùng nội bộ)
+function PickingModule({ user, allUsers, mobile }: any) {
+  const perm      = getPerm(user)
+  const canPick   = perm.pickOrders || perm.viewAllDashboard
+  const isAdmin   = perm.viewAllDashboard
+  const p = mobile ? '16px' : '24px'
 
+  const [orders, setOrders]     = useState<any[]>([])
+  const [loading, setLoading]   = useState(true)
+  const [syncing, setSyncing]   = useState(false)
+  const [lastSync, setLastSync] = useState<Date|null>(null)
+  const [selectedCode, setSelectedCode] = useState<string|null>(null)
+  const [searchQ, setSearchQ] = useState('')
+  const [tab, setTab] = useState<'todo'|'done_today'>('todo')
+
+  const fetchData = async (quiet=false) => {
+    if (!quiet) setSyncing(true)
+    const { data } = await db.from('packing_workflow').select('*')
+      .in('status', ['picking','packing','done'])
+      .order('purchase_date', { ascending: false })
+      .limit(500)
+    setOrders(data||[])
+    setLastSync(new Date())
+    if (!quiet) setSyncing(false)
+    setLoading(false)
+  }
+
+  const syncKV = async () => {
+    setSyncing(true)
+    try {
+      const res = await fetch(`${SUPABASE_URL}/functions/v1/kiotviet-picking`, {
+        method: 'POST',
+        headers: { 'Authorization': `Bearer ${SUPABASE_ANON}` }
+      })
+      const json = await res.json()
+      if (json.error) alert('❌ Sync lỗi: ' + json.error)
+      await fetchData(true)
+    } catch(e: any) {
+      alert('❌ Sync lỗi: ' + e.message)
+    }
+    setSyncing(false)
+  }
+
+  useEffect(() => {
+    fetchData()
+    const interval = setInterval(() => {
+      syncKV().then(() => fetchData(true))
+    }, 120000)
+    return () => clearInterval(interval)
+  }, [])
+
+  const norm = (s: string) => (s||'').toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g,'').replace(/đ/g,'d').trim()
+  const filterByQ = (list: any[]) => {
+    const q = norm(searchQ)
+    if (!q) return list
+    return list.filter((o: any) => norm(`${o.order_code} ${o.customer_name} ${o.sold_by_name}`).includes(q))
+  }
+
+  // Tab 'todo': đơn status='picking' (chờ nhặt)
+  const todoOrders = filterByQ(orders.filter((o: any) => o.status === 'picking')
+    .sort((a: any, b: any) => new Date(a.purchase_date).getTime() - new Date(b.purchase_date).getTime()))
+
+  // Tab 'done_today': đơn đã nhặt xong hôm nay (picked_at = today, status='packing' hoặc 'done')
+  const todayStart = new Date()
+  todayStart.setHours(0,0,0,0)
+  const doneTodayOrders = filterByQ(orders.filter((o: any) =>
+    o.picked_at && new Date(o.picked_at) >= todayStart
+  ).sort((a: any, b: any) => new Date(b.picked_at).getTime() - new Date(a.picked_at).getTime()))
+
+  const displayOrders = tab === 'todo' ? todoOrders : doneTodayOrders
+
+  // Update item picked qty
+  const updatePickedQty = async (orderCode: string, itemCode: string, newQty: number) => {
+    const ord = orders.find((o: any) => o.order_code === orderCode)
+    if (!ord) return
+    const newItems = (ord.items || []).map((it: any) => {
+      if (it.code === itemCode) {
+        const clamped = Math.max(0, Math.min(newQty, it.qty))
+        return { ...it, picked_qty: clamped, picked_at: clamped>0 ? new Date().toISOString() : null }
+      }
+      return it
+    })
+    const upd: any = {
+      items: newItems,
+      picking_started_at: ord.picking_started_at || new Date().toISOString(),
+      updated_at: new Date().toISOString(),
+    }
+    await db.from('packing_workflow').update(upd).eq('order_code', orderCode)
+    setOrders(prev => prev.map((o: any) => o.order_code === orderCode ? {...o, ...upd} : o))
+  }
+
+  const reportShort = async (orderCode: string, itemCode: string, shortQty: number, note: string) => {
+    const ord = orders.find((o: any) => o.order_code === orderCode)
+    if (!ord) return
+    const newItems = (ord.items || []).map((it: any) => {
+      if (it.code === itemCode) return { ...it, short_qty: shortQty, short_note: note }
+      return it
+    })
+    await db.from('packing_workflow').update({ items: newItems, updated_at: new Date().toISOString() })
+      .eq('order_code', orderCode)
+    setOrders(prev => prev.map((o: any) => o.order_code === orderCode ? {...o, items: newItems} : o))
+    const item = (ord.items||[]).find((it: any) => it.code === itemCode)
+    if (item && shortQty > 0) {
+      await db.from('shortage_items').insert({
+        id: `sh_pick_${orderCode}_${itemCode}_${Date.now()}`,
+        product_code: itemCode, product_name: item.name,
+        qty_short: shortQty, unit: item.unit || '',
+        reported_by: user.id, status: 'pending',
+        note: `Từ đơn nhặt ${orderCode}. ${note||''}`.trim(),
+        created_at: new Date().toISOString(),
+      })
+    }
+  }
+
+  const finishPicking = async (orderCode: string) => {
+    const ord = orders.find((o: any) => o.order_code === orderCode)
+    if (!ord) return
+    const allPicked = (ord.items||[]).every((it: any) => (it.picked_qty||0) + (it.short_qty||0) >= it.qty)
+    if (!allPicked) {
+      if (!confirm('Còn SP chưa nhặt đủ. Xác nhận hoàn tất nhặt?')) return
+    }
+    const upd = {
+      status: 'packing',
+      picked_at: new Date().toISOString(),
+      updated_at: new Date().toISOString(),
+    }
+    const { error } = await db.from('packing_workflow').update(upd).eq('order_code', orderCode)
+    if (error) { alert('❌ Lỗi: ' + error.message); return }
+    setOrders(prev => prev.map((o: any) => o.order_code === orderCode ? {...o, ...upd} : o))
+    setSelectedCode(null)
+    alert('✅ Đã hoàn tất nhặt, đơn chuyển sang bước Đóng hàng')
+  }
+
+  if (loading) return <div style={{ padding:p, textAlign:'center', color:T.light, paddingTop:40 }}>⏳ Đang tải...</div>
+
+  const selected = selectedCode ? orders.find((o: any) => o.order_code === selectedCode) : null
+
+  // Desktop layout: 2 cột (list + detail)
+  // Mobile: stack (chỉ thấy 1 cái tại 1 lần)
+  const showDetail = selected !== null
+  const showList = !mobile || !showDetail
+
+  return (
+    <div style={{ padding:`0 ${p} ${mobile?'80px':p}` }}>
+      <Topbar mobile={mobile} title="📥 Nhặt hàng"
+        subtitle={`${todoOrders.length} đơn chờ nhặt • ${doneTodayOrders.length} đã xong hôm nay`}
+        action={
+          <div style={{ display:'flex', gap:8, alignItems:'center' }}>
+            {lastSync && (
+              <span style={{ fontSize:10, color:T.light }}>
+                {syncing ? '🔄 Sync...' : '✓ ' + lastSync.toLocaleTimeString('vi-VN', {hour:'2-digit',minute:'2-digit'})}
+              </span>
+            )}
+            <button onClick={syncKV} disabled={syncing}
+              style={{ padding:'5px 12px', borderRadius:20, border:`1px solid ${T.gold}`,
+                background:T.goldBg, color:T.goldText, cursor:'pointer', fontFamily:'inherit',
+                fontSize:11, fontWeight:600 }}>
+              🔄 Sync KV
+            </button>
+          </div>
+        }/>
+
+      {/* Tabs */}
+      <div style={{ display:'flex', gap:6, marginBottom:14, flexWrap:'wrap' }}>
+        {[
+          { id:'todo',       label:`📥 Chờ nhặt${todoOrders.length?` (${todoOrders.length})`:''}` },
+          { id:'done_today', label:`✅ Xong hôm nay${doneTodayOrders.length?` (${doneTodayOrders.length})`:''}` },
+        ].map((t: any) => (
+          <button key={t.id} onClick={() => { setTab(t.id as any); setSelectedCode(null) }}
+            style={{ padding:'6px 14px', borderRadius:20, cursor:'pointer', fontFamily:'inherit', fontSize:12,
+              border:`1.5px solid ${tab===t.id?T.gold:T.border}`,
+              background:tab===t.id?T.goldBg:'transparent',
+              color:tab===t.id?T.goldText:T.med, fontWeight:tab===t.id?700:400 }}>
+            {t.label}
+          </button>
+        ))}
+      </div>
+
+      {/* 2-column layout (desktop) / stacked (mobile) */}
+      <div style={{
+        display: 'grid',
+        gridTemplateColumns: mobile ? '1fr' : (showDetail ? '380px 1fr' : '1fr'),
+        gap: 14,
+        alignItems: 'flex-start',
+      }}>
+        {/* ─── Column 1: List ─── */}
+        {showList && (
+          <div style={{ display:'flex', flexDirection:'column', gap:8 }}>
+            {/* Search */}
+            <Card style={{ padding:10 }}>
+              <input value={searchQ} onChange={e => setSearchQ(e.target.value)}
+                placeholder="🔍 Tìm mã đơn, khách, sale..."
+                style={{ width:'100%', padding:'7px 11px', border:`1px solid ${T.border}`, borderRadius:8,
+                  fontSize:12, fontFamily:'inherit', color:T.dark, background:'#fff', outline:'none',
+                  boxSizing:'border-box' as any }}/>
+            </Card>
+
+            {/* List orders */}
+            {displayOrders.length === 0 ? (
+              <div style={{ padding:'40px 20px', textAlign:'center', color:T.light, fontSize:13 }}>
+                {tab==='todo' ? '🎉 Không còn đơn chờ nhặt!' : 'Chưa có đơn nào xong hôm nay.'}
+              </div>
+            ) : (
+              displayOrders.map((o: any) => {
+                const totalItems  = (o.items||[]).length
+                const pickedItems = (o.items||[]).filter((it: any) => (it.picked_qty||0) + (it.short_qty||0) >= it.qty).length
+                const short = (o.items||[]).filter((it: any) => (it.short_qty||0) > 0).length
+                const isSelected = o.order_code === selectedCode
+                const daysOld = Math.floor((Date.now() - new Date(o.purchase_date).getTime())/86400000)
+                return (
+                  <Card key={o.order_code}
+                    onClick={() => setSelectedCode(o.order_code)}
+                    style={{ padding:10, cursor:'pointer',
+                      borderLeft: isSelected ? `4px solid ${T.gold}` : `4px solid transparent`,
+                      background: isSelected ? T.goldBg : '#fff',
+                      transition:'all .15s' }}>
+                    <div style={{ display:'flex', alignItems:'flex-start', justifyContent:'space-between', gap:6 }}>
+                      <div style={{ flex:1, minWidth:0 }}>
+                        <div style={{ fontSize:12, fontWeight:700, color:T.dark,
+                          whiteSpace:'nowrap', overflow:'hidden', textOverflow:'ellipsis' }}>
+                          {o.order_code} • {o.customer_name || 'KH lẻ'}
+                        </div>
+                        <div style={{ fontSize:10, color:T.light, marginTop:2 }}>
+                          Sale: {o.sold_by_name||'—'} • {daysOld>0?`${daysOld}N trước`:'hôm nay'}
+                          {o.printed_by_name && <> • 🖨 {o.printed_by_name}</>}
+                        </div>
+                      </div>
+                      <div style={{ textAlign:'right', fontSize:10, color:T.med, flexShrink:0 }}>
+                        <div style={{ fontWeight:700, color: pickedItems===totalItems?T.green:T.dark }}>
+                          {pickedItems}/{totalItems}
+                        </div>
+                        {short>0 && <div style={{ color:T.red, fontSize:9 }}>⚠️{short}</div>}
+                      </div>
+                    </div>
+                  </Card>
+                )
+              })
+            )}
+          </div>
+        )}
+
+        {/* ─── Column 2: Detail ─── */}
+        {showDetail && selected && (
+          <PickingDetailPanel
+            ord={selected}
+            mobile={mobile}
+            onClose={() => setSelectedCode(null)}
+            onUpdateQty={(code: string, qty: number) => updatePickedQty(selected.order_code, code, qty)}
+            onReportShort={(code: string, qty: number, note: string) => reportShort(selected.order_code, code, qty, note)}
+            onFinish={() => finishPicking(selected.order_code)}
+            canPick={canPick && selected.status === 'picking'}
+          />
+        )}
+      </div>
+    </div>
+  )
+}
+
+// ── Picking Detail Panel (cột phải) ──
+function PickingDetailPanel({ ord, mobile, onClose, onUpdateQty, onReportShort, onFinish, canPick }: any) {
+  const [searchSP, setSearchSP] = useState('')
+  const [showShortModal, setShowShortModal] = useState<any>(null)
+  const [showImgModal, setShowImgModal] = useState<string|null>(null)
+
+  const norm = (s: string) => (s||'').toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g,'').replace(/đ/g,'d').trim()
+  const items = ord.items || []
+  const filtered = items.filter((it: any) => {
+    if (!searchSP.trim()) return true
+    return norm(`${it.code} ${it.name}`).includes(norm(searchSP))
+  })
+
+  const totalQty   = items.reduce((s: number, it: any) => s + it.qty, 0)
+  const pickedQty  = items.reduce((s: number, it: any) => s + (it.picked_qty||0) + (it.short_qty||0), 0)
+  const progress   = totalQty > 0 ? Math.round(pickedQty*100/totalQty) : 0
+  const pickedItems = items.filter((it: any) => (it.picked_qty||0) + (it.short_qty||0) >= it.qty).length
+
+  return (
+    <div style={{ background:T.card, borderRadius:12, border:`1px solid ${T.border}`,
+      padding:16, position: mobile ? 'static' : 'sticky', top: 0, maxHeight: mobile ? 'none' : 'calc(100vh - 40px)',
+      overflowY: 'auto', boxShadow:'0 2px 8px rgba(0,0,0,0.04)' }}>
+
+      {/* Header */}
+      <div style={{ display:'flex', alignItems:'center', justifyContent:'space-between',
+        paddingBottom:12, borderBottom:`1px solid ${T.border}`, marginBottom:12 }}>
+        <div>
+          <div style={{ fontSize:14, fontWeight:700, color:T.dark }}>
+            {ord.order_code} • {ord.customer_name}
+          </div>
+          <div style={{ fontSize:11, color:T.light, marginTop:2 }}>
+            Sale: {ord.sold_by_name||'—'} • {Number(ord.total_amount||0).toLocaleString('vi-VN')}đ
+            {ord.printed_by_name && <> • 🖨 Người in: <b style={{ color:T.dark }}>{ord.printed_by_name}</b></>}
+          </div>
+        </div>
+        <button onClick={onClose}
+          style={{ padding:'5px 10px', borderRadius:6, border:`1px solid ${T.border}`,
+            background:'#fff', color:T.med, cursor:'pointer', fontFamily:'inherit', fontSize:11 }}>
+          ✕ Đóng
+        </button>
+      </div>
+
+      {ord.description_kv && (
+        <div style={{ padding:'8px 12px', marginBottom:12, background:T.goldBg,
+          border:`1px solid ${T.goldBorder}`, borderRadius:6 }}>
+          <div style={{ fontSize:10, color:T.goldText, fontWeight:600 }}>📝 Ghi chú KV:</div>
+          <div style={{ fontSize:11, color:T.dark, marginTop:3 }}>{ord.description_kv}</div>
+        </div>
+      )}
+
+      {/* Status banner */}
+      {ord.status !== 'picking' && (
+        <div style={{ padding:'8px 12px', marginBottom:12, background:T.greenBg,
+          borderRadius:6, fontSize:11, color:T.green, fontWeight:600 }}>
+          ✓ Đơn này đã hoàn tất nhặt
+          {ord.picked_at && <> lúc {new Date(ord.picked_at).toLocaleString('vi-VN',{hour:'2-digit',minute:'2-digit',day:'2-digit',month:'2-digit'})}</>}
+        </div>
+      )}
+
+      {/* Progress */}
+      <div style={{ marginBottom:12 }}>
+        <div style={{ display:'flex', justifyContent:'space-between', marginBottom:6, fontSize:11, color:T.med }}>
+          <span>Tiến độ: <b style={{ color:T.dark }}>{pickedItems}/{items.length}</b> SP đủ</span>
+          <span>{progress}%</span>
+        </div>
+        <div style={{ height:8, background:T.border, borderRadius:4 }}>
+          <div style={{ height:'100%', borderRadius:4,
+            background: progress===100 ? T.green : T.gold,
+            width:`${progress}%`, transition:'width .3s' }}/>
+        </div>
+      </div>
+
+      {/* Search SP */}
+      <input value={searchSP} onChange={e => setSearchSP(e.target.value)}
+        placeholder="🔍 Tìm SP trong đơn..."
+        style={{ width:'100%', padding:'6px 10px', border:`1px solid ${T.border}`, borderRadius:6,
+          fontSize:11, fontFamily:'inherit', color:T.dark, background:'#fff', outline:'none',
+          boxSizing:'border-box' as any, marginBottom:10 }}/>
+
+      {/* Items */}
+      <div style={{ display:'flex', flexDirection:'column', gap:6, marginBottom:12 }}>
+        {filtered.map((it: any) => {
+          const done = (it.picked_qty||0) + (it.short_qty||0) >= it.qty
+          const hasShort = (it.short_qty||0) > 0
+          return (
+            <div key={it.code} style={{ padding:10, borderRadius:8,
+              background: done ? (hasShort ? T.redBg : T.greenBg) : T.bg,
+              borderLeft: `3px solid ${done ? (hasShort?T.red:T.green) : T.border}` }}>
+              <div style={{ fontSize:11, fontWeight:600, color:T.dark, lineHeight:1.4 }}>{it.name}</div>
+              <div style={{ fontSize:9, color:T.light, marginTop:2 }}>{it.code}{it.unit?` • ${it.unit}`:''}</div>
+              <div style={{ display:'flex', alignItems:'center', gap:6, marginTop:6, flexWrap:'wrap' }}>
+                <span style={{ fontSize:10, color:T.med }}>📦<b style={{ color:T.dark }}> {it.stock||0}</b></span>
+                <span style={{ fontSize:10, color:T.med }}>🛒<b style={{ color:T.blue }}> {it.qty}</b></span>
+                <button onClick={() => setShowImgModal(it.code)}
+                  style={{ padding:'1px 7px', borderRadius:10, border:`1px solid ${T.border}`,
+                    background:'#fff', color:T.med, cursor:'pointer', fontFamily:'inherit', fontSize:9 }}>
+                  🖼
+                </button>
+                {canPick && (
+                  <>
+                    <div style={{ display:'flex', alignItems:'center', gap:3, marginLeft:'auto' }}>
+                      <button onClick={() => onUpdateQty(it.code, Math.max(0, (it.picked_qty||0)-1))}
+                        disabled={(it.picked_qty||0)<=0}
+                        style={{ width:22, height:22, borderRadius:4, border:`1px solid ${T.border}`,
+                          background:'#fff', cursor:'pointer', fontSize:12, fontFamily:'inherit',
+                          color:(it.picked_qty||0)<=0?T.light:T.dark, padding:0 }}>−</button>
+                      <span style={{ minWidth:34, textAlign:'center', fontSize:11, fontWeight:700,
+                        color: done?T.green:T.dark }}>
+                        {it.picked_qty||0}/{it.qty}
+                      </span>
+                      <button onClick={() => onUpdateQty(it.code, (it.picked_qty||0)+1)}
+                        disabled={(it.picked_qty||0)>=it.qty}
+                        style={{ width:22, height:22, borderRadius:4, border:`1px solid ${T.border}`,
+                          background:'#fff', cursor:'pointer', fontSize:12, fontFamily:'inherit',
+                          color:(it.picked_qty||0)>=it.qty?T.light:T.dark, padding:0 }}>+</button>
+                    </div>
+                    <button onClick={() => onUpdateQty(it.code, it.qty)}
+                      style={{ padding:'3px 8px', borderRadius:4, border:`1px solid ${T.green}`,
+                        background: done && !hasShort ? T.greenBg : '#fff', color:T.green,
+                        cursor:'pointer', fontFamily:'inherit', fontSize:9, fontWeight:600 }}>
+                      ✓ Đủ
+                    </button>
+                    <button onClick={() => setShowShortModal(it)}
+                      style={{ padding:'3px 8px', borderRadius:4, border:`1px solid ${T.red}`,
+                        background:hasShort?T.redBg:'#fff', color:T.red,
+                        cursor:'pointer', fontFamily:'inherit', fontSize:9, fontWeight:600 }}>
+                      ⚠️ Thiếu
+                    </button>
+                  </>
+                )}
+              </div>
+              {hasShort && (
+                <div style={{ fontSize:10, color:T.red, marginTop:4 }}>
+                  ⚠️ Thiếu {it.short_qty}{it.short_note?`: ${it.short_note}`:''}
+                </div>
+              )}
+            </div>
+          )
+        })}
+      </div>
+
+      {/* Footer */}
+      {canPick && (
+        <div style={{ display:'flex', gap:8, paddingTop:10, borderTop:`1px solid ${T.border}` }}>
+          <button onClick={onClose}
+            style={{ flex:1, padding:'9px', borderRadius:6, border:`1px solid ${T.border}`,
+              background:'#fff', color:T.med, cursor:'pointer', fontFamily:'inherit', fontSize:12 }}>
+            ⏸ Tạm
+          </button>
+          <button onClick={onFinish}
+            style={{ flex:2, padding:'9px', borderRadius:6, border:'none',
+              background:`linear-gradient(135deg, ${T.green} 0%, #107035 100%)`, color:'#fff',
+              cursor:'pointer', fontFamily:'inherit', fontSize:12, fontWeight:700 }}>
+            ✓ Hoàn tất nhặt
+          </button>
+        </div>
+      )}
+
+      {showShortModal && (
+        <ShortageModalV2 item={showShortModal} onClose={() => setShowShortModal(null)}
+          onSubmit={(qty: number, note: string) => {
+            onReportShort(showShortModal.code, qty, note)
+            setShowShortModal(null)
+          }}/>
+      )}
+      {showImgModal && (
+        <ProductImageModalV2 code={showImgModal} onClose={() => setShowImgModal(null)}/>
+      )}
+    </div>
+  )
+}
+
+function ShortageModalV2({ item, onClose, onSubmit }: any) {
+  const [qty, setQty]   = useState(String(item.short_qty || (item.qty - (item.picked_qty||0))))
+  const [note, setNote] = useState(item.short_note || '')
+  return (
+    <div style={{ position:'fixed', inset:0, background:'rgba(0,0,0,0.5)', zIndex:9999,
+      display:'flex', alignItems:'center', justifyContent:'center', padding:20 }}>
+      <div style={{ background:'#fff', borderRadius:12, padding:20, maxWidth:420, width:'100%' }}>
+        <div style={{ fontSize:15, fontWeight:700, color:T.dark, marginBottom:6 }}>⚠️ Báo thiếu hàng</div>
+        <div style={{ fontSize:12, color:T.med, marginBottom:14 }}>{item.name} ({item.code})</div>
+        <label style={{ fontSize:11, color:T.med, fontWeight:600, display:'block', marginBottom:4 }}>
+          Số lượng thiếu (còn {item.qty} cần nhặt)
+        </label>
+        <input type="number" value={qty} onChange={e => setQty(e.target.value)} min="0" max={item.qty}
+          style={{ width:'100%', padding:'8px 11px', border:`1px solid ${T.border}`, borderRadius:6,
+            fontSize:13, fontFamily:'inherit', color:T.dark, background:'#fff', outline:'none',
+            boxSizing:'border-box' as any, marginBottom:12 }}/>
+        <label style={{ fontSize:11, color:T.med, fontWeight:600, display:'block', marginBottom:4 }}>
+          Ghi chú (VD: Hết hàng, Vỡ hỏng...)
+        </label>
+        <input value={note} onChange={e => setNote(e.target.value)}
+          style={{ width:'100%', padding:'8px 11px', border:`1px solid ${T.border}`, borderRadius:6,
+            fontSize:13, fontFamily:'inherit', color:T.dark, background:'#fff', outline:'none',
+            boxSizing:'border-box' as any, marginBottom:16 }}/>
+        <div style={{ display:'flex', gap:10 }}>
+          <button onClick={onClose}
+            style={{ flex:1, padding:'8px', borderRadius:6, border:`1px solid ${T.border}`,
+              background:'#fff', color:T.med, cursor:'pointer', fontFamily:'inherit', fontSize:12 }}>
+            Hủy
+          </button>
+          <button onClick={() => onSubmit(Number(qty)||0, note)}
+            style={{ flex:1, padding:'8px', borderRadius:6, border:'none',
+              background:T.red, color:'#fff', cursor:'pointer', fontFamily:'inherit', fontSize:12, fontWeight:600 }}>
+            📤 Báo thiếu
+          </button>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+function ProductImageModalV2({ code, onClose }: any) {
+  const [product, setProduct] = useState<any>(null)
+  const [loading, setLoading] = useState(true)
+  useEffect(() => {
+    db.from('products').select('code,name,images,image_url').eq('code', code).maybeSingle()
+      .then(({data}) => { setProduct(data); setLoading(false) })
+  }, [code])
+  const imgs = product?.images || (product?.image_url ? [product.image_url] : [])
+  return (
+    <div style={{ position:'fixed', inset:0, background:'rgba(0,0,0,0.8)', zIndex:9999,
+      display:'flex', alignItems:'center', justifyContent:'center', padding:20 }}
+      onClick={onClose}>
+      <div style={{ background:'#fff', borderRadius:12, padding:20, maxWidth:600, width:'100%',
+        maxHeight:'90vh', overflow:'auto' }} onClick={e => e.stopPropagation()}>
+        <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:12 }}>
+          <div style={{ fontSize:14, fontWeight:700, color:T.dark }}>{product?.name || code}</div>
+          <button onClick={onClose}
+            style={{ background:'transparent', border:'none', fontSize:20, cursor:'pointer', color:T.med }}>
+            ×
+          </button>
+        </div>
+        {loading && <div style={{ padding:20, textAlign:'center', color:T.light }}>⏳</div>}
+        {!loading && imgs.length === 0 && (
+          <div style={{ padding:40, textAlign:'center', color:T.light, fontSize:13 }}>
+            Chưa có ảnh cho SP này.
+          </div>
+        )}
+        {!loading && imgs.length > 0 && (
+          <div style={{ display:'grid', gridTemplateColumns:'1fr', gap:10 }}>
+            {imgs.map((url: string, i: number) => (
+              <img key={i} src={url} alt={product?.name}
+                style={{ width:'100%', borderRadius:8, border:`1px solid ${T.border}` }}/>
+            ))}
+          </div>
+        )}
+      </div>
+    </div>
+  )
+}
+
+// ══════════════════════════════════════════════════════════════════════
+// ══ PACKING MODULE v2 — Đóng Đơn (2 loại ảnh: nhặt + thùng) ═══════════
+// ══════════════════════════════════════════════════════════════════════
 function PackingModule({ user, allUsers, mobile }: any) {
   const perm    = getPerm(user)
-  const canPack = perm.packOrders
-  const isAdmin = perm.viewAllDashboard
+  const canPack = perm.packOrders || perm.viewAllDashboard
   const p = mobile ? '16px' : '24px'
 
   const [orders, setOrders]   = useState<any[]>([])
   const [loading, setLoading] = useState(true)
   const [tab, setTab]         = useState<'pending'|'done_today'>('pending')
-  const [expandedOrder, setExpandedOrder] = useState<string|null>(null)
+  const [selectedCode, setSelectedCode] = useState<string|null>(null)
   const [searchQ, setSearchQ] = useState('')
 
   const fetchData = async () => {
@@ -13655,7 +13524,7 @@ function PackingModule({ user, allUsers, mobile }: any) {
 
   useEffect(() => {
     fetchData()
-    const interval = setInterval(fetchData, 30000) // refresh mỗi 30s
+    const interval = setInterval(fetchData, 30000)
     return () => clearInterval(interval)
   }, [])
 
@@ -13663,10 +13532,7 @@ function PackingModule({ user, allUsers, mobile }: any) {
   const filterByQ = (list: any[]) => {
     const q = norm(searchQ)
     if (!q) return list
-    return list.filter((o: any) => {
-      const hay = norm(`${o.order_code} ${o.customer_name} ${o.sold_by_name}`)
-      return hay.includes(q)
-    })
+    return list.filter((o: any) => norm(`${o.order_code} ${o.customer_name} ${o.sold_by_name}`).includes(q))
   }
 
   const todayStart = new Date()
@@ -13676,55 +13542,50 @@ function PackingModule({ user, allUsers, mobile }: any) {
     o.status === 'done' && o.packed_at && new Date(o.packed_at) >= todayStart
   ))
 
-  // Finalize packing
-  const finishPacking = async (orderCode: string, photos: string[]) => {
+  const finishPacking = async (orderCode: string) => {
+    const ord = orders.find((o: any) => o.order_code === orderCode)
+    if (!ord) return
+    const totalItems = (ord.items||[]).length
+    const { min } = photoCountRangeV2(totalItems)
+    const picked = (ord.photos_picked||[]).length
+    const packed = (ord.photos_packed||[]).length
+    if (picked < min || packed < min) {
+      alert(`❌ Cần tối thiểu ${min} ảnh hàng đã nhặt VÀ ${min} ảnh thùng hàng (hiện có ${picked} & ${packed}).`)
+      return
+    }
     const upd = {
       status: 'done',
       packed_by: user.id,
       packed_at: new Date().toISOString(),
-      photos: photos,
       updated_at: new Date().toISOString(),
     }
     const { error } = await db.from('packing_workflow').update(upd).eq('order_code', orderCode)
     if (error) { alert('❌ Lỗi: ' + error.message); return false }
     setOrders(prev => prev.map((o: any) => o.order_code === orderCode ? {...o, ...upd} : o))
-    setExpandedOrder(null)
+    setSelectedCode(null)
     alert('✅ Đã hoàn tất đóng hàng')
     return true
   }
 
-  // Update photos (không finalize - giữ trạng thái packing)
-  const updatePhotos = async (orderCode: string, photos: string[]) => {
-    await db.from('packing_workflow').update({ photos, updated_at: new Date().toISOString() })
-      .eq('order_code', orderCode)
-    setOrders(prev => prev.map((o: any) => o.order_code === orderCode ? {...o, photos} : o))
+  const updatePhotoList = async (orderCode: string, type: 'picked'|'packed', newPhotos: string[]) => {
+    const col = type === 'picked' ? 'photos_picked' : 'photos_packed'
+    const upd: any = { [col]: newPhotos, updated_at: new Date().toISOString() }
+    await db.from('packing_workflow').update(upd).eq('order_code', orderCode)
+    setOrders(prev => prev.map((o: any) => o.order_code === orderCode ? {...o, ...upd} : o))
   }
 
   if (loading) return <div style={{ padding:p, textAlign:'center', color:T.light, paddingTop:40 }}>⏳ Đang tải...</div>
 
-  // Render detail view
-  if (expandedOrder) {
-    const ord = orders.find((o: any) => o.order_code === expandedOrder)
-    if (!ord) { setExpandedOrder(null); return null }
-    return (
-      <PackingDetail ord={ord} mobile={mobile} user={user} allUsers={allUsers}
-        onBack={() => setExpandedOrder(null)}
-        onFinish={finishPacking}
-        onUpdatePhotos={updatePhotos}
-        readOnly={ord.status === 'done' || !canPack}
-      />
-    )
-  }
+  const selected = selectedCode ? orders.find((o: any) => o.order_code === selectedCode) : null
+  const showDetail = selected !== null
+  const showList = !mobile || !showDetail
 
-  const tabs = [
-    { id:'pending',    label:`📦 Chờ đóng${pendingOrds.length?` (${pendingOrds.length})`:''}` },
-    { id:'done_today', label:`✅ Đã xong hôm nay${doneTodayOrds.length?` (${doneTodayOrds.length})`:''}` },
-  ]
+  const displayOrders = tab === 'pending' ? pendingOrds : doneTodayOrds
 
   return (
     <div style={{ padding:`0 ${p} ${mobile?'80px':p}` }}>
       <Topbar mobile={mobile} title="📸 Đóng đơn"
-        subtitle={`${pendingOrds.length} đơn chờ đóng • ${doneTodayOrds.length} đã xong hôm nay`}
+        subtitle={`${pendingOrds.length} chờ đóng • ${doneTodayOrds.length} đã xong hôm nay`}
         action={
           <button onClick={fetchData}
             style={{ padding:'5px 12px', borderRadius:20, border:`1px solid ${T.border}`,
@@ -13735,8 +13596,11 @@ function PackingModule({ user, allUsers, mobile }: any) {
 
       {/* Tabs */}
       <div style={{ display:'flex', gap:6, marginBottom:14, flexWrap:'wrap' }}>
-        {tabs.map((t: any) => (
-          <button key={t.id} onClick={() => setTab(t.id as any)}
+        {[
+          { id:'pending',    label:`📦 Chờ đóng${pendingOrds.length?` (${pendingOrds.length})`:''}` },
+          { id:'done_today', label:`✅ Xong hôm nay${doneTodayOrds.length?` (${doneTodayOrds.length})`:''}` },
+        ].map((t: any) => (
+          <button key={t.id} onClick={() => { setTab(t.id as any); setSelectedCode(null) }}
             style={{ padding:'6px 14px', borderRadius:20, cursor:'pointer', fontFamily:'inherit', fontSize:12,
               border:`1.5px solid ${tab===t.id?T.gold:T.border}`,
               background:tab===t.id?T.goldBg:'transparent',
@@ -13746,119 +13610,222 @@ function PackingModule({ user, allUsers, mobile }: any) {
         ))}
       </div>
 
-      {/* Search */}
-      <Card style={{ padding:10, marginBottom:12 }}>
-        <input value={searchQ} onChange={e => setSearchQ(e.target.value)}
-          placeholder="🔍 Tìm mã đơn, tên khách, sale..."
-          style={{ width:'100%', padding:'8px 12px', border:`1px solid ${T.border}`, borderRadius:8,
-            fontSize:12, fontFamily:'inherit', color:T.dark, background:'#fff', outline:'none',
-            boxSizing:'border-box' as any }}/>
-      </Card>
+      {/* 2-column layout */}
+      <div style={{
+        display: 'grid',
+        gridTemplateColumns: mobile ? '1fr' : (showDetail ? '380px 1fr' : '1fr'),
+        gap: 14,
+        alignItems: 'flex-start',
+      }}>
+        {/* Left: list */}
+        {showList && (
+          <div style={{ display:'flex', flexDirection:'column', gap:8 }}>
+            <Card style={{ padding:10 }}>
+              <input value={searchQ} onChange={e => setSearchQ(e.target.value)}
+                placeholder="🔍 Tìm mã đơn, khách..."
+                style={{ width:'100%', padding:'7px 11px', border:`1px solid ${T.border}`, borderRadius:8,
+                  fontSize:12, fontFamily:'inherit', color:T.dark, background:'#fff', outline:'none',
+                  boxSizing:'border-box' as any }}/>
+            </Card>
 
-      {/* List */}
-      {tab === 'pending' && (
-        <PackingList orders={pendingOrds} allUsers={allUsers} onOpen={setExpandedOrder}
-          emptyMsg="Chưa có đơn nào chờ đóng. Đơn sẽ hiện ở đây sau khi NV Nhặt hoàn tất."/>
-      )}
-      {tab === 'done_today' && (
-        <PackingList orders={doneTodayOrds} allUsers={allUsers} onOpen={setExpandedOrder}
-          emptyMsg="Chưa có đơn nào xong hôm nay." showDone/>
-      )}
+            {displayOrders.length === 0 ? (
+              <div style={{ padding:'40px 20px', textAlign:'center', color:T.light, fontSize:13 }}>
+                {tab==='pending' ? 'Chưa có đơn nào chờ đóng.' : 'Chưa có đơn xong hôm nay.'}
+              </div>
+            ) : (
+              displayOrders.map((o: any) => {
+                const totalItems = (o.items||[]).length
+                const { min } = photoCountRangeV2(totalItems)
+                const picked = (o.photos_picked||[]).length
+                const packed = (o.photos_packed||[]).length
+                const isSelected = o.order_code === selectedCode
+                return (
+                  <Card key={o.order_code}
+                    onClick={() => setSelectedCode(o.order_code)}
+                    style={{ padding:10, cursor:'pointer',
+                      borderLeft: isSelected ? `4px solid ${T.gold}` : `4px solid transparent`,
+                      background: isSelected ? T.goldBg : '#fff' }}>
+                    <div style={{ fontSize:12, fontWeight:700, color:T.dark,
+                      whiteSpace:'nowrap', overflow:'hidden', textOverflow:'ellipsis' }}>
+                      {o.order_code} • {o.customer_name}
+                    </div>
+                    <div style={{ fontSize:10, color:T.light, marginTop:2 }}>
+                      {totalItems} SP • {Number(o.total_amount||0).toLocaleString('vi-VN')}đ
+                    </div>
+                    <div style={{ display:'flex', gap:6, marginTop:5, fontSize:9 }}>
+                      <span style={{ padding:'1px 6px', borderRadius:10,
+                        background: picked>=min?T.greenBg:T.amberBg,
+                        color: picked>=min?T.green:T.amber, fontWeight:600 }}>
+                        📦 Hàng: {picked}/{min}+
+                      </span>
+                      <span style={{ padding:'1px 6px', borderRadius:10,
+                        background: packed>=min?T.greenBg:T.amberBg,
+                        color: packed>=min?T.green:T.amber, fontWeight:600 }}>
+                        📮 Thùng: {packed}/{min}+
+                      </span>
+                    </div>
+                  </Card>
+                )
+              })
+            )}
+          </div>
+        )}
+
+        {/* Right: detail */}
+        {showDetail && selected && (
+          <PackingDetailPanel
+            ord={selected}
+            mobile={mobile}
+            user={user}
+            allUsers={allUsers}
+            onClose={() => setSelectedCode(null)}
+            onFinish={() => finishPacking(selected.order_code)}
+            onUpdatePhotos={(type: 'picked'|'packed', photos: string[]) =>
+              updatePhotoList(selected.order_code, type, photos)}
+            readOnly={selected.status === 'done' || !canPack}
+          />
+        )}
+      </div>
     </div>
   )
 }
 
-// ── List component ──
-function PackingList({ orders, allUsers, onOpen, emptyMsg, showDone }: any) {
-  if (orders.length === 0) return (
-    <div style={{ padding:'40px 20px', textAlign:'center', color:T.light, fontSize:13 }}>
-      {emptyMsg}
-    </div>
-  )
+function PackingDetailPanel({ ord, mobile, user, allUsers, onClose, onFinish, onUpdatePhotos, readOnly }: any) {
   const getName = (id: string) => allUsers.find((u: any) => u.id === id)?.name || '?'
+  const totalItems = (ord.items || []).length
+  const { min, max } = photoCountRangeV2(totalItems)
+
   return (
-    <div style={{ display:'flex', flexDirection:'column', gap:8 }}>
-      {orders.map((o: any) => {
-        const totalItems = (o.items||[]).length
-        const { min, max } = photoCountRange(totalItems)
-        const photoCount = (o.photos||[]).length
-        const photoStatus = photoCount < min ? 'low' : photoCount >= min ? 'ok' : 'mid'
-        return (
-          <Card key={o.order_code} style={{ padding:12, cursor:'pointer' }}
-            onClick={() => onOpen(o.order_code)}>
-            <div style={{ display:'flex', alignItems:'center', gap:10, flexWrap:'wrap' }}>
-              <div style={{ flex:1, minWidth:200 }}>
-                <div style={{ fontSize:13, fontWeight:700, color:T.dark }}>
-                  {o.order_code} <span style={{ fontWeight:400, color:T.med }}>• {o.customer_name || 'Khách lẻ'}</span>
-                </div>
-                <div style={{ fontSize:11, color:T.light, marginTop:3 }}>
-                  Sale: {o.sold_by_name || '—'} • {totalItems} SP • {Number(o.total_amount||0).toLocaleString('vi-VN')}đ
-                  {o.assigned_to && <> • Nhặt: <b style={{ color:T.dark }}>{getName(o.assigned_to)}</b></>}
-                  {showDone && o.packed_by && <> • Đóng: <b style={{ color:T.green }}>{getName(o.packed_by)}</b></>}
-                </div>
-              </div>
-              {/* Photo indicator */}
-              <div style={{ fontSize:11, padding:'3px 10px', borderRadius:12,
-                background: photoStatus==='low'?T.redBg: photoStatus==='ok'?T.greenBg: T.amberBg,
-                color:      photoStatus==='low'?T.red:   photoStatus==='ok'?T.green:   T.amber,
-                fontWeight:600 }}>
-                📷 {photoCount}/{min}-{max}
-              </div>
-              <button style={{ padding:'5px 14px', borderRadius:20, border:`1px solid ${T.gold}`,
-                background:T.goldBg, color:T.goldText, cursor:'pointer', fontFamily:'inherit',
-                fontSize:11, fontWeight:600 }}>
-                {showDone ? 'Xem' : photoCount>0 ? 'Tiếp tục →' : 'Chụp & đóng →'}
-              </button>
-            </div>
-          </Card>
-        )
-      })}
+    <div style={{ background:T.card, borderRadius:12, border:`1px solid ${T.border}`,
+      padding:16, position: mobile ? 'static' : 'sticky', top: 0, maxHeight: mobile ? 'none' : 'calc(100vh - 40px)',
+      overflowY: 'auto', boxShadow:'0 2px 8px rgba(0,0,0,0.04)' }}>
+
+      {/* Header */}
+      <div style={{ display:'flex', alignItems:'center', justifyContent:'space-between',
+        paddingBottom:12, borderBottom:`1px solid ${T.border}`, marginBottom:12 }}>
+        <div>
+          <div style={{ fontSize:14, fontWeight:700, color:T.dark }}>
+            {ord.order_code} • {ord.customer_name}
+          </div>
+          <div style={{ fontSize:11, color:T.light, marginTop:2 }}>
+            Sale: {ord.sold_by_name||'—'} • {totalItems} SP • {Number(ord.total_amount||0).toLocaleString('vi-VN')}đ
+          </div>
+        </div>
+        <button onClick={onClose}
+          style={{ padding:'5px 10px', borderRadius:6, border:`1px solid ${T.border}`,
+            background:'#fff', color:T.med, cursor:'pointer', fontFamily:'inherit', fontSize:11 }}>
+          ✕ Đóng
+        </button>
+      </div>
+
+      {ord.description_kv && (
+        <div style={{ padding:'8px 12px', marginBottom:12, background:T.goldBg,
+          border:`1px solid ${T.goldBorder}`, borderRadius:6, fontSize:11, color:T.dark }}>
+          {ord.description_kv}
+        </div>
+      )}
+
+      {/* Metadata */}
+      <div style={{ padding:'8px 10px', marginBottom:12, background:T.bg, borderRadius:6,
+        fontSize:10, color:T.med, lineHeight:1.6 }}>
+        {ord.printed_by_name && <div>🖨 Người in: <b style={{ color:T.dark }}>{ord.printed_by_name}</b></div>}
+        {ord.assigned_to && <div>✋ NV nhặt: <b style={{ color:T.dark }}>{getName(ord.assigned_to)}</b></div>}
+        {ord.picked_at && <div>✓ Xong nhặt: <b style={{ color:T.dark }}>{new Date(ord.picked_at).toLocaleString('vi-VN',{hour:'2-digit',minute:'2-digit',day:'2-digit',month:'2-digit'})}</b></div>}
+        {ord.packed_by && <div>📮 Người đóng: <b style={{ color:T.green }}>{getName(ord.packed_by)}</b></div>}
+      </div>
+
+      {/* Items summary */}
+      <div style={{ marginBottom:14, maxHeight:150, overflowY:'auto',
+        border:`1px solid ${T.border}`, borderRadius:6, padding:10 }}>
+        <div style={{ fontSize:11, fontWeight:600, color:T.med, marginBottom:6 }}>
+          📋 {totalItems} sản phẩm
+        </div>
+        {(ord.items||[]).map((it: any, i: number) => (
+          <div key={i} style={{ display:'flex', justifyContent:'space-between', padding:'3px 0',
+            fontSize:10, borderBottom:i<ord.items.length-1?`1px dashed ${T.border}`:'none' }}>
+            <span style={{ color:T.dark, flex:1 }}>{it.name}</span>
+            <span style={{ color:T.med, marginLeft:8 }}>x{it.qty}</span>
+          </div>
+        ))}
+      </div>
+
+      {/* Section 1: Ảnh hàng đã nhặt */}
+      <PhotoSection
+        title="📦 Ảnh hàng đã nhặt (trước đóng thùng)"
+        subtitle="Chụp ảnh các SP đã nhặt xếp ra bàn/khay trước khi đóng vào thùng."
+        photos={ord.photos_picked || []}
+        min={min} max={max}
+        readOnly={readOnly}
+        orderCode={ord.order_code}
+        photoType="picked"
+        onUpdate={(photos: string[]) => onUpdatePhotos('picked', photos)}
+      />
+
+      <div style={{ height:16 }}/>
+
+      {/* Section 2: Ảnh thùng hàng */}
+      <PhotoSection
+        title="📮 Ảnh thùng hàng (sau khi đóng xong)"
+        subtitle="Chụp ảnh thùng hàng đã đóng kín, dán nhãn/ghi địa chỉ."
+        photos={ord.photos_packed || []}
+        min={min} max={max}
+        readOnly={readOnly}
+        orderCode={ord.order_code}
+        photoType="packed"
+        onUpdate={(photos: string[]) => onUpdatePhotos('packed', photos)}
+      />
+
+      {/* Footer */}
+      {!readOnly && (
+        <div style={{ display:'flex', gap:8, paddingTop:14, marginTop:14, borderTop:`1px solid ${T.border}` }}>
+          <button onClick={onClose}
+            style={{ flex:1, padding:'9px', borderRadius:6, border:`1px solid ${T.border}`,
+              background:'#fff', color:T.med, cursor:'pointer', fontFamily:'inherit', fontSize:12 }}>
+            ⏸ Thoát
+          </button>
+          <button onClick={onFinish}
+            style={{ flex:2, padding:'9px', borderRadius:6, border:'none',
+              background:`linear-gradient(135deg, ${T.green} 0%, #107035 100%)`, color:'#fff',
+              cursor:'pointer', fontFamily:'inherit', fontSize:12, fontWeight:700 }}>
+            ✓ Hoàn tất đóng hàng
+          </button>
+        </div>
+      )}
     </div>
   )
 }
 
-// ── Detail view: chụp ảnh ──
-function PackingDetail({ ord, mobile, user, allUsers, onBack, onFinish, onUpdatePhotos, readOnly }: any) {
-  const p = mobile ? '16px' : '24px'
-  const [photos, setPhotos] = useState<string[]>(ord.photos || [])
+function PhotoSection({ title, subtitle, photos, min, max, readOnly, orderCode, photoType, onUpdate }: any) {
   const [uploading, setUploading] = useState(false)
-  const [finishing, setFinishing] = useState(false)
   const [previewIdx, setPreviewIdx] = useState<number|null>(null)
   const fileInputRef = useRef<HTMLInputElement>(null)
 
-  const totalItems = (ord.items || []).length
-  const { min, max } = photoCountRange(totalItems)
   const canAddMore = !readOnly && photos.length < max
 
-  const getName = (id: string) => allUsers.find((u: any) => u.id === id)?.name || '?'
-
-  // Upload ảnh
   const handleFileSelect = async (e: any) => {
     const files: FileList = e.target.files
     if (!files || files.length === 0) return
     if (photos.length + files.length > max) {
-      alert(`❌ Đã vượt số ảnh tối đa (${max}). Đơn này chỉ cho phép chụp tối đa ${max} ảnh.`)
+      alert(`❌ Đã vượt số ảnh tối đa (${max}).`)
       return
     }
     setUploading(true)
     const newUrls: string[] = []
     try {
       for (const file of Array.from(files)) {
-        const blob = await compressImage(file)
+        const blob = await compressImageV2(file)
         const ts = Date.now()
         const idx = photos.length + newUrls.length
-        const path = `${ord.order_code}/${ts}_${idx}.jpg`
+        const path = `${orderCode}/${photoType}_${ts}_${idx}.jpg`
         const { data, error } = await db.storage.from('packing-photos').upload(path, blob, {
-          contentType: 'image/jpeg',
-          upsert: false,
+          contentType: 'image/jpeg', upsert: false,
         })
         if (error) { alert('❌ Upload lỗi: ' + error.message); continue }
         const { data: urlData } = db.storage.from('packing-photos').getPublicUrl(data.path)
         newUrls.push(urlData.publicUrl)
       }
       const updated = [...photos, ...newUrls]
-      setPhotos(updated)
-      await onUpdatePhotos(ord.order_code, updated)
+      await onUpdate(updated)
     } catch(e: any) {
       alert('❌ Lỗi: ' + e.message)
     } finally {
@@ -13867,7 +13834,6 @@ function PackingDetail({ ord, mobile, user, allUsers, onBack, onFinish, onUpdate
     }
   }
 
-  // Xóa 1 ảnh
   const deletePhoto = async (idx: number) => {
     if (readOnly) return
     if (!confirm('Xóa ảnh này?')) return
@@ -13877,111 +13843,48 @@ function PackingDetail({ ord, mobile, user, allUsers, onBack, onFinish, onUpdate
     if (path) {
       await db.storage.from('packing-photos').remove([path])
     }
-    const updated = photos.filter((_, i) => i !== idx)
-    setPhotos(updated)
-    await onUpdatePhotos(ord.order_code, updated)
+    const updated = photos.filter((_: any, i: number) => i !== idx)
+    await onUpdate(updated)
   }
 
-  // Hoàn tất đóng
-  const handleFinish = async () => {
-    if (photos.length < min) {
-      alert(`❌ Cần chụp ít nhất ${min} ảnh cho đơn này (hiện có ${photos.length}).`)
-      return
-    }
-    setFinishing(true)
-    await onFinish(ord.order_code, photos)
-    setFinishing(false)
-  }
+  const enough = photos.length >= min
 
   return (
-    <div style={{ padding:`0 ${p} ${mobile?'80px':p}` }}>
-      <Topbar mobile={mobile}
-        title={
-          <div style={{ display:'flex', alignItems:'center', gap:8 }}>
-            <button onClick={onBack}
-              style={{ background:'transparent', border:'none', fontSize:16, cursor:'pointer', color:T.med, padding:0 }}>
-              ←
-            </button>
-            {ord.order_code}
-          </div> as any
-        }
-        subtitle={`${ord.customer_name} • ${totalItems} SP • ${Number(ord.total_amount||0).toLocaleString('vi-VN')}đ`}
-      />
+    <div style={{ border:`1px solid ${enough?T.green:T.border}`, borderRadius:8, padding:12,
+      background: enough ? T.greenBg : '#fff' }}>
+      <div style={{ fontSize:12, fontWeight:700, color:T.dark, marginBottom:2 }}>{title}</div>
+      <div style={{ fontSize:10, color:T.light, marginBottom:8 }}>{subtitle}</div>
 
-      {ord.description_kv && (
-        <Card style={{ padding:10, marginBottom:12, background:T.goldBg, border:`1px solid ${T.gold}` }}>
-          <div style={{ fontSize:11, color:T.goldText, fontWeight:600 }}>📝 Ghi chú từ KV:</div>
-          <div style={{ fontSize:12, color:T.dark, marginTop:4 }}>{ord.description_kv}</div>
-        </Card>
-      )}
+      <div style={{ fontSize:11, color: enough ? T.green : T.amber, fontWeight:600, marginBottom:10 }}>
+        📷 {photos.length}/{min}-{max} ảnh {enough && '✓'}
+      </div>
 
-      {/* Info summary */}
-      <Card style={{ padding:12, marginBottom:12 }}>
-        <div style={{ fontSize:12, color:T.med, display:'flex', flexWrap:'wrap', gap:12 }}>
-          <span>Sale: <b style={{ color:T.dark }}>{ord.sold_by_name||'?'}</b></span>
-          {ord.assigned_to && <span>Đã nhặt: <b style={{ color:T.dark }}>{getName(ord.assigned_to)}</b></span>}
-          {ord.picked_at && <span>Xong nhặt: <b style={{ color:T.dark }}>{new Date(ord.picked_at).toLocaleString('vi-VN',{hour:'2-digit',minute:'2-digit',day:'2-digit',month:'2-digit'})}</b></span>}
-          {ord.packed_by && <span>Đóng: <b style={{ color:T.green }}>{getName(ord.packed_by)}</b></span>}
-        </div>
-      </Card>
-
-      {/* Items summary */}
-      <Card style={{ padding:12, marginBottom:12 }}>
-        <div style={{ fontSize:12, fontWeight:600, color:T.dark, marginBottom:8 }}>
-          📋 {totalItems} SP
-        </div>
-        <div style={{ maxHeight:200, overflowY:'auto' }}>
-          {(ord.items||[]).map((it: any, i: number) => (
-            <div key={i} style={{ display:'flex', justifyContent:'space-between', padding:'4px 0',
-              fontSize:11, borderBottom:i<ord.items.length-1?`1px dashed ${T.border}`:'none' }}>
-              <span style={{ color:T.dark, flex:1 }}>{it.name}</span>
-              <span style={{ color:T.med, marginLeft:8 }}>x{it.qty}</span>
-            </div>
-          ))}
-        </div>
-      </Card>
-
-      {/* Photo requirement info */}
-      <Card style={{ padding:12, marginBottom:12, background: photos.length >= min ? T.greenBg : T.amberBg,
-        border:`1px solid ${photos.length >= min ? T.green : T.amber}` }}>
-        <div style={{ fontSize:12, fontWeight:600, color:photos.length >= min ? T.green : T.amber }}>
-          📷 Cần tối thiểu <b>{min}</b> ảnh, tối đa <b>{max}</b> ảnh (hiện có {photos.length})
-        </div>
-        <div style={{ fontSize:11, color:T.med, marginTop:4 }}>
-          Ảnh chụp cần thấy rõ các SP và số lượng. Không cần quá chi tiết, chỉ cần nhận dạng được.
-        </div>
-      </Card>
-
-      {/* Photo grid */}
-      <div style={{ display:'grid', gridTemplateColumns:'repeat(auto-fill, minmax(100px, 1fr))',
-        gap:10, marginBottom:16 }}>
-        {photos.map((url, i) => (
-          <div key={i} style={{ position:'relative', aspectRatio:'1/1', borderRadius:8, overflow:'hidden',
+      <div style={{ display:'grid', gridTemplateColumns:'repeat(auto-fill, minmax(80px, 1fr))',
+        gap:8 }}>
+        {photos.map((url: string, i: number) => (
+          <div key={i} style={{ position:'relative', aspectRatio:'1/1', borderRadius:6, overflow:'hidden',
             border:`1px solid ${T.border}`, cursor:'pointer' }}
             onClick={() => setPreviewIdx(i)}>
             <img src={url} alt={`Photo ${i+1}`}
               style={{ width:'100%', height:'100%', objectFit:'cover', display:'block' }}/>
             {!readOnly && (
               <button onClick={e => { e.stopPropagation(); deletePhoto(i) }}
-                style={{ position:'absolute', top:4, right:4, width:24, height:24,
-                  borderRadius:12, border:'none', background:'rgba(185,28,28,0.9)', color:'#fff',
-                  cursor:'pointer', fontSize:12, fontFamily:'inherit' }}>
+                style={{ position:'absolute', top:2, right:2, width:20, height:20,
+                  borderRadius:10, border:'none', background:'rgba(185,28,28,0.9)', color:'#fff',
+                  cursor:'pointer', fontSize:10, fontFamily:'inherit', padding:0, lineHeight:'20px' }}>
                 ×
               </button>
             )}
-            <div style={{ position:'absolute', bottom:0, left:0, right:0,
-              background:'rgba(0,0,0,0.5)', color:'#fff', fontSize:10, textAlign:'center', padding:'2px 0' }}>
-              Ảnh {i+1}
-            </div>
           </div>
         ))}
         {canAddMore && (
           <label style={{ display:'flex', alignItems:'center', justifyContent:'center', aspectRatio:'1/1',
-            borderRadius:8, border:`2px dashed ${T.gold}`, background:T.goldBg, cursor:uploading?'wait':'pointer',
-            color:T.goldText, fontSize:11, fontWeight:600, textAlign:'center', flexDirection:'column', gap:4 }}>
-            {uploading ? '⏳ Đang upload...' : <>
-              <span style={{ fontSize:24 }}>📷</span>
-              <span>Chụp ảnh</span>
+            borderRadius:6, border:`2px dashed ${T.gold}`, background:T.goldBg,
+            cursor:uploading?'wait':'pointer',
+            color:T.goldText, fontSize:10, fontWeight:600, textAlign:'center', flexDirection:'column', gap:2 }}>
+            {uploading ? '⏳' : <>
+              <span style={{ fontSize:18 }}>📷</span>
+              <span>Chụp</span>
             </>}
             <input ref={fileInputRef} type="file" accept="image/*" capture="environment" multiple
               onChange={handleFileSelect} disabled={uploading}
@@ -13990,30 +13893,6 @@ function PackingDetail({ ord, mobile, user, allUsers, onBack, onFinish, onUpdate
         )}
       </div>
 
-      {/* Footer */}
-      {!readOnly && (
-        <div style={{ position:'sticky', bottom:mobile?70:0, background:'#fff', padding:'12px 0',
-          borderTop:`1px solid ${T.border}`, display:'flex', gap:10 }}>
-          <button onClick={onBack}
-            style={{ flex:1, padding:'10px', borderRadius:8, border:`1px solid ${T.border}`,
-              background:'#fff', color:T.med, cursor:'pointer', fontFamily:'inherit', fontSize:13 }}>
-            ⏸ Thoát (giữ nguyên)
-          </button>
-          <button onClick={handleFinish}
-            disabled={photos.length < min || finishing}
-            style={{ flex:2, padding:'10px', borderRadius:8, border:'none',
-              background: photos.length >= min
-                ? `linear-gradient(135deg, ${T.green} 0%, #107035 100%)`
-                : T.border,
-              color: photos.length >= min ? '#fff' : T.light,
-              cursor: photos.length >= min && !finishing ? 'pointer' : 'not-allowed',
-              fontFamily:'inherit', fontSize:13, fontWeight:700 }}>
-            {finishing ? '⏳ Đang lưu...' : `✓ Hoàn tất đóng hàng${photos.length < min ? ` (cần ${min-photos.length} ảnh nữa)` : ''}`}
-          </button>
-        </div>
-      )}
-
-      {/* Preview modal */}
       {previewIdx !== null && (
         <div style={{ position:'fixed', inset:0, background:'rgba(0,0,0,0.9)', zIndex:9999,
           display:'flex', alignItems:'center', justifyContent:'center', padding:20 }}
@@ -14026,10 +13905,6 @@ function PackingDetail({ ord, mobile, user, allUsers, onBack, onFinish, onUpdate
                 cursor:'pointer', fontSize:18, fontFamily:'inherit' }}>×</button>
             <img src={photos[previewIdx]} alt={`Photo ${previewIdx+1}`}
               style={{ maxWidth:'90vw', maxHeight:'90vh', borderRadius:8 }}/>
-            <div style={{ position:'absolute', bottom:10, left:'50%', transform:'translateX(-50%)',
-              background:'rgba(0,0,0,0.7)', color:'#fff', padding:'4px 14px', borderRadius:20, fontSize:12 }}>
-              Ảnh {previewIdx+1}/{photos.length}
-            </div>
           </div>
         </div>
       )}
