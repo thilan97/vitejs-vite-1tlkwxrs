@@ -11593,7 +11593,8 @@ function PaymentOrderForm({ suppliers, accounts, onSave, onClose, edit, mobile }
   }
 
   const handleSubmit = async (forceStatus?: string) => {
-    const finalStatus = forceStatus ?? status
+    // Defense: chỉ nhận string. Nếu React pass event object thì treat as undefined.
+    const finalStatus = typeof forceStatus === 'string' ? forceStatus : status
     // Draft không yêu cầu điền đủ thông tin
     if (finalStatus !== 'draft' && !isValid) return
     if (!selSup) return  // Ít nhất phải có NCC
@@ -11928,7 +11929,7 @@ function PaymentOrderForm({ suppliers, accounts, onSave, onClose, edit, mobile }
 
         <div style={{ padding:'12px 20px', borderTop:`1px solid ${T.border}`,
           display:'flex', gap:10, flexShrink:0 }}>
-          <GoldBtn onClick={handleSubmit}
+          <GoldBtn onClick={() => handleSubmit()}
             disabled={(status !== 'draft' && !isValid) || saving}>
             {saving ? 'Đang lưu...' : edit
               ? (edit.status==='draft' && status==='pending' ? '📤 Gửi lên chờ CK' : 'Cập nhật')
