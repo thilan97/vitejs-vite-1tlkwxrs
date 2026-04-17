@@ -12,7 +12,7 @@ const db = createClient(SUPABASE_URL, SUPABASE_KEY)
 // APP_VERSION — dùng để invalidate cache localStorage mỗi khi deploy version mới
 // (ngăn bug quyền user bị "reset" do cache position cũ sau deploy)
 // ⚠️ MỖI LẦN DEPLOY FEATURE MỚI CÓ PERMISSION MỚI, BUMP SỐ NÀY:
-const APP_VERSION = '2026.04.17.v10'
+const APP_VERSION = '2026.04.17.v11'
 
 // ════════════════════════════════════════════════════════════════
 // AUDIT LOG — ghi nhận các hành động phá hoại data để trace lại
@@ -7007,8 +7007,8 @@ export default function App() {
           {validPage==='payment'    && <PaymentModule {...pp}/>}
           {validPage==='pricelist'  && <PriceModule {...pp} products={products} priceConfigs={priceConfigs} setPriceConfigs={setPriceConfigs} priceTiers={priceTiers} setPriceTiers={setPriceTiers} priceHistory={priceHistory} setPriceHistory={setPriceHistory} brandPrograms={brandPrograms} setBrandPrograms={setBrandPrograms}/>}
           {validPage==='notifications' && <NotificationPage {...pp} groups={notifGroups} totalUnread={notifUnread} totalItems={notifTotal} reads={notificationReads} setReads={setNotificationReads} setPage={setPage}/>}
-          {validPage==='picking'    && <PickingModule {...pp}/>}
-          {validPage==='packing'    && <PackingModule {...pp}/>}
+          {validPage==='picking'    && <PickingModule {...pp} products={products}/>}
+          {validPage==='packing'    && <PackingModule {...pp} products={products}/>}
           {validPage==='audit'      && <AuditLogModule {...pp}/>}
           {validPage==='settings'   && <Settings {...pp} setUser={setUser} settings={settings} setSettings={setSettings} onManualReset={manualReset}/>}
         </main>
@@ -13262,11 +13262,18 @@ function photoCountRangeV2(totalItems: number) {
   return { min, max }
 }
 
-function PickingModule({ user, allUsers, mobile }: any) {
+function PickingModule({ user, allUsers, mobile, products }: any) {
   const perm      = getPerm(user)
   const canPick   = perm.pickOrders || perm.viewAllDashboard
   const isAdmin   = perm.viewAllDashboard
   const p = mobile ? '16px' : '24px'
+
+  // Map product code → {stock, name} để hiển thị tồn kho realtime
+  const productMap = useMemo(() => {
+    const m = new Map<string, any>()
+    ;(products || []).forEach((p: any) => m.set(p.code, p))
+    return m
+  }, [products])
 
   const [orders, setOrders]     = useState<any[]>([])
   const [loading, setLoading]   = useState(true)
@@ -13507,6 +13514,7 @@ function PickingModule({ user, allUsers, mobile }: any) {
           <PickingDetailPanel
             ord={selected}
             mobile={mobile}
+            productMap={productMap}
             onClose={() => setSelectedCode(null)}
             onUpdateQty={(code: string, qty: number) => updatePickedQty(selected.order_code, code, qty)}
             onReportShort={(code: string, qty: number, note: string) => reportShort(selected.order_code, code, qty, note)}
@@ -13520,7 +13528,7 @@ function PickingModule({ user, allUsers, mobile }: any) {
 }
 
 // ── Picking Detail Panel (cột phải) ──
-function PickingDetailPanel({ ord, mobile, onClose, onUpdateQty, onReportShort, onFinish, canPick }: any) {
+function PickingDetailPanel({ ord, mobile, productMap, onClose, onUpdateQty, onReportShort, onFinish, canPick }: any) {
   const [searchSP, setSearchSP] = useState('')
   const [showShortModal, setShowShortModal] = useState<any>(null)
   const [showImgModal, setShowImgModal] = useState<string|null>(null)
@@ -13536,6 +13544,13 @@ function PickingDetailPanel({ ord, mobile, onClose, onUpdateQty, onReportShort, 
   const pickedQty  = items.reduce((s: number, it: any) => s + (it.picked_qty||0) + (it.short_qty||0), 0)
   const progress   = totalQty > 0 ? Math.round(pickedQty*100/totalQty) : 0
   const pickedItems = items.filter((it: any) => (it.picked_qty||0) + (it.short_qty||0) >= it.qty).length
+
+  // Helper: lấy stock realtime từ products table (nếu có)
+  const getStock = (code: string, fallback: number) => {
+    const p = productMap?.get(code)
+    if (p && p.stock !== null && p.stock !== undefined) return p.stock
+    return fallback || 0
+  }
 
   return (
     <div style={{ background:T.card, borderRadius:12, border:`1px solid ${T.border}`,
@@ -13598,61 +13613,109 @@ function PickingDetailPanel({ ord, mobile, onClose, onUpdateQty, onReportShort, 
           fontSize:11, fontFamily:'inherit', color:T.dark, background:'#fff', outline:'none',
           boxSizing:'border-box' as any, marginBottom:10 }}/>
 
-      {/* Items */}
-      <div style={{ display:'flex', flexDirection:'column', gap:6, marginBottom:12 }}>
+      {/* Items — NEW LAYOUT: tồn kho + KH đặt to rõ bên cạnh tên */}
+      <div style={{ display:'flex', flexDirection:'column', gap:8, marginBottom:12 }}>
         {filtered.map((it: any) => {
           const done = (it.picked_qty||0) + (it.short_qty||0) >= it.qty
           const hasShort = (it.short_qty||0) > 0
+          const realStock = getStock(it.code, it.stock)
+          const stockLow = realStock < it.qty  // tồn ít hơn khách đặt → cảnh báo
           return (
-            <div key={it.code} style={{ padding:10, borderRadius:8,
-              background: done ? (hasShort ? T.redBg : T.greenBg) : T.bg,
-              borderLeft: `3px solid ${done ? (hasShort?T.red:T.green) : T.border}` }}>
-              <div style={{ fontSize:11, fontWeight:600, color:T.dark, lineHeight:1.4 }}>{it.name}</div>
-              <div style={{ fontSize:9, color:T.light, marginTop:2 }}>{it.code}{it.unit?` • ${it.unit}`:''}</div>
-              <div style={{ display:'flex', alignItems:'center', gap:6, marginTop:6, flexWrap:'wrap' }}>
-                <span style={{ fontSize:10, color:T.med }}>📦<b style={{ color:T.dark }}> {it.stock||0}</b></span>
-                <span style={{ fontSize:10, color:T.med }}>🛒<b style={{ color:T.blue }}> {it.qty}</b></span>
+            <div key={it.code} style={{ padding:12, borderRadius:10,
+              background: done ? (hasShort ? T.redBg : T.greenBg) : '#fff',
+              border: `1px solid ${done ? (hasShort?T.red:T.green) : T.border}`,
+              borderLeft: `4px solid ${done ? (hasShort?T.red:T.green) : (stockLow?T.amber:T.border)}` }}>
+
+              {/* Row 1: tên SP + nút xem ảnh */}
+              <div style={{ display:'flex', alignItems:'flex-start', gap:8, marginBottom:8 }}>
+                <div style={{ flex:1, minWidth:0 }}>
+                  <div style={{ fontSize:13, fontWeight:700, color:T.dark, lineHeight:1.35 }}>
+                    {it.name}
+                  </div>
+                  <div style={{ fontSize:10, color:T.light, marginTop:2 }}>
+                    {it.code}{it.unit?` • ${it.unit}`:''}
+                  </div>
+                </div>
                 <button onClick={() => setShowImgModal(it.code)}
-                  style={{ padding:'1px 7px', borderRadius:10, border:`1px solid ${T.border}`,
-                    background:'#fff', color:T.med, cursor:'pointer', fontFamily:'inherit', fontSize:9 }}>
-                  🖼
+                  style={{ padding:'6px 10px', borderRadius:6, border:`1px solid ${T.gold}`,
+                    background:T.goldBg, color:T.goldText, cursor:'pointer', fontFamily:'inherit',
+                    fontSize:11, fontWeight:600, flexShrink:0, whiteSpace:'nowrap' }}>
+                  🖼 Ảnh SP
                 </button>
-                {canPick && (
-                  <>
-                    <div style={{ display:'flex', alignItems:'center', gap:3, marginLeft:'auto' }}>
-                      <button onClick={() => onUpdateQty(it.code, Math.max(0, (it.picked_qty||0)-1))}
-                        disabled={(it.picked_qty||0)<=0}
-                        style={{ width:22, height:22, borderRadius:4, border:`1px solid ${T.border}`,
-                          background:'#fff', cursor:'pointer', fontSize:12, fontFamily:'inherit',
-                          color:(it.picked_qty||0)<=0?T.light:T.dark, padding:0 }}>−</button>
-                      <span style={{ minWidth:34, textAlign:'center', fontSize:11, fontWeight:700,
-                        color: done?T.green:T.dark }}>
-                        {it.picked_qty||0}/{it.qty}
-                      </span>
-                      <button onClick={() => onUpdateQty(it.code, (it.picked_qty||0)+1)}
-                        disabled={(it.picked_qty||0)>=it.qty}
-                        style={{ width:22, height:22, borderRadius:4, border:`1px solid ${T.border}`,
-                          background:'#fff', cursor:'pointer', fontSize:12, fontFamily:'inherit',
-                          color:(it.picked_qty||0)>=it.qty?T.light:T.dark, padding:0 }}>+</button>
-                    </div>
-                    <button onClick={() => onUpdateQty(it.code, it.qty)}
-                      style={{ padding:'3px 8px', borderRadius:4, border:`1px solid ${T.green}`,
-                        background: done && !hasShort ? T.greenBg : '#fff', color:T.green,
-                        cursor:'pointer', fontFamily:'inherit', fontSize:9, fontWeight:600 }}>
-                      ✓ Đủ
-                    </button>
-                    <button onClick={() => setShowShortModal(it)}
-                      style={{ padding:'3px 8px', borderRadius:4, border:`1px solid ${T.red}`,
-                        background:hasShort?T.redBg:'#fff', color:T.red,
-                        cursor:'pointer', fontFamily:'inherit', fontSize:9, fontWeight:600 }}>
-                      ⚠️ Thiếu
-                    </button>
-                  </>
-                )}
               </div>
+
+              {/* Row 2: Tồn kho + KH đặt TO RÕ */}
+              <div style={{ display:'flex', gap:10, marginBottom:10 }}>
+                <div style={{ flex:1, padding:'8px 12px', borderRadius:8, background:T.bg,
+                  border:`1px solid ${stockLow?T.amber:T.border}`, textAlign:'center' }}>
+                  <div style={{ fontSize:9, color:T.light, fontWeight:600, letterSpacing:.5 }}>
+                    📦 TỒN KHO
+                  </div>
+                  <div style={{ fontSize:22, fontWeight:800,
+                    color: stockLow ? T.amber : T.dark, lineHeight:1.2 }}>
+                    {realStock}
+                  </div>
+                </div>
+                <div style={{ flex:1, padding:'8px 12px', borderRadius:8, background:T.bg,
+                  border:`1px solid ${T.blue}`, textAlign:'center' }}>
+                  <div style={{ fontSize:9, color:T.light, fontWeight:600, letterSpacing:.5 }}>
+                    🛒 KH ĐẶT
+                  </div>
+                  <div style={{ fontSize:22, fontWeight:800, color:T.blue, lineHeight:1.2 }}>
+                    {it.qty}
+                  </div>
+                </div>
+                <div style={{ flex:1, padding:'8px 12px', borderRadius:8,
+                  background: done?T.greenBg:'#fff',
+                  border:`1px solid ${done?T.green:T.border}`, textAlign:'center' }}>
+                  <div style={{ fontSize:9, color:T.light, fontWeight:600, letterSpacing:.5 }}>
+                    ✓ ĐÃ NHẶT
+                  </div>
+                  <div style={{ fontSize:22, fontWeight:800,
+                    color: done?T.green:T.dark, lineHeight:1.2 }}>
+                    {it.picked_qty||0}
+                  </div>
+                </div>
+              </div>
+
+              {/* Row 3: Controls (chỉ khi canPick) */}
+              {canPick && (
+                <div style={{ display:'flex', alignItems:'center', gap:8, flexWrap:'wrap' }}>
+                  <div style={{ display:'flex', alignItems:'center', gap:6 }}>
+                    <button onClick={() => onUpdateQty(it.code, Math.max(0, (it.picked_qty||0)-1))}
+                      disabled={(it.picked_qty||0)<=0}
+                      style={{ width:36, height:36, borderRadius:6, border:`1px solid ${T.border}`,
+                        background:'#fff', cursor:'pointer', fontSize:18, fontWeight:700, fontFamily:'inherit',
+                        color:(it.picked_qty||0)<=0?T.light:T.dark, padding:0 }}>−</button>
+                    <button onClick={() => onUpdateQty(it.code, (it.picked_qty||0)+1)}
+                      disabled={(it.picked_qty||0)>=it.qty}
+                      style={{ width:36, height:36, borderRadius:6, border:`1px solid ${T.border}`,
+                        background:'#fff', cursor:'pointer', fontSize:18, fontWeight:700, fontFamily:'inherit',
+                        color:(it.picked_qty||0)>=it.qty?T.light:T.dark, padding:0 }}>+</button>
+                  </div>
+                  <button onClick={() => onUpdateQty(it.code, it.qty)}
+                    style={{ flex:1, padding:'8px 12px', borderRadius:6,
+                      border:`1.5px solid ${T.green}`,
+                      background: done && !hasShort ? T.green : '#fff',
+                      color: done && !hasShort ? '#fff' : T.green,
+                      cursor:'pointer', fontFamily:'inherit', fontSize:12, fontWeight:700 }}>
+                    ✓ Đủ hàng
+                  </button>
+                  <button onClick={() => setShowShortModal(it)}
+                    style={{ flex:1, padding:'8px 12px', borderRadius:6,
+                      border:`1.5px solid ${T.red}`,
+                      background: hasShort ? T.red : '#fff',
+                      color: hasShort ? '#fff' : T.red,
+                      cursor:'pointer', fontFamily:'inherit', fontSize:12, fontWeight:700 }}>
+                    ⚠️ Báo thiếu
+                  </button>
+                </div>
+              )}
+
               {hasShort && (
-                <div style={{ fontSize:10, color:T.red, marginTop:4 }}>
-                  ⚠️ Thiếu {it.short_qty}{it.short_note?`: ${it.short_note}`:''}
+                <div style={{ fontSize:11, color:T.red, marginTop:8, padding:'6px 10px',
+                  background:'#fff', borderRadius:6, border:`1px solid ${T.red}` }}>
+                  ⚠️ Thiếu <b>{it.short_qty}</b>{it.short_note?`: ${it.short_note}`:''}
                 </div>
               )}
             </div>
@@ -13664,14 +13727,14 @@ function PickingDetailPanel({ ord, mobile, onClose, onUpdateQty, onReportShort, 
       {canPick && (
         <div style={{ display:'flex', gap:8, paddingTop:10, borderTop:`1px solid ${T.border}` }}>
           <button onClick={onClose}
-            style={{ flex:1, padding:'9px', borderRadius:6, border:`1px solid ${T.border}`,
-              background:'#fff', color:T.med, cursor:'pointer', fontFamily:'inherit', fontSize:12 }}>
+            style={{ flex:1, padding:'10px', borderRadius:6, border:`1px solid ${T.border}`,
+              background:'#fff', color:T.med, cursor:'pointer', fontFamily:'inherit', fontSize:13 }}>
             ⏸ Tạm
           </button>
           <button onClick={onFinish}
-            style={{ flex:2, padding:'9px', borderRadius:6, border:'none',
+            style={{ flex:2, padding:'10px', borderRadius:6, border:'none',
               background:`linear-gradient(135deg, ${T.green} 0%, #107035 100%)`, color:'#fff',
-              cursor:'pointer', fontFamily:'inherit', fontSize:12, fontWeight:700 }}>
+              cursor:'pointer', fontFamily:'inherit', fontSize:13, fontWeight:700 }}>
             ✓ Hoàn tất nhặt
           </button>
         </div>
@@ -13732,37 +13795,77 @@ function ShortageModalV2({ item, onClose, onSubmit }: any) {
 }
 
 function ProductImageModalV2({ code, onClose }: any) {
-  const [product, setProduct] = useState<any>(null)
+  const [info, setInfo]       = useState<any>(null)
   const [loading, setLoading] = useState(true)
+  const [error, setError]     = useState<string|null>(null)
+
   useEffect(() => {
-    db.from('products').select('code,name,images,image_url').eq('code', code).maybeSingle()
-      .then(({data}) => { setProduct(data); setLoading(false) })
+    (async () => {
+      try {
+        const res = await fetch(
+          `${SUPABASE_URL}/functions/v1/kiotviet-product-info?code=${encodeURIComponent(code)}`,
+          { headers: { 'Authorization': `Bearer ${SUPABASE_ANON}` } }
+        )
+        const data = await res.json()
+        if (data.error) setError(data.error)
+        else setInfo(data)
+      } catch(e: any) {
+        setError(e.message)
+      }
+      setLoading(false)
+    })()
   }, [code])
-  const imgs = product?.images || (product?.image_url ? [product.image_url] : [])
+
+  const imgs: string[] = info?.images || []
+
   return (
-    <div style={{ position:'fixed', inset:0, background:'rgba(0,0,0,0.8)', zIndex:9999,
+    <div style={{ position:'fixed', inset:0, background:'rgba(0,0,0,0.85)', zIndex:9999,
       display:'flex', alignItems:'center', justifyContent:'center', padding:20 }}
       onClick={onClose}>
       <div style={{ background:'#fff', borderRadius:12, padding:20, maxWidth:600, width:'100%',
         maxHeight:'90vh', overflow:'auto' }} onClick={e => e.stopPropagation()}>
         <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:12 }}>
-          <div style={{ fontSize:14, fontWeight:700, color:T.dark }}>{product?.name || code}</div>
+          <div>
+            <div style={{ fontSize:14, fontWeight:700, color:T.dark }}>{info?.name || code}</div>
+            <div style={{ fontSize:11, color:T.light, marginTop:3 }}>
+              Mã: {code}
+              {info && <> • Tồn: <b style={{ color:T.green }}>{info.stock}</b></>}
+              {info?.unit && <> • {info.unit}</>}
+            </div>
+          </div>
           <button onClick={onClose}
-            style={{ background:'transparent', border:'none', fontSize:20, cursor:'pointer', color:T.med }}>
+            style={{ background:'transparent', border:'none', fontSize:22, cursor:'pointer',
+              color:T.med, padding:'0 6px', lineHeight:1 }}>
             ×
           </button>
         </div>
-        {loading && <div style={{ padding:20, textAlign:'center', color:T.light }}>⏳</div>}
-        {!loading && imgs.length === 0 && (
-          <div style={{ padding:40, textAlign:'center', color:T.light, fontSize:13 }}>
-            Chưa có ảnh cho SP này.
+
+        {loading && <div style={{ padding:30, textAlign:'center', color:T.light, fontSize:13 }}>
+          ⏳ Đang tải ảnh từ KiotViet...
+        </div>}
+
+        {error && (
+          <div style={{ padding:20, textAlign:'center', color:T.red, fontSize:13,
+            background:T.redBg, borderRadius:8 }}>
+            ❌ Lỗi: {error}
           </div>
         )}
+
+        {!loading && !error && imgs.length === 0 && (
+          <div style={{ padding:40, textAlign:'center', color:T.light, fontSize:13,
+            background:T.bg, borderRadius:8 }}>
+            📷 SP này chưa có ảnh trên KiotViet.<br/>
+            <span style={{ fontSize:11 }}>Admin có thể vào KV → Hàng hoá → Thêm ảnh.</span>
+          </div>
+        )}
+
         {!loading && imgs.length > 0 && (
           <div style={{ display:'grid', gridTemplateColumns:'1fr', gap:10 }}>
             {imgs.map((url: string, i: number) => (
-              <img key={i} src={url} alt={product?.name}
-                style={{ width:'100%', borderRadius:8, border:`1px solid ${T.border}` }}/>
+              <img key={i} src={url} alt={info?.name}
+                style={{ width:'100%', borderRadius:8, border:`1px solid ${T.border}`,
+                  display:'block' }}
+                onError={(e: any) => { e.currentTarget.style.display = 'none' }}/>
             ))}
           </div>
         )}
@@ -13774,7 +13877,7 @@ function ProductImageModalV2({ code, onClose }: any) {
 // ══════════════════════════════════════════════════════════════════════
 // ══ PACKING MODULE v2 — Đóng Đơn (2 loại ảnh: nhặt + thùng) ═══════════
 // ══════════════════════════════════════════════════════════════════════
-function PackingModule({ user, allUsers, mobile }: any) {
+function PackingModule({ user, allUsers, mobile, products }: any) {
   const perm    = getPerm(user)
   const canPack = perm.packOrders || perm.viewAllDashboard
   const p = mobile ? '16px' : '24px'
@@ -13951,6 +14054,7 @@ function PackingModule({ user, allUsers, mobile }: any) {
             mobile={mobile}
             user={user}
             allUsers={allUsers}
+            products={products}
             onClose={() => setSelectedCode(null)}
             onFinish={() => finishPacking(selected.order_code)}
             onUpdatePhotos={(type: 'picked'|'packed', photos: string[]) =>
@@ -13963,10 +14067,23 @@ function PackingModule({ user, allUsers, mobile }: any) {
   )
 }
 
-function PackingDetailPanel({ ord, mobile, user, allUsers, onClose, onFinish, onUpdatePhotos, readOnly }: any) {
+function PackingDetailPanel({ ord, mobile, user, allUsers, products, onClose, onFinish, onUpdatePhotos, readOnly }: any) {
   const getName = (id: string) => allUsers.find((u: any) => u.id === id)?.name || '?'
   const totalItems = (ord.items || []).length
   const { min, max } = photoCountRangeV2(totalItems)
+  const [showImgModal, setShowImgModal] = useState<string|null>(null)
+
+  // Map product → stock realtime
+  const productMap = useMemo(() => {
+    const m = new Map<string, any>()
+    ;(products || []).forEach((p: any) => m.set(p.code, p))
+    return m
+  }, [products])
+  const getStock = (code: string, fallback: number) => {
+    const p = productMap.get(code)
+    if (p && p.stock !== null && p.stock !== undefined) return p.stock
+    return fallback || 0
+  }
 
   return (
     <div style={{ background:T.card, borderRadius:12, border:`1px solid ${T.border}`,
@@ -14007,19 +14124,56 @@ function PackingDetailPanel({ ord, mobile, user, allUsers, onClose, onFinish, on
         {ord.packed_by && <div>📮 Người đóng: <b style={{ color:T.green }}>{getName(ord.packed_by)}</b></div>}
       </div>
 
-      {/* Items summary */}
-      <div style={{ marginBottom:14, maxHeight:150, overflowY:'auto',
-        border:`1px solid ${T.border}`, borderRadius:6, padding:10 }}>
-        <div style={{ fontSize:11, fontWeight:600, color:T.med, marginBottom:6 }}>
-          📋 {totalItems} sản phẩm
+      {/* Items — với tồn kho, số lượng đặt, nút xem ảnh cho NV đóng match */}
+      <div style={{ marginBottom:14 }}>
+        <div style={{ fontSize:11, fontWeight:600, color:T.med, marginBottom:8 }}>
+          📋 {totalItems} sản phẩm trong đơn
         </div>
-        {(ord.items||[]).map((it: any, i: number) => (
-          <div key={i} style={{ display:'flex', justifyContent:'space-between', padding:'3px 0',
-            fontSize:10, borderBottom:i<ord.items.length-1?`1px dashed ${T.border}`:'none' }}>
-            <span style={{ color:T.dark, flex:1 }}>{it.name}</span>
-            <span style={{ color:T.med, marginLeft:8 }}>x{it.qty}</span>
-          </div>
-        ))}
+        <div style={{ maxHeight:320, overflowY:'auto', display:'flex', flexDirection:'column', gap:6 }}>
+          {(ord.items||[]).map((it: any, i: number) => {
+            const realStock = getStock(it.code, it.stock)
+            return (
+              <div key={i} style={{ padding:10, borderRadius:8, background:'#fff',
+                border:`1px solid ${T.border}` }}>
+                <div style={{ display:'flex', alignItems:'flex-start', gap:8, marginBottom:6 }}>
+                  <div style={{ flex:1, minWidth:0 }}>
+                    <div style={{ fontSize:12, fontWeight:700, color:T.dark, lineHeight:1.35 }}>
+                      {it.name}
+                    </div>
+                    <div style={{ fontSize:9, color:T.light, marginTop:2 }}>
+                      {it.code}{it.unit?` • ${it.unit}`:''}
+                    </div>
+                  </div>
+                  <button onClick={() => setShowImgModal(it.code)}
+                    style={{ padding:'5px 10px', borderRadius:6, border:`1px solid ${T.gold}`,
+                      background:T.goldBg, color:T.goldText, cursor:'pointer', fontFamily:'inherit',
+                      fontSize:10, fontWeight:600, flexShrink:0, whiteSpace:'nowrap' }}>
+                    🖼 Ảnh SP
+                  </button>
+                </div>
+                <div style={{ display:'flex', gap:8 }}>
+                  <div style={{ flex:1, padding:'6px 10px', borderRadius:6, background:T.bg,
+                    border:`1px solid ${T.border}`, textAlign:'center' }}>
+                    <div style={{ fontSize:8, color:T.light, fontWeight:600, letterSpacing:.5 }}>📦 TỒN</div>
+                    <div style={{ fontSize:17, fontWeight:800, color:T.dark, lineHeight:1.2 }}>{realStock}</div>
+                  </div>
+                  <div style={{ flex:1, padding:'6px 10px', borderRadius:6, background:T.bg,
+                    border:`1px solid ${T.blue}`, textAlign:'center' }}>
+                    <div style={{ fontSize:8, color:T.light, fontWeight:600, letterSpacing:.5 }}>🛒 ĐẶT</div>
+                    <div style={{ fontSize:17, fontWeight:800, color:T.blue, lineHeight:1.2 }}>{it.qty}</div>
+                  </div>
+                  {(it.short_qty||0) > 0 && (
+                    <div style={{ flex:1, padding:'6px 10px', borderRadius:6, background:T.redBg,
+                      border:`1px solid ${T.red}`, textAlign:'center' }}>
+                      <div style={{ fontSize:8, color:T.red, fontWeight:600, letterSpacing:.5 }}>⚠️ THIẾU</div>
+                      <div style={{ fontSize:17, fontWeight:800, color:T.red, lineHeight:1.2 }}>{it.short_qty}</div>
+                    </div>
+                  )}
+                </div>
+              </div>
+            )
+          })}
+        </div>
       </div>
 
       {/* Section 1: Ảnh hàng đã nhặt */}
@@ -14063,6 +14217,10 @@ function PackingDetailPanel({ ord, mobile, user, allUsers, onClose, onFinish, on
             ✓ Hoàn tất đóng hàng
           </button>
         </div>
+      )}
+
+      {showImgModal && (
+        <ProductImageModalV2 code={showImgModal} onClose={() => setShowImgModal(null)}/>
       )}
     </div>
   )
