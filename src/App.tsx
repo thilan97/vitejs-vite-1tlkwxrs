@@ -5721,6 +5721,15 @@ function Settings({ user, setUser, settings, setSettings, onManualReset, mobile 
               <Inp label="Reset hàng tháng vào ngày (1-28)" type="number" min="1" max="28" value={monthDay} onChange={setMonthDay}/>
               <Inp label="Chu kỳ reset hàng tuần (số ngày)" type="number" min="1" max="30" value={weekInt} onChange={setWeekInt}/>
             </div>
+            <div style={{ marginBottom:14, paddingTop:10, borderTop:`1px solid ${T.border}` }}>
+              <div style={{ fontSize:12, fontWeight:600, color:T.dark, marginBottom:8 }}>🕐 Cảnh báo đơn hàng KiotViet quá hạn</div>
+              <div style={{ display:'grid', gridTemplateColumns:'1fr 2fr', gap:12, alignItems:'center' }}>
+                <Inp label="Ngưỡng cảnh báo (ngày)" type="number" min="1" max="30" value={overdayThreshold} onChange={setOverdayThreshold}/>
+                <div style={{ fontSize:11, color:T.light, paddingTop:16 }}>
+                  Đơn "Phiếu tạm" trong KiotViet chưa được xử lý quá <b style={{ color:T.amber }}>{overdayThreshold} ngày</b> sẽ hiện cảnh báo cho sale và manager
+                </div>
+              </div>
+            </div>
             <div style={{ display:'flex', gap:10, alignItems:'center' }}>
               <GoldBtn small onClick={saveSettings}>Lưu cài đặt</GoldBtn>
               {saved && <span style={{ color:T.green, fontSize:12 }}>✅ Đã lưu!</span>}
@@ -5744,7 +5753,7 @@ function Settings({ user, setUser, settings, setSettings, onManualReset, mobile 
 
 // ── MAIN APP ──────────────────────────────────────
 // ── NOTIFICATION BANNER ─────────────────────────────
-function NotifBanner({ user, wrongOrders, returnSlips, shortageItems, batches, paymentOrders, setPage }: any) {
+function NotifBanner({ user, wrongOrders, returnSlips, shortageItems, batches, paymentOrders, overdueOrders, settings, setPage }: any) {
   const [dismissedCats, setDismissedCats] = useState<Set<string>>(new Set())
   const dismiss = (cat: string) => setDismissedCats(prev => new Set([...prev, cat]))
   const isDismissed = (cat: string) => dismissedCats.has(cat)
@@ -5796,8 +5805,22 @@ function NotifBanner({ user, wrongOrders, returnSlips, shortageItems, batches, p
     o.status === 'paid' && o.created_by === user.id
   ) : []
 
+  // Đơn hàng KiotViet quá hạn chưa xử lý
+  const threshold = settings?.overdue_days_threshold ?? 7
+  const norm2 = (s: string) => (s||'').toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g,'').replace(/đ/g,'d').trim()
+
+  // Sale chỉ thấy đơn của mình (match tên); Manager/Admin thấy tất cả
+  const myOverdue = (!isDismissed('overdue') && isSale && !isAdmin)
+    ? (overdueOrders||[]).filter((o: any) => norm2(o.soldByName||'') === norm2(user.name||''))
+    : []
+  const allOverdue = (!isDismissed('overdue') && (isAdmin || isMgrSale))
+    ? (overdueOrders||[])
+    : []
+  const overdueList = isAdmin || isMgrSale ? allOverdue : myOverdue
+
   const totalPending = pendingWO.length + pendingRet.length + pendingShortage.length
     + expiryAlertSale.length + staleBatches.length + pendingPayments.length + myKiotPending.length
+    + overdueList.length
 
   if (totalPending === 0) return null
 
@@ -5808,6 +5831,7 @@ function NotifBanner({ user, wrongOrders, returnSlips, shortageItems, batches, p
   const hasStale = staleBatches.length > 0
   const hasPay   = pendingPayments.length > 0
   const hasKiot  = myKiotPending.length > 0
+  const hasOverdue = overdueList.length > 0
   const accent   = hasWO ? T.red : hasRet ? T.amber : hasExp ? T.red : hasPay ? T.blue : T.teal
 
   const DismissBtn = ({ cat }: any) => (
@@ -5902,6 +5926,50 @@ function NotifBanner({ user, wrongOrders, returnSlips, shortageItems, batches, p
               ))}
             </div>
           )}
+          {/* ── Đơn hàng quá hạn chưa xử lý ── */}
+          {hasOverdue && (
+            <div style={{ paddingTop:(hasWO||hasRet||hasSh||hasExp||hasStale||hasPay||hasKiot)?8:0,
+              borderTop:sep(hasWO||hasRet||hasSh||hasExp||hasStale||hasPay||hasKiot), marginBottom:6 }}>
+              <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:4 }}>
+                <div style={{ fontSize:11, fontWeight:700, color:'#C62828' }}>
+                  🕐 {overdueList.length} đơn KiotViet quá {threshold} ngày chưa xử lý
+                </div>
+                <DismissBtn cat="overdue"/>
+              </div>
+              {(isAdmin || isMgrSale) ? (
+                // Manager: nhóm theo sale, hiện số lượng
+                (() => {
+                  const byName: Record<string,any[]> = {}
+                  overdueList.forEach((o: any) => {
+                    const n = o.soldByName || 'Không rõ'
+                    if (!byName[n]) byName[n] = []
+                    byName[n].push(o)
+                  })
+                  return Object.entries(byName).slice(0,4).map(([name, ords]) => (
+                    <div key={name} style={{ fontSize:11, color:T.med, marginBottom:2 }}>
+                      • <b style={{ color:T.dark }}>{name}</b>: {ords.length} đơn
+                      <span style={{ color:T.light, marginLeft:4 }}>
+                        (cũ nhất: {Math.floor((Date.now()-new Date(ords[ords.length-1].purchaseDate).getTime())/86400000)}N)
+                      </span>
+                    </div>
+                  ))
+                })()
+              ) : (
+                // Sale: hiện chi tiết đơn của mình
+                overdueList.slice(0,3).map((o: any) => (
+                  <div key={o.id} style={{ fontSize:11, color:T.med, marginBottom:2 }}>
+                    • <b style={{ color:T.dark }}>{o.code}</b> — {o.customerName||'KH lẻ'}
+                    <span style={{ color:'#C62828', marginLeft:4, fontWeight:700 }}>
+                      ({Math.floor((Date.now()-new Date(o.purchaseDate).getTime())/86400000)}N)
+                    </span>
+                  </div>
+                ))
+              )}
+              {overdueList.length > (isAdmin||isMgrSale ? 4 : 3) && (
+                <div style={{ fontSize:11, color:T.light }}>...+{overdueList.length-(isAdmin||isMgrSale?4:3)} đơn nữa</div>
+              )}
+            </div>
+          )}
           <div style={{ display:'flex', gap:8, marginTop:12, flexWrap:'wrap' }}>
             {hasWO && <button onClick={() => { setPage('wrongord'); dismiss('wo') }}
               style={{ padding:'5px 13px', borderRadius:20, border:'none', background:T.red,
@@ -5923,7 +5991,7 @@ function NotifBanner({ user, wrongOrders, returnSlips, shortageItems, batches, p
                 color:'#fff', cursor:'pointer', fontFamily:'inherit', fontSize:11, fontWeight:700 }}>Nhập KiotViet →</button>}
           </div>
         </div>
-        <button onClick={() => setDismissedCats(new Set(['wo','ret','shortage','expiry','stale','pay','kiot']))}
+        <button onClick={() => setDismissedCats(new Set(['wo','ret','shortage','expiry','stale','pay','kiot','overdue']))}
           style={{ background:'none', border:'none', cursor:'pointer', color:T.light,
             fontSize:18, padding:0, lineHeight:1, flexShrink:0 }}>✕</button>
       </div>
@@ -6064,6 +6132,7 @@ export default function App() {
   const [batches, setBatches]         = useState<any[]>([])
   const [paymentOrders, setPaymentOrders] = useState<any[]>([])
   const [taskNotiDismissed, setTaskNotiDismissed] = useState(false)
+  const [overdueOrders, setOverdueOrders] = useState<any[]>([])
   const [priceConfigs, setPriceConfigs]   = useState<any[]>([])
   const [priceTiers, setPriceTiers]       = useState<any[]>([])
   const [priceHistory, setPriceHistory]   = useState<any[]>([])
@@ -6253,6 +6322,21 @@ export default function App() {
         .then(({data}) => { if (data) setPriceHistory(data) })
       db.from('brand_programs').select('*').order('created_at',{ascending:false})
         .then(({data}) => { if (data) setBrandPrograms(data) })
+      // Fetch đơn hàng quá hạn từ KiotViet (qua Edge Function)
+      ;(async () => {
+        try {
+          const threshold = stData?.overdue_days_threshold ?? 7
+          const cutoff = new Date(Date.now() - threshold * 86400000)
+          const from = new Date(Date.now() - 90 * 86400000).toISOString().split('T')[0]
+          const to   = cutoff.toISOString().split('T')[0]
+          const res = await fetch(
+            `https://uzloxzrqtzuucxlokqfm.supabase.co/functions/v1/kiotviet-orders?fromDate=${from}&toDate=${to}&status=1`,
+            { headers: { 'Authorization': `Bearer ${SUPABASE_ANON}` } }
+          )
+          const json = await res.json()
+          if (json.data) setOverdueOrders(json.data)
+        } catch(e) { /* silent fail — không block app */ }
+      })()
       // Fetch return slips for notifications (last 30 days)
       const thirtyAgo = new Date(Date.now()-30*86400000).toISOString().split('T')[0]
       db.from('return_items').select('id,slip_id,sale_id,created_at,created_by,date')
@@ -6374,7 +6458,7 @@ export default function App() {
         {/* Sticky Note — floating for all users */}
         {user && <StickyNote user={user}/>}
         {/* Notification Banner — wrong orders pending */}
-        {user && <NotifBanner user={user} wrongOrders={wrongOrders} returnSlips={returnSlips} shortageItems={shortageNoti} batches={batches} paymentOrders={paymentOrders} setPage={setPage}/>}
+        {user && <NotifBanner user={user} wrongOrders={wrongOrders} returnSlips={returnSlips} shortageItems={shortageNoti} batches={batches} paymentOrders={paymentOrders} overdueOrders={overdueOrders} settings={settings} setPage={setPage}/>}
         {user && !taskNotiDismissed && <TaskNotifBanner user={user} tasks={tasks} allUsers={allUsers} setPage={setPage} onDismiss={() => setTaskNotiDismissed(true)}/>}
         {user && <SaturdayBanner user={user}/>}
       </div>
