@@ -3747,6 +3747,10 @@ function ShortageItems({ user, allUsers, mobile, products, setProducts }: any) {
               })
               const data = await res.json()
               if (data.success) {
+                // ── Cập nhật timestamp sync ──
+                const now = new Date().toISOString()
+                await db.from('settings').update({ last_kv_sync: now }).eq('id', 'main')
+                setLastKvSync(now)
                 setSyncMsg(`✅ Sync ${data.synced} SP${data.shortage>0?' — ⚠️ '+data.shortage+' mã thiếu hàng':''}`)
                 // Reload ALL products after sync
                 const allPr: any[] = []
