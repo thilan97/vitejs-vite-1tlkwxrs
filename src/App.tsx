@@ -12347,9 +12347,12 @@ function PaymentModule({ user, mobile, allUsers }: any) {
     const { error } = await db.from('payment_orders').update(upd).eq('id', String(editOrder.id))
     if (error) { alert('❌ Lỗi cập nhật: ' + error.message); return }
     setOrders(prev => prev.map(o => o.id===editOrder.id ? {...o,...upd} : o))
-    if (editOrder.status === 'draft' && form.status === 'pending') {
-      setFilterStatus('pending')
+    // Bug fix: tự chuyển tab lọc sang trạng thái mới nếu có thay đổi status
+    // (trước đây chỉ handle draft→pending, các case khác đơn "biến mất" khỏi view)
+    if (form.status && form.status !== editOrder.status) {
+      setFilterStatus(String(form.status))
     }
+    alert('✅ Đã cập nhật lệnh')
     setEditOrder(null); setShowForm(false)
   }
 
