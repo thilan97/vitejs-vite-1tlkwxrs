@@ -12,7 +12,66 @@ const db = createClient(SUPABASE_URL, SUPABASE_KEY)
 // APP_VERSION — dùng để invalidate cache localStorage mỗi khi deploy version mới
 // (ngăn bug quyền user bị "reset" do cache position cũ sau deploy)
 // ⚠️ MỖI LẦN DEPLOY FEATURE MỚI CÓ PERMISSION MỚI, BUMP SỐ NÀY:
-const APP_VERSION = '2026.04.17.v6'
+const APP_VERSION = '2026.04.17.v8'
+
+// ════════════════════════════════════════════════════════════════
+// AUDIT LOG — ghi nhận các hành động phá hoại data để trace lại
+// ════════════════════════════════════════════════════════════════
+async function logAudit(opts: {
+  user: any,
+  action: string,           // 'delete', 'bulk_delete', 'update_critical'
+  table: string,
+  recordId?: string,
+  snapshot?: any,
+  note?: string
+}) {
+  try {
+    await db.from('audit_log').insert({
+      id: `aud_${Date.now()}_${Math.random().toString(36).slice(2,7)}`,
+      user_id: opts.user?.id || 'unknown',
+      user_name: opts.user?.name || opts.user?.ini || 'unknown',
+      action: opts.action,
+      table_name: opts.table,
+      record_id: opts.recordId || null,
+      record_snapshot: opts.snapshot || null,
+      note: opts.note || null,
+      created_at: new Date().toISOString(),
+    })
+  } catch (e) {
+    // Silent fail — không được để audit log lỗi làm chết action chính
+    console.error('Audit log failed:', e)
+  }
+}
+
+// Helper: Delete + audit 1 record (snapshot trước khi xóa)
+async function deleteWithAudit(opts: {
+  user: any,
+  table: string,
+  id: string,
+  note?: string
+}) {
+  // Lấy snapshot trước khi xóa
+  let snapshot: any = null
+  try {
+    const { data } = await db.from(opts.table).select('*').eq('id', opts.id).maybeSingle()
+    snapshot = data
+  } catch {}
+
+  // Delete
+  const { error } = await db.from(opts.table).delete().eq('id', opts.id)
+  if (error) return { error }
+
+  // Log audit
+  await logAudit({
+    user: opts.user,
+    action: 'delete',
+    table: opts.table,
+    recordId: opts.id,
+    snapshot,
+    note: opts.note,
+  })
+  return { error: null, snapshot }
+}
 
 // ── THEME ────────────────────────────────────────
 const T: any = {
@@ -99,6 +158,7 @@ const getPerm = (user: any) => {
     pickOrders:         isAdmin || (pos.perm_pick_orders ?? false) || (pos.perm_manage_inventory ?? false),
     packOrders:         isAdmin || (pos.perm_pack_orders ?? false) || (pos.perm_manage_inventory ?? false),
     assignPacking:      isAdmin || (pos.perm_assign_packing ?? false) || (pos.perm_manage_inventory ?? false),
+    viewAuditLog:       isAdmin || (pos.perm_view_audit_log ?? false),
   }
 }
 
@@ -143,6 +203,7 @@ const ALL_PERMS = [
   { key:'perm_pick_orders',          label:'Nhặt hàng (NV Nhặt)',                group:'Kho'      },
   { key:'perm_pack_orders',          label:'Đóng hàng (NV Đóng)',                group:'Kho'      },
   { key:'perm_assign_packing',       label:'Gán NV Nhặt đơn (Manager Kho)',      group:'Kho'      },
+  { key:'perm_view_audit_log',       label:'Xem nhật ký hoạt động (Audit log)',  group:'Quản trị' },
 ]
 // ── UTILITIES ────────────────────────────────────
 const fmtNow   = () => new Date().toLocaleString('vi-VN',{hour:'2-digit',minute:'2-digit',day:'2-digit',month:'2-digit',year:'numeric'})
@@ -291,6 +352,87 @@ const Topbar = ({ title, subtitle, action, mobile }: any) => (
     {action}
   </div>
 )
+
+// ── CONFIRM DELETE MODAL — Yêu cầu gõ "XÓA" để xác nhận destructive actions ──
+function ConfirmDeleteModal({
+  title = 'Xóa dữ liệu',
+  message,
+  detail,
+  confirmWord = 'XÓA',
+  onConfirm,
+  onCancel,
+}: {
+  title?: string, message: string, detail?: string,
+  confirmWord?: string,
+  onConfirm: () => void, onCancel: () => void
+}) {
+  const [typed, setTyped] = useState('')
+  const [deleting, setDeleting] = useState(false)
+  const match = typed.trim().toUpperCase() === confirmWord.toUpperCase()
+
+  const handleConfirm = async () => {
+    if (!match || deleting) return
+    setDeleting(true)
+    try {
+      await onConfirm()
+    } finally {
+      setDeleting(false)
+    }
+  }
+
+  return (
+    <div style={{ position:'fixed', inset:0, background:'rgba(0,0,0,0.55)', zIndex:9999,
+      display:'flex', alignItems:'center', justifyContent:'center', padding:20 }}>
+      <div style={{ background:'#fff', borderRadius:12, maxWidth:460, width:'100%',
+        border:`2px solid ${T.red}`, overflow:'hidden' }}>
+        <div style={{ padding:'14px 20px', background:T.redBg, borderBottom:`1px solid ${T.red}` }}>
+          <div style={{ fontSize:15, fontWeight:700, color:T.red, display:'flex', alignItems:'center', gap:8 }}>
+            ⚠️ {title}
+          </div>
+        </div>
+        <div style={{ padding:20 }}>
+          <div style={{ fontSize:13, color:T.dark, marginBottom:10, lineHeight:1.5 }}>
+            {message}
+          </div>
+          {detail && (
+            <div style={{ fontSize:12, color:T.med, padding:'8px 10px', background:T.bg,
+              borderRadius:6, marginBottom:14, border:`1px solid ${T.border}`, lineHeight:1.5,
+              whiteSpace:'pre-wrap' }}>
+              {detail}
+            </div>
+          )}
+          <div style={{ fontSize:12, color:T.red, fontWeight:600, marginBottom:6 }}>
+            ⚠️ Hành động này KHÔNG thể hoàn tác. Mọi thao tác xóa sẽ được ghi vào nhật ký.
+          </div>
+          <label style={{ fontSize:12, color:T.med, display:'block', marginBottom:6 }}>
+            Để xác nhận, gõ <b style={{ color:T.red, fontFamily:'monospace' }}>{confirmWord}</b> vào ô dưới:
+          </label>
+          <input value={typed} onChange={e => setTyped(e.target.value)} autoFocus
+            placeholder={confirmWord}
+            style={{ width:'100%', padding:'10px 13px', border:`2px solid ${match?T.green:T.border}`, borderRadius:6,
+              fontSize:14, fontFamily:'monospace', color:T.dark, background:'#fff', outline:'none',
+              boxSizing:'border-box' as any, marginBottom:16, letterSpacing:2 }}
+            onKeyDown={e => e.key === 'Enter' && match && handleConfirm()}/>
+          <div style={{ display:'flex', gap:10 }}>
+            <button onClick={onCancel}
+              style={{ flex:1, padding:'9px', borderRadius:6, border:`1px solid ${T.border}`,
+                background:'#fff', color:T.med, cursor:'pointer', fontFamily:'inherit', fontSize:13 }}>
+              Hủy
+            </button>
+            <button onClick={handleConfirm} disabled={!match || deleting}
+              style={{ flex:1, padding:'9px', borderRadius:6, border:'none',
+                background: match ? T.red : T.border,
+                color: match ? '#fff' : T.light,
+                cursor: match && !deleting ? 'pointer' : 'not-allowed',
+                fontFamily:'inherit', fontSize:13, fontWeight:700 }}>
+              {deleting ? '⏳ Đang xóa...' : '🗑️ Xóa'}
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+  )
+}
 
 // ── IN-APP ALERT BANNER ──────────────────────────
 const AlertBanner = ({ user, checklist, leaveRequests, otRequests, allUsers }: any) => {
@@ -574,6 +716,7 @@ const NAV_GROUPS = (perm: any, deptId = '') => {
         { id:'orgchart',  icon:'🏢', label:'Sơ đồ'      },
         perm.manageUsers     && { id:'users',     icon:'👥', label:'Nhân viên' },
         perm.managePositions && { id:'positions',  icon:'🎯', label:'Vị trí'   },
+        perm.viewAuditLog    && { id:'audit',     icon:'📜', label:'Nhật ký'   },
         { id:'settings',  icon:'⚙️', label:'Cài đặt'   },
       ].filter(Boolean)
     },
@@ -5350,7 +5493,7 @@ function UserManagement({ user, allUsers, setAllUsers, departments, positions, m
 }
 
 // ── POSITIONS MANAGEMENT ──────────────────────────
-function PositionsManagement({ positions, setPositions, mobile }: any) {
+function PositionsManagement({ user, positions, setPositions, mobile }: any) {
   const [show, setShow] = useState(false)
   const [edit, setEdit] = useState<any>(null)
   const [form, setForm] = useState<any>({
@@ -5396,10 +5539,29 @@ function PositionsManagement({ positions, setPositions, mobile }: any) {
     setShow(false)
   }
 
-  const remove = async (id: string) => {
-    if (!confirm('Xóa vị trí này?')) return
-    setPositions((prev: any) => prev.filter((p: any) => p.id!==id))
-    await db.from('positions').delete().eq('id', id)
+  const [confirmDelete, setConfirmDelete] = useState<any>(null)
+
+  const remove = (id: string) => {
+    const pos = positions.find((p: any) => p.id === id)
+    if (!pos) return
+    setConfirmDelete({
+      title: 'Xóa vị trí',
+      message: `Bạn sắp xóa vị trí "${pos.name}".`,
+      detail: `Vị trí này nếu có NV đang giữ sẽ mất quyền truy cập. Đề nghị chuyển NV sang vị trí khác trước khi xóa.`,
+      action: async () => {
+        await logAudit({
+          user,
+          action: 'delete',
+          table: 'positions',
+          recordId: id,
+          snapshot: pos,
+          note: `Xóa vị trí "${pos.name}"`,
+        })
+        await db.from('positions').delete().eq('id', id)
+        setPositions((prev: any) => prev.filter((p: any) => p.id!==id))
+        setConfirmDelete(null)
+      }
+    })
   }
 
   const groups = ALL_PERMS.reduce((acc: any, p) => {
@@ -5527,6 +5689,16 @@ function PositionsManagement({ positions, setPositions, mobile }: any) {
           <GoldBtn small onClick={save} disabled={!form.name}>Lưu vị trí</GoldBtn>
         </div>
       </Modal>
+
+      {confirmDelete && (
+        <ConfirmDeleteModal
+          title={confirmDelete.title}
+          message={confirmDelete.message}
+          detail={confirmDelete.detail}
+          onConfirm={confirmDelete.action}
+          onCancel={() => setConfirmDelete(null)}
+        />
+      )}
     </div>
   )
 }
@@ -6826,7 +6998,7 @@ export default function App() {
           {validPage==='orgchart'   && <OrgChart {...pp} positions={positions}/>}
           {validPage==='history'    && <History {...pp} history={history}/>}
           {validPage==='users'      && <UserManagement {...pp} setAllUsers={setAllUsers} departments={departments} positions={positions}/>}
-          {validPage==='positions'  && <PositionsManagement positions={positions} setPositions={setPositions} mobile={mobile}/>}
+          {validPage==='positions'  && <PositionsManagement user={user} positions={positions} setPositions={setPositions} mobile={mobile}/>}
           {validPage==='shortage'   && <ShortageItems {...pp} products={products} setProducts={setProducts}/>}
           {validPage==='inventory'  && <InventoryModule {...pp} products={products} invSessions={invSessions} setInvSessions={setInvSessions}/>}
           {validPage==='returns'    && <ReturnItems {...pp} products={products}/>}
@@ -6837,6 +7009,7 @@ export default function App() {
           {validPage==='notifications' && <NotificationPage {...pp} groups={notifGroups} totalUnread={notifUnread} totalItems={notifTotal} reads={notificationReads} setReads={setNotificationReads} setPage={setPage}/>}
           {validPage==='picking'    && <PickingModule {...pp}/>}
           {validPage==='packing'    && <PackingModule {...pp}/>}
+          {validPage==='audit'      && <AuditLogModule {...pp}/>}
           {validPage==='settings'   && <Settings {...pp} setUser={setUser} settings={settings} setSettings={setSettings} onManualReset={manualReset}/>}
         </main>
         {mobile && <BottomNav user={user} page={validPage} setPage={setPage} pendingLeave={pendingLeave} pendingOT={pendingOT} notifUnread={notifUnread} onLogout={() => {
@@ -7769,6 +7942,8 @@ function InventoryModule({ user, allUsers, products, invSessions, setInvSessions
   const [monthFilter, setMonthFilter] = useState(() => {
     const n = new Date(); return `${n.getFullYear()}-${String(n.getMonth()+1).padStart(2,'0')}`
   })
+  // Modal xác nhận xóa (yêu cầu gõ "XÓA")
+  const [confirmDelete, setConfirmDelete] = useState<any>(null)
   const p = mobile ? '16px' : '24px'
   const perm = getPerm(user)
   const canManage = perm.viewAllDashboard || (perm as any).manageInventory
@@ -8213,12 +8388,29 @@ function InventoryModule({ user, allUsers, products, invSessions, setInvSessions
                                 color:T.amber,fontWeight:700}}>Chốt</button>
                           )}
                           {perm.deleteInvSession && (
-                            <button onClick={async () => {
-                              if (!confirm('Xóa phiên này và toàn bộ dữ liệu KK?')) return
-                              await db.from('inventory_checks').delete().eq('session_id',s.id)
-                              await db.from('inventory_sessions').delete().eq('id',s.id)
-                              setInvSessions(prev => prev.filter((x: any) => x.id!==s.id))
-                              setChecks(prev => prev.filter((c: any) => c.session_id!==s.id))
+                            <button onClick={() => {
+                              const sessChecks = checks.filter((c: any) => c.session_id === s.id)
+                              setConfirmDelete({
+                                title: 'Xóa phiên kiểm kê',
+                                message: `Bạn sắp xóa phiên kiểm kê ngày ${s.date}.`,
+                                detail: `Phiên này có ${sessChecks.length} bản ghi kiểm kê.\nToàn bộ dữ liệu kiểm kê chi tiết sẽ bị xóa vĩnh viễn.`,
+                                action: async () => {
+                                  // Snapshot trước khi xóa (để rescue nếu cần)
+                                  await logAudit({
+                                    user,
+                                    action: 'bulk_delete',
+                                    table: 'inventory_sessions',
+                                    recordId: s.id,
+                                    snapshot: { session: s, checks: sessChecks },
+                                    note: `Xóa phiên KK ngày ${s.date} kèm ${sessChecks.length} bản ghi`,
+                                  })
+                                  await db.from('inventory_checks').delete().eq('session_id', s.id)
+                                  await db.from('inventory_sessions').delete().eq('id', s.id)
+                                  setInvSessions((prev: any) => prev.filter((x: any) => x.id!==s.id))
+                                  setChecks((prev: any) => prev.filter((c: any) => c.session_id!==s.id))
+                                  setConfirmDelete(null)
+                                }
+                              })
                             }}
                               style={{padding:'3px 8px',borderRadius:20,border:`1px solid ${T.redBg}`,
                                 background:T.redBg,cursor:'pointer',fontSize:10,fontFamily:'inherit',color:T.red}}>✕</button>
@@ -8708,6 +8900,17 @@ function InventoryModule({ user, allUsers, products, invSessions, setInvSessions
             setShowWizard(false)
           }}
           onClose={() => setShowWizard(false)}/>
+      )}
+
+      {/* Confirm delete modal — yêu cầu gõ "XÓA" + ghi audit log */}
+      {confirmDelete && (
+        <ConfirmDeleteModal
+          title={confirmDelete.title}
+          message={confirmDelete.message}
+          detail={confirmDelete.detail}
+          onConfirm={confirmDelete.action}
+          onCancel={() => setConfirmDelete(null)}
+        />
       )}
     </div>
   )
@@ -12427,12 +12630,31 @@ function PaymentModule({ user, mobile, allUsers }: any) {
     setOrders(prev => prev.filter(x => x.id !== o.id))
   }
 
-  const deleteOrder = async (id: string, status: string) => {
-    const label = status === 'pending' ? 'lệnh chờ chuyển khoản' : 'lệnh nháp'
-    if (!confirm(`Xóa ${label} này?`)) return
-    const { error } = await db.from('payment_orders').delete().eq('id', id)
-    if (error) { alert('❌ Lỗi xóa: ' + error.message); return }
-    setOrders(prev => prev.filter(o => o.id !== id))
+  const [paymentConfirmDelete, setPaymentConfirmDelete] = useState<any>(null)
+
+  const deleteOrder = (id: string, status: string) => {
+    const ord = orders.find((o: any) => o.id === id)
+    if (!ord) return
+    const label = status === 'pending' ? 'lệnh chờ CK' : status === 'paid' ? 'lệnh đã CK' : 'lệnh nháp'
+    setPaymentConfirmDelete({
+      title: `Xóa ${label}`,
+      message: `Bạn sắp xóa lệnh thanh toán cho "${ord.supplier_name || 'supplier'}".`,
+      detail: `Số tiền: ${(ord.amount||0).toLocaleString('vi-VN')}đ\nTrạng thái: ${status}\n\nThao tác này sẽ được ghi vào nhật ký.`,
+      action: async () => {
+        await logAudit({
+          user,
+          action: 'delete',
+          table: 'payment_orders',
+          recordId: id,
+          snapshot: ord,
+          note: `Xóa lệnh ${label}: ${ord.supplier_name} - ${(ord.amount||0).toLocaleString('vi-VN')}đ`,
+        })
+        const { error } = await db.from('payment_orders').delete().eq('id', id)
+        if (error) { alert('❌ Lỗi xóa: ' + error.message); setPaymentConfirmDelete(null); return }
+        setOrders(prev => prev.filter(o => o.id !== id))
+        setPaymentConfirmDelete(null)
+      }
+    })
   }
 
   const promoteOrder = async (o: any) => {
@@ -12986,6 +13208,16 @@ function PaymentModule({ user, mobile, allUsers }: any) {
             </div>
           </div>
         </div>
+      )}
+
+      {paymentConfirmDelete && (
+        <ConfirmDeleteModal
+          title={paymentConfirmDelete.title}
+          message={paymentConfirmDelete.message}
+          detail={paymentConfirmDelete.detail}
+          onConfirm={paymentConfirmDelete.action}
+          onCancel={() => setPaymentConfirmDelete(null)}
+        />
       )}
     </div>
   )
@@ -13946,6 +14178,576 @@ function PhotoSection({ title, subtitle, photos, min, max, readOnly, orderCode, 
                 cursor:'pointer', fontSize:18, fontFamily:'inherit' }}>×</button>
             <img src={photos[previewIdx]} alt={`Photo ${previewIdx+1}`}
               style={{ maxWidth:'90vw', maxHeight:'90vh', borderRadius:8 }}/>
+          </div>
+        </div>
+      )}
+    </div>
+  )
+}
+
+// ══════════════════════════════════════════════════════════════════════
+// ══ AUDIT LOG MODULE — Xem lịch sử các hành động xóa/sửa ══════════════
+// ══════════════════════════════════════════════════════════════════════
+function AuditLogModule({ user, allUsers, mobile }: any) {
+  const perm = getPerm(user)
+  const canView = perm.viewAuditLog || perm.viewAllDashboard
+  const p = mobile ? '16px' : '24px'
+
+  const [logs, setLogs] = useState<any[]>([])
+  const [loading, setLoading] = useState(true)
+  const [filterAction, setFilterAction] = useState<string>('all')
+  const [filterTable, setFilterTable] = useState<string>('all')
+  const [filterUser, setFilterUser] = useState<string>('all')
+  const [searchQ, setSearchQ] = useState('')
+  const [expanded, setExpanded] = useState<string|null>(null)
+  const [dateRange, setDateRange] = useState<'7d'|'30d'|'90d'|'all'>('30d')
+  const [rescueConfirm, setRescueConfirm] = useState<any>(null)
+
+  const fetchLogs = async () => {
+    setLoading(true)
+    const days = dateRange === '7d' ? 7 : dateRange === '30d' ? 30 : dateRange === '90d' ? 90 : 9999
+    const from = new Date(Date.now() - days * 86400000).toISOString()
+    const { data } = await db.from('audit_log').select('*')
+      .gte('created_at', from)
+      .order('created_at', { ascending: false })
+      .limit(2000)
+    setLogs(data || [])
+    setLoading(false)
+  }
+
+  useEffect(() => { if (canView) fetchLogs() }, [dateRange, canView])
+
+  if (!canView) return (
+    <div style={{ padding:40, textAlign:'center', color:T.light }}>
+      ⛔ Bạn không có quyền xem nhật ký hoạt động.
+    </div>
+  )
+
+  // Rescue: khôi phục data từ snapshot
+  const handleRescue = async (log: any) => {
+    if (log.action !== 'delete' && log.action !== 'bulk_delete') {
+      alert('Chỉ có thể khôi phục các thao tác xóa.')
+      return
+    }
+    const snapshot = log.record_snapshot
+    if (!snapshot) {
+      alert('Không có snapshot để khôi phục.')
+      return
+    }
+    try {
+      if (log.action === 'bulk_delete' && snapshot.session && snapshot.checks) {
+        // Inventory session rescue
+        await db.from('inventory_sessions').insert(snapshot.session)
+        if (snapshot.checks.length > 0) {
+          await db.from('inventory_checks').insert(snapshot.checks)
+        }
+        alert(`✅ Đã khôi phục phiên KK ngày ${snapshot.session.date} và ${snapshot.checks.length} bản ghi.`)
+      } else {
+        // Single record rescue
+        await db.from(log.table_name).insert(snapshot)
+        alert(`✅ Đã khôi phục record vào bảng ${log.table_name}.`)
+      }
+      await logAudit({
+        user,
+        action: 'rescue',
+        table: log.table_name,
+        recordId: log.record_id,
+        snapshot,
+        note: `Khôi phục từ audit log ${log.id}`,
+      })
+      setRescueConfirm(null)
+      fetchLogs()
+    } catch(e: any) {
+      alert('❌ Rescue lỗi: ' + e.message)
+    }
+  }
+
+  // Filter logic
+  const norm = (s: string) => (s||'').toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g,'').replace(/đ/g,'d').trim()
+  const filtered = logs.filter((log: any) => {
+    if (filterAction !== 'all' && log.action !== filterAction) return false
+    if (filterTable !== 'all' && log.table_name !== filterTable) return false
+    if (filterUser !== 'all' && log.user_id !== filterUser) return false
+    if (searchQ) {
+      const hay = norm(`${log.user_name} ${log.table_name} ${log.record_id} ${log.note}`)
+      if (!hay.includes(norm(searchQ))) return false
+    }
+    return true
+  })
+
+  const uniqueTables = [...new Set(logs.map((l: any) => l.table_name))].sort()
+  const uniqueActions = [...new Set(logs.map((l: any) => l.action))].sort()
+
+  const actionLabel: any = {
+    delete:       { icon:'🗑️', label:'Xóa',         color: T.red },
+    bulk_delete:  { icon:'💥', label:'Xóa hàng loạt', color: T.red },
+    update_critical: { icon:'✏️', label:'Sửa quan trọng', color: T.amber },
+    rescue:       { icon:'♻️', label:'Khôi phục',   color: T.green },
+  }
+
+  const tableLabel: any = {
+    inventory_sessions: 'Phiên kiểm kê',
+    inventory_checks:   'Bản ghi KK',
+    payment_orders:     'Lệnh chuyển khoản',
+    positions:          'Vị trí',
+    users:              'Nhân viên',
+    wrong_orders:       'Đơn sai',
+    return_items:       'Phiếu hoàn',
+    shortage_items:     'Hàng thiếu',
+    product_batches:    'Lô SP',
+    packing_workflow:   'Đơn đóng gói',
+  }
+
+  return (
+    <div style={{ padding:`0 ${p} ${mobile?'80px':p}` }}>
+      <Topbar mobile={mobile} title="📜 Nhật ký hoạt động"
+        subtitle={`${filtered.length} bản ghi${loading?' • Đang tải...':''}`}
+        action={
+          <button onClick={fetchLogs}
+            style={{ padding:'5px 12px', borderRadius:20, border:`1px solid ${T.border}`,
+              background:'transparent', cursor:'pointer', fontFamily:'inherit', fontSize:11, color:T.med }}>
+            🔄 Refresh
+          </button>
+        }/>
+
+      {/* Filters */}
+      <Card style={{ padding:12, marginBottom:12 }}>
+        <div style={{ display:'grid', gridTemplateColumns: mobile ? '1fr 1fr' : 'repeat(4, 1fr) 2fr',
+          gap:8, alignItems:'end' }}>
+          <div>
+            <label style={{ fontSize:10, color:T.light, fontWeight:600, display:'block', marginBottom:3 }}>
+              Thời gian
+            </label>
+            <select value={dateRange} onChange={e => setDateRange(e.target.value as any)}
+              style={{ width:'100%', padding:'6px 8px', border:`1px solid ${T.border}`, borderRadius:6,
+                fontSize:11, fontFamily:'inherit', background:'#fff', outline:'none' }}>
+              <option value="7d">7 ngày qua</option>
+              <option value="30d">30 ngày qua</option>
+              <option value="90d">90 ngày qua</option>
+              <option value="all">Tất cả</option>
+            </select>
+          </div>
+          <div>
+            <label style={{ fontSize:10, color:T.light, fontWeight:600, display:'block', marginBottom:3 }}>
+              Hành động
+            </label>
+            <select value={filterAction} onChange={e => setFilterAction(e.target.value)}
+              style={{ width:'100%', padding:'6px 8px', border:`1px solid ${T.border}`, borderRadius:6,
+                fontSize:11, fontFamily:'inherit', background:'#fff', outline:'none' }}>
+              <option value="all">Tất cả</option>
+              {uniqueActions.map(a => (
+                <option key={a} value={a}>{actionLabel[a]?.label || a}</option>
+              ))}
+            </select>
+          </div>
+          <div>
+            <label style={{ fontSize:10, color:T.light, fontWeight:600, display:'block', marginBottom:3 }}>
+              Bảng
+            </label>
+            <select value={filterTable} onChange={e => setFilterTable(e.target.value)}
+              style={{ width:'100%', padding:'6px 8px', border:`1px solid ${T.border}`, borderRadius:6,
+                fontSize:11, fontFamily:'inherit', background:'#fff', outline:'none' }}>
+              <option value="all">Tất cả</option>
+              {uniqueTables.map(t => (
+                <option key={t} value={t}>{tableLabel[t] || t}</option>
+              ))}
+            </select>
+          </div>
+          <div>
+            <label style={{ fontSize:10, color:T.light, fontWeight:600, display:'block', marginBottom:3 }}>
+              Người dùng
+            </label>
+            <select value={filterUser} onChange={e => setFilterUser(e.target.value)}
+              style={{ width:'100%', padding:'6px 8px', border:`1px solid ${T.border}`, borderRadius:6,
+                fontSize:11, fontFamily:'inherit', background:'#fff', outline:'none' }}>
+              <option value="all">Tất cả</option>
+              {allUsers.map((u: any) => (
+                <option key={u.id} value={u.id}>{u.name || u.ini}</option>
+              ))}
+            </select>
+          </div>
+          <div>
+            <input value={searchQ} onChange={e => setSearchQ(e.target.value)}
+              placeholder="🔍 Tìm mã, ghi chú..."
+              style={{ width:'100%', padding:'6px 10px', border:`1px solid ${T.border}`, borderRadius:6,
+                fontSize:11, fontFamily:'inherit', color:T.dark, background:'#fff', outline:'none',
+                boxSizing:'border-box' as any }}/>
+          </div>
+        </div>
+      </Card>
+
+      {/* Logs list */}
+      {loading ? (
+        <div style={{ padding:40, textAlign:'center', color:T.light }}>⏳ Đang tải...</div>
+      ) : filtered.length === 0 ? (
+        <div style={{ padding:40, textAlign:'center', color:T.light, fontSize:13 }}>
+          Không có bản ghi nào phù hợp filter.
+        </div>
+      ) : (
+        <div style={{ display:'flex', flexDirection:'column', gap:6 }}>
+          {filtered.map((log: any) => {
+            const isExpanded = expanded === log.id
+            const actInfo = actionLabel[log.action] || { icon:'📝', label: log.action, color: T.gray }
+            const tblLabel = tableLabel[log.table_name] || log.table_name
+            const canRescue = (log.action === 'delete' || log.action === 'bulk_delete') && log.record_snapshot
+            return (
+              <Card key={log.id} style={{ padding:0, overflow:'hidden' }}>
+                <div style={{ padding:'10px 14px', cursor:'pointer',
+                  borderLeft: `4px solid ${actInfo.color}`,
+                  background: isExpanded ? T.bg : '#fff' }}
+                  onClick={() => setExpanded(isExpanded ? null : log.id)}>
+                  <div style={{ display:'flex', alignItems:'center', gap:10, flexWrap:'wrap' }}>
+                    <span style={{ fontSize:16 }}>{actInfo.icon}</span>
+                    <div style={{ flex:1, minWidth:0 }}>
+                      <div style={{ fontSize:12, color:T.dark, fontWeight:600 }}>
+                        <span style={{ color: actInfo.color }}>{actInfo.label}</span>
+                        {' '}bảng <b>{tblLabel}</b>
+                      </div>
+                      <div style={{ fontSize:10, color:T.light, marginTop:2 }}>
+                        {log.user_name} • {new Date(log.created_at).toLocaleString('vi-VN',{hour:'2-digit',minute:'2-digit',day:'2-digit',month:'2-digit',year:'2-digit'})}
+                        {log.record_id && <> • ID: {log.record_id}</>}
+                      </div>
+                      {log.note && (
+                        <div style={{ fontSize:11, color:T.med, marginTop:3, fontStyle:'italic' }}>
+                          {log.note}
+                        </div>
+                      )}
+                    </div>
+                    <span style={{ fontSize:10, color:T.light }}>{isExpanded?'▲':'▼'}</span>
+                  </div>
+                </div>
+
+                {isExpanded && (
+                  <div style={{ padding:'12px 14px', borderTop:`1px solid ${T.border}`, background:T.bg }}>
+                    <div style={{ fontSize:10, fontWeight:700, color:T.med, marginBottom:6 }}>
+                      📋 Snapshot dữ liệu trước khi {actInfo.label.toLowerCase()}:
+                    </div>
+                    <pre style={{ fontSize:10, fontFamily:'monospace', color:T.dark,
+                      background:'#fff', padding:10, borderRadius:6, border:`1px solid ${T.border}`,
+                      maxHeight:300, overflow:'auto', margin:0, whiteSpace:'pre-wrap' }}>
+                      {log.record_snapshot ? JSON.stringify(log.record_snapshot, null, 2) : '(Không có snapshot)'}
+                    </pre>
+                    {canRescue && (
+                      <div style={{ marginTop:10 }}>
+                        <button onClick={() => setRescueConfirm(log)}
+                          style={{ padding:'6px 14px', borderRadius:6, border:`1px solid ${T.green}`,
+                            background:T.greenBg, color:T.green, cursor:'pointer', fontFamily:'inherit',
+                            fontSize:11, fontWeight:600 }}>
+                          ♻️ Khôi phục dữ liệu
+                        </button>
+                        <span style={{ fontSize:10, color:T.light, marginLeft:10 }}>
+                          Khôi phục sẽ INSERT lại record từ snapshot
+                        </span>
+                      </div>
+                    )}
+                  </div>
+                )}
+              </Card>
+            )
+          })}
+        </div>
+      )}
+
+      {/* Rescue confirm modal */}
+      {rescueConfirm && (
+        <div style={{ position:'fixed', inset:0, background:'rgba(0,0,0,0.5)', zIndex:9999,
+          display:'flex', alignItems:'center', justifyContent:'center', padding:20 }}>
+          <div style={{ background:'#fff', borderRadius:12, maxWidth:460, width:'100%',
+            border:`2px solid ${T.green}`, overflow:'hidden' }}>
+            <div style={{ padding:'14px 20px', background:T.greenBg }}>
+              <div style={{ fontSize:15, fontWeight:700, color:T.green }}>
+                ♻️ Khôi phục dữ liệu
+              </div>
+            </div>
+            <div style={{ padding:20 }}>
+              <div style={{ fontSize:13, color:T.dark, marginBottom:10, lineHeight:1.5 }}>
+                Khôi phục <b>{tableLabel[rescueConfirm.table_name] || rescueConfirm.table_name}</b> đã bị xóa bởi <b>{rescueConfirm.user_name}</b>?
+              </div>
+              <div style={{ fontSize:12, color:T.med, marginBottom:14 }}>
+                Hệ thống sẽ INSERT lại record từ snapshot đã lưu. Nếu đã có record trùng ID, sẽ báo lỗi.
+              </div>
+              <div style={{ display:'flex', gap:10 }}>
+                <button onClick={() => setRescueConfirm(null)}
+                  style={{ flex:1, padding:'9px', borderRadius:6, border:`1px solid ${T.border}`,
+                    background:'#fff', color:T.med, cursor:'pointer', fontFamily:'inherit', fontSize:13 }}>
+                  Hủy
+                </button>
+                <button onClick={() => handleRescue(rescueConfirm)}
+                  style={{ flex:1, padding:'9px', borderRadius:6, border:'none',
+                    background:T.green, color:'#fff', cursor:'pointer', fontFamily:'inherit',
+                    fontSize:13, fontWeight:700 }}>
+                  ♻️ Khôi phục
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  )
+}
+
+// ══════════════════════════════════════════════════════════════════════
+// ══ AUDIT LOG MODULE — Nhật ký hoạt động ═════════════════════════════
+// ══════════════════════════════════════════════════════════════════════
+function AuditLogModule({ user, allUsers, mobile }: any) {
+  const perm = getPerm(user)
+  const p = mobile ? '16px' : '24px'
+  const [logs, setLogs]       = useState<any[]>([])
+  const [loading, setLoading] = useState(true)
+  const [filterUser, setFilterUser]   = useState<string>('')
+  const [filterTable, setFilterTable] = useState<string>('')
+  const [filterAction, setFilterAction] = useState<string>('')
+  const [dayRange, setDayRange] = useState(30)
+  const [expandedLog, setExpandedLog] = useState<string|null>(null)
+  const [showRestoreModal, setShowRestoreModal] = useState<any>(null)
+
+  if (!perm.viewAuditLog) {
+    return (
+      <div style={{ padding:p, textAlign:'center', color:T.light, marginTop:40 }}>
+        <div style={{ fontSize:48, marginBottom:10 }}>🔒</div>
+        <div style={{ fontSize:14 }}>Bạn không có quyền xem nhật ký hoạt động.</div>
+      </div>
+    )
+  }
+
+  const fetchLogs = async () => {
+    setLoading(true)
+    const fromDate = new Date(Date.now() - dayRange * 86400000).toISOString()
+    const { data } = await db.from('audit_log').select('*')
+      .gte('created_at', fromDate)
+      .order('created_at', { ascending: false })
+      .limit(1000)
+    setLogs(data||[])
+    setLoading(false)
+  }
+
+  useEffect(() => { fetchLogs() }, [dayRange])
+
+  const filtered = logs.filter((l: any) => {
+    if (filterUser && l.user_id !== filterUser) return false
+    if (filterTable && l.table_name !== filterTable) return false
+    if (filterAction && l.action !== filterAction) return false
+    return true
+  })
+
+  // Unique values for filter dropdowns
+  const uniqueUsers  = [...new Set(logs.map((l: any) => l.user_id))]
+  const uniqueTables = [...new Set(logs.map((l: any) => l.table_name))]
+  const uniqueActions = [...new Set(logs.map((l: any) => l.action))]
+  const getUserName = (id: string) => allUsers.find((u: any) => u.id === id)?.name || id
+
+  // Restore snapshot (cho inventory_sessions bulk_delete)
+  const handleRestore = async (log: any) => {
+    const snap = log.record_snapshot
+    if (!snap) { alert('Không có snapshot để restore.'); return }
+    try {
+      if (log.table_name === 'inventory_sessions' && snap.session && Array.isArray(snap.checks)) {
+        // Restore session + checks
+        const sessExists = await db.from('inventory_sessions').select('id').eq('id', snap.session.id).maybeSingle()
+        if (sessExists.data) {
+          if (!confirm('Phiên KK này đã tồn tại lại. Overwrite không?')) return
+        }
+        await db.from('inventory_sessions').upsert(snap.session)
+        if (snap.checks.length > 0) {
+          // Chunked insert để tránh payload quá lớn
+          const chunks = []
+          for (let i = 0; i < snap.checks.length; i += 500) {
+            chunks.push(snap.checks.slice(i, i+500))
+          }
+          for (const chunk of chunks) {
+            await db.from('inventory_checks').upsert(chunk)
+          }
+        }
+        await logAudit({
+          user, action: 'restore', table: log.table_name,
+          recordId: snap.session.id, snapshot: snap,
+          note: `Restore phiên KK ${snap.session.date} từ audit log ${log.id}`,
+        })
+        alert(`✅ Đã restore phiên KK ngày ${snap.session.date} với ${snap.checks.length} bản ghi`)
+      } else if (log.table_name && log.record_id) {
+        // Generic restore 1 record
+        await db.from(log.table_name).upsert(snap)
+        await logAudit({
+          user, action: 'restore', table: log.table_name,
+          recordId: log.record_id, note: `Restore từ audit log ${log.id}`,
+        })
+        alert('✅ Đã restore record')
+      }
+      setShowRestoreModal(null)
+      fetchLogs()
+    } catch (e: any) {
+      alert('❌ Lỗi restore: ' + e.message)
+    }
+  }
+
+  const actionLabel = (a: string) => ({
+    'delete': '🗑️ Xóa', 'bulk_delete': '🗑️ Xóa hàng loạt',
+    'update_critical': '✏️ Sửa quan trọng', 'restore': '♻️ Khôi phục',
+  } as any)[a] || a
+
+  const tableLabel = (t: string) => ({
+    'inventory_sessions': 'Phiên kiểm kê',
+    'inventory_checks': 'Bản ghi KK',
+    'positions': 'Vị trí',
+    'payment_orders': 'Lệnh CK',
+    'wrong_orders': 'Đơn sai',
+    'return_items': 'Phiếu hoàn',
+    'shortage_items': 'Hàng thiếu',
+    'users': 'NV',
+    'packing_workflow': 'Đơn nhặt/đóng',
+  } as any)[t] || t
+
+  if (loading) return <div style={{ padding:p, textAlign:'center', color:T.light, paddingTop:40 }}>⏳ Đang tải...</div>
+
+  return (
+    <div style={{ padding:`0 ${p} ${mobile?'80px':p}` }}>
+      <Topbar mobile={mobile} title="📜 Nhật ký hoạt động"
+        subtitle={`${filtered.length}/${logs.length} hành động trong ${dayRange} ngày`}
+        action={
+          <button onClick={fetchLogs}
+            style={{ padding:'5px 12px', borderRadius:20, border:`1px solid ${T.border}`,
+              background:'transparent', cursor:'pointer', fontFamily:'inherit', fontSize:11, color:T.med }}>
+            🔄 Refresh
+          </button>
+        }/>
+
+      {/* Filters */}
+      <Card style={{ padding:12, marginBottom:12 }}>
+        <div style={{ display:'grid', gridTemplateColumns: mobile?'1fr 1fr':'repeat(4, 1fr)', gap:8 }}>
+          <div>
+            <label style={{ fontSize:10, color:T.med, fontWeight:600, display:'block', marginBottom:3 }}>NV</label>
+            <select value={filterUser} onChange={e => setFilterUser(e.target.value)}
+              style={{ width:'100%', padding:'6px 10px', border:`1px solid ${T.border}`, borderRadius:6,
+                fontSize:11, fontFamily:'inherit', background:'#fff', outline:'none' }}>
+              <option value="">Tất cả</option>
+              {uniqueUsers.map((uid: string) => (
+                <option key={uid} value={uid}>{getUserName(uid)}</option>
+              ))}
+            </select>
+          </div>
+          <div>
+            <label style={{ fontSize:10, color:T.med, fontWeight:600, display:'block', marginBottom:3 }}>Bảng</label>
+            <select value={filterTable} onChange={e => setFilterTable(e.target.value)}
+              style={{ width:'100%', padding:'6px 10px', border:`1px solid ${T.border}`, borderRadius:6,
+                fontSize:11, fontFamily:'inherit', background:'#fff', outline:'none' }}>
+              <option value="">Tất cả</option>
+              {uniqueTables.map((t: string) => (
+                <option key={t} value={t}>{tableLabel(t)}</option>
+              ))}
+            </select>
+          </div>
+          <div>
+            <label style={{ fontSize:10, color:T.med, fontWeight:600, display:'block', marginBottom:3 }}>Hành động</label>
+            <select value={filterAction} onChange={e => setFilterAction(e.target.value)}
+              style={{ width:'100%', padding:'6px 10px', border:`1px solid ${T.border}`, borderRadius:6,
+                fontSize:11, fontFamily:'inherit', background:'#fff', outline:'none' }}>
+              <option value="">Tất cả</option>
+              {uniqueActions.map((a: string) => (
+                <option key={a} value={a}>{actionLabel(a)}</option>
+              ))}
+            </select>
+          </div>
+          <div>
+            <label style={{ fontSize:10, color:T.med, fontWeight:600, display:'block', marginBottom:3 }}>Khoảng thời gian</label>
+            <select value={dayRange} onChange={e => setDayRange(Number(e.target.value))}
+              style={{ width:'100%', padding:'6px 10px', border:`1px solid ${T.border}`, borderRadius:6,
+                fontSize:11, fontFamily:'inherit', background:'#fff', outline:'none' }}>
+              <option value={7}>7 ngày</option>
+              <option value={30}>30 ngày</option>
+              <option value={90}>90 ngày</option>
+              <option value={365}>1 năm</option>
+            </select>
+          </div>
+        </div>
+      </Card>
+
+      {/* List */}
+      {filtered.length === 0 ? (
+        <div style={{ padding:'40px 20px', textAlign:'center', color:T.light, fontSize:13 }}>
+          Không có hoạt động nào phù hợp filter.
+        </div>
+      ) : (
+        <div style={{ display:'flex', flexDirection:'column', gap:6 }}>
+          {filtered.map((log: any) => {
+            const expanded = expandedLog === log.id
+            const isDestruct = ['delete','bulk_delete'].includes(log.action)
+            return (
+              <Card key={log.id} style={{ padding:10, cursor:'pointer',
+                borderLeft: isDestruct ? `3px solid ${T.red}` : `3px solid ${T.blue}`,
+                background: expanded ? T.bg : '#fff' }}
+                onClick={() => setExpandedLog(expanded ? null : log.id)}>
+                <div style={{ display:'flex', alignItems:'flex-start', gap:10 }}>
+                  <div style={{ flex:1, minWidth:0 }}>
+                    <div style={{ fontSize:12, fontWeight:600, color:T.dark }}>
+                      {actionLabel(log.action)} • {tableLabel(log.table_name)}
+                      {log.record_id && <span style={{ color:T.light, fontWeight:400, marginLeft:6 }}>#{log.record_id.slice(0,20)}</span>}
+                    </div>
+                    <div style={{ fontSize:11, color:T.med, marginTop:2 }}>
+                      <b>{log.user_name || getUserName(log.user_id)}</b> • {new Date(log.created_at).toLocaleString('vi-VN')}
+                    </div>
+                    {log.note && (
+                      <div style={{ fontSize:11, color:T.light, marginTop:3, fontStyle:'italic' }}>
+                        {log.note}
+                      </div>
+                    )}
+                  </div>
+                  {isDestruct && log.record_snapshot && (
+                    <button onClick={e => { e.stopPropagation(); setShowRestoreModal(log) }}
+                      style={{ padding:'4px 10px', borderRadius:20, border:`1px solid ${T.green}`,
+                        background:T.greenBg, color:T.green, cursor:'pointer', fontFamily:'inherit',
+                        fontSize:10, fontWeight:600, flexShrink:0 }}>
+                      ♻️ Restore
+                    </button>
+                  )}
+                </div>
+                {expanded && log.record_snapshot && (
+                  <div style={{ marginTop:10, padding:10, background:T.bg, borderRadius:6,
+                    fontSize:10, fontFamily:'monospace', color:T.med, maxHeight:300, overflow:'auto',
+                    border:`1px solid ${T.border}` }}>
+                    <pre style={{ margin:0, whiteSpace:'pre-wrap', wordBreak:'break-all' }}>
+                      {JSON.stringify(log.record_snapshot, null, 2)}
+                    </pre>
+                  </div>
+                )}
+              </Card>
+            )
+          })}
+        </div>
+      )}
+
+      {/* Restore modal */}
+      {showRestoreModal && (
+        <div style={{ position:'fixed', inset:0, background:'rgba(0,0,0,0.5)', zIndex:9999,
+          display:'flex', alignItems:'center', justifyContent:'center', padding:20 }}>
+          <div style={{ background:'#fff', borderRadius:12, padding:20, maxWidth:500, width:'100%',
+            border:`2px solid ${T.green}` }}>
+            <div style={{ fontSize:15, fontWeight:700, color:T.green, marginBottom:6 }}>
+              ♻️ Khôi phục dữ liệu
+            </div>
+            <div style={{ fontSize:13, color:T.dark, marginBottom:10, lineHeight:1.5 }}>
+              Bạn sắp khôi phục {tableLabel(showRestoreModal.table_name)} đã bị xóa bởi <b>{showRestoreModal.user_name}</b>.
+            </div>
+            <div style={{ padding:'8px 10px', background:T.bg, borderRadius:6, marginBottom:14,
+              fontSize:11, color:T.med, border:`1px solid ${T.border}` }}>
+              {showRestoreModal.note}
+            </div>
+            <div style={{ fontSize:11, color:T.amber, fontWeight:600, marginBottom:14 }}>
+              ⚠️ Nếu dữ liệu đã được tạo lại từ sau thời điểm xóa, restore có thể ghi đè. Hãy xem xét kỹ.
+            </div>
+            <div style={{ display:'flex', gap:10 }}>
+              <button onClick={() => setShowRestoreModal(null)}
+                style={{ flex:1, padding:'9px', borderRadius:6, border:`1px solid ${T.border}`,
+                  background:'#fff', color:T.med, cursor:'pointer', fontFamily:'inherit', fontSize:13 }}>
+                Hủy
+              </button>
+              <button onClick={() => handleRestore(showRestoreModal)}
+                style={{ flex:1, padding:'9px', borderRadius:6, border:'none',
+                  background:T.green, color:'#fff', cursor:'pointer', fontFamily:'inherit',
+                  fontSize:13, fontWeight:700 }}>
+                ♻️ Khôi phục
+              </button>
+            </div>
           </div>
         </div>
       )}
