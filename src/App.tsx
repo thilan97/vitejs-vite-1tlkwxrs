@@ -12,7 +12,7 @@ const db = createClient(SUPABASE_URL, SUPABASE_KEY)
 // APP_VERSION — dùng để invalidate cache localStorage mỗi khi deploy version mới
 // (ngăn bug quyền user bị "reset" do cache position cũ sau deploy)
 // ⚠️ MỖI LẦN DEPLOY FEATURE MỚI CÓ PERMISSION MỚI, BUMP SỐ NÀY:
-const APP_VERSION = '2026.04.17.v8'
+const APP_VERSION = '2026.04.17.v9'
 
 // ════════════════════════════════════════════════════════════════
 // AUDIT LOG — ghi nhận các hành động phá hoại data để trace lại
@@ -270,8 +270,8 @@ const Av = ({ u, size = 32, showDept = false, showTitle = false }: any) => (
   </div>
 )
 
-const Card = ({ children, style }: any) => (
-  <div style={{ background:T.card, border:`1px solid ${T.border}`, borderRadius:12, padding:'18px 22px',
+const Card = ({ children, style, onClick }: any) => (
+  <div onClick={onClick} style={{ background:T.card, border:`1px solid ${T.border}`, borderRadius:12, padding:'18px 22px',
     boxShadow:'0 1px 4px rgba(0,0,0,0.06)', ...style }}>
     {children}
   </div>
