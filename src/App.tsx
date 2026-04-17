@@ -88,7 +88,7 @@ const getPerm = (user: any) => {
     manageExpiry:       isAdmin || (pos.perm_manage_inventory ?? false) || (pos.perm_manage_expiry ?? false),
     managePayment:      isAdmin || (pos.perm_manage_payment ?? false),
     editReturn:         isAdmin || (pos.perm_manage_inventory ?? false) || (pos.perm_edit_return ?? false),
-    deleteInvSession:   isAdmin || (pos.perm_delete_inv_session ?? false),
+    deleteInvSession:   isAdmin || (pos.perm_manage_inventory ?? false) || (pos.perm_delete_inv_session ?? false),
     editPrice:          isAdmin || (pos.perm_edit_price ?? false),
     managePrograms:     isAdmin || (pos.perm_manage_programs ?? false),
   }
@@ -3900,19 +3900,19 @@ function ReturnSaleForm({ item, allUsers, saleUsers, onSave, onClose }: any) {
     sale_note:           item.sale_note           || '',
   })
   const [userSearch, setUserSearch] = useState('')
-  const userResults = allUsers.filter((u: any) => {
-    const q = userSearch.toLowerCase()
-    return !q || u.name.toLowerCase().includes(q) || (u.ini||'').toLowerCase().includes(q)
-  }).slice(0,8)
+  const normRet = (s: string) => (s||'').toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g,'').replace(/đ/g,'d')
+  const fuzzyUser = (u: any, q: string) => {
+    if (!q.trim()) return true
+    const hay = normRet(u.name + ' ' + (u.ini||''))
+    return normRet(q).split(/\s+/).every((t: string) => hay.includes(t))
+  }
+  const userResults = allUsers.filter((u: any) => fuzzyUser(u, userSearch)).slice(0,8)
 
   // Chỉ lấy nhân viên phòng sale
   const saleOnlyUsers = allUsers.filter((u: any) => u.dept_id === 'sale')
   // Nhân viên vi phạm: kho + sale
   const violatorUsers = allUsers.filter((u: any) => u.dept_id === 'kho' || u.dept_id === 'sale')
-  const violatorResults = violatorUsers.filter((u: any) => {
-    const q = userSearch.toLowerCase()
-    return !q || u.name.toLowerCase().includes(q) || (u.ini||'').toLowerCase().includes(q)
-  }).slice(0,8)
+  const violatorResults = violatorUsers.filter((u: any) => fuzzyUser(u, userSearch)).slice(0,8)
 
   return (
     <div>
@@ -10465,9 +10465,16 @@ function ExpiryModule({ user, mobile, products, batches, setBatches }: any) {
   const countYellow = withQty.filter((b: any) => b.monthsLeft >= 12 && b.monthsLeft < 18).length
   const countGreen  = withQty.filter((b: any) => b.monthsLeft >= 18).length
 
+  const normExp = (s: string) => (s||'').toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g,'').replace(/đ/g,'d')
+  const fuzzyExp = (b: any, q: string) => {
+    if (!q.trim()) return true
+    const hay = normExp(b.product_code + ' ' + b.product_name)
+    return normExp(q).split(/\s+/).every((t: string) => hay.includes(t))
+  }
+
   const filtered = enriched.filter((b: any) => {
     if (filterStatus !== 'all' && b.status.key !== filterStatus) return false
-    if (searchQ) return (b.product_code + ' ' + b.product_name).toLowerCase().includes(searchQ.toLowerCase())
+    if (searchQ) return fuzzyExp(b, searchQ)
     return true
   }).sort((a: any, b: any) => a.monthsLeft - b.monthsLeft)
 
@@ -11132,37 +11139,42 @@ function PaymentOrderForm({ suppliers, accounts, onSave, onClose, edit, mobile }
     if (finalStatus !== 'draft' && !isValid) return
     if (!selSup) return  // Ít nhất phải có NCC
     setSaving(true)
-
-    // Nếu NCC mới (id='__new__'), tạo supplier trước rồi mới save order
-    let finalSupId = selSup.id
-    let finalSupName = selSup.name
-    if (selSup.id === '__new__') {
-      const now = new Date().toISOString()
-      const newSup = {
-        id: 'sup_' + Date.now() + '_' + Math.random().toString(36).slice(2,5),
-        name: selSup.name, short_name: '', note: '', active: true,
-        created_at: now, created_by: ''
+    try {
+      // Nếu NCC mới (id='__new__'), tạo supplier trước rồi mới save order
+      let finalSupId = selSup.id
+      let finalSupName = selSup.name
+      if (selSup.id === '__new__') {
+        const now = new Date().toISOString()
+        const newSup = {
+          id: 'sup_' + Date.now() + '_' + Math.random().toString(36).slice(2,5),
+          name: selSup.name, short_name: '', note: '', active: true,
+          created_at: now, created_by: ''
+        }
+        await db.from('suppliers').insert(newSup)
+        finalSupId = newSup.id
+        finalSupName = newSup.name
       }
-      await db.from('suppliers').insert(newSup)
-      finalSupId = newSup.id
-      finalSupName = newSup.name
-    }
 
-    // Check if STK is new (chưa có trong accounts)
-    const isNewStk = !accounts.find((a: any) =>
-      a.account_number.replace(/[^0-9]/g,'') === (selAcc.account_number||'').replace(/[^0-9]/g,'')
-    )
-    await onSave({
-      supplier_id: finalSupId, supplier_name: finalSupName,
-      account_id: selAcc.id || 'acc_new_' + Date.now(),
-      account_number: selAcc.account_number,
-      account_name: selAcc.account_name, bank_name: selAcc.bank_name,
-      amount: parseMoney(amount), transfer_content: content,
-      purpose, note, order_ref: orderRef, status: finalStatus,
-      _isNewStk: isNewStk,
-      _newStkData: isNewStk ? { ...selAcc, supplier_id: finalSupId } : null,
-    })
-    setSaving(false)
+      // Check if STK is new (chưa có trong accounts) — chỉ khi có selAcc
+      const isNewStk = selAcc ? !accounts.find((a: any) =>
+        a.account_number.replace(/[^0-9]/g,'') === (selAcc.account_number||'').replace(/[^0-9]/g,'')
+      ) : false
+
+      await onSave({
+        supplier_id: finalSupId, supplier_name: finalSupName,
+        account_id: selAcc?.id || 'acc_new_' + Date.now(),
+        account_number: selAcc?.account_number || '',
+        account_name: selAcc?.account_name || '', bank_name: selAcc?.bank_name || '',
+        amount: parseMoney(amount), transfer_content: content,
+        purpose, note, order_ref: orderRef, status: finalStatus,
+        _isNewStk: isNewStk,
+        _newStkData: isNewStk && selAcc ? { ...selAcc, supplier_id: finalSupId } : null,
+      })
+    } catch (err: any) {
+      alert('❌ Lỗi khi lưu: ' + (err?.message || 'Không xác định'))
+    } finally {
+      setSaving(false)
+    }
   }
 
   const p = mobile ? 16 : 24
