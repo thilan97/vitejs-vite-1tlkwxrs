@@ -3123,11 +3123,21 @@ function ShortageItems({ user, allUsers, mobile, products, setProducts }: any) {
   // ── Report hàng thiếu ──
   const report = async () => {
     if (!selectedProd) return
+    // Check ALL statuses — không cho phép báo lại SP đã được xử lý
     const existing = visibleItems.find(i =>
-      norm(i.product_name) === norm(selectedProd.name) &&
-      !['arrived','burned'].includes(i.status)
+      norm(i.product_name) === norm(selectedProd.name)
     )
     if (existing) {
+      if (existing.status === 'burned') {
+        setDupWarning({ type: 'burned', item: existing }); return
+      }
+      if (existing.status === 'arrived') {
+        setDupWarning({ type: 'arrived', item: existing }); return
+      }
+      if (existing.status === 'incoming') {
+        setDupWarning({ type: 'incoming', item: existing }); return
+      }
+      // status === 'pending': check xem mình đã báo chưa
       const alreadyMe = existing.reporters?.some((r: any) => r.user_id === user.id)
       setDupWarning({ type: alreadyMe ? 'self' : 'other', item: existing })
       return
@@ -3610,12 +3620,38 @@ function ShortageItems({ user, allUsers, mobile, products, setProducts }: any) {
       {/* ══ Modal: Báo thiếu ══ */}
       <Modal open={showAdd} onClose={closeAdd} title="Báo hàng thiếu">
         {dupWarning ? (
-          dupWarning.type==='self' ? (
+          dupWarning.type==='burned' ? (
+            // Hàng cháy — block hoàn toàn
+            <div style={{ padding:'16px', background:T.redBg, borderRadius:10, fontSize:13, color:T.red, textAlign:'center' }}>
+              <div style={{ fontSize:22, marginBottom:8 }}>🔥</div>
+              <b>{dupWarning.item.product_name}</b>
+              <div style={{ marginTop:6, color:T.med }}>Sản phẩm này đã được đánh dấu <b>Cháy hàng</b>.<br/>Không thể báo thiếu thêm.</div>
+              <div style={{ marginTop:12 }}><GoldBtn small onClick={closeAdd}>Đã hiểu</GoldBtn></div>
+            </div>
+          ) : dupWarning.type==='arrived' ? (
+            // Hàng đã về — block
+            <div style={{ padding:'16px', background:T.greenBg, borderRadius:10, fontSize:13, color:T.green, textAlign:'center' }}>
+              <div style={{ fontSize:22, marginBottom:8 }}>✅</div>
+              <b>{dupWarning.item.product_name}</b>
+              <div style={{ marginTop:6, color:T.med }}>Sản phẩm này đã <b>về hàng</b>.<br/>Không cần báo thiếu thêm.</div>
+              <div style={{ marginTop:12 }}><GoldBtn small onClick={closeAdd}>Đã hiểu</GoldBtn></div>
+            </div>
+          ) : dupWarning.type==='incoming' ? (
+            // Hàng sắp về — block
+            <div style={{ padding:'16px', background:T.amberBg, borderRadius:10, fontSize:13, color:T.amber, textAlign:'center' }}>
+              <div style={{ fontSize:22, marginBottom:8 }}>🚚</div>
+              <b>{dupWarning.item.product_name}</b>
+              <div style={{ marginTop:6, color:T.med }}>Sản phẩm này đang <b>trên đường về</b>.<br/>Quản lý đã xử lý rồi, không cần báo thêm.</div>
+              <div style={{ marginTop:12 }}><GoldBtn small onClick={closeAdd}>Đã hiểu</GoldBtn></div>
+            </div>
+          ) : dupWarning.type==='self' ? (
+            // Mình đã báo rồi
             <div style={{ padding:'14px', background:T.amberBg, borderRadius:10, fontSize:13, color:T.amber, textAlign:'center' }}>
               ⚠️ Bạn đã báo <b>{dupWarning.item.product_name}</b> rồi!
               <div style={{ marginTop:12 }}><GoldBtn small onClick={closeAdd}>Đóng</GoldBtn></div>
             </div>
           ) : (
+            // Người khác đã báo — có thể thêm tên vào
             <div>
               <div style={{ padding:'12px', background:T.goldBg, borderRadius:8, fontSize:13, color:T.goldText, marginBottom:14 }}>
                 📢 <b>{dupWarning.item.product_name}</b> đã có trong list, báo bởi: <b>{dupWarning.item.reporters?.map((r: any) => r.name).join(', ')}</b>
