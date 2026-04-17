@@ -505,7 +505,14 @@ const NAV_GROUPS = (perm: any, deptId = '') => {
   const groups = [
     hasDashboard && {
       id:'dashboard', icon:'📊', label:'Tổng quan',
-      pages:[{ id:'dashboard', icon:'📊', label:'Dashboard' }]
+      pages:[
+        { id:'dashboard', icon:'📊', label:'Dashboard' },
+        { id:'notifications', icon:'🔔', label:'Thông báo' },
+      ]
+    },
+    !hasDashboard && {
+      id:'notifications_only', icon:'🔔', label:'Thông báo',
+      pages:[{ id:'notifications', icon:'🔔', label:'Thông báo' }]
     },
     {
       id:'work', icon:'✅', label:'Công việc',
@@ -571,7 +578,8 @@ const getGroupForPage = (pageId: string, perm: any, deptId = '') => {
   return groups.find((g: any) => g.pages.some((p: any) => p.id === pageId))
 }
 
-function Sidebar({ user, page, setPage, onLogout, pendingLeave, pendingOT }: any) {
+function Sidebar(props: any) {
+  const { user, page, setPage, onLogout, pendingLeave, pendingOT, notifUnread } = props
   const perm   = getPerm(user)
   const groups = NAV_GROUPS(perm, user?.dept_id||'')
   const activeGroup = getGroupForPage(page, perm, user?.dept_id||'')
@@ -592,7 +600,9 @@ function Sidebar({ user, page, setPage, onLogout, pendingLeave, pendingOT }: any
       <nav style={{ flex:1, padding:'4px 10px 8px', overflowY:'auto' }}>
         {groups.map((group: any) => {
           const isActiveGroup = activeGroup?.id === group.id
-          const groupBadge = group.id==='hr' ? pendingLeave+pendingOT : 0
+          const groupBadge = group.id==='hr' ? pendingLeave+pendingOT
+                           : group.id==='notifications_only' ? (notifUnread||0)
+                           : 0
           return (
             <div key={group.id} style={{ marginBottom:6 }}>
               {/* Section label */}
@@ -614,7 +624,10 @@ function Sidebar({ user, page, setPage, onLogout, pendingLeave, pendingOT }: any
               {/* Items */}
               {group.pages.map((item: any) => {
                 const active = page === item.id
-                const badge  = item.id==='leave' ? pendingLeave : item.id==='overtime' ? pendingOT : 0
+                const badge  = item.id==='leave' ? pendingLeave
+                             : item.id==='overtime' ? pendingOT
+                             : item.id==='notifications' ? (notifUnread||0)
+                             : 0
                 return (
                   <button key={item.id} onClick={() => setPage(item.id)}
                     style={{
@@ -695,7 +708,7 @@ function Sidebar({ user, page, setPage, onLogout, pendingLeave, pendingOT }: any
   )
 }
 
-function BottomNav({ page, setPage, user, pendingLeave, pendingOT, onLogout }: any) {
+function BottomNav({ page, setPage, user, pendingLeave, pendingOT, notifUnread, onLogout }: any) {
   const perm   = getPerm(user)
   const groups = NAV_GROUPS(perm, user?.dept_id||'')
   const activeGroup = getGroupForPage(page, perm, user?.dept_id||'')
@@ -738,7 +751,10 @@ function BottomNav({ page, setPage, user, pendingLeave, pendingOT, onLogout }: a
           <div style={{ display:'flex', flexWrap:'wrap', padding:'6px 8px', gap:4 }}>
             {activeGroup.pages.map((item: any) => {
               const active = page === item.id
-              const badge = item.id==='leave' ? pendingLeave : item.id==='overtime' ? pendingOT : 0
+              const badge = item.id==='leave' ? pendingLeave
+                          : item.id==='overtime' ? pendingOT
+                          : item.id==='notifications' ? (notifUnread||0)
+                          : 0
               return (
                 <button key={item.id} onClick={() => { setPage(item.id); setShowSubTabs(false) }}
                   style={{ flex:'1 1 auto', display:'flex', alignItems:'center', justifyContent:'center',
@@ -764,7 +780,9 @@ function BottomNav({ page, setPage, user, pendingLeave, pendingOT, onLogout }: a
         paddingBottom:'env(safe-area-inset-bottom,0px)' }}>
         {groups.map((group: any) => {
           const isActive = activeGroup?.id === group.id
-          const badge = group.id==='hr' ? pendingLeave+pendingOT : 0
+          const badge = group.id==='hr' ? pendingLeave+pendingOT
+                      : (group.id==='dashboard' || group.id==='notifications_only') ? (notifUnread||0)
+                      : 0
           const hasMultiple = group.pages.length > 1
           return (
             <button key={group.id} onClick={() => handleGroupClick(group)}
@@ -5752,8 +5770,316 @@ function Settings({ user, setUser, settings, setSettings, onManualReset, mobile 
   )
 }
 
+// ══════════════════════════════════════════════════════════════════════
+// ══ NOTIFICATION CENTER — Hook + Page Component ══════════════════════
+// ══════════════════════════════════════════════════════════════════════
+function useNotifications({ user, wrongOrders, returnSlips, shortageItems, batches, paymentOrders, overdueOrders, reads, settings }: any) {
+  const perm         = getPerm(user)
+  const isSale       = user?.dept_id === 'sale'
+  const isAdmin      = perm.viewAllDashboard
+  const isMgrSale    = isSale && perm.approveLeave
+  const canManageExp = perm.manageExpiry || perm.manageInventory || isAdmin
+  const canPay       = perm.managePayment || isAdmin
+  const threshold    = settings?.overdue_days_threshold ?? 7
+
+  const norm2 = (s: string) => (s||'').toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g,'').replace(/đ/g,'d').trim()
+  const today = new Date()
+  const staleThreshold = new Date(Date.now() - 7*86400000).toISOString()
+
+  const groups: any[] = []
+
+  // ─ 1. Đơn sai pending (Sale) ─
+  if (isSale && !isAdmin) {
+    const items = (wrongOrders||[]).filter((r: any) =>
+      r.status==='pending' && (r.sale_id===user.id || !r.sale_id)
+    ).map((r: any) => ({
+      key: `wo:${r.id}`, icon:'🔴',
+      title: `Đơn sai: ${r.order_code||r.id}`,
+      meta: r.customer_name || 'Khách',
+      timestamp: r.created_at, urgency:'high',
+      targetPage: 'wrongord',
+    }))
+    if (items.length>0) groups.push({ id:'wo', title:'🔴 Đơn sai chưa xử lý', items })
+  }
+
+  // ─ 2. Phiếu hoàn chưa điền (Sale) ─
+  if (isSale && !isAdmin) {
+    const items = (returnSlips||[]).filter((r: any) => !r.sale_id).map((r: any) => ({
+      key: `ret:${r.slip_id}`, icon:'↩️',
+      title: `Phiếu hoàn: ${r.slip_id}`,
+      meta: 'Chưa điền thông tin',
+      timestamp: r.created_at, urgency:'med',
+      targetPage: 'returns',
+    }))
+    if (items.length>0) groups.push({ id:'ret', title:'↩️ Phiếu hoàn chưa điền', items })
+  }
+
+  // ─ 3. Hàng thiếu (QM Sale) ─
+  if (isMgrSale) {
+    const items = (shortageItems||[]).filter((r: any) =>
+      r.status==='pending' && !r.manager_note
+    ).map((r: any) => ({
+      key: `sh:${r.id}`, icon:'⚠️',
+      title: r.product_name || r.product_code,
+      meta: `Thiếu ${r.qty_short||0} ${r.unit||''}`.trim(),
+      timestamp: r.created_at, urgency:'high',
+      targetPage: 'shortage',
+    }))
+    if (items.length>0) groups.push({ id:'shortage', title:'⚠️ Hàng thiếu chưa xử lý', items })
+  }
+
+  // ─ 4. Lô <6 tháng còn tồn (Sale) ─
+  if (isSale) {
+    const items = (batches||[]).filter((b: any) => {
+      if (!b.expiry_date || (b.qty_remaining||0) <= 0) return false
+      const exp = new Date(b.expiry_date)
+      const ml  = (exp.getFullYear() - today.getFullYear()) * 12 + (exp.getMonth() - today.getMonth())
+      return ml < 6
+    }).map((b: any) => ({
+      key: `exp:${b.id}`, icon:'📅',
+      title: b.product_name || b.product_code,
+      meta: `HSD: ${b.expiry_date}, còn ${b.qty_remaining}`,
+      timestamp: b.last_updated_at || b.created_at, urgency:'med',
+      targetPage: 'expiry',
+    }))
+    if (items.length>0) groups.push({ id:'expiry', title:'📅 Date sản phẩm sắp hết', items })
+  }
+
+  // ─ 5. Lô chưa update >7 ngày (QM Kho/Admin) ─
+  if (canManageExp) {
+    const items = (batches||[]).filter((b: any) => {
+      if ((b.qty_remaining||0) <= 0) return false
+      const lastUpd = b.last_updated_at || b.created_at || ''
+      return lastUpd < staleThreshold
+    }).map((b: any) => ({
+      key: `stale:${b.id}`, icon:'🧮',
+      title: b.product_name || b.product_code,
+      meta: `Chưa update từ ${b.last_updated_at||b.created_at||'?'}`,
+      timestamp: b.last_updated_at || b.created_at, urgency:'low',
+      targetPage: 'expiry',
+    }))
+    if (items.length>0) groups.push({ id:'stale', title:'🧮 Lô chưa update >7 ngày', items })
+  }
+
+  // ─ 6. Lệnh CK chờ duyệt (Admin/canPay) ─
+  if (canPay) {
+    const items = (paymentOrders||[]).filter((o: any) => o.status === 'pending').map((o: any) => ({
+      key: `pay:${o.id}`, icon:'💰',
+      title: o.supplier_name || 'Supplier',
+      meta: `${(o.amount||0).toLocaleString('vi-VN')}đ`,
+      timestamp: o.created_at, urgency:'high',
+      targetPage: 'payment',
+    }))
+    if (items.length>0) groups.push({ id:'pay', title:'💰 Lệnh CK chờ duyệt', items })
+  }
+
+  // ─ 7. Lệnh CK đã paid chờ nhập KV (QM Sale) ─
+  if (isSale && !isAdmin) {
+    const items = (paymentOrders||[]).filter((o: any) =>
+      o.status === 'paid' && o.created_by === user.id
+    ).map((o: any) => ({
+      key: `kiot:${o.id}`, icon:'📦',
+      title: o.supplier_name || 'Supplier',
+      meta: `${(o.amount||0).toLocaleString('vi-VN')}đ — chờ nhập KV`,
+      timestamp: o.created_at, urgency:'med',
+      targetPage: 'payment',
+    }))
+    if (items.length>0) groups.push({ id:'kiot', title:'📦 CK đã paid chờ nhập KiotViet', items })
+  }
+
+  // ─ 8. Đơn KV quá hạn ─
+  {
+    const all = overdueOrders || []
+    let items: any[] = []
+    if (isAdmin || isMgrSale) {
+      items = all.map((o: any) => ({
+        key: `overdue:${o.code}`, icon:'🕐',
+        title: `${o.code} — ${o.customerName||'KH lẻ'}`,
+        meta: `Sale: ${o.soldByName||'?'} • ${o.daysOld}N trước`,
+        timestamp: o.purchaseDate, urgency: o.daysOld>14?'high':'med',
+        targetPage: 'dashboard',
+      }))
+    } else if (isSale) {
+      items = all.filter((o: any) => norm2(o.soldByName||'') === norm2(user.name||'')).map((o: any) => ({
+        key: `overdue:${o.code}`, icon:'🕐',
+        title: `${o.code} — ${o.customerName||'KH lẻ'}`,
+        meta: `${o.daysOld}N trước • Kiểm tra và xử lý`,
+        timestamp: o.purchaseDate, urgency: o.daysOld>14?'high':'med',
+        targetPage: 'dashboard',
+      }))
+    }
+    if (items.length>0) groups.push({ id:'overdue', title:`🕐 Đơn KiotViet quá ${threshold} ngày`, items })
+  }
+
+  groups.forEach((g: any) => {
+    g.total = g.items.length
+    g.unread = g.items.filter((it: any) => !reads.has(it.key)).length
+    g.items.forEach((it: any) => { it.isRead = reads.has(it.key) })
+  })
+
+  const totalUnread = groups.reduce((sum: number, g: any) => sum + g.unread, 0)
+  const totalItems  = groups.reduce((sum: number, g: any) => sum + g.total, 0)
+
+  return { groups, totalUnread, totalItems }
+}
+
+function NotificationPage({ user, mobile, groups, totalUnread, totalItems, reads, setReads, setPage }: any) {
+  const [collapsed, setCollapsed] = useState<Set<string>>(new Set())
+  const p = mobile ? '16px' : '24px'
+
+  const toggle = (gid: string) => {
+    setCollapsed(prev => {
+      const next = new Set(prev)
+      if (next.has(gid)) next.delete(gid); else next.add(gid)
+      return next
+    })
+  }
+
+  const markRead = async (key: string) => {
+    setReads((prev: Set<string>) => new Set([...prev, key]))
+    try {
+      await db.from('notification_reads').upsert({
+        user_id: user.id, noti_key: key, read_at: new Date().toISOString()
+      })
+    } catch(e) { /* silent */ }
+  }
+
+  const markGroupRead = async (group: any) => {
+    const keys = group.items.filter((it: any) => !it.isRead).map((it: any) => it.key)
+    if (keys.length === 0) return
+    setReads((prev: Set<string>) => new Set([...prev, ...keys]))
+    try {
+      await db.from('notification_reads').upsert(
+        keys.map((key: string) => ({
+          user_id: user.id, noti_key: key, read_at: new Date().toISOString()
+        }))
+      )
+    } catch(e) { /* silent */ }
+  }
+
+  const markAllRead = async () => {
+    const keys = groups.flatMap((g: any) => g.items.filter((it: any) => !it.isRead).map((it: any) => it.key))
+    if (keys.length === 0) return
+    setReads((prev: Set<string>) => new Set([...prev, ...keys]))
+    try {
+      await db.from('notification_reads').upsert(
+        keys.map((key: string) => ({
+          user_id: user.id, noti_key: key, read_at: new Date().toISOString()
+        }))
+      )
+    } catch(e) { /* silent */ }
+  }
+
+  const handleItemClick = (item: any) => {
+    markRead(item.key)
+    if (item.targetPage) setPage(item.targetPage)
+  }
+
+  const relTime = (iso: string) => {
+    if (!iso) return ''
+    const diff = Date.now() - new Date(iso).getTime()
+    const mins = Math.floor(diff/60000)
+    if (mins < 60) return `${mins}p trước`
+    const hrs = Math.floor(mins/60)
+    if (hrs < 24) return `${hrs}h trước`
+    const days = Math.floor(hrs/24)
+    return `${days} ngày trước`
+  }
+
+  return (
+    <div style={{ padding:`0 ${p} ${mobile?'80px':p}` }}>
+      <Topbar mobile={mobile} title="🔔 Thông báo"
+        subtitle={totalUnread>0 ? `${totalUnread} chưa đọc trong ${totalItems} thông báo` : 'Tất cả đã đọc'}
+        action={totalUnread>0 && (
+          <button onClick={markAllRead}
+            style={{ padding:'6px 14px', borderRadius:20, border:`1px solid ${T.border}`,
+              background:'transparent', cursor:'pointer', fontFamily:'inherit',
+              fontSize:12, color:T.med }}>
+            ✓ Đánh dấu tất cả đã đọc
+          </button>
+        )}/>
+
+      {groups.length === 0 ? (
+        <div style={{ padding:'60px 20px', textAlign:'center', color:T.light }}>
+          <div style={{ fontSize:48, marginBottom:12 }}>🎉</div>
+          <div style={{ fontSize:14, color:T.med }}>Tuyệt vời! Không có thông báo nào đang chờ.</div>
+        </div>
+      ) : (
+        <div style={{ display:'flex', flexDirection:'column', gap:12 }}>
+          {groups.map((g: any) => {
+            const isCol = collapsed.has(g.id)
+            return (
+              <Card key={g.id} style={{ padding:0, overflow:'hidden' }}>
+                <div style={{ padding:'12px 16px', background:T.bg,
+                  borderBottom:isCol?'none':`1px solid ${T.border}`,
+                  display:'flex', alignItems:'center', gap:10, cursor:'pointer' }}
+                  onClick={() => toggle(g.id)}>
+                  <span style={{ fontSize:11, color:T.light, width:14 }}>{isCol?'▶':'▼'}</span>
+                  <div style={{ flex:1, fontSize:13, fontWeight:700, color:T.dark }}>
+                    {g.title}
+                  </div>
+                  <span style={{ fontSize:11, color:g.unread>0?T.red:T.light, fontWeight:700 }}>
+                    {g.unread}/{g.total}
+                  </span>
+                  {g.unread > 0 && (
+                    <button onClick={(e) => { e.stopPropagation(); markGroupRead(g) }}
+                      style={{ padding:'3px 10px', borderRadius:20, border:`1px solid ${T.border}`,
+                        background:'#fff', cursor:'pointer', fontFamily:'inherit',
+                        fontSize:10, color:T.med }}>
+                      ✓ Đánh dấu đọc
+                    </button>
+                  )}
+                </div>
+                {!isCol && (
+                  <div>
+                    {g.items.map((item: any, i: number) => {
+                      const urgColor = item.urgency==='high'?T.red : item.urgency==='med'?T.amber : T.blue
+                      return (
+                        <div key={item.key}
+                          onClick={() => handleItemClick(item)}
+                          style={{
+                            padding:'10px 16px',
+                            borderBottom:i<g.items.length-1?`1px solid ${T.border}`:'none',
+                            display:'flex', alignItems:'center', gap:12, cursor:'pointer',
+                            background: item.isRead ? T.bg : '#fff',
+                            opacity: item.isRead ? 0.65 : 1,
+                            transition:'background .15s'
+                          }}
+                          onMouseEnter={e => (e.currentTarget as any).style.background = T.goldBg}
+                          onMouseLeave={e => (e.currentTarget as any).style.background = item.isRead?T.bg:'#fff'}>
+                          <span style={{ width:8, height:8, borderRadius:4, flexShrink:0,
+                            background: item.isRead ? 'transparent' : urgColor,
+                            border: item.isRead ? `1px solid ${T.border}` : 'none' }}/>
+                          <span style={{ fontSize:18, flexShrink:0 }}>{item.icon}</span>
+                          <div style={{ flex:1, minWidth:0 }}>
+                            <div style={{ fontSize:13, fontWeight: item.isRead?400:600, color:T.dark,
+                              whiteSpace:'nowrap', overflow:'hidden', textOverflow:'ellipsis' }}>
+                              {item.title}
+                            </div>
+                            <div style={{ fontSize:11, color:T.light, marginTop:2 }}>
+                              {item.meta}
+                            </div>
+                          </div>
+                          <span style={{ fontSize:10, color:T.light, flexShrink:0 }}>
+                            {relTime(item.timestamp)}
+                          </span>
+                          <span style={{ fontSize:12, color:T.light, flexShrink:0 }}>→</span>
+                        </div>
+                      )
+                    })}
+                  </div>
+                )}
+              </Card>
+            )
+          })}
+        </div>
+      )}
+    </div>
+  )
+}
+
 // ── MAIN APP ──────────────────────────────────────
-// ── NOTIFICATION BANNER ─────────────────────────────
+// ── NOTIFICATION BANNER (legacy — sẽ bỏ) ────────────
 function NotifBanner({ user, wrongOrders, returnSlips, shortageItems, batches, paymentOrders, overdueOrders, settings, setPage }: any) {
   const [dismissedCats, setDismissedCats] = useState<Set<string>>(new Set())
   const dismiss = (cat: string) => setDismissedCats(prev => new Set([...prev, cat]))
@@ -6134,6 +6460,7 @@ export default function App() {
   const [paymentOrders, setPaymentOrders] = useState<any[]>([])
   const [taskNotiDismissed, setTaskNotiDismissed] = useState(false)
   const [overdueOrders, setOverdueOrders] = useState<any[]>([])
+  const [notificationReads, setNotificationReads] = useState<Set<string>>(new Set())
   const [priceConfigs, setPriceConfigs]   = useState<any[]>([])
   const [priceTiers, setPriceTiers]       = useState<any[]>([])
   const [priceHistory, setPriceHistory]   = useState<any[]>([])
@@ -6323,6 +6650,10 @@ export default function App() {
         .then(({data}) => { if (data) setPriceHistory(data) })
       db.from('brand_programs').select('*').order('created_at',{ascending:false})
         .then(({data}) => { if (data) setBrandPrograms(data) })
+      db.from('notification_reads').select('noti_key').eq('user_id', user.id)
+        .then(({data}) => {
+          if (data) setNotificationReads(new Set(data.map((r: any) => r.noti_key)))
+        })
       // Fetch đơn hàng quá hạn từ KiotViet (qua Edge Function)
       ;(async () => {
         try {
@@ -6423,12 +6754,18 @@ export default function App() {
   }).length
   const pendingOT = 0 // will be updated from Overtime component
 
+  // ── Notification Center: compute once, reuse for sidebar badge + page ──
+  const { groups: notifGroups, totalUnread: notifUnread, totalItems: notifTotal } = useNotifications({
+    user, wrongOrders, returnSlips, shortageItems: shortageNoti, batches,
+    paymentOrders, overdueOrders, reads: notificationReads, settings
+  })
+
   return (
     <div style={{ display:'flex', minHeight:'100vh',
       fontFamily:"'Segoe UI',system-ui,sans-serif", background:T.bg }}>
         {!mobile && (
           <Sidebar user={user} page={validPage} setPage={setPage}
-            pendingLeave={pendingLeave} pendingOT={pendingOT}
+            pendingLeave={pendingLeave} pendingOT={pendingOT} notifUnread={notifUnread}
             onLogout={() => { localStorage.removeItem('la_user'); setUser(null); setAllUsers([]); setChecklist([]) }}/>
         )}
         <main style={{ flex:1, overflowY:'auto', paddingTop:4, minWidth:0 }}>
@@ -6451,13 +6788,12 @@ export default function App() {
           {validPage==='expiry'     && <ExpiryModule {...pp} products={products} batches={batches} setBatches={setBatches}/>}
           {validPage==='payment'    && <PaymentModule {...pp}/>}
           {validPage==='pricelist'  && <PriceModule {...pp} products={products} priceConfigs={priceConfigs} setPriceConfigs={setPriceConfigs} priceTiers={priceTiers} setPriceTiers={setPriceTiers} priceHistory={priceHistory} setPriceHistory={setPriceHistory} brandPrograms={brandPrograms} setBrandPrograms={setBrandPrograms}/>}
+          {validPage==='notifications' && <NotificationPage {...pp} groups={notifGroups} totalUnread={notifUnread} totalItems={notifTotal} reads={notificationReads} setReads={setNotificationReads} setPage={setPage}/>}
           {validPage==='settings'   && <Settings {...pp} setUser={setUser} settings={settings} setSettings={setSettings} onManualReset={manualReset}/>}
         </main>
-        {mobile && <BottomNav user={user} page={validPage} setPage={setPage} pendingLeave={pendingLeave} pendingOT={pendingOT} onLogout={() => { localStorage.removeItem('la_user'); setUser(null); setAllUsers([]); setChecklist([]) }}/>}
+        {mobile && <BottomNav user={user} page={validPage} setPage={setPage} pendingLeave={pendingLeave} pendingOT={pendingOT} notifUnread={notifUnread} onLogout={() => { localStorage.removeItem('la_user'); setUser(null); setAllUsers([]); setChecklist([]) }}/>}
         {/* Sticky Note — floating for all users */}
         {user && <StickyNote user={user}/>}
-        {/* Notification Banner — wrong orders pending */}
-        {user && <NotifBanner user={user} wrongOrders={wrongOrders} returnSlips={returnSlips} shortageItems={shortageNoti} batches={batches} paymentOrders={paymentOrders} overdueOrders={overdueOrders} settings={settings} setPage={setPage}/>}
         {user && !taskNotiDismissed && <TaskNotifBanner user={user} tasks={tasks} allUsers={allUsers} setPage={setPage} onDismiss={() => setTaskNotiDismissed(true)}/>}
         {user && <SaturdayBanner user={user}/>}
       </div>
