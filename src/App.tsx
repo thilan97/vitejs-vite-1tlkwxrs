@@ -12,7 +12,7 @@ const db = createClient(SUPABASE_URL, SUPABASE_KEY)
 // APP_VERSION — dùng để invalidate cache localStorage mỗi khi deploy version mới
 // (ngăn bug quyền user bị "reset" do cache position cũ sau deploy)
 // ⚠️ MỖI LẦN DEPLOY FEATURE MỚI CÓ PERMISSION MỚI, BUMP SỐ NÀY:
-const APP_VERSION = '2026.04.17.v11'
+const APP_VERSION = '2026.04.17.v12'
 
 // ════════════════════════════════════════════════════════════════
 // AUDIT LOG — ghi nhận các hành động phá hoại data để trace lại
@@ -159,6 +159,8 @@ const getPerm = (user: any) => {
     packOrders:         isAdmin || (pos.perm_pack_orders ?? false) || (pos.perm_manage_inventory ?? false),
     assignPacking:      isAdmin || (pos.perm_assign_packing ?? false) || (pos.perm_manage_inventory ?? false),
     viewAuditLog:       isAdmin || (pos.perm_view_audit_log ?? false),
+    submitPriority:     isAdmin || (pos.perm_submit_priority ?? false),
+    handlePriority:     isAdmin || (pos.perm_handle_priority ?? false),
   }
 }
 
@@ -204,6 +206,8 @@ const ALL_PERMS = [
   { key:'perm_pack_orders',          label:'Đóng hàng (NV Đóng)',                group:'Kho'      },
   { key:'perm_assign_packing',       label:'Gán NV Nhặt đơn (Manager Kho)',      group:'Kho'      },
   { key:'perm_view_audit_log',       label:'Xem nhật ký hoạt động (Audit log)',  group:'Quản trị' },
+  { key:'perm_submit_priority',      label:'Gửi phiếu ưu tiên (Sale)',           group:'Sale'     },
+  { key:'perm_handle_priority',      label:'Nhận & xử lý phiếu ưu tiên (Kho)',   group:'Kho'      },
 ]
 // ── UTILITIES ────────────────────────────────────
 const fmtNow   = () => new Date().toLocaleString('vi-VN',{hour:'2-digit',minute:'2-digit',day:'2-digit',month:'2-digit',year:'numeric'})
@@ -672,6 +676,7 @@ const NAV_GROUPS = (perm: any, deptId = '') => {
     {
       id:'work', icon:'✅', label:'Công việc',
       pages:[
+        (perm.submitPriority || perm.handlePriority) && { id:'priority', icon:'🚨', label:'Phiếu ưu tiên' },
         { id:'checklist',  icon:'✅', label:'Checklist'  },
         { id:'tasks',      icon:'📌', label:'Giao việc'  },
         perm.manageTemplate && { id:'templates', icon:'📋', label:'Template' },
@@ -6665,6 +6670,7 @@ export default function App() {
   const [batches, setBatches]         = useState<any[]>([])
   const [paymentOrders, setPaymentOrders] = useState<any[]>([])
   const [taskNotiDismissed, setTaskNotiDismissed] = useState(false)
+  const [priorityAckOpen, setPriorityAckOpen] = useState(false)
   const [overdueOrders, setOverdueOrders] = useState<any[]>([])
   const [notificationReads, setNotificationReads] = useState<Set<string>>(new Set())
   const [priceConfigs, setPriceConfigs]   = useState<any[]>([])
@@ -6987,6 +6993,7 @@ export default function App() {
             }}/>
         )}
         <main style={{ flex:1, overflowY:'auto', paddingTop:4, minWidth:0 }}>
+          <PriorityAlertBanner user={user} onOpen={() => setPriorityAckOpen(true)}/>
           {validPage==='dashboard' && <Dashboard {...pp} checklist={checklist} tasks={tasks} attendance={attendance} leaveRequests={leaveRequests} otRequests={[]}/>}
           {validPage==='checklist'  && <Checklist {...pp} checklist={checklist} setChecklist={setChecklist} addLog={addLog}/>}
           {validPage==='tasks'      && <Tasks {...pp} tasks={tasks} setTasks={setTasks} addLog={addLog}/>}
@@ -7009,6 +7016,7 @@ export default function App() {
           {validPage==='notifications' && <NotificationPage {...pp} groups={notifGroups} totalUnread={notifUnread} totalItems={notifTotal} reads={notificationReads} setReads={setNotificationReads} setPage={setPage}/>}
           {validPage==='picking'    && <PickingModule {...pp} products={products}/>}
           {validPage==='packing'    && <PackingModule {...pp} products={products}/>}
+          {validPage==='priority'   && <PriorityRequestModule {...pp}/>}
           {validPage==='audit'      && <AuditLogModule {...pp}/>}
           {validPage==='settings'   && <Settings {...pp} setUser={setUser} settings={settings} setSettings={setSettings} onManualReset={manualReset}/>}
         </main>
@@ -7021,6 +7029,9 @@ export default function App() {
         {user && <StickyNote user={user}/>}
         {user && !taskNotiDismissed && <TaskNotifBanner user={user} tasks={tasks} allUsers={allUsers} setPage={setPage} onDismiss={() => setTaskNotiDismissed(true)}/>}
         {user && <SaturdayBanner user={user}/>}
+        {priorityAckOpen && user && (
+          <PriorityAckModal user={user} onClose={() => setPriorityAckOpen(false)}/>
+        )}
       </div>
      )
 }
@@ -13339,6 +13350,17 @@ function PickingModule({ user, allUsers, mobile, products }: any) {
 
   const displayOrders = tab === 'todo' ? todoOrders : doneTodayOrders
 
+  // Tổng số lượng mỗi SP trong TẤT CẢ đơn status='picking' (để tham khảo khi thiếu hàng)
+  const totalOrderedByCode = useMemo(() => {
+    const m = new Map<string, number>()
+    orders.filter((o: any) => o.status === 'picking').forEach((o: any) => {
+      (o.items || []).forEach((it: any) => {
+        m.set(it.code, (m.get(it.code) || 0) + (it.qty || 0))
+      })
+    })
+    return m
+  }, [orders])
+
   // Update item picked qty
   const updatePickedQty = async (orderCode: string, itemCode: string, newQty: number) => {
     const ord = orders.find((o: any) => o.order_code === orderCode)
@@ -13515,6 +13537,7 @@ function PickingModule({ user, allUsers, mobile, products }: any) {
             ord={selected}
             mobile={mobile}
             productMap={productMap}
+            totalOrderedByCode={totalOrderedByCode}
             onClose={() => setSelectedCode(null)}
             onUpdateQty={(code: string, qty: number) => updatePickedQty(selected.order_code, code, qty)}
             onReportShort={(code: string, qty: number, note: string) => reportShort(selected.order_code, code, qty, note)}
@@ -13528,7 +13551,7 @@ function PickingModule({ user, allUsers, mobile, products }: any) {
 }
 
 // ── Picking Detail Panel (cột phải) ──
-function PickingDetailPanel({ ord, mobile, productMap, onClose, onUpdateQty, onReportShort, onFinish, canPick }: any) {
+function PickingDetailPanel({ ord, mobile, productMap, totalOrderedByCode, onClose, onUpdateQty, onReportShort, onFinish, canPick }: any) {
   const [searchSP, setSearchSP] = useState('')
   const [showShortModal, setShowShortModal] = useState<any>(null)
   const [showImgModal, setShowImgModal] = useState<string|null>(null)
@@ -13545,12 +13568,12 @@ function PickingDetailPanel({ ord, mobile, productMap, onClose, onUpdateQty, onR
   const progress   = totalQty > 0 ? Math.round(pickedQty*100/totalQty) : 0
   const pickedItems = items.filter((it: any) => (it.picked_qty||0) + (it.short_qty||0) >= it.qty).length
 
-  // Helper: lấy stock realtime từ products table (nếu có)
   const getStock = (code: string, fallback: number) => {
     const p = productMap?.get(code)
     if (p && p.stock !== null && p.stock !== undefined) return p.stock
     return fallback || 0
   }
+  const getTotalOrdered = (code: string) => totalOrderedByCode?.get(code) || 0
 
   return (
     <div style={{ background:T.card, borderRadius:12, border:`1px solid ${T.border}`,
@@ -13584,7 +13607,6 @@ function PickingDetailPanel({ ord, mobile, productMap, onClose, onUpdateQty, onR
         </div>
       )}
 
-      {/* Status banner */}
       {ord.status !== 'picking' && (
         <div style={{ padding:'8px 12px', marginBottom:12, background:T.greenBg,
           borderRadius:6, fontSize:11, color:T.green, fontWeight:600 }}>
@@ -13606,34 +13628,38 @@ function PickingDetailPanel({ ord, mobile, productMap, onClose, onUpdateQty, onR
         </div>
       </div>
 
-      {/* Search SP */}
       <input value={searchSP} onChange={e => setSearchSP(e.target.value)}
         placeholder="🔍 Tìm SP trong đơn..."
         style={{ width:'100%', padding:'6px 10px', border:`1px solid ${T.border}`, borderRadius:6,
           fontSize:11, fontFamily:'inherit', color:T.dark, background:'#fff', outline:'none',
           boxSizing:'border-box' as any, marginBottom:10 }}/>
 
-      {/* Items — NEW LAYOUT: tồn kho + KH đặt to rõ bên cạnh tên */}
+      {/* Items — Số lượng ĐƠN NÀY = TO, tồn + tổng đặt = nhỏ bên */}
       <div style={{ display:'flex', flexDirection:'column', gap:8, marginBottom:12 }}>
         {filtered.map((it: any) => {
           const done = (it.picked_qty||0) + (it.short_qty||0) >= it.qty
           const hasShort = (it.short_qty||0) > 0
           const realStock = getStock(it.code, it.stock)
-          const stockLow = realStock < it.qty  // tồn ít hơn khách đặt → cảnh báo
+          const totalOrdered = getTotalOrdered(it.code)
+          const stockShort = realStock < totalOrdered  // tổng đặt lớn hơn tồn → cảnh báo
           return (
             <div key={it.code} style={{ padding:12, borderRadius:10,
               background: done ? (hasShort ? T.redBg : T.greenBg) : '#fff',
               border: `1px solid ${done ? (hasShort?T.red:T.green) : T.border}`,
-              borderLeft: `4px solid ${done ? (hasShort?T.red:T.green) : (stockLow?T.amber:T.border)}` }}>
+              borderLeft: `4px solid ${done ? (hasShort?T.red:T.green) : (stockShort?T.amber:T.border)}` }}>
 
-              {/* Row 1: tên SP + nút xem ảnh */}
+              {/* Row 1: Tên + Nút ảnh */}
               <div style={{ display:'flex', alignItems:'flex-start', gap:8, marginBottom:8 }}>
                 <div style={{ flex:1, minWidth:0 }}>
                   <div style={{ fontSize:13, fontWeight:700, color:T.dark, lineHeight:1.35 }}>
                     {it.name}
                   </div>
-                  <div style={{ fontSize:10, color:T.light, marginTop:2 }}>
-                    {it.code}{it.unit?` • ${it.unit}`:''}
+                  <div style={{ fontSize:10, color:T.light, marginTop:2, display:'flex', gap:8, flexWrap:'wrap' }}>
+                    <span>{it.code}</span>
+                    {it.unit && <span>{it.unit}</span>}
+                    <span>• 📦 Tồn: <b style={{ color: stockShort ? T.amber : T.dark }}>{realStock}</b></span>
+                    <span>• 🛒 Tổng KH đặt: <b style={{ color: stockShort ? T.amber : T.dark }}>{totalOrdered}</b></span>
+                    {stockShort && <span style={{ color:T.amber, fontWeight:700 }}>⚠️ KHẢ NĂNG THIẾU</span>}
                   </div>
                 </div>
                 <button onClick={() => setShowImgModal(it.code)}
@@ -13644,69 +13670,60 @@ function PickingDetailPanel({ ord, mobile, productMap, onClose, onUpdateQty, onR
                 </button>
               </div>
 
-              {/* Row 2: Tồn kho + KH đặt TO RÕ */}
-              <div style={{ display:'flex', gap:10, marginBottom:10 }}>
-                <div style={{ flex:1, padding:'8px 12px', borderRadius:8, background:T.bg,
-                  border:`1px solid ${stockLow?T.amber:T.border}`, textAlign:'center' }}>
-                  <div style={{ fontSize:9, color:T.light, fontWeight:600, letterSpacing:.5 }}>
-                    📦 TỒN KHO
+              {/* Row 2: SỐ LƯỢNG ĐƠN NÀY — TO HOÀNH TRÁNG */}
+              <div style={{ display:'flex', alignItems:'center', gap:12, padding:'12px 14px',
+                background: done ? 'transparent' : T.bg, borderRadius:8,
+                border: done ? 'none' : `1px solid ${T.border}`, marginBottom:10 }}>
+                <div style={{ flex:1, textAlign:'center' }}>
+                  <div style={{ fontSize:10, color:T.light, fontWeight:700, letterSpacing:1, marginBottom:2 }}>
+                    SỐ LƯỢNG CẦN NHẶT
                   </div>
-                  <div style={{ fontSize:22, fontWeight:800,
-                    color: stockLow ? T.amber : T.dark, lineHeight:1.2 }}>
-                    {realStock}
-                  </div>
-                </div>
-                <div style={{ flex:1, padding:'8px 12px', borderRadius:8, background:T.bg,
-                  border:`1px solid ${T.blue}`, textAlign:'center' }}>
-                  <div style={{ fontSize:9, color:T.light, fontWeight:600, letterSpacing:.5 }}>
-                    🛒 KH ĐẶT
-                  </div>
-                  <div style={{ fontSize:22, fontWeight:800, color:T.blue, lineHeight:1.2 }}>
+                  <div style={{ fontSize:42, fontWeight:900, color: done ? T.green : T.dark,
+                    lineHeight:1, letterSpacing:-1 }}>
                     {it.qty}
                   </div>
                 </div>
-                <div style={{ flex:1, padding:'8px 12px', borderRadius:8,
-                  background: done?T.greenBg:'#fff',
-                  border:`1px solid ${done?T.green:T.border}`, textAlign:'center' }}>
-                  <div style={{ fontSize:9, color:T.light, fontWeight:600, letterSpacing:.5 }}>
-                    ✓ ĐÃ NHẶT
+                {canPick && (
+                  <div style={{ display:'flex', flexDirection:'column', gap:6 }}>
+                    <div style={{ display:'flex', alignItems:'center', gap:6 }}>
+                      <button onClick={() => onUpdateQty(it.code, Math.max(0, (it.picked_qty||0)-1))}
+                        disabled={(it.picked_qty||0)<=0}
+                        style={{ width:42, height:42, borderRadius:8, border:`2px solid ${T.border}`,
+                          background:'#fff', cursor:'pointer', fontSize:22, fontWeight:700, fontFamily:'inherit',
+                          color:(it.picked_qty||0)<=0?T.light:T.dark, padding:0 }}>−</button>
+                      <div style={{ minWidth:60, textAlign:'center' }}>
+                        <div style={{ fontSize:9, color:T.light, fontWeight:600 }}>ĐÃ NHẶT</div>
+                        <div style={{ fontSize:24, fontWeight:800, color: done?T.green:T.dark, lineHeight:1 }}>
+                          {it.picked_qty||0}
+                        </div>
+                      </div>
+                      <button onClick={() => onUpdateQty(it.code, (it.picked_qty||0)+1)}
+                        disabled={(it.picked_qty||0)>=it.qty}
+                        style={{ width:42, height:42, borderRadius:8, border:`2px solid ${T.border}`,
+                          background:'#fff', cursor:'pointer', fontSize:22, fontWeight:700, fontFamily:'inherit',
+                          color:(it.picked_qty||0)>=it.qty?T.light:T.dark, padding:0 }}>+</button>
+                    </div>
                   </div>
-                  <div style={{ fontSize:22, fontWeight:800,
-                    color: done?T.green:T.dark, lineHeight:1.2 }}>
-                    {it.picked_qty||0}
-                  </div>
-                </div>
+                )}
               </div>
 
-              {/* Row 3: Controls (chỉ khi canPick) */}
+              {/* Row 3: nút thao tác nhanh */}
               {canPick && (
-                <div style={{ display:'flex', alignItems:'center', gap:8, flexWrap:'wrap' }}>
-                  <div style={{ display:'flex', alignItems:'center', gap:6 }}>
-                    <button onClick={() => onUpdateQty(it.code, Math.max(0, (it.picked_qty||0)-1))}
-                      disabled={(it.picked_qty||0)<=0}
-                      style={{ width:36, height:36, borderRadius:6, border:`1px solid ${T.border}`,
-                        background:'#fff', cursor:'pointer', fontSize:18, fontWeight:700, fontFamily:'inherit',
-                        color:(it.picked_qty||0)<=0?T.light:T.dark, padding:0 }}>−</button>
-                    <button onClick={() => onUpdateQty(it.code, (it.picked_qty||0)+1)}
-                      disabled={(it.picked_qty||0)>=it.qty}
-                      style={{ width:36, height:36, borderRadius:6, border:`1px solid ${T.border}`,
-                        background:'#fff', cursor:'pointer', fontSize:18, fontWeight:700, fontFamily:'inherit',
-                        color:(it.picked_qty||0)>=it.qty?T.light:T.dark, padding:0 }}>+</button>
-                  </div>
+                <div style={{ display:'flex', gap:8 }}>
                   <button onClick={() => onUpdateQty(it.code, it.qty)}
-                    style={{ flex:1, padding:'8px 12px', borderRadius:6,
+                    style={{ flex:1, padding:'10px', borderRadius:6,
                       border:`1.5px solid ${T.green}`,
                       background: done && !hasShort ? T.green : '#fff',
                       color: done && !hasShort ? '#fff' : T.green,
-                      cursor:'pointer', fontFamily:'inherit', fontSize:12, fontWeight:700 }}>
+                      cursor:'pointer', fontFamily:'inherit', fontSize:13, fontWeight:700 }}>
                     ✓ Đủ hàng
                   </button>
                   <button onClick={() => setShowShortModal(it)}
-                    style={{ flex:1, padding:'8px 12px', borderRadius:6,
+                    style={{ flex:1, padding:'10px', borderRadius:6,
                       border:`1.5px solid ${T.red}`,
                       background: hasShort ? T.red : '#fff',
                       color: hasShort ? '#fff' : T.red,
-                      cursor:'pointer', fontFamily:'inherit', fontSize:12, fontWeight:700 }}>
+                      cursor:'pointer', fontFamily:'inherit', fontSize:13, fontWeight:700 }}>
                     ⚠️ Báo thiếu
                   </button>
                 </div>
@@ -14124,24 +14141,29 @@ function PackingDetailPanel({ ord, mobile, user, allUsers, products, onClose, on
         {ord.packed_by && <div>📮 Người đóng: <b style={{ color:T.green }}>{getName(ord.packed_by)}</b></div>}
       </div>
 
-      {/* Items — với tồn kho, số lượng đặt, nút xem ảnh cho NV đóng match */}
+      {/* Items — Số lượng đơn này TO, tồn + thiếu nhỏ để tham khảo */}
       <div style={{ marginBottom:14 }}>
         <div style={{ fontSize:11, fontWeight:600, color:T.med, marginBottom:8 }}>
           📋 {totalItems} sản phẩm trong đơn
         </div>
-        <div style={{ maxHeight:320, overflowY:'auto', display:'flex', flexDirection:'column', gap:6 }}>
+        <div style={{ maxHeight:380, overflowY:'auto', display:'flex', flexDirection:'column', gap:6 }}>
           {(ord.items||[]).map((it: any, i: number) => {
             const realStock = getStock(it.code, it.stock)
+            const hasShort = (it.short_qty||0) > 0
             return (
               <div key={i} style={{ padding:10, borderRadius:8, background:'#fff',
-                border:`1px solid ${T.border}` }}>
+                border:`1px solid ${hasShort ? T.red : T.border}`,
+                borderLeft:`4px solid ${hasShort ? T.red : T.green}` }}>
                 <div style={{ display:'flex', alignItems:'flex-start', gap:8, marginBottom:6 }}>
                   <div style={{ flex:1, minWidth:0 }}>
                     <div style={{ fontSize:12, fontWeight:700, color:T.dark, lineHeight:1.35 }}>
                       {it.name}
                     </div>
-                    <div style={{ fontSize:9, color:T.light, marginTop:2 }}>
-                      {it.code}{it.unit?` • ${it.unit}`:''}
+                    <div style={{ fontSize:9, color:T.light, marginTop:2, display:'flex', gap:6, flexWrap:'wrap' }}>
+                      <span>{it.code}</span>
+                      {it.unit && <span>• {it.unit}</span>}
+                      <span>• 📦 Tồn: <b style={{ color:T.dark }}>{realStock}</b></span>
+                      {hasShort && <span style={{ color:T.red, fontWeight:700 }}>• ⚠️ Thiếu {it.short_qty}</span>}
                     </div>
                   </div>
                   <button onClick={() => setShowImgModal(it.code)}
@@ -14151,24 +14173,20 @@ function PackingDetailPanel({ ord, mobile, user, allUsers, products, onClose, on
                     🖼 Ảnh SP
                   </button>
                 </div>
-                <div style={{ display:'flex', gap:8 }}>
-                  <div style={{ flex:1, padding:'6px 10px', borderRadius:6, background:T.bg,
-                    border:`1px solid ${T.border}`, textAlign:'center' }}>
-                    <div style={{ fontSize:8, color:T.light, fontWeight:600, letterSpacing:.5 }}>📦 TỒN</div>
-                    <div style={{ fontSize:17, fontWeight:800, color:T.dark, lineHeight:1.2 }}>{realStock}</div>
+                {/* Số lượng TO */}
+                <div style={{ textAlign:'center', padding:'8px 0', background:T.bg, borderRadius:6,
+                  border:`1px solid ${T.border}` }}>
+                  <div style={{ fontSize:9, color:T.light, fontWeight:700, letterSpacing:.8 }}>
+                    SỐ LƯỢNG CẦN ĐÓNG
                   </div>
-                  <div style={{ flex:1, padding:'6px 10px', borderRadius:6, background:T.bg,
-                    border:`1px solid ${T.blue}`, textAlign:'center' }}>
-                    <div style={{ fontSize:8, color:T.light, fontWeight:600, letterSpacing:.5 }}>🛒 ĐẶT</div>
-                    <div style={{ fontSize:17, fontWeight:800, color:T.blue, lineHeight:1.2 }}>{it.qty}</div>
+                  <div style={{ fontSize:30, fontWeight:900, color:T.dark, lineHeight:1, marginTop:2 }}>
+                    {it.qty - (it.short_qty||0)}
+                    {hasShort && (
+                      <span style={{ fontSize:14, color:T.light, fontWeight:400, marginLeft:6 }}>
+                        (đặt {it.qty})
+                      </span>
+                    )}
                   </div>
-                  {(it.short_qty||0) > 0 && (
-                    <div style={{ flex:1, padding:'6px 10px', borderRadius:6, background:T.redBg,
-                      border:`1px solid ${T.red}`, textAlign:'center' }}>
-                      <div style={{ fontSize:8, color:T.red, fontWeight:600, letterSpacing:.5 }}>⚠️ THIẾU</div>
-                      <div style={{ fontSize:17, fontWeight:800, color:T.red, lineHeight:1.2 }}>{it.short_qty}</div>
-                    </div>
-                  )}
                 </div>
               </div>
             )
@@ -14607,6 +14625,396 @@ function AuditLogModule({ user, allUsers, mobile }: any) {
             </div>
           </div>
         </div>
+      )}
+    </div>
+  )
+}
+
+// ══════════════════════════════════════════════════════════════════════
+// ══ PRIORITY REQUEST — Báo ưu tiên từ Sale → Kho =====================
+// ══════════════════════════════════════════════════════════════════════
+
+// Banner nhấp nháy khi có phiếu ưu tiên chưa acknowledge (cho Kho)
+function PriorityAlertBanner({ user, onOpen }: any) {
+  const perm = getPerm(user)
+  const [pending, setPending] = useState<any[]>([])
+  const [seenAlertIds, setSeenAlertIds] = useState<Set<string>>(new Set())
+
+  const fetchPending = async () => {
+    const { data } = await db.from('priority_requests').select('*')
+      .eq('status', 'pending').order('submitted_at', { ascending: true })
+    setPending(data || [])
+  }
+
+  useEffect(() => {
+    if (!perm.handlePriority) return
+    fetchPending()
+    const interval = setInterval(fetchPending, 15000) // poll 15s
+    return () => clearInterval(interval)
+  }, [perm.handlePriority])
+
+  // Play sound khi có request mới
+  useEffect(() => {
+    if (!perm.handlePriority || pending.length === 0) return
+    const newOnes = pending.filter(p => !seenAlertIds.has(p.id))
+    if (newOnes.length > 0) {
+      // Simple beep via Web Audio API
+      try {
+        const AC = (window as any).AudioContext || (window as any).webkitAudioContext
+        if (AC) {
+          const ctx = new AC()
+          const o = ctx.createOscillator(), g = ctx.createGain()
+          o.connect(g); g.connect(ctx.destination)
+          o.frequency.value = 800; o.type = 'sine'
+          g.gain.setValueAtTime(0.2, ctx.currentTime)
+          g.gain.exponentialRampToValueAtTime(0.01, ctx.currentTime + 0.5)
+          o.start(); o.stop(ctx.currentTime + 0.5)
+        }
+      } catch {}
+      setSeenAlertIds(new Set(pending.map(p => p.id)))
+    }
+  }, [pending, perm.handlePriority])
+
+  if (!perm.handlePriority || pending.length === 0) return null
+
+  return (
+    <>
+      <style>{`
+        @keyframes pulseRed {
+          0%, 100% { box-shadow: 0 0 0 0 rgba(185,28,28,0.6); }
+          50% { box-shadow: 0 0 0 12px rgba(185,28,28,0); }
+        }
+      `}</style>
+      <div onClick={onOpen}
+        style={{ position:'sticky', top:0, zIndex:500, cursor:'pointer',
+          background:`linear-gradient(90deg, #dc2626 0%, #b91c1c 50%, #dc2626 100%)`,
+          color:'#fff', padding:'12px 20px', display:'flex', alignItems:'center', gap:12,
+          animation:'pulseRed 1.5s infinite', borderBottom:'2px solid #7f1d1d' }}>
+        <div style={{ fontSize:24, animation:'pulseRed 1s infinite' }}>🚨</div>
+        <div style={{ flex:1, minWidth:0 }}>
+          <div style={{ fontSize:14, fontWeight:800, letterSpacing:.5 }}>
+            CÓ {pending.length} PHIẾU ƯU TIÊN MỚI — CẦN XỬ LÝ NGAY
+          </div>
+          <div style={{ fontSize:11, opacity:0.9, whiteSpace:'nowrap', overflow:'hidden',
+            textOverflow:'ellipsis', marginTop:2 }}>
+            {pending.slice(0, 2).map(p => `${p.from_user_name}: ${p.content?.slice(0,40)}`).join(' • ')}
+            {pending.length > 2 && ` • và ${pending.length - 2} phiếu nữa`}
+          </div>
+        </div>
+        <div style={{ padding:'6px 14px', background:'rgba(255,255,255,0.2)', borderRadius:20,
+          fontSize:12, fontWeight:700, border:'1px solid rgba(255,255,255,0.4)' }}>
+          Mở ngay →
+        </div>
+      </div>
+    </>
+  )
+}
+
+// Modal hiển thị danh sách phiếu ưu tiên pending (cho Kho) — bắt buộc ack từng phiếu
+function PriorityAckModal({ user, onClose }: any) {
+  const [pending, setPending] = useState<any[]>([])
+  const [loading, setLoading] = useState(true)
+  const [ackingId, setAckingId] = useState<string|null>(null)
+
+  const fetchPending = async () => {
+    setLoading(true)
+    const { data } = await db.from('priority_requests').select('*')
+      .eq('status', 'pending').order('submitted_at', { ascending: true })
+    setPending(data || [])
+    setLoading(false)
+  }
+
+  useEffect(() => { fetchPending() }, [])
+
+  const acknowledge = async (req: any) => {
+    setAckingId(req.id)
+    const upd = {
+      status: 'acknowledged',
+      acknowledged_by: user.id,
+      acknowledged_by_name: user.name || user.ini,
+      acknowledged_at: new Date().toISOString(),
+    }
+    const { error } = await db.from('priority_requests').update(upd).eq('id', req.id)
+    setAckingId(null)
+    if (error) { alert('❌ Lỗi: ' + error.message); return }
+    setPending(prev => prev.filter(p => p.id !== req.id))
+  }
+
+  return (
+    <div style={{ position:'fixed', inset:0, background:'rgba(0,0,0,0.7)', zIndex:9999,
+      display:'flex', alignItems:'center', justifyContent:'center', padding:20 }}>
+      <div style={{ background:'#fff', borderRadius:12, maxWidth:560, width:'100%',
+        maxHeight:'90vh', overflow:'auto', border:`2px solid ${T.red}` }}>
+        <div style={{ padding:'14px 20px', background:T.red, color:'#fff',
+          display:'flex', justifyContent:'space-between', alignItems:'center' }}>
+          <div style={{ fontSize:15, fontWeight:800 }}>🚨 Phiếu ưu tiên chờ xử lý ({pending.length})</div>
+          <button onClick={onClose}
+            style={{ background:'transparent', border:'none', color:'#fff', cursor:'pointer',
+              fontSize:22, padding:0, lineHeight:1 }}>
+            ×
+          </button>
+        </div>
+
+        <div style={{ padding:20 }}>
+          {loading && <div style={{ textAlign:'center', color:T.light }}>⏳ Đang tải...</div>}
+          {!loading && pending.length === 0 && (
+            <div style={{ textAlign:'center', padding:30, color:T.green, fontWeight:600, fontSize:14 }}>
+              ✅ Không còn phiếu ưu tiên nào chờ xử lý!
+            </div>
+          )}
+          {!loading && pending.map((req: any) => {
+            const minutesAgo = Math.floor((Date.now() - new Date(req.submitted_at).getTime()) / 60000)
+            return (
+              <div key={req.id} style={{ padding:14, marginBottom:10, borderRadius:8,
+                background: minutesAgo > 15 ? '#fef2f2' : T.bg,
+                border:`2px solid ${minutesAgo > 15 ? T.red : T.amber}` }}>
+                <div style={{ display:'flex', justifyContent:'space-between', marginBottom:6 }}>
+                  <div style={{ fontSize:12, fontWeight:700, color:T.dark }}>
+                    👤 {req.from_user_name}
+                  </div>
+                  <div style={{ fontSize:11,
+                    color: minutesAgo > 15 ? T.red : T.amber, fontWeight:600 }}>
+                    ⏱ {minutesAgo} phút trước
+                  </div>
+                </div>
+                <div style={{ fontSize:13, color:T.dark, lineHeight:1.5, marginBottom:10,
+                  padding:'8px 10px', background:'#fff', borderRadius:6,
+                  border:`1px solid ${T.border}`, whiteSpace:'pre-wrap' }}>
+                  {req.content}
+                </div>
+                <div style={{ fontSize:10, color:T.light, marginBottom:10 }}>
+                  🕒 Gửi lúc: {new Date(req.submitted_at).toLocaleString('vi-VN')}
+                </div>
+                <button onClick={() => acknowledge(req)} disabled={ackingId === req.id}
+                  style={{ width:'100%', padding:'10px', borderRadius:6, border:'none',
+                    background: ackingId === req.id ? T.border :
+                      `linear-gradient(135deg, ${T.green} 0%, #107035 100%)`,
+                    color:'#fff', cursor: ackingId === req.id ? 'wait' : 'pointer',
+                    fontFamily:'inherit', fontSize:13, fontWeight:700 }}>
+                  {ackingId === req.id ? '⏳ Đang xác nhận...' : '✓ Xác nhận đã nhận — tôi sẽ xử lý'}
+                </button>
+              </div>
+            )
+          })}
+        </div>
+      </div>
+    </div>
+  )
+}
+
+// Modal form submit phiếu ưu tiên (cho Sale)
+function PrioritySubmitModal({ user, onClose, onSubmitted }: any) {
+  const [content, setContent] = useState('')
+  const [submitting, setSubmitting] = useState(false)
+
+  const submit = async () => {
+    if (!content.trim()) { alert('Vui lòng nhập nội dung'); return }
+    setSubmitting(true)
+    const req = {
+      id: `pri_${Date.now()}_${Math.random().toString(36).slice(2,6)}`,
+      from_user_id: user.id,
+      from_user_name: user.name || user.ini,
+      content: content.trim(),
+      submitted_at: new Date().toISOString(),
+      status: 'pending',
+      created_at: new Date().toISOString(),
+    }
+    const { error } = await db.from('priority_requests').insert(req)
+    setSubmitting(false)
+    if (error) { alert('❌ Lỗi: ' + error.message); return }
+    alert('✅ Đã gửi phiếu ưu tiên! Kho sẽ nhận thông báo ngay.')
+    setContent('')
+    onSubmitted && onSubmitted(req)
+    onClose()
+  }
+
+  return (
+    <div style={{ position:'fixed', inset:0, background:'rgba(0,0,0,0.55)', zIndex:9999,
+      display:'flex', alignItems:'center', justifyContent:'center', padding:20 }}>
+      <div style={{ background:'#fff', borderRadius:12, maxWidth:480, width:'100%',
+        border:`2px solid ${T.red}`, overflow:'hidden' }}>
+        <div style={{ padding:'14px 20px', background:T.red, color:'#fff' }}>
+          <div style={{ fontSize:15, fontWeight:800 }}>🚨 Gửi phiếu ưu tiên cho Kho</div>
+          <div style={{ fontSize:11, opacity:0.9, marginTop:3 }}>
+            Phiếu này sẽ hiện banner khẩn cấp trên màn hình Kho — chỉ dùng khi cần hỗ trợ gấp
+          </div>
+        </div>
+        <div style={{ padding:20 }}>
+          <label style={{ fontSize:12, color:T.med, fontWeight:600, display:'block', marginBottom:6 }}>
+            Nội dung phiếu ưu tiên *
+          </label>
+          <textarea value={content} onChange={e => setContent(e.target.value)} autoFocus rows={5}
+            placeholder="VD: Sửa đơn DH007732, thêm 1 SP X cho KH, khách chờ ngoài cửa hàng..."
+            style={{ width:'100%', padding:'10px 12px', border:`1px solid ${T.border}`, borderRadius:6,
+              fontSize:13, fontFamily:'inherit', color:T.dark, background:'#fff', outline:'none',
+              boxSizing:'border-box' as any, resize:'vertical', marginBottom:14 }}/>
+
+          <div style={{ padding:'8px 12px', background:T.amberBg, border:`1px solid ${T.amber}`,
+            borderRadius:6, fontSize:11, color:T.amber, fontWeight:600, marginBottom:14 }}>
+            ⚠️ Cả thao tác gửi và xác nhận đều được lưu timestamp. Hãy dùng đúng mục đích.
+          </div>
+
+          <div style={{ display:'flex', gap:10 }}>
+            <button onClick={onClose}
+              style={{ flex:1, padding:'9px', borderRadius:6, border:`1px solid ${T.border}`,
+                background:'#fff', color:T.med, cursor:'pointer', fontFamily:'inherit', fontSize:13 }}>
+              Hủy
+            </button>
+            <button onClick={submit} disabled={!content.trim() || submitting}
+              style={{ flex:2, padding:'9px', borderRadius:6, border:'none',
+                background: content.trim() && !submitting ? T.red : T.border,
+                color: content.trim() ? '#fff' : T.light,
+                cursor: content.trim() && !submitting ? 'pointer' : 'not-allowed',
+                fontFamily:'inherit', fontSize:13, fontWeight:700 }}>
+              {submitting ? '⏳ Đang gửi...' : '🚨 Gửi phiếu ưu tiên'}
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+// Trang quản lý phiếu ưu tiên (dành cho cả Sale và Kho để xem lịch sử)
+function PriorityRequestModule({ user, allUsers, mobile }: any) {
+  const perm = getPerm(user)
+  const canSubmit = perm.submitPriority
+  const canHandle = perm.handlePriority
+  const isAdmin = perm.viewAllDashboard
+  const p = mobile ? '16px' : '24px'
+
+  const [requests, setRequests] = useState<any[]>([])
+  const [loading, setLoading] = useState(true)
+  const [tab, setTab] = useState<'pending'|'acknowledged'|'mine'>('pending')
+  const [showSubmit, setShowSubmit] = useState(false)
+
+  const fetchData = async () => {
+    setLoading(true)
+    const { data } = await db.from('priority_requests').select('*')
+      .order('created_at', { ascending: false })
+      .limit(200)
+    setRequests(data || [])
+    setLoading(false)
+  }
+
+  useEffect(() => {
+    fetchData()
+    const interval = setInterval(fetchData, 20000)
+    return () => clearInterval(interval)
+  }, [])
+
+  const pendingList = requests.filter(r => r.status === 'pending')
+  const ackList     = requests.filter(r => r.status === 'acknowledged')
+  const myList      = requests.filter(r => r.from_user_id === user.id)
+  const displayList =
+    tab === 'pending'      ? pendingList :
+    tab === 'acknowledged' ? ackList : myList
+
+  const acknowledge = async (req: any) => {
+    const upd = {
+      status: 'acknowledged',
+      acknowledged_by: user.id,
+      acknowledged_by_name: user.name || user.ini,
+      acknowledged_at: new Date().toISOString(),
+    }
+    const { error } = await db.from('priority_requests').update(upd).eq('id', req.id)
+    if (error) { alert('❌ Lỗi: ' + error.message); return }
+    fetchData()
+  }
+
+  if (loading) return <div style={{ padding:p, textAlign:'center', color:T.light, paddingTop:40 }}>⏳ Đang tải...</div>
+
+  return (
+    <div style={{ padding:`0 ${p} ${mobile?'80px':p}` }}>
+      <Topbar mobile={mobile} title="🚨 Phiếu ưu tiên"
+        subtitle={`${pendingList.length} đang chờ xử lý • ${ackList.length} đã xác nhận`}
+        action={
+          canSubmit ? (
+            <button onClick={() => setShowSubmit(true)}
+              style={{ padding:'7px 14px', borderRadius:20, border:'none',
+                background:T.red, color:'#fff', cursor:'pointer', fontFamily:'inherit',
+                fontSize:12, fontWeight:700 }}>
+              🚨 Gửi phiếu ưu tiên
+            </button>
+          ) : null
+        }/>
+
+      {/* Tabs */}
+      <div style={{ display:'flex', gap:6, marginBottom:14, flexWrap:'wrap' }}>
+        {[
+          { id:'pending',       label:`🚨 Chờ xử lý${pendingList.length?` (${pendingList.length})`:''}` },
+          { id:'acknowledged',  label:`✓ Đã xác nhận${ackList.length?` (${ackList.length})`:''}` },
+          { id:'mine',          label:`📤 Phiếu của tôi${myList.length?` (${myList.length})`:''}` },
+        ].map((t: any) => (
+          <button key={t.id} onClick={() => setTab(t.id as any)}
+            style={{ padding:'6px 14px', borderRadius:20, cursor:'pointer', fontFamily:'inherit', fontSize:12,
+              border:`1.5px solid ${tab===t.id?T.red:T.border}`,
+              background:tab===t.id?T.redBg:'transparent',
+              color:tab===t.id?T.red:T.med, fontWeight:tab===t.id?700:400 }}>
+            {t.label}
+          </button>
+        ))}
+      </div>
+
+      {/* List */}
+      {displayList.length === 0 ? (
+        <div style={{ padding:'40px 20px', textAlign:'center', color:T.light, fontSize:13 }}>
+          {tab==='pending' ? '✅ Không có phiếu nào chờ xử lý!' :
+           tab==='acknowledged' ? 'Chưa có phiếu nào đã xác nhận.' :
+           'Bạn chưa gửi phiếu nào.'}
+        </div>
+      ) : (
+        <div style={{ display:'flex', flexDirection:'column', gap:8 }}>
+          {displayList.map((req: any) => {
+            const isPending = req.status === 'pending'
+            const minutesAgo = Math.floor((Date.now() - new Date(req.submitted_at).getTime()) / 60000)
+            return (
+              <Card key={req.id} style={{ padding:14,
+                borderLeft: `4px solid ${isPending ? T.red : T.green}` }}>
+                <div style={{ display:'flex', justifyContent:'space-between', alignItems:'flex-start', gap:10, marginBottom:8 }}>
+                  <div style={{ flex:1, minWidth:0 }}>
+                    <div style={{ fontSize:13, fontWeight:700, color:T.dark }}>
+                      {isPending ? '🚨' : '✓'} {req.from_user_name}
+                    </div>
+                    <div style={{ fontSize:10, color:T.light, marginTop:2 }}>
+                      📤 {new Date(req.submitted_at).toLocaleString('vi-VN')}
+                      {isPending && <> • <span style={{ color:minutesAgo>15?T.red:T.amber, fontWeight:700 }}>{minutesAgo}p trước</span></>}
+                    </div>
+                  </div>
+                  <div style={{ padding:'3px 10px', borderRadius:12,
+                    background: isPending ? T.redBg : T.greenBg,
+                    color: isPending ? T.red : T.green, fontSize:10, fontWeight:700 }}>
+                    {isPending ? 'CHỜ XỬ LÝ' : 'ĐÃ XÁC NHẬN'}
+                  </div>
+                </div>
+                <div style={{ fontSize:12, color:T.dark, lineHeight:1.5, padding:'8px 10px',
+                  background:T.bg, borderRadius:6, border:`1px solid ${T.border}`,
+                  whiteSpace:'pre-wrap', marginBottom:8 }}>
+                  {req.content}
+                </div>
+                {req.acknowledged_at && (
+                  <div style={{ fontSize:10, color:T.green, fontWeight:600 }}>
+                    ✓ {req.acknowledged_by_name} xác nhận lúc {new Date(req.acknowledged_at).toLocaleString('vi-VN')}
+                    {' '}(sau {Math.floor((new Date(req.acknowledged_at).getTime() - new Date(req.submitted_at).getTime())/60000)} phút)
+                  </div>
+                )}
+                {isPending && canHandle && (
+                  <button onClick={() => acknowledge(req)}
+                    style={{ marginTop:8, width:'100%', padding:'8px', borderRadius:6, border:'none',
+                      background:T.green, color:'#fff', cursor:'pointer',
+                      fontFamily:'inherit', fontSize:12, fontWeight:700 }}>
+                    ✓ Xác nhận đã nhận phiếu
+                  </button>
+                )}
+              </Card>
+            )
+          })}
+        </div>
+      )}
+
+      {showSubmit && (
+        <PrioritySubmitModal user={user} onClose={() => setShowSubmit(false)}
+          onSubmitted={() => fetchData()}/>
       )}
     </div>
   )
