@@ -6327,11 +6327,9 @@ export default function App() {
       ;(async () => {
         try {
           const threshold = stData?.overdue_days_threshold ?? 7
-          const cutoff = new Date(Date.now() - threshold * 86400000)
-          const from = new Date(Date.now() - 90 * 86400000).toISOString().split('T')[0]
-          const to   = cutoff.toISOString().split('T')[0]
+          // Edge Function tự filter status + tuổi đơn, chỉ cần truyền threshold
           const res = await fetch(
-            `https://uzloxzrqtzuucxlokqfm.supabase.co/functions/v1/kiotviet-orders?fromDate=${from}&toDate=${to}&status=1`,
+            `https://uzloxzrqtzuucxlokqfm.supabase.co/functions/v1/kiotviet-orders?threshold=${threshold}`,
             { headers: { 'Authorization': `Bearer ${SUPABASE_ANON}` } }
           )
           const json = await res.json()
