@@ -5668,6 +5668,7 @@ function Settings({ user, setUser, settings, setSettings, onManualReset, mobile 
   const [pwMsg, setPwMsg]     = useState('')
   const [monthDay, setMonthDay] = useState(String(settings?.monthly_reset_day||1))
   const [weekInt, setWeekInt]   = useState(String(settings?.weekly_reset_interval||7))
+  const [overdayThreshold, setOverdayThreshold] = useState(String(settings?.overdue_days_threshold||7))
   const [saved, setSaved]       = useState(false)
   const [resetting, setResetting] = useState(false)
   const p = mobile ? '16px' : '24px'
@@ -5684,7 +5685,7 @@ function Settings({ user, setUser, settings, setSettings, onManualReset, mobile 
   }
 
   const saveSettings = async () => {
-    const updated = {...settings, id:'main', monthly_reset_day:Number(monthDay), weekly_reset_interval:Number(weekInt)}
+    const updated = {...settings, id:'main', monthly_reset_day:Number(monthDay), weekly_reset_interval:Number(weekInt), overdue_days_threshold:Number(overdayThreshold)||7}
     await db.from('settings').upsert(updated)
     setSettings(updated); setSaved(true); setTimeout(() => setSaved(false), 2000)
   }
