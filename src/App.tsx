@@ -12,7 +12,7 @@ const db = createClient(SUPABASE_URL, SUPABASE_KEY)
 // APP_VERSION — dùng để invalidate cache localStorage mỗi khi deploy version mới
 // (ngăn bug quyền user bị "reset" do cache position cũ sau deploy)
 // ⚠️ MỖI LẦN DEPLOY FEATURE MỚI CÓ PERMISSION MỚI, BUMP SỐ NÀY:
-const APP_VERSION = '2026.04.17.v42'
+const APP_VERSION = '2026.04.17.v44'
 
 // ════════════════════════════════════════════════════════════════
 // AUDIT LOG — ghi nhận các hành động phá hoại data để trace lại
@@ -1672,10 +1672,7 @@ function Checklist({ user, checklist, setChecklist, addLog, allUsers, mobile }: 
 
       {/* ── Groups theo người ── */}
       {groups.length === 0 ? (
-        <Card style={{ textAlign:'center', padding:'48px', color:T.light }}>
-          <div style={{ fontSize:36, marginBottom:10 }}>✅</div>
-          <div style={{ fontSize:14, fontWeight:500 }}>Không có checklist nào</div>
-        </Card>
+        <EmptyState icon={Ico.checkBox} title="Không có checklist nào"/>
       ) : (
         <div style={{ display:'flex', flexDirection:'column', gap:14 }}>
           {groups.map((g: any) => {
@@ -2182,6 +2179,76 @@ function Templates({ templates, setTemplates, allUsers, mobile }: any) {
               {group.name} — {group.items.length} template
             </span>
           </div>
+          {mobile ? (
+            // Mobile: card view
+            <div style={{ display:'flex', flexDirection:'column' }}>
+              {group.items.map((tp: any, i: number) => {
+                const assignee = allUsers.find((u: any) => u.id === tp.assignee_id)
+                return (
+                  <div key={tp.id} style={{ padding:`${SP[3]}px ${SP[4]}px`,
+                    borderBottom: i<group.items.length-1 ? `1px solid ${T.border}` : 'none',
+                    opacity: tp.active ? 1 : 0.5,
+                    background: i%2===0 ? '#fff' : T.bg }}>
+                    {/* Header: title + actions */}
+                    <div style={{ display:'flex', justifyContent:'space-between',
+                      alignItems:'flex-start', gap:SP[2], marginBottom:SP[2] }}>
+                      <div style={{ flex:1, minWidth:0 }}>
+                        <div style={{ fontSize:FS.base, fontWeight:600, color:T.dark, lineHeight:1.3 }}>
+                          {tp.title}
+                        </div>
+                        {tp.description && (
+                          <div style={{ fontSize:FS.xs, color:T.light, marginTop:2 }}>
+                            {tp.description}
+                          </div>
+                        )}
+                      </div>
+                      <div style={{ display:'flex', gap:SP[1], flexShrink:0 }}>
+                        <button onClick={() => openEdit(tp)}
+                          style={{ padding:'4px 10px', borderRadius:RD.sm, border:`1px solid ${T.border}`,
+                            background:'transparent', cursor:'pointer', fontSize:FS.xs,
+                            fontFamily:'inherit', color:T.med }}>Sửa</button>
+                        <button onClick={() => remove(tp.id)}
+                          style={{ padding:'4px 10px', borderRadius:RD.sm, border:`1px solid ${T.redBg}`,
+                            background:T.redBg, cursor:'pointer', fontSize:FS.xs,
+                            fontFamily:'inherit', color:T.red }}>Xoá</button>
+                      </div>
+                    </div>
+                    {/* Meta row */}
+                    <div style={{ display:'flex', flexWrap:'wrap', gap:SP[2], alignItems:'center',
+                      marginBottom:SP[2] }}>
+                      {assignee && <Av u={assignee} size={22} showTitle/>}
+                    </div>
+                    {/* Chips row */}
+                    <div style={{ display:'flex', flexWrap:'wrap', gap:SP[1], alignItems:'center' }}>
+                      <span style={{ fontSize:FS.xs, fontWeight:600, padding:'3px 8px', borderRadius:RD.full,
+                        color:FREQ_COLOR[tp.freq]?.color, background:FREQ_COLOR[tp.freq]?.bg,
+                        whiteSpace:'nowrap' }}>{tp.freq}</span>
+                      <Badge cfg={PRI_CFG[tp.priority]} small/>
+                      <span style={{ fontSize:FS.sm, color:T.dark, fontWeight:600, whiteSpace:'nowrap' }}>
+                        🕐 {timeRange(tp)} · {tp.mins}p
+                      </span>
+                      <span style={{ fontSize:FS.xs, fontWeight:600, padding:'3px 8px', borderRadius:RD.full,
+                        color:tp.active?T.green:T.gray, background:tp.active?T.greenBg:T.grayBg,
+                        whiteSpace:'nowrap' }}>
+                        {tp.active?'Đang dùng':'Tắt'}
+                      </span>
+                      {tp.freq==='Hàng tháng' && tp.day_of_month && (
+                        <span style={{ fontSize:FS.xs, color:T.light }}>
+                          {Number(tp.day_of_month)===99 ? '📅 Cuối tháng' : `📅 Ngày ${tp.day_of_month}`}
+                        </span>
+                      )}
+                      {tp.freq==='Ngày cụ thể' && tp.specific_date && (
+                        <span style={{ fontSize:FS.xs, color:T.purple, fontWeight:600 }}>
+                          📅 {new Date(tp.specific_date).toLocaleDateString('vi-VN',{day:'2-digit',month:'2-digit',year:'numeric'})}
+                        </span>
+                      )}
+                    </div>
+                  </div>
+                )
+              })}
+            </div>
+          ) : (
+          // Desktop: table view
           <div style={{ overflowX:'auto' }}>
             <table style={{ width:'100%', borderCollapse:'collapse', tableLayout:'fixed', minWidth:920 }}>
               <colgroup>
@@ -2279,6 +2346,7 @@ function Templates({ templates, setTemplates, allUsers, mobile }: any) {
               </tbody>
             </table>
           </div>
+          )}
         </Card>
       ))}
 
@@ -3462,10 +3530,7 @@ function Announcements({ user, allUsers, mobile }: any) {
         action={canCreate && <GoldBtn small onClick={() => setShow(true)}>+ Tạo thông báo</GoldBtn>}/>
 
       {myItems.length===0 ? (
-        <Card style={{ textAlign:'center', padding:'48px', color:T.light }}>
-          <div style={{ fontSize:36, marginBottom:10 }}>📣</div>
-          <div style={{ fontSize:14, fontWeight:500 }}>Chưa có thông báo nào</div>
-        </Card>
+        <EmptyState icon={Ico.megaphone} title="Chưa có thông báo nào"/>
       ) : (
         <div style={{ display:'flex', flexDirection:'column', gap:10 }}>
           {myItems.map(a => {
@@ -5210,8 +5275,8 @@ function ReturnItems({ user, allUsers, products, mobile }: any) {
         </div>
       ) : (
         /* ── LIST — desktop table with fixed headers ── */
-        <div style={{ background:T.card, borderRadius:12, border:`1px solid ${T.border}`,
-          boxShadow:'0 1px 4px rgba(0,0,0,0.06)', overflow:'hidden' }}>
+        <div style={{ background:T.card, borderRadius:RD.lg, border:`1px solid ${T.border}`,
+          boxShadow:'0 1px 3px rgba(0,0,0,0.04)', overflow:'hidden' }}>
           {/* ── Sticky table header ── */}
           {!mobile && (
             <div style={{ display:'grid',
@@ -5233,10 +5298,9 @@ function ReturnItems({ user, allUsers, products, mobile }: any) {
           )}
 
           {slips.length===0 ? (
-            <div style={{ padding:'40px', textAlign:'center', color:T.light }}>
-              <div style={{ fontSize:28, marginBottom:8 }}>🔄</div>
-              <div style={{ fontSize:13 }}>Không có phiếu hoàn nào trong tháng này</div>
-            </div>
+            <EmptyState icon={Ico.rotate}
+              title="Không có phiếu hoàn nào"
+              description="Không có phiếu hoàn nào trong tháng đã chọn."/>
           ) : slips.map((slip: any, si: number) => {
             const saleUser     = allUsers.find((u: any) => u.id===slip.sale_id)
             const violatorUser = allUsers.find((u: any) => u.id===slip.violator_id)
@@ -6868,10 +6932,9 @@ function NotificationPage({ user, mobile, groups, totalUnread, totalItems, reads
       )}
 
       {groups.length === 0 ? (
-        <div style={{ padding:'60px 20px', textAlign:'center', color:T.light }}>
-          <div style={{ fontSize:48, marginBottom:12 }}>🎉</div>
-          <div style={{ fontSize:14, color:T.med }}>Tuyệt vời! Không có thông báo nào đang chờ.</div>
-        </div>
+        <EmptyState icon={Ico.check}
+          title="Tuyệt vời!"
+          description="Không có thông báo nào đang chờ."/>
       ) : (
         <div style={{ display:'flex', flexDirection:'column', gap:12 }}>
           {groups.map((g: any) => {
@@ -9291,7 +9354,7 @@ function InventoryModule({ user, allUsers, products, invSessions, setInvSessions
             })()}
 
             {!searchSP.trim() && (invSessions.length===0
-              ? <div style={{padding:'32px',textAlign:'center',color:T.light}}>Chưa có phiên kiểm kê nào</div>
+              ? <EmptyState icon={Ico.clipboard} title="Chưa có phiên kiểm kê nào" description="Tạo phiên kiểm kê mới để bắt đầu."/>
               : invSessions.map((s: any, i: number) => {
                   const sChecks = checks.filter((c: any) => c.session_id===s.id)
                   const sLech   = sChecks.filter((c: any) => c.diff!=null && c.diff!==0).length
@@ -9414,9 +9477,9 @@ function InventoryModule({ user, allUsers, products, invSessions, setInvSessions
 
               {/* Check table */}
               {myChecks.length === 0 ? (
-                <Card style={{textAlign:'center',padding:'32px',color:T.light}}>
-                  Chưa có mã nào được phân cho bạn trong phiên này
-                </Card>
+                <EmptyState icon={Ico.clipboard}
+                  title="Chưa có mã nào được phân cho bạn"
+                  description="Không có sản phẩm nào cần kiểm tra trong phiên hiện tại."/>
               ) : (
                 <div style={{background:T.card,borderRadius:12,border:`1px solid ${T.border}`,overflow:'hidden',boxShadow:'0 1px 4px rgba(0,0,0,0.06)'}}>
                   {!mobile && (
@@ -9561,10 +9624,7 @@ function InventoryModule({ user, allUsers, products, invSessions, setInvSessions
               const dates = Object.keys(byDate).sort((a,b)=>b.localeCompare(a))
 
               if (filtered.length===0) return (
-                <div style={{padding:'32px',textAlign:'center',color:T.light}}>
-                  <div style={{fontSize:28,marginBottom:8}}>✅</div>
-                  <div style={{fontSize:13}}>Không có mã nào lệch trong tháng này</div>
-                </div>
+                <EmptyState icon={Ico.check} title="Không có mã nào lệch" description="Không có mã nào lệch trong tháng này."/>
               )
 
               const DIFF_CFG: any = {
@@ -9746,9 +9806,7 @@ function InventoryModule({ user, allUsers, products, invSessions, setInvSessions
                     </div>
                   )}
                   {noReason.length===0
-                    ? <div style={{padding:'32px',textAlign:'center',color:T.green,fontSize:13}}>
-                        ✅ Không có mã nào ở trạng thái "Không tìm được nguyên nhân"
-                      </div>
+                    ? <EmptyState icon={Ico.check} title="Không có mã nào cần xử lý" description='Không có mã nào ở trạng thái "Không tìm được nguyên nhân".'/>
                     : noReason.map((c: any, i: number) => {
                         const sess     = invSessions.find((s: any) => s.id===c.session_id)
                         const price    = c.price_override ?? c.base_price ?? 0
@@ -16818,9 +16876,10 @@ function AuditLogModule({ user, allUsers, mobile }: any) {
 
   if (!perm.viewAuditLog) {
     return (
-      <div style={{ padding:p, textAlign:'center', color:T.light, marginTop:40 }}>
-        <div style={{ fontSize:48, marginBottom:10 }}>🔒</div>
-        <div style={{ fontSize:14 }}>Bạn không có quyền xem nhật ký hoạt động.</div>
+      <div style={{ padding:p }}>
+        <EmptyState icon={Ico.scroll}
+          title="Không có quyền truy cập"
+          description="Bạn không có quyền xem nhật ký hoạt động."/>
       </div>
     )
   }
@@ -17934,9 +17993,10 @@ function WarehouseStatsModule({ user, allUsers, mobile }: any) {
 
   if (!perm.viewWarehouseStats) {
     return (
-      <div style={{ padding:p, textAlign:'center', color:T.light, marginTop:40 }}>
-        <div style={{ fontSize:48, marginBottom:10 }}>🔒</div>
-        <div style={{ fontSize:14 }}>Bạn không có quyền xem thống kê hiệu suất kho.</div>
+      <div style={{ padding:p }}>
+        <EmptyState icon={Ico.barChart}
+          title="Không có quyền truy cập"
+          description="Bạn không có quyền xem thống kê hiệu suất kho."/>
       </div>
     )
   }
@@ -18186,9 +18246,9 @@ function WarehouseStatsModule({ user, allUsers, mobile }: any) {
       {/* ═══ TAB SALE: bảng theo sold_by_name ═══ */}
       {viewTab === 'sale' && (
         saleStats.length === 0 ? (
-          <div style={{ padding:'40px 20px', textAlign:'center', color:T.light, fontSize:13 }}>
-            Không có đơn nào được xử lý trong khoảng thời gian này.
-          </div>
+          <EmptyState icon={Ico.briefcase}
+            title="Không có đơn nào được xử lý"
+            description="Không có dữ liệu trong khoảng thời gian đã chọn."/>
         ) : (
           <Card style={{ padding:0, overflow:'hidden' }}>
             <div style={{ padding:'12px 16px', fontSize:13, fontWeight:700,
@@ -18247,9 +18307,9 @@ function WarehouseStatsModule({ user, allUsers, mobile }: any) {
       {/* ═══ TAB PACK / PICK: bar chart + bảng NV ═══ */}
       {viewTab !== 'sale' && (
         stats.length === 0 ? (
-          <div style={{ padding:'40px 20px', textAlign:'center', color:T.light, fontSize:13 }}>
-            Không có đơn nào {viewTab==='pack'?'đã đóng':'đã nhặt'} trong khoảng thời gian này.
-          </div>
+          <EmptyState icon={Ico.barChart}
+            title={`Không có đơn nào ${viewTab==='pack'?'đã đóng':'đã nhặt'}`}
+            description="Không có dữ liệu trong khoảng thời gian đã chọn."/>
         ) : (
           <>
             {/* Bar chart: số đơn */}
