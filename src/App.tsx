@@ -12,7 +12,7 @@ const db = createClient(SUPABASE_URL, SUPABASE_KEY)
 // APP_VERSION — dùng để invalidate cache localStorage mỗi khi deploy version mới
 // (ngăn bug quyền user bị "reset" do cache position cũ sau deploy)
 // ⚠️ MỖI LẦN DEPLOY FEATURE MỚI CÓ PERMISSION MỚI, BUMP SỐ NÀY:
-const APP_VERSION = '2026.04.17.v27'
+const APP_VERSION = '2026.04.17.v28'
 
 // ════════════════════════════════════════════════════════════════
 // AUDIT LOG — ghi nhận các hành động phá hoại data để trace lại
@@ -14673,6 +14673,26 @@ function PackingModule({ user, allUsers, mobile, products }: any) {
   }
 
   if (loading) return <div style={{ padding:p, textAlign:'center', color:T.light, paddingTop:40 }}>⏳ Đang tải...</div>
+
+  const tryOpenOrder = (orderCode: string) => {
+    const ord = orders.find((o: any) => o.order_code === orderCode)
+    if (!ord) return
+    // Done order → đọc lịch sử, không cần confirm
+    if (ord.status === 'done') {
+      setSelectedCode(orderCode)
+      return
+    }
+    const activePackers: string[] = ord.active_packers || []
+    const otherPackers = activePackers.filter(id => id !== user.id)
+    if (otherPackers.length > 0) {
+      const names = otherPackers.map(id =>
+        allUsers.find((u: any) => u.id === id)?.name || '?'
+      ).join(', ')
+      setJoinConfirm({ orderCode, names })
+      return
+    }
+    setSelectedCode(orderCode)
+  }
 
   const selected = selectedCode ? orders.find((o: any) => o.order_code === selectedCode) : null
   const showDetail = selected !== null
