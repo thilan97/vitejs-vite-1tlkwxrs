@@ -12,7 +12,7 @@ const db = createClient(SUPABASE_URL, SUPABASE_KEY)
 // APP_VERSION — dùng để invalidate cache localStorage mỗi khi deploy version mới
 // (ngăn bug quyền user bị "reset" do cache position cũ sau deploy)
 // ⚠️ MỖI LẦN DEPLOY FEATURE MỚI CÓ PERMISSION MỚI, BUMP SỐ NÀY:
-const APP_VERSION = '2026.04.17.v13'
+const APP_VERSION = '2026.04.17.v14'
 
 // ════════════════════════════════════════════════════════════════
 // AUDIT LOG — ghi nhận các hành động phá hoại data để trace lại
@@ -13268,9 +13268,12 @@ async function compressImageV2(file: File, maxW = 1920, quality = 0.82): Promise
 }
 
 function photoCountRangeV2(totalItems: number) {
-  const min = Math.max(1, Math.ceil(totalItems / 20))
+  // Min luôn là 1 theo yêu cầu của anh. max giữ để hạn chế dung lượng.
+  // Suggest: gợi ý số ảnh lý tưởng (không bắt buộc, chỉ để popup nhắc)
+  const min = 1
   const max = Math.min(10, Math.max(3, Math.ceil(totalItems / 10)))
-  return { min, max }
+  const suggest = Math.max(1, Math.ceil(totalItems / 10))  // 10 SP = 1 ảnh gợi ý
+  return { min, max, suggest }
 }
 
 function PickingModule({ user, allUsers, mobile, products }: any) {
@@ -13901,7 +13904,7 @@ function PackingModule({ user, allUsers, mobile, products }: any) {
 
   const [orders, setOrders]   = useState<any[]>([])
   const [loading, setLoading] = useState(true)
-  const [tab, setTab]         = useState<'pending'|'done_today'>('pending')
+  const [tab, setTab]         = useState<'pending'|'done_today'|'lookup'>('pending')
   const [selectedCode, setSelectedCode] = useState<string|null>(null)
   const [searchQ, setSearchQ] = useState('')
 
@@ -13939,18 +13942,36 @@ function PackingModule({ user, allUsers, mobile, products }: any) {
     const ord = orders.find((o: any) => o.order_code === orderCode)
     if (!ord) return
     const totalItems = (ord.items||[]).length
-    const { min } = photoCountRangeV2(totalItems)
+    const { min, suggest } = photoCountRangeV2(totalItems)
     const picked = (ord.photos_picked||[]).length
     const packed = (ord.photos_packed||[]).length
-    // Kiểm tra ảnh hàng đã nhặt — LUÔN bắt buộc
+    // Bắt buộc min (giờ là 1) cho photos_picked
     if (picked < min) {
       alert(`❌ Cần tối thiểu ${min} ảnh hàng đã nhặt (hiện có ${picked}).`)
       return
     }
-    // Kiểm tra ảnh thùng hàng — CHỈ khi không phải đơn bookship
+    // Bắt buộc min cho photos_packed nếu không phải bookship
     if (!ord.no_box && packed < min) {
       alert(`❌ Cần tối thiểu ${min} ảnh thùng hàng (hiện có ${packed}).\nNếu đơn bookship không đóng thùng, hãy tick vào ô "Đơn bookship — không đóng thùng".`)
       return
+    }
+    // Soft popup: nếu đơn >=3 SP mà ảnh hàng đã nhặt < suggest
+    if (totalItems >= 3 && picked < suggest) {
+      const ok = confirm(
+        `⚠️ Đơn này có ${totalItems} SP nhưng bạn chỉ chụp ${picked} ảnh hàng đã nhặt.\n` +
+        `Gợi ý nên chụp ít nhất ${suggest} ảnh để có bằng chứng rõ ràng nếu KH khiếu nại.\n\n` +
+        `Tiếp tục hoàn tất đóng hàng với chỉ ${picked} ảnh?`
+      )
+      if (!ok) return
+    }
+    // Soft popup cho thùng hàng
+    if (!ord.no_box && totalItems >= 3 && packed < suggest) {
+      const ok = confirm(
+        `⚠️ Đơn này có ${totalItems} SP nhưng bạn chỉ chụp ${packed} ảnh thùng hàng.\n` +
+        `Gợi ý nên chụp ít nhất ${suggest} ảnh để có bằng chứng rõ ràng.\n\n` +
+        `Tiếp tục hoàn tất?`
+      )
+      if (!ok) return
     }
     const upd = {
       status: 'done',
@@ -14006,6 +14027,7 @@ function PackingModule({ user, allUsers, mobile, products }: any) {
         {[
           { id:'pending',    label:`📦 Chờ đóng${pendingOrds.length?` (${pendingOrds.length})`:''}` },
           { id:'done_today', label:`✅ Xong hôm nay${doneTodayOrds.length?` (${doneTodayOrds.length})`:''}` },
+          { id:'lookup',     label:`🔍 Tra cứu đơn` },
         ].map((t: any) => (
           <button key={t.id} onClick={() => { setTab(t.id as any); setSelectedCode(null) }}
             style={{ padding:'6px 14px', borderRadius:20, cursor:'pointer', fontFamily:'inherit', fontSize:12,
@@ -14017,7 +14039,13 @@ function PackingModule({ user, allUsers, mobile, products }: any) {
         ))}
       </div>
 
-      {/* 2-column layout */}
+      {/* Lookup tab — render riêng, không vào 2-col layout */}
+      {tab === 'lookup' && (
+        <OrderLookupTab user={user} allUsers={allUsers} mobile={mobile}/>
+      )}
+
+      {/* 2-column layout (chỉ cho pending / done_today) */}
+      {tab !== 'lookup' && (
       <div style={{
         display: 'grid',
         gridTemplateColumns: mobile ? '1fr' : (showDetail ? '380px 1fr' : '1fr'),
@@ -14046,30 +14074,52 @@ function PackingModule({ user, allUsers, mobile, products }: any) {
                 const picked = (o.photos_picked||[]).length
                 const packed = (o.photos_packed||[]).length
                 const isSelected = o.order_code === selectedCode
+                const modCount = o.modification_count || 0
+                const latestChange = (o.change_log||[])[((o.change_log||[]).length - 1)]
+                const wasReverted = o.had_mod_after_done === true
                 return (
                   <Card key={o.order_code}
                     onClick={() => setSelectedCode(o.order_code)}
                     style={{ padding:10, cursor:'pointer',
-                      borderLeft: isSelected ? `4px solid ${T.gold}` : `4px solid transparent`,
-                      background: isSelected ? T.goldBg : '#fff' }}>
+                      borderLeft: wasReverted
+                        ? `4px solid ${T.red}`
+                        : (isSelected ? `4px solid ${T.gold}` : `4px solid transparent`),
+                      background: wasReverted ? '#fff5f5' : (isSelected ? T.goldBg : '#fff') }}>
                     <div style={{ fontSize:12, fontWeight:700, color:T.dark,
                       whiteSpace:'nowrap', overflow:'hidden', textOverflow:'ellipsis' }}>
                       {o.order_code} • {o.customer_name}
                     </div>
                     <div style={{ fontSize:10, color:T.light, marginTop:2 }}>
                       {totalItems} SP • {Number(o.total_amount||0).toLocaleString('vi-VN')}đ
+                      {o.no_box && <> • 📮 Bookship</>}
                     </div>
+                    {wasReverted && (
+                      <div style={{ marginTop:5, padding:'3px 8px', borderRadius:6,
+                        background:T.red, color:'#fff', fontSize:9, fontWeight:800, letterSpacing:.3 }}>
+                        🚨 ĐƠN ĐÃ MỞ LẠI — SALE SỬA SAU KHI ĐÓNG
+                      </div>
+                    )}
+                    {modCount > 0 && latestChange && (
+                      <div style={{ marginTop:5, padding:'3px 8px', borderRadius:6,
+                        background:T.amberBg, color:T.amber, fontSize:9, fontWeight:700,
+                        whiteSpace:'nowrap', overflow:'hidden', textOverflow:'ellipsis' }}
+                        title={latestChange.summary}>
+                        📝 ĐÃ SỬA {modCount}× • {latestChange.summary}
+                      </div>
+                    )}
                     <div style={{ display:'flex', gap:6, marginTop:5, fontSize:9 }}>
                       <span style={{ padding:'1px 6px', borderRadius:10,
-                        background: picked>=min?T.greenBg:T.amberBg,
-                        color: picked>=min?T.green:T.amber, fontWeight:600 }}>
-                        📦 Hàng: {picked}/{min}+
+                        background: picked>=1?T.greenBg:T.amberBg,
+                        color: picked>=1?T.green:T.amber, fontWeight:600 }}>
+                        📦 Hàng: {picked}
                       </span>
-                      <span style={{ padding:'1px 6px', borderRadius:10,
-                        background: packed>=min?T.greenBg:T.amberBg,
-                        color: packed>=min?T.green:T.amber, fontWeight:600 }}>
-                        📮 Thùng: {packed}/{min}+
-                      </span>
+                      {!o.no_box && (
+                        <span style={{ padding:'1px 6px', borderRadius:10,
+                          background: packed>=1?T.greenBg:T.amberBg,
+                          color: packed>=1?T.green:T.amber, fontWeight:600 }}>
+                          📮 Thùng: {packed}
+                        </span>
+                      )}
                     </div>
                   </Card>
                 )
@@ -14095,6 +14145,90 @@ function PackingModule({ user, allUsers, mobile, products }: any) {
           />
         )}
       </div>
+      )}
+    </div>
+  )
+}
+
+// ── ChangeLogBanner — hiển thị banner đỏ/vàng khi đơn bị Sale sửa ──
+function ChangeLogBanner({ ord }: any) {
+  const [showAll, setShowAll] = useState(false)
+  const log = ord.change_log || []
+  const reverted = ord.had_mod_after_done === true
+  const modCount = ord.modification_count || 0
+  const latest = log[log.length - 1]
+  if (!latest) return null
+
+  return (
+    <div style={{ padding:'12px 14px', marginBottom:14, borderRadius:8,
+      background: reverted ? '#fef2f2' : T.amberBg,
+      border: `2px solid ${reverted ? T.red : T.amber}` }}>
+      <div style={{ fontSize:13, fontWeight:800,
+        color: reverted ? T.red : T.amber, marginBottom:6 }}>
+        {reverted
+          ? '🚨 ĐƠN ĐÃ MỞ LẠI — SALE SỬA SAU KHI ĐÓNG'
+          : `⚠️ ĐƠN NÀY ĐÃ BỊ SỬA ${modCount} LẦN`}
+      </div>
+      {reverted && (
+        <div style={{ fontSize:11, color:T.dark, marginBottom:8, lineHeight:1.5 }}>
+          NV Kho cần <b>mở thùng, kiểm tra lại SP, chụp ảnh bổ sung</b> trước khi đóng lại.
+        </div>
+      )}
+      <div style={{ fontSize:11, color:T.med, marginBottom:4 }}>
+        Thay đổi gần nhất lúc {new Date(latest.at).toLocaleString('vi-VN')}:
+      </div>
+      <div style={{ fontSize:12, color:T.dark, fontWeight:600, lineHeight:1.5,
+        padding:'6px 10px', background:'#fff', borderRadius:6, border:`1px solid ${T.border}` }}>
+        {latest.changes.map((c: any, i: number) => (
+          <div key={i} style={{ display:'flex', gap:8, alignItems:'center', padding:'2px 0' }}>
+            {c.type === 'add' && (
+              <>
+                <span style={{ color:T.green, fontWeight:800, minWidth:40 }}>+{c.qty}</span>
+                <span>{c.name}</span>
+              </>
+            )}
+            {c.type === 'remove' && (
+              <>
+                <span style={{ color:T.red, fontWeight:800, minWidth:40 }}>-{c.qty}</span>
+                <span style={{ textDecoration:'line-through', color:T.light }}>{c.name}</span>
+              </>
+            )}
+            {c.type === 'qty_change' && (
+              <>
+                <span style={{ color: c.diff > 0 ? T.green : T.red, fontWeight:800, minWidth:40 }}>
+                  {c.diff > 0 ? '+' : ''}{c.diff}
+                </span>
+                <span>{c.name}</span>
+                <span style={{ color:T.light, fontSize:10 }}>({c.oldQty}→{c.newQty})</span>
+              </>
+            )}
+          </div>
+        ))}
+      </div>
+      {log.length > 1 && (
+        <button onClick={() => setShowAll(!showAll)}
+          style={{ marginTop:8, padding:'4px 10px', borderRadius:12, border:`1px solid ${T.border}`,
+            background:'#fff', color:T.med, cursor:'pointer', fontFamily:'inherit',
+            fontSize:10, fontWeight:600 }}>
+          {showAll ? '▲ Ẩn lịch sử' : `▼ Xem toàn bộ lịch sử (${log.length - 1} lần trước đó)`}
+        </button>
+      )}
+      {showAll && (
+        <div style={{ marginTop:8, maxHeight:250, overflowY:'auto' }}>
+          {log.slice(0, -1).reverse().map((entry: any, i: number) => (
+            <div key={i} style={{ padding:'8px 10px', marginBottom:6, background:'#fff',
+              borderRadius:6, border:`1px solid ${T.border}` }}>
+              <div style={{ fontSize:10, color:T.light, marginBottom:4 }}>
+                🕒 {new Date(entry.at).toLocaleString('vi-VN')}
+                {entry.status_at_time && <> • trạng thái lúc đó: <b>{entry.status_at_time}</b></>}
+              </div>
+              <div style={{ fontSize:11, color:T.dark, fontWeight:600 }}>
+                {entry.summary}
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
     </div>
   )
 }
@@ -14182,6 +14316,11 @@ function PackingDetailPanel({ ord, mobile, user, allUsers, products, onClose, on
         </div>
       )}
 
+      {/* ══ BANNER đơn đã bị sửa ══ */}
+      {(ord.modification_count || 0) > 0 && (
+        <ChangeLogBanner ord={ord}/>
+      )}
+
       {/* ══ PHASE 1: GATE — bắt buộc chụp ảnh hàng đã nhặt ══ */}
       {phase === 'gate' && !hasPassedGate && (
         <>
@@ -14204,7 +14343,8 @@ function PackingDetailPanel({ ord, mobile, user, allUsers, products, onClose, on
             readOnly={readOnly}
             orderCode={ord.order_code}
             photoType="picked"
-            onUpdate={(photos: string[]) => onUpdatePhotos('picked', photos)}
+            userId={user?.id}
+            onUpdate={(photos: any[]) => onUpdatePhotos('picked', photos)}
           />
 
           <div style={{ marginTop:16, display:'flex', gap:8 }}>
@@ -14339,7 +14479,8 @@ function PackingDetailPanel({ ord, mobile, user, allUsers, products, onClose, on
               readOnly={readOnly}
               orderCode={ord.order_code}
               photoType="packed"
-              onUpdate={(photos: string[]) => onUpdatePhotos('packed', photos)}
+              userId={user?.id}
+              onUpdate={(photos: any[]) => onUpdatePhotos('packed', photos)}
             />
           )}
 
@@ -14380,10 +14521,14 @@ function PackingDetailPanel({ ord, mobile, user, allUsers, products, onClose, on
   )
 }
 
-function PhotoSection({ title, subtitle, photos, min, max, readOnly, orderCode, photoType, onUpdate }: any) {
+function PhotoSection({ title, subtitle, photos, min, max, readOnly, orderCode, photoType, onUpdate, userId }: any) {
   const [uploading, setUploading] = useState(false)
   const [previewIdx, setPreviewIdx] = useState<number|null>(null)
   const fileInputRef = useRef<HTMLInputElement>(null)
+
+  // Helper: normalize photo entry (string URL hoặc object {url, at, by})
+  const getUrl = (p: any): string => typeof p === 'string' ? p : (p?.url || '')
+  const getAt  = (p: any): string => typeof p === 'string' ? '' : (p?.at || '')
 
   const canAddMore = !readOnly && photos.length < max
 
@@ -14395,21 +14540,25 @@ function PhotoSection({ title, subtitle, photos, min, max, readOnly, orderCode, 
       return
     }
     setUploading(true)
-    const newUrls: string[] = []
+    const newEntries: any[] = []
     try {
       for (const file of Array.from(files)) {
         const blob = await compressImageV2(file)
         const ts = Date.now()
-        const idx = photos.length + newUrls.length
+        const idx = photos.length + newEntries.length
         const path = `${orderCode}/${photoType}_${ts}_${idx}.jpg`
         const { data, error } = await db.storage.from('packing-photos').upload(path, blob, {
           contentType: 'image/jpeg', upsert: false,
         })
         if (error) { alert('❌ Upload lỗi: ' + error.message); continue }
         const { data: urlData } = db.storage.from('packing-photos').getPublicUrl(data.path)
-        newUrls.push(urlData.publicUrl)
+        newEntries.push({
+          url: urlData.publicUrl,
+          at: new Date().toISOString(),
+          by: userId || '',
+        })
       }
-      const updated = [...photos, ...newUrls]
+      const updated = [...photos, ...newEntries]
       await onUpdate(updated)
     } catch(e: any) {
       alert('❌ Lỗi: ' + e.message)
@@ -14422,7 +14571,7 @@ function PhotoSection({ title, subtitle, photos, min, max, readOnly, orderCode, 
   const deletePhoto = async (idx: number) => {
     if (readOnly) return
     if (!confirm('Xóa ảnh này?')) return
-    const url = photos[idx]
+    const url = getUrl(photos[idx])
     const pathMatch = url.match(/packing-photos\/(.+)$/)
     const path = pathMatch ? pathMatch[1] : null
     if (path) {
@@ -14441,27 +14590,41 @@ function PhotoSection({ title, subtitle, photos, min, max, readOnly, orderCode, 
       <div style={{ fontSize:10, color:T.light, marginBottom:8 }}>{subtitle}</div>
 
       <div style={{ fontSize:11, color: enough ? T.green : T.amber, fontWeight:600, marginBottom:10 }}>
-        📷 {photos.length}/{min}-{max} ảnh {enough && '✓'}
+        📷 {photos.length} ảnh {enough && '✓'} {!enough && `(cần tối thiểu ${min})`}
       </div>
 
-      <div style={{ display:'grid', gridTemplateColumns:'repeat(auto-fill, minmax(80px, 1fr))',
+      <div style={{ display:'grid', gridTemplateColumns:'repeat(auto-fill, minmax(90px, 1fr))',
         gap:8 }}>
-        {photos.map((url: string, i: number) => (
-          <div key={i} style={{ position:'relative', aspectRatio:'1/1', borderRadius:6, overflow:'hidden',
-            border:`1px solid ${T.border}`, cursor:'pointer' }}
-            onClick={() => setPreviewIdx(i)}>
-            <img src={url} alt={`Photo ${i+1}`}
-              style={{ width:'100%', height:'100%', objectFit:'cover', display:'block' }}/>
-            {!readOnly && (
-              <button onClick={e => { e.stopPropagation(); deletePhoto(i) }}
-                style={{ position:'absolute', top:2, right:2, width:20, height:20,
-                  borderRadius:10, border:'none', background:'rgba(185,28,28,0.9)', color:'#fff',
-                  cursor:'pointer', fontSize:10, fontFamily:'inherit', padding:0, lineHeight:'20px' }}>
-                ×
-              </button>
-            )}
-          </div>
-        ))}
+        {photos.map((ph: any, i: number) => {
+          const url = getUrl(ph)
+          const at  = getAt(ph)
+          return (
+            <div key={i} style={{ position:'relative', borderRadius:6, overflow:'hidden',
+              border:`1px solid ${T.border}`, cursor:'pointer' }}
+              onClick={() => setPreviewIdx(i)}>
+              <div style={{ aspectRatio:'1/1', overflow:'hidden' }}>
+                <img src={url} alt={`Photo ${i+1}`}
+                  style={{ width:'100%', height:'100%', objectFit:'cover', display:'block' }}/>
+              </div>
+              {at && (
+                <div style={{ fontSize:8, color:T.light, padding:'3px 4px', background:T.bg,
+                  textAlign:'center', lineHeight:1.2 }}>
+                  {new Date(at).toLocaleTimeString('vi-VN', {hour:'2-digit', minute:'2-digit'})}
+                  {' '}
+                  {new Date(at).toLocaleDateString('vi-VN', {day:'2-digit', month:'2-digit'})}
+                </div>
+              )}
+              {!readOnly && (
+                <button onClick={e => { e.stopPropagation(); deletePhoto(i) }}
+                  style={{ position:'absolute', top:2, right:2, width:20, height:20,
+                    borderRadius:10, border:'none', background:'rgba(185,28,28,0.9)', color:'#fff',
+                    cursor:'pointer', fontSize:10, fontFamily:'inherit', padding:0, lineHeight:'20px' }}>
+                  ×
+                </button>
+              )}
+            </div>
+          )
+        })}
         {canAddMore && (
           <label style={{ display:'flex', alignItems:'center', justifyContent:'center', aspectRatio:'1/1',
             borderRadius:6, border:`2px dashed ${T.gold}`, background:T.goldBg,
@@ -14488,8 +14651,14 @@ function PhotoSection({ title, subtitle, photos, min, max, readOnly, orderCode, 
               style={{ position:'absolute', top:10, right:10, width:36, height:36,
                 borderRadius:18, border:'none', background:'rgba(255,255,255,0.9)', color:T.dark,
                 cursor:'pointer', fontSize:18, fontFamily:'inherit' }}>×</button>
-            <img src={photos[previewIdx]} alt={`Photo ${previewIdx+1}`}
+            <img src={getUrl(photos[previewIdx])} alt={`Photo ${previewIdx+1}`}
               style={{ maxWidth:'90vw', maxHeight:'90vh', borderRadius:8 }}/>
+            {getAt(photos[previewIdx]) && (
+              <div style={{ position:'absolute', bottom:10, left:'50%', transform:'translateX(-50%)',
+                background:'rgba(0,0,0,0.7)', color:'#fff', padding:'4px 14px', borderRadius:20, fontSize:11 }}>
+                🕒 Chụp lúc {new Date(getAt(photos[previewIdx])).toLocaleString('vi-VN')}
+              </div>
+            )}
           </div>
         </div>
       )}
@@ -15023,12 +15192,13 @@ function PriorityRequestModule({ user, allUsers, mobile }: any) {
   const [loading, setLoading] = useState(true)
   const [tab, setTab] = useState<'pending'|'acknowledged'|'mine'>('pending')
   const [showSubmit, setShowSubmit] = useState(false)
+  const [searchQ, setSearchQ] = useState('')
 
   const fetchData = async () => {
     setLoading(true)
     const { data } = await db.from('priority_requests').select('*')
       .order('created_at', { ascending: false })
-      .limit(200)
+      .limit(500)
     setRequests(data || [])
     setLoading(false)
   }
@@ -15039,9 +15209,22 @@ function PriorityRequestModule({ user, allUsers, mobile }: any) {
     return () => clearInterval(interval)
   }, [])
 
-  const pendingList = requests.filter(r => r.status === 'pending')
-  const ackList     = requests.filter(r => r.status === 'acknowledged')
-  const myList      = requests.filter(r => r.from_user_id === user.id)
+  // Fuzzy search theo nội dung, tên người gửi
+  const norm = (s: string) => (s||'').toLowerCase().normalize('NFD')
+    .replace(/[\u0300-\u036f]/g,'').replace(/đ/g,'d').trim()
+  const filterByQ = (list: any[]) => {
+    const q = norm(searchQ)
+    if (!q) return list
+    const tokens = q.split(/\s+/).filter(Boolean)
+    return list.filter((r: any) => {
+      const hay = norm(`${r.content||''} ${r.from_user_name||''} ${r.acknowledged_by_name||''}`)
+      return tokens.every(t => hay.includes(t))
+    })
+  }
+
+  const pendingList = filterByQ(requests.filter(r => r.status === 'pending'))
+  const ackList     = filterByQ(requests.filter(r => r.status === 'acknowledged'))
+  const myList      = filterByQ(requests.filter(r => r.from_user_id === user.id))
   const displayList =
     tab === 'pending'      ? pendingList :
     tab === 'acknowledged' ? ackList : myList
@@ -15092,10 +15275,25 @@ function PriorityRequestModule({ user, allUsers, mobile }: any) {
         ))}
       </div>
 
+      {/* Search — tìm theo nội dung, người gửi, người ack */}
+      <Card style={{ padding:10, marginBottom:10 }}>
+        <input value={searchQ} onChange={e => setSearchQ(e.target.value)}
+          placeholder="🔍 Tìm trong nội dung phiếu (VD: mã đơn, tên SP, tên KH, lý do...)"
+          style={{ width:'100%', padding:'8px 12px', border:`1px solid ${T.border}`, borderRadius:8,
+            fontSize:12, fontFamily:'inherit', color:T.dark, background:'#fff', outline:'none',
+            boxSizing:'border-box' as any }}/>
+        {searchQ.trim() && (
+          <div style={{ fontSize:10, color:T.light, marginTop:6 }}>
+            Tìm thấy {displayList.length} phiếu phù hợp
+          </div>
+        )}
+      </Card>
+
       {/* List */}
       {displayList.length === 0 ? (
         <div style={{ padding:'40px 20px', textAlign:'center', color:T.light, fontSize:13 }}>
-          {tab==='pending' ? '✅ Không có phiếu nào chờ xử lý!' :
+          {searchQ.trim() ? `Không có phiếu nào khớp "${searchQ}"` :
+           tab==='pending' ? '✅ Không có phiếu nào chờ xử lý!' :
            tab==='acknowledged' ? 'Chưa có phiếu nào đã xác nhận.' :
            'Bạn chưa gửi phiếu nào.'}
         </div>
@@ -15151,6 +15349,397 @@ function PriorityRequestModule({ user, allUsers, mobile }: any) {
       {showSubmit && (
         <PrioritySubmitModal user={user} onClose={() => setShowSubmit(false)}
           onSubmitted={() => fetchData()}/>
+      )}
+    </div>
+  )
+}
+
+// ══════════════════════════════════════════════════════════════════════
+// ══ ORDER LOOKUP TAB — Tra cứu đơn theo sản phẩm + chia sẻ ảnh =======
+// ══════════════════════════════════════════════════════════════════════
+
+function OrderLookupTab({ user, allUsers, mobile }: any) {
+  const [searchQ, setSearchQ] = useState('')
+  const [dayRange, setDayRange] = useState(15)
+  const [statusFilter, setStatusFilter] = useState<string>('all')
+  const [allOrders, setAllOrders] = useState<any[]>([])
+  const [loading, setLoading] = useState(false)
+  const [expanded, setExpanded] = useState<string|null>(null)
+
+  const norm = (s: string) => (s||'').toLowerCase().normalize('NFD')
+    .replace(/[\u0300-\u036f]/g,'').replace(/đ/g,'d').trim()
+
+  const fetchOrders = async () => {
+    setLoading(true)
+    const fromDate = new Date(Date.now() - dayRange * 86400000).toISOString()
+    const { data } = await db.from('packing_workflow').select('*')
+      .gte('purchase_date', fromDate)
+      .order('purchase_date', { ascending: false })
+      .limit(1500)
+    setAllOrders(data || [])
+    setLoading(false)
+  }
+
+  useEffect(() => { fetchOrders() }, [dayRange])
+
+  // Filter orders: phải có SP match query, + status filter
+  const filtered = useMemo(() => {
+    const q = norm(searchQ)
+    if (!q.trim()) return []
+    const tokens = q.split(/\s+/).filter(Boolean)
+    return allOrders.filter((o: any) => {
+      if (statusFilter !== 'all' && o.status !== statusFilter) return false
+      const items = o.items || []
+      return items.some((it: any) => {
+        const hay = norm(`${it.code} ${it.name}`)
+        return tokens.every(t => hay.includes(t))
+      })
+    })
+  }, [searchQ, allOrders, statusFilter])
+
+  const getName = (id: string) => allUsers.find((u: any) => u.id === id)?.name || '—'
+  const getUrl = (p: any): string => typeof p === 'string' ? p : (p?.url || '')
+  const getAt  = (p: any): string => typeof p === 'string' ? '' : (p?.at || '')
+
+  return (
+    <div>
+      {/* Filters */}
+      <Card style={{ padding:12, marginBottom:12 }}>
+        <input value={searchQ} onChange={e => setSearchQ(e.target.value)} autoFocus
+          placeholder="🔍 Tên SP hoặc mã SP (VD: kyunglab, KCN, tay trang...)"
+          style={{ width:'100%', padding:'10px 13px', border:`1px solid ${T.border}`, borderRadius:8,
+            fontSize:13, fontFamily:'inherit', color:T.dark, background:'#fff', outline:'none',
+            boxSizing:'border-box' as any, marginBottom:10 }}/>
+        <div style={{ display:'flex', gap:8, flexWrap:'wrap' }}>
+          <div>
+            <label style={{ fontSize:10, color:T.med, fontWeight:600, display:'block', marginBottom:3 }}>
+              Khoảng thời gian
+            </label>
+            <select value={dayRange} onChange={e => setDayRange(Number(e.target.value))}
+              style={{ padding:'6px 10px', border:`1px solid ${T.border}`, borderRadius:6,
+                fontSize:11, fontFamily:'inherit', background:'#fff', outline:'none' }}>
+              <option value={3}>3 ngày</option>
+              <option value={7}>7 ngày</option>
+              <option value={15}>15 ngày</option>
+              <option value={30}>30 ngày</option>
+            </select>
+          </div>
+          <div>
+            <label style={{ fontSize:10, color:T.med, fontWeight:600, display:'block', marginBottom:3 }}>
+              Trạng thái
+            </label>
+            <select value={statusFilter} onChange={e => setStatusFilter(e.target.value)}
+              style={{ padding:'6px 10px', border:`1px solid ${T.border}`, borderRadius:6,
+                fontSize:11, fontFamily:'inherit', background:'#fff', outline:'none' }}>
+              <option value="all">Tất cả</option>
+              <option value="picking">Chờ nhặt</option>
+              <option value="packing">Chờ đóng</option>
+              <option value="done">Đã xong</option>
+              <option value="cancelled">Đã huỷ</option>
+            </select>
+          </div>
+        </div>
+      </Card>
+
+      {!searchQ.trim() && (
+        <div style={{ padding:'40px 20px', textAlign:'center', color:T.light, fontSize:13 }}>
+          🔍 Nhập tên hoặc mã SP để tra cứu đơn có chứa SP đó
+        </div>
+      )}
+
+      {loading && (
+        <div style={{ padding:'20px', textAlign:'center', color:T.light, fontSize:12 }}>
+          ⏳ Đang tải...
+        </div>
+      )}
+
+      {searchQ.trim() && !loading && (
+        <>
+          <div style={{ padding:'8px 12px', marginBottom:10, background:T.goldBg,
+            borderRadius:6, fontSize:12, color:T.goldText, fontWeight:600 }}>
+            Tìm thấy <b>{filtered.length}</b> đơn có chứa "{searchQ}" trong {dayRange} ngày
+          </div>
+
+          <div style={{ display:'flex', flexDirection:'column', gap:8 }}>
+            {filtered.map((o: any) => {
+              const isExp = expanded === o.order_code
+              const matchingItems = (o.items||[]).filter((it: any) => {
+                const hay = norm(`${it.code} ${it.name}`)
+                const tokens = norm(searchQ).split(/\s+/).filter(Boolean)
+                return tokens.every(t => hay.includes(t))
+              })
+              const statusLabel = ({
+                picking:'Chờ nhặt', packing:'Chờ đóng',
+                done:'Đã xong', cancelled:'Đã huỷ'
+              } as any)[o.status] || o.status
+              const statusColor = ({
+                picking:T.amber, packing:T.blue, done:T.green, cancelled:T.light
+              } as any)[o.status] || T.light
+              return (
+                <Card key={o.order_code} style={{ padding:12, cursor:'pointer' }}
+                  onClick={() => setExpanded(isExp ? null : o.order_code)}>
+                  <div style={{ display:'flex', justifyContent:'space-between', alignItems:'flex-start', gap:10 }}>
+                    <div style={{ flex:1, minWidth:0 }}>
+                      <div style={{ fontSize:13, fontWeight:700, color:T.dark }}>
+                        {o.order_code} • {o.customer_name}
+                      </div>
+                      <div style={{ fontSize:10, color:T.light, marginTop:3 }}>
+                        Sale: {o.sold_by_name||'—'} • {new Date(o.purchase_date).toLocaleDateString('vi-VN')}
+                        {o.packed_by && <> • Đóng: {getName(o.packed_by)}</>}
+                      </div>
+                      <div style={{ marginTop:5, fontSize:11, color:T.dark }}>
+                        Match: {matchingItems.map((it: any) => `${it.qty}× ${it.name}`).join(', ')}
+                      </div>
+                    </div>
+                    <div style={{ padding:'3px 10px', borderRadius:12,
+                      background: statusColor + '22', color: statusColor,
+                      fontSize:10, fontWeight:700, flexShrink:0 }}>
+                      {statusLabel}
+                    </div>
+                  </div>
+
+                  {isExp && (
+                    <div style={{ marginTop:12, paddingTop:12, borderTop:`1px dashed ${T.border}` }}
+                      onClick={e => e.stopPropagation()}>
+                      {/* Metadata */}
+                      <div style={{ fontSize:11, color:T.med, marginBottom:10, lineHeight:1.7 }}>
+                        <div>💰 Tổng: <b style={{ color:T.dark }}>{Number(o.total_amount||0).toLocaleString('vi-VN')}</b></div>
+                        {o.picked_at && <div>✓ Xong nhặt: <b style={{ color:T.dark }}>{new Date(o.picked_at).toLocaleString('vi-VN')}</b></div>}
+                        {o.packed_at && <div>📮 Xong đóng: <b style={{ color:T.green }}>{new Date(o.packed_at).toLocaleString('vi-VN')}</b> • bởi {getName(o.packed_by)}</div>}
+                        {o.no_box && <div style={{ color:T.amber, fontWeight:600 }}>📮 Đơn bookship (không đóng thùng)</div>}
+                        {(o.modification_count||0) > 0 && <div style={{ color:T.amber, fontWeight:600 }}>📝 Đã sửa {o.modification_count} lần</div>}
+                      </div>
+
+                      {/* Full items list */}
+                      <div style={{ marginBottom:10, padding:10, background:T.bg, borderRadius:6,
+                        border:`1px solid ${T.border}` }}>
+                        <div style={{ fontSize:10, fontWeight:700, color:T.med, marginBottom:6 }}>
+                          📋 TOÀN BỘ SP TRONG ĐƠN ({(o.items||[]).length})
+                        </div>
+                        {(o.items||[]).map((it: any, i: number) => (
+                          <div key={i} style={{ fontSize:10, padding:'2px 0',
+                            color: matchingItems.some((m: any) => m.code === it.code) ? T.dark : T.light,
+                            fontWeight: matchingItems.some((m: any) => m.code === it.code) ? 700 : 400 }}>
+                            {it.qty}× {it.name}
+                          </div>
+                        ))}
+                      </div>
+
+                      {/* Photos: hàng đã nhặt */}
+                      {(o.photos_picked||[]).length > 0 && (
+                        <PhotoGallery title="📦 Ảnh hàng đã nhặt"
+                          photos={o.photos_picked}
+                          allUsers={allUsers}
+                          orderCode={o.order_code}
+                          kind="picked"/>
+                      )}
+
+                      {/* Photos: thùng hàng */}
+                      {(o.photos_packed||[]).length > 0 && (
+                        <PhotoGallery title="📮 Ảnh thùng hàng"
+                          photos={o.photos_packed}
+                          allUsers={allUsers}
+                          orderCode={o.order_code}
+                          kind="packed"/>
+                      )}
+
+                      {(o.photos_picked||[]).length === 0 && (o.photos_packed||[]).length === 0 && (
+                        <div style={{ padding:'10px', textAlign:'center', color:T.light, fontSize:11,
+                          background:T.bg, borderRadius:6 }}>
+                          📷 Đơn này chưa có ảnh nào
+                        </div>
+                      )}
+                    </div>
+                  )}
+                </Card>
+              )
+            })}
+          </div>
+
+          {filtered.length === 0 && (
+            <div style={{ padding:'40px 20px', textAlign:'center', color:T.light, fontSize:13 }}>
+              Không tìm thấy đơn nào chứa "{searchQ}" trong {dayRange} ngày
+            </div>
+          )}
+        </>
+      )}
+    </div>
+  )
+}
+
+// ── Gallery + nút chia sẻ Zalo/Download cho từng set ảnh ──
+function PhotoGallery({ title, photos, allUsers, orderCode, kind }: any) {
+  const [previewIdx, setPreviewIdx] = useState<number|null>(null)
+  const [sharing, setSharing] = useState(false)
+
+  const getUrl = (p: any): string => typeof p === 'string' ? p : (p?.url || '')
+  const getAt  = (p: any): string => typeof p === 'string' ? '' : (p?.at || '')
+  const getBy  = (p: any): string => typeof p === 'string' ? '' : (p?.by || '')
+  const getName = (id: string) => allUsers.find((u: any) => u.id === id)?.name || ''
+
+  // ── SHARE: tải ảnh về dạng blob → gắn vào navigator.share (native)
+  //    Fallback: download từng ảnh về máy
+  const shareAll = async () => {
+    setSharing(true)
+    try {
+      // Check Web Share API với files support
+      const hasShareFiles = 'share' in navigator && 'canShare' in navigator
+      const files: File[] = []
+
+      for (let i = 0; i < photos.length; i++) {
+        const url = getUrl(photos[i])
+        if (!url) continue
+        try {
+          const res = await fetch(url)
+          const blob = await res.blob()
+          const filename = `${orderCode}_${kind}_${i+1}.jpg`
+          files.push(new File([blob], filename, { type: blob.type || 'image/jpeg' }))
+        } catch (e) {
+          console.error('Fetch failed for photo', i, e)
+        }
+      }
+
+      if (files.length === 0) { alert('❌ Không tải được ảnh nào'); return }
+
+      const shareData: any = {
+        title: `${orderCode} — ${kind === 'picked' ? 'Ảnh hàng đã nhặt' : 'Ảnh thùng hàng'}`,
+        text: `Đơn ${orderCode} — ${files.length} ảnh`,
+        files,
+      }
+
+      if (hasShareFiles && (navigator as any).canShare(shareData)) {
+        await (navigator as any).share(shareData)
+      } else {
+        // Fallback: download từng file về máy
+        for (const file of files) {
+          const url = URL.createObjectURL(file)
+          const a = document.createElement('a')
+          a.href = url; a.download = file.name
+          document.body.appendChild(a); a.click()
+          document.body.removeChild(a)
+          URL.revokeObjectURL(url)
+          await new Promise(r => setTimeout(r, 100))
+        }
+        alert(`✅ Đã tải ${files.length} ảnh về máy.\nBạn có thể mở Zalo và kéo thả/chọn từ thư mục Downloads để gửi cho KH.`)
+      }
+    } catch (e: any) {
+      if (e.name !== 'AbortError') alert('❌ Lỗi chia sẻ: ' + e.message)
+    }
+    setSharing(false)
+  }
+
+  // Share single photo
+  const shareOne = async (idx: number) => {
+    const url = getUrl(photos[idx])
+    if (!url) return
+    try {
+      const res = await fetch(url)
+      const blob = await res.blob()
+      const filename = `${orderCode}_${kind}_${idx+1}.jpg`
+      const file = new File([blob], filename, { type: blob.type || 'image/jpeg' })
+
+      const shareData: any = {
+        title: `${orderCode} — ảnh ${idx+1}`,
+        files: [file],
+      }
+
+      if ('share' in navigator && 'canShare' in navigator && (navigator as any).canShare(shareData)) {
+        await (navigator as any).share(shareData)
+      } else {
+        // Fallback: copy link
+        await navigator.clipboard.writeText(url)
+        alert('✅ Đã copy link ảnh vào clipboard.\nPaste vào Zalo để gửi cho KH.')
+      }
+    } catch (e: any) {
+      if (e.name !== 'AbortError') alert('❌ Lỗi: ' + e.message)
+    }
+  }
+
+  const copyAllLinks = async () => {
+    try {
+      const urls = photos.map((p: any) => getUrl(p)).filter(Boolean).join('\n')
+      await navigator.clipboard.writeText(urls)
+      alert(`✅ Đã copy ${photos.length} link ảnh vào clipboard.\nPaste vào Zalo để gửi cho KH.`)
+    } catch (e: any) {
+      alert('❌ Lỗi copy: ' + e.message)
+    }
+  }
+
+  return (
+    <div style={{ marginBottom:10 }}>
+      <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:6 }}>
+        <div style={{ fontSize:11, fontWeight:700, color:T.dark }}>
+          {title} ({photos.length})
+        </div>
+        <div style={{ display:'flex', gap:6 }}>
+          <button onClick={copyAllLinks}
+            style={{ padding:'4px 10px', borderRadius:12, border:`1px solid ${T.border}`,
+              background:'#fff', color:T.med, cursor:'pointer', fontFamily:'inherit',
+              fontSize:10, fontWeight:600 }}>
+            🔗 Copy link
+          </button>
+          <button onClick={shareAll} disabled={sharing}
+            style={{ padding:'4px 10px', borderRadius:12, border:`1px solid ${T.blue}`,
+              background:T.blue, color:'#fff', cursor:sharing?'wait':'pointer', fontFamily:'inherit',
+              fontSize:10, fontWeight:600 }}>
+            {sharing ? '⏳ Đang...' : '📤 Chia sẻ'}
+          </button>
+        </div>
+      </div>
+      <div style={{ display:'grid', gridTemplateColumns:'repeat(auto-fill, minmax(85px, 1fr))', gap:6 }}>
+        {photos.map((p: any, i: number) => {
+          const url = getUrl(p)
+          const at  = getAt(p)
+          return (
+            <div key={i} style={{ position:'relative', borderRadius:6, overflow:'hidden',
+              border:`1px solid ${T.border}`, cursor:'pointer' }}
+              onClick={() => setPreviewIdx(i)}>
+              <div style={{ aspectRatio:'1/1', overflow:'hidden' }}>
+                <img src={url} alt="" style={{ width:'100%', height:'100%', objectFit:'cover', display:'block' }}/>
+              </div>
+              {at && (
+                <div style={{ fontSize:8, color:T.light, padding:'2px 3px', background:T.bg,
+                  textAlign:'center', lineHeight:1.2 }}>
+                  {new Date(at).toLocaleTimeString('vi-VN', {hour:'2-digit', minute:'2-digit'})}
+                  {' '}
+                  {new Date(at).toLocaleDateString('vi-VN', {day:'2-digit', month:'2-digit'})}
+                </div>
+              )}
+            </div>
+          )
+        })}
+      </div>
+
+      {previewIdx !== null && (
+        <div style={{ position:'fixed', inset:0, background:'rgba(0,0,0,0.92)', zIndex:9999,
+          display:'flex', alignItems:'center', justifyContent:'center', padding:16 }}
+          onClick={() => setPreviewIdx(null)}>
+          <div style={{ position:'relative', maxWidth:'100%', maxHeight:'100%' }}
+            onClick={e => e.stopPropagation()}>
+            <button onClick={() => setPreviewIdx(null)}
+              style={{ position:'absolute', top:10, right:10, width:36, height:36, zIndex:2,
+                borderRadius:18, border:'none', background:'rgba(255,255,255,0.9)', color:T.dark,
+                cursor:'pointer', fontSize:18, fontFamily:'inherit' }}>×</button>
+            <img src={getUrl(photos[previewIdx])} alt=""
+              style={{ maxWidth:'90vw', maxHeight:'85vh', borderRadius:8, display:'block' }}/>
+            <div style={{ position:'absolute', bottom:10, left:'50%', transform:'translateX(-50%)',
+              display:'flex', gap:8 }}>
+              {getAt(photos[previewIdx]) && (
+                <div style={{ background:'rgba(0,0,0,0.7)', color:'#fff', padding:'4px 12px',
+                  borderRadius:20, fontSize:11 }}>
+                  🕒 {new Date(getAt(photos[previewIdx])).toLocaleString('vi-VN')}
+                  {getBy(photos[previewIdx]) && <> • {getName(getBy(photos[previewIdx]))}</>}
+                </div>
+              )}
+              <button onClick={() => shareOne(previewIdx)}
+                style={{ padding:'4px 12px', borderRadius:20, border:'none',
+                  background:T.blue, color:'#fff', cursor:'pointer', fontFamily:'inherit',
+                  fontSize:11, fontWeight:600 }}>
+                📤 Chia sẻ ảnh này
+              </button>
+            </div>
+          </div>
+        </div>
       )}
     </div>
   )
