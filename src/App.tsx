@@ -6876,14 +6876,33 @@ export default function App() {
       ;(async () => {
         try {
           const threshold = stData?.overdue_days_threshold ?? 7
-          // Edge Function tự filter status + tuổi đơn, chỉ cần truyền threshold
+          console.log('[Overdue] Fetching with threshold:', threshold)
           const res = await fetch(
             `https://uzloxzrqtzuucxlokqfm.supabase.co/functions/v1/kiotviet-orders?threshold=${threshold}`,
             { headers: { 'Authorization': `Bearer ${SUPABASE_ANON}` } }
           )
+          console.log('[Overdue] HTTP status:', res.status, res.statusText)
+          if (!res.ok) {
+            const errText = await res.text()
+            console.error('[Overdue] Fetch failed. Response:', errText)
+            ;(window as any).__overdueDebug = { error: errText, status: res.status, time: new Date().toISOString() }
+            return
+          }
           const json = await res.json()
-          if (json.data) setOverdueOrders(json.data)
-        } catch(e) { /* silent fail — không block app */ }
+          console.log('[Overdue] Response:', { total: json.total, scanned: json.scanned, breakdown: json.breakdown, error: json.error })
+          ;(window as any).__overdueDebug = { ...json, time: new Date().toISOString() }
+          if (json.error) {
+            console.error('[Overdue] Edge Function error:', json.error)
+            return
+          }
+          if (Array.isArray(json.data)) {
+            console.log(`[Overdue] Loaded ${json.data.length} overdue orders`)
+            setOverdueOrders(json.data)
+          }
+        } catch(e: any) {
+          console.error('[Overdue] Fetch exception:', e?.message || e)
+          ;(window as any).__overdueDebug = { exception: e?.message, time: new Date().toISOString() }
+        }
       })()
       // Fetch return slips for notifications (last 30 days)
       const thirtyAgo = new Date(Date.now()-30*86400000).toISOString().split('T')[0]
