@@ -12,7 +12,7 @@ const db = createClient(SUPABASE_URL, SUPABASE_KEY)
 // APP_VERSION — dùng để invalidate cache localStorage mỗi khi deploy version mới
 // (ngăn bug quyền user bị "reset" do cache position cũ sau deploy)
 // ⚠️ MỖI LẦN DEPLOY FEATURE MỚI CÓ PERMISSION MỚI, BUMP SỐ NÀY:
-const APP_VERSION = '2026.04.17.v30'
+const APP_VERSION = '2026.04.17.v31'
 
 // ════════════════════════════════════════════════════════════════
 // AUDIT LOG — ghi nhận các hành động phá hoại data để trace lại
@@ -13664,11 +13664,18 @@ function PickingModule({ user, allUsers, mobile, products }: any) {
 
   const fetchData = async (quiet=false) => {
     if (!quiet) setSyncing(true)
-    const { data } = await db.from('packing_workflow').select('*')
-      .in('status', ['picking','packing','done'])
+    // Query 1: ALL orders đang picking
+    const { data: pickingData } = await db.from('packing_workflow').select('*')
+      .eq('status', 'picking')
       .order('purchase_date', { ascending: false })
+    // Query 2: orders đã nhặt trong 3 ngày gần nhất (status packing hoặc done)
+    const threeDaysAgo = new Date(Date.now() - 3*86400000).toISOString()
+    const { data: donePickData } = await db.from('packing_workflow').select('*')
+      .in('status', ['packing','done'])
+      .gte('picked_at', threeDaysAgo)
+      .order('picked_at', { ascending: false })
       .limit(500)
-    setOrders(data||[])
+    setOrders([...(pickingData||[]), ...(donePickData||[])])
     setLastSync(new Date())
     if (!quiet) setSyncing(false)
     setLoading(false)
@@ -13945,6 +13952,11 @@ function PickingModule({ user, allUsers, mobile, products }: any) {
                 const pickedTime = o.picked_at
                   ? new Date(o.picked_at).toLocaleTimeString('vi-VN', {hour:'2-digit', minute:'2-digit'})
                   : null
+                const packedTime = o.packed_at
+                  ? new Date(o.packed_at).toLocaleTimeString('vi-VN', {hour:'2-digit', minute:'2-digit'})
+                  : null
+                // Đơn đã đóng xong hay chưa
+                const fullyPacked = o.status === 'done' && !!o.packed_at
                 return (
                   <Card key={o.order_code}
                     onClick={() => setSelectedCode(o.order_code)}
@@ -13962,12 +13974,26 @@ function PickingModule({ user, allUsers, mobile, products }: any) {
                           Sale: {o.sold_by_name||'—'} • {daysOld>0?`${daysOld}N trước`:'hôm nay'}
                           {o.printed_by_name && <> • 🖨 {o.printed_by_name}</>}
                         </div>
-                        {/* Tab "Xong hôm nay" hiện người nhặt + giờ xong */}
-                        {tab === 'done_today' && pickerName && (
-                          <div style={{ fontSize:10, color:T.green, marginTop:3, fontWeight:600 }}>
-                            👤 Nhặt: {pickerName}
-                            {pickedTime && <span style={{ color:T.light, fontWeight:400 }}> • {pickedTime}</span>}
-                          </div>
+                        {/* Tab "Xong hôm nay" hiện timeline đầy đủ: Nhặt + Đã đóng */}
+                        {tab === 'done_today' && (
+                          <>
+                            {pickerName && (
+                              <div style={{ fontSize:10, color:T.green, marginTop:3, fontWeight:600 }}>
+                                👤 Nhặt: {pickerName}
+                                {pickedTime && <span style={{ color:T.light, fontWeight:400 }}> • {pickedTime}</span>}
+                              </div>
+                            )}
+                            {fullyPacked ? (
+                              <div style={{ fontSize:10, color:T.blue, marginTop:2, fontWeight:600 }}>
+                                📮 Đã đóng xong
+                                {packedTime && <span style={{ color:T.light, fontWeight:400 }}> • {packedTime}</span>}
+                              </div>
+                            ) : (
+                              <div style={{ fontSize:10, color:T.amber, marginTop:2, fontWeight:600 }}>
+                                ⏳ Đang chờ đóng gói
+                              </div>
+                            )}
+                          </>
                         )}
                       </div>
                       <div style={{ textAlign:'right', fontSize:10, color:T.med, flexShrink:0 }}>
@@ -14024,16 +14050,31 @@ function PickingModule({ user, allUsers, mobile, products }: any) {
           }}
           onCleanupOld={async () => {
             if (!cutoffDate) return
-            const cutoffISO = new Date(cutoffDate + 'T00:00:00').toISOString()
-            const toDelete = orders.filter((o: any) =>
-              (o.status === 'picking' || o.status === 'packing') &&
-              o.purchase_date && new Date(o.purchase_date) < new Date(cutoffDate + 'T00:00:00')
-            )
+            const cutoffTime = new Date(cutoffDate + 'T00:00:00').getTime()
+            // Safeguard: CHỈ xoá đơn picking/packing có cả purchase_date VÀ updated_at trước cutoff
+            // Điều này bảo vệ đơn cũ nhưng đang được Kho xử lý (updated_at mới)
+            const toDelete = orders.filter((o: any) => {
+              if (o.status !== 'picking' && o.status !== 'packing') return false
+              // Phải có purchase_date cũ
+              if (!o.purchase_date || new Date(o.purchase_date).getTime() >= cutoffTime) return false
+              // Phải KHÔNG được update gần đây (tránh xoá đơn đang xử lý)
+              const lastUpd = o.updated_at || o.created_at
+              if (lastUpd && new Date(lastUpd).getTime() >= cutoffTime) return false
+              // Phải KHÔNG có ảnh đã chụp (NV đã bắt đầu công việc)
+              if ((o.photos_picked||[]).length > 0) return false
+              if ((o.photos_packed||[]).length > 0) return false
+              // Phải KHÔNG có item đã picked
+              const hasPickedItems = (o.items||[]).some((it: any) =>
+                (Number(it.picked_qty)||0) > 0 || (Number(it.short_qty)||0) > 0
+              )
+              if (hasPickedItems) return false
+              return true
+            })
             if (toDelete.length === 0) {
-              alert('Không có đơn nào cần dọn dẹp.')
+              alert('✅ Không có đơn nào cần dọn dẹp.\n\nLưu ý: đơn nào đang được Kho xử lý (đã có ảnh/items đã nhặt/updated gần đây) sẽ được BẢO VỆ không xoá, dù purchase_date cũ.')
               return
             }
-            if (!confirm(`Xoá ${toDelete.length} đơn cũ (trước ngày ${cutoffDate.split('-').reverse().join('/')}) đang ở trạng thái picking/packing?\n\nHành động này không thể hoàn tác.`)) return
+            if (!confirm(`Xoá ${toDelete.length} đơn cũ (trước ngày ${cutoffDate.split('-').reverse().join('/')}) đang ở trạng thái picking/packing?\n\n⚠️ Đã loại trừ các đơn đang xử lý (có ảnh, có items đã nhặt, hoặc updated gần đây).\n\nHành động này không thể hoàn tác.`)) return
             const codes = toDelete.map(o => o.order_code)
             for (const code of codes) {
               await logAudit({
@@ -14545,11 +14586,18 @@ function PackingModule({ user, allUsers, mobile, products }: any) {
 
   const fetchData = async () => {
     setLoading(true)
-    const { data } = await db.from('packing_workflow').select('*')
-      .in('status', ['packing','done'])
+    // Query 1: ALL orders đang packing (không limit vì thường <100 đơn cùng lúc)
+    const { data: pendingData } = await db.from('packing_workflow').select('*')
+      .eq('status', 'packing')
       .order('picked_at', { ascending: true })
+    // Query 2: orders done trong 3 ngày gần nhất (đủ cho tab "Xong hôm nay" + buffer)
+    const threeDaysAgo = new Date(Date.now() - 3*86400000).toISOString()
+    const { data: doneData } = await db.from('packing_workflow').select('*')
+      .eq('status', 'done')
+      .gte('packed_at', threeDaysAgo)
+      .order('packed_at', { ascending: false })
       .limit(500)
-    setOrders(data||[])
+    setOrders([...(pendingData||[]), ...(doneData||[])])
     setLoading(false)
   }
 
@@ -15844,7 +15892,7 @@ function AuditLogModule({ user, allUsers, mobile }: any) {
             <label style={{ fontSize:10, color:T.med, fontWeight:600, display:'block', marginBottom:3 }}>NV</label>
             <select value={filterUser} onChange={e => setFilterUser(e.target.value)}
               style={{ width:'100%', padding:'6px 10px', border:`1px solid ${T.border}`, borderRadius:6,
-                fontSize:11, fontFamily:'inherit', background:'#fff', outline:'none' }}>
+                fontSize:11, fontFamily:"inherit", background:"#fff", color:T.dark, outline:"none" }}>
               <option value="">Tất cả</option>
               {uniqueUsers.map((uid: string) => (
                 <option key={uid} value={uid}>{getUserName(uid)}</option>
@@ -15855,7 +15903,7 @@ function AuditLogModule({ user, allUsers, mobile }: any) {
             <label style={{ fontSize:10, color:T.med, fontWeight:600, display:'block', marginBottom:3 }}>Bảng</label>
             <select value={filterTable} onChange={e => setFilterTable(e.target.value)}
               style={{ width:'100%', padding:'6px 10px', border:`1px solid ${T.border}`, borderRadius:6,
-                fontSize:11, fontFamily:'inherit', background:'#fff', outline:'none' }}>
+                fontSize:11, fontFamily:"inherit", background:"#fff", color:T.dark, outline:"none" }}>
               <option value="">Tất cả</option>
               {uniqueTables.map((t: string) => (
                 <option key={t} value={t}>{tableLabel(t)}</option>
@@ -15866,7 +15914,7 @@ function AuditLogModule({ user, allUsers, mobile }: any) {
             <label style={{ fontSize:10, color:T.med, fontWeight:600, display:'block', marginBottom:3 }}>Hành động</label>
             <select value={filterAction} onChange={e => setFilterAction(e.target.value)}
               style={{ width:'100%', padding:'6px 10px', border:`1px solid ${T.border}`, borderRadius:6,
-                fontSize:11, fontFamily:'inherit', background:'#fff', outline:'none' }}>
+                fontSize:11, fontFamily:"inherit", background:"#fff", color:T.dark, outline:"none" }}>
               <option value="">Tất cả</option>
               {uniqueActions.map((a: string) => (
                 <option key={a} value={a}>{actionLabel(a)}</option>
@@ -15877,7 +15925,7 @@ function AuditLogModule({ user, allUsers, mobile }: any) {
             <label style={{ fontSize:10, color:T.med, fontWeight:600, display:'block', marginBottom:3 }}>Khoảng thời gian</label>
             <select value={dayRange} onChange={e => setDayRange(Number(e.target.value))}
               style={{ width:'100%', padding:'6px 10px', border:`1px solid ${T.border}`, borderRadius:6,
-                fontSize:11, fontFamily:'inherit', background:'#fff', outline:'none' }}>
+                fontSize:11, fontFamily:"inherit", background:"#fff", color:T.dark, outline:"none" }}>
               <option value={7}>7 ngày</option>
               <option value={30}>30 ngày</option>
               <option value={90}>90 ngày</option>
@@ -16467,7 +16515,7 @@ function OrderLookupTab({ user, allUsers, mobile }: any) {
             </label>
             <select value={dayRange} onChange={e => setDayRange(Number(e.target.value))}
               style={{ padding:'6px 10px', border:`1px solid ${T.border}`, borderRadius:6,
-                fontSize:11, fontFamily:'inherit', background:'#fff', outline:'none' }}>
+                fontSize:11, fontFamily:"inherit", background:"#fff", color:T.dark, outline:"none" }}>
               <option value={3}>3 ngày</option>
               <option value={7}>7 ngày</option>
               <option value={15}>15 ngày</option>
@@ -16480,7 +16528,7 @@ function OrderLookupTab({ user, allUsers, mobile }: any) {
             </label>
             <select value={statusFilter} onChange={e => setStatusFilter(e.target.value)}
               style={{ padding:'6px 10px', border:`1px solid ${T.border}`, borderRadius:6,
-                fontSize:11, fontFamily:'inherit', background:'#fff', outline:'none' }}>
+                fontSize:11, fontFamily:"inherit", background:"#fff", color:T.dark, outline:"none" }}>
               <option value="all">Tất cả</option>
               <option value="picking">Chờ nhặt</option>
               <option value="packing">Chờ đóng</option>
@@ -18083,7 +18131,7 @@ function SaleOrderTrackingModule({ user, allUsers, mobile }: any) {
         <div style={{ display:'flex', gap:8, flexWrap:'wrap', alignItems:'center' }}>
           <select value={dayRange} onChange={e => setDayRange(Number(e.target.value))}
             style={{ padding:'5px 10px', border:`1px solid ${T.border}`, borderRadius:6,
-              fontSize:11, fontFamily:'inherit', background:'#fff', outline:'none' }}>
+              fontSize:11, fontFamily:"inherit", background:"#fff", color:T.dark, outline:"none" }}>
             <option value={3}>3 ngày</option>
             <option value={7}>7 ngày</option>
             <option value={15}>15 ngày</option>
