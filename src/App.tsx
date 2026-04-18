@@ -12,7 +12,7 @@ const db = createClient(SUPABASE_URL, SUPABASE_KEY)
 // APP_VERSION — dùng để invalidate cache localStorage mỗi khi deploy version mới
 // (ngăn bug quyền user bị "reset" do cache position cũ sau deploy)
 // ⚠️ MỖI LẦN DEPLOY FEATURE MỚI CÓ PERMISSION MỚI, BUMP SỐ NÀY:
-const APP_VERSION = '2026.04.17.v33'
+const APP_VERSION = '2026.04.17.v34'
 
 // ════════════════════════════════════════════════════════════════
 // AUDIT LOG — ghi nhận các hành động phá hoại data để trace lại
@@ -2307,7 +2307,7 @@ function Overtime({ user, allUsers, mobile }: any) {
     .map((u: any) => ({
       ...u,
       reqs: monthReqs.filter((r: any) => r.user_id===u.id),
-      totalHours: monthReqs.filter((r: any) => r.user_id===u.id).reduce((sum: number, r: any) => sum+(r.hours||0), 0)
+      totalHours: Math.round(monthReqs.filter((r: any) => r.user_id===u.id).reduce((sum: number, r: any) => sum+(r.hours||0), 0) * 4) / 4
     }))
     .filter((u: any) => u.reqs.length > 0)
 
@@ -2527,6 +2527,7 @@ function Leave({ user, allUsers, leaveRequests, setLeaveRequests, mobile }: any)
   const [tab, setTab]               = useState('mine')
   const [submitError, setSubmitError] = useState('')
   const [submitting, setSubmitting]   = useState(false)
+  const [expandedLeaveId, setExpandedLeaveId] = useState<string|null>(null)
   const p = mobile ? '16px' : '24px'
 
   // Refresh data mỗi khi mở tab Nghỉ phép
@@ -2699,7 +2700,7 @@ function Leave({ user, allUsers, leaveRequests, setLeaveRequests, mobile }: any)
           </div>
         </Card>
       ) : (
-        <div style={{ display:'flex', flexDirection:'column', gap:10 }}>
+        <div style={{ display:'flex', flexDirection:'column', gap:8 }}>
           {displayList.map((r: any) => {
             const req = allUsers.find((u: any) => u.id === r.user_id)
             const rev = allUsers.find((u: any) => u.id === r.reviewed_by)
@@ -2707,55 +2708,93 @@ function Leave({ user, allUsers, leaveRequests, setLeaveRequests, mobile }: any)
             const days = r.days || daysBetween(r.start_date, r.end_date)
             const canRev = canReviewReq(r)
             const canDel = (canAll || r.user_id === user.id || (canApprove && dids.includes(r.user_id)))
+            const isExpanded = expandedLeaveId === r.id
+            const dateTxt = r.half_day==='yes'
+              ? `${fmtDate(r.start_date)} (${r.half_day_session==='morning'?'sáng':'chiều'})`
+              : days === 1
+                ? fmtDate(r.start_date)
+                : `${fmtDate(r.start_date)}→${fmtDate(r.end_date)}`
+            const durTxt = r.half_day==='yes' ? '½ngày' : `${days}N`
             return (
               <div key={r.id} style={{ background:T.card,
                 border:`1px solid ${r.status==='pending'?T.amber:T.border}`,
-                borderRadius:12, padding:'16px 18px' }}>
-                <div style={{ display:'flex', justifyContent:'space-between', alignItems:'flex-start', flexWrap:'wrap', gap:10 }}>
-                  <div style={{ flex:1 }}>
-                    <div style={{ display:'flex', gap:10, alignItems:'center', marginBottom:6, flexWrap:'wrap' }}>
-                      {req && <Av u={req} size={28} showTitle/>}
-                      <span style={{ fontSize:13, fontWeight:700, padding:'2px 9px', borderRadius:20, color:T.goldText, background:T.goldBg }}>
+                borderRadius:10, overflow:'hidden',
+                transition:'all .15s' }}>
+                {/* COMPACT ROW — always visible */}
+                <div onClick={() => setExpandedLeaveId(isExpanded ? null : r.id)}
+                  style={{ padding: mobile?'10px 12px':'10px 14px', cursor:'pointer',
+                    display:'flex', alignItems:'center', gap:10,
+                    background: isExpanded ? T.bg : 'transparent' }}>
+                  {req && <Av u={req} size={mobile?28:32}/>}
+                  <div style={{ flex:1, minWidth:0 }}>
+                    <div style={{ display:'flex', gap:8, alignItems:'center', marginBottom:2, flexWrap:'wrap' }}>
+                      <span style={{ fontSize:13, fontWeight:700, color:T.dark,
+                        overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap', maxWidth:mobile?120:220 }}>
+                        {req?.name || '—'}
+                      </span>
+                      <span style={{ fontSize:10, fontWeight:700, padding:'2px 7px', borderRadius:20,
+                        color:T.goldText, background:T.goldBg }}>
                         {LEAVE_TYPE[r.type]||r.type}
                       </span>
-                      <span style={{ fontSize:11, color:T.light }}>
-                        {r.half_day==='yes'
-                          ? `🌓 Nửa ngày${r.half_day_session==='morning'?' (sáng)':r.half_day_session==='afternoon'?' (chiều)':''}`
-                          : `${days} ngày`}
-                      </span>
-                      <span style={{ fontSize:10, padding:'2px 7px', borderRadius:20, background:T.grayBg, color:T.gray }}>
-                        {approverLabel(r)}
-                      </span>
+                      <span style={{ fontSize:10, color:T.light, fontWeight:600 }}>{durTxt}</span>
                     </div>
-                    <div style={{ fontSize:12, color:T.dark, marginBottom:3 }}>
-                      {r.half_day==='yes'
-                        ? <>🌓 {fmtDate(r.start_date)} — {r.half_day_session==='morning'?'Buổi sáng':'Buổi chiều'}</>
-                        : <>📅 {fmtDate(r.start_date)} → {fmtDate(r.end_date)}</>
-                      }
+                    <div style={{ fontSize:11, color:T.med,
+                      overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap' }}>
+                      📅 {dateTxt} • {r.reason}
                     </div>
-                    <div style={{ fontSize:12, color:T.med }}>Lý do: {r.reason}</div>
-                    {r.review_notes && <div style={{ fontSize:11, color:T.blue, marginTop:4 }}>💬 {r.review_notes}</div>}
-                    {rev && r.reviewed_at && <div style={{ fontSize:11, color:T.light, marginTop:3 }}>Xử lý bởi {rev.name} • {r.reviewed_at}</div>}
-                    <div style={{ fontSize:11, color:T.light, marginTop:3 }}>Gửi lúc: {r.created_at}</div>
                   </div>
-                  <div style={{ display:'flex', flexDirection:'column', gap:6, alignItems:'flex-end' }}>
-                    <span style={{ fontSize:11, fontWeight:700, padding:'4px 10px', borderRadius:20, color:sc.color, background:sc.bg }}>{sc.label}</span>
-                    {canRev && (
-                      <button onClick={() => { setReviewItem(r); setReviewNotes('') }}
-                        style={{ padding:'6px 13px', borderRadius:7, border:`1.5px solid ${T.gold}`,
-                          background:T.goldBg, cursor:'pointer', fontSize:12, fontFamily:'inherit', color:T.goldText, fontWeight:600 }}>
-                        Xem xét
-                      </button>
-                    )}
-                    {canDel && (
-                      <button onClick={() => remove(r.id)}
-                        style={{ padding:'5px 11px', borderRadius:7, border:`1px solid ${T.redBg}`,
-                          background:T.redBg, cursor:'pointer', fontSize:11, fontFamily:'inherit', color:T.red }}>
-                        🗑️ Xóa
-                      </button>
-                    )}
+                  <div style={{ display:'flex', flexDirection:'column', gap:4, alignItems:'flex-end', flexShrink:0 }}>
+                    <span style={{ fontSize:10, fontWeight:700, padding:'3px 8px', borderRadius:20,
+                      color:sc.color, background:sc.bg, whiteSpace:'nowrap' }}>{sc.label}</span>
+                    <span style={{ fontSize:9, color:T.light }}>{isExpanded?'▲':'▼'}</span>
                   </div>
                 </div>
+
+                {/* EXPANDED — only when clicked */}
+                {isExpanded && (
+                  <div style={{ padding:'12px 14px', borderTop:`1px solid ${T.border}`, background:'#fff' }}>
+                    <div style={{ fontSize:11, color:T.light, marginBottom:8 }}>
+                      {approverLabel(r)} • Gửi: {r.created_at}
+                    </div>
+                    <div style={{ fontSize:12, color:T.dark, marginBottom:6 }}>
+                      <b>Ngày: </b>
+                      {r.half_day==='yes'
+                        ? <>🌓 {fmtDate(r.start_date)} — {r.half_day_session==='morning'?'Buổi sáng':'Buổi chiều'}</>
+                        : <>📅 {fmtDate(r.start_date)} → {fmtDate(r.end_date)} ({days} ngày)</>
+                      }
+                    </div>
+                    <div style={{ fontSize:12, color:T.med, marginBottom:6 }}>
+                      <b>Lý do: </b>{r.reason}
+                    </div>
+                    {r.review_notes && (
+                      <div style={{ fontSize:12, color:T.blue, marginBottom:6,
+                        padding:'6px 8px', background:T.blueBg, borderRadius:6 }}>
+                        💬 <b>Ghi chú duyệt:</b> {r.review_notes}
+                      </div>
+                    )}
+                    {rev && r.reviewed_at && (
+                      <div style={{ fontSize:11, color:T.light, marginBottom:8 }}>
+                        Xử lý bởi <b style={{ color:T.dark }}>{rev.name}</b> • {r.reviewed_at}
+                      </div>
+                    )}
+                    <div style={{ display:'flex', gap:8, flexWrap:'wrap' }}>
+                      {canRev && (
+                        <button onClick={(e) => { e.stopPropagation(); setReviewItem(r); setReviewNotes('') }}
+                          style={{ padding:'6px 13px', borderRadius:7, border:`1.5px solid ${T.gold}`,
+                            background:T.goldBg, cursor:'pointer', fontSize:12, fontFamily:'inherit', color:T.goldText, fontWeight:600 }}>
+                          Xem xét
+                        </button>
+                      )}
+                      {canDel && (
+                        <button onClick={(e) => { e.stopPropagation(); remove(r.id) }}
+                          style={{ padding:'5px 11px', borderRadius:7, border:`1px solid ${T.redBg}`,
+                            background:T.redBg, cursor:'pointer', fontSize:11, fontFamily:'inherit', color:T.red }}>
+                          🗑️ Xóa
+                        </button>
+                      )}
+                    </div>
+                  </div>
+                )}
               </div>
             )
           })}
