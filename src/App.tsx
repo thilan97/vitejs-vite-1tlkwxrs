@@ -12,7 +12,7 @@ const db = createClient(SUPABASE_URL, SUPABASE_KEY)
 // APP_VERSION — dùng để invalidate cache localStorage mỗi khi deploy version mới
 // (ngăn bug quyền user bị "reset" do cache position cũ sau deploy)
 // ⚠️ MỖI LẦN DEPLOY FEATURE MỚI CÓ PERMISSION MỚI, BUMP SỐ NÀY:
-const APP_VERSION = '2026.04.17.v23'
+const APP_VERSION = '2026.04.17.v24'
 
 // ════════════════════════════════════════════════════════════════
 // AUDIT LOG — ghi nhận các hành động phá hoại data để trace lại
@@ -13599,11 +13599,16 @@ function PickingModule({ user, allUsers, mobile, products }: any) {
 
   useEffect(() => {
     fetchData()
+  }, [])
+
+  // Auto-sync KV mỗi 2 phút — PAUSE khi user đang mở đơn (tránh disrupt công việc)
+  useEffect(() => {
+    if (selectedCode) return  // user đang làm việc → không auto-sync
     const interval = setInterval(() => {
       syncKV().then(() => fetchData(true))
     }, 120000)
     return () => clearInterval(interval)
-  }, [])
+  }, [selectedCode])
 
   const norm = (s: string) => (s||'').toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g,'').replace(/đ/g,'d').trim()
   const filterByQ = (list: any[]) => {
@@ -13721,8 +13726,10 @@ function PickingModule({ user, allUsers, mobile, products }: any) {
         action={
           <div style={{ display:'flex', gap:8, alignItems:'center' }}>
             {lastSync && (
-              <span style={{ fontSize:10, color:T.light }}>
-                {syncing ? '🔄 Sync...' : '✓ ' + lastSync.toLocaleTimeString('vi-VN', {hour:'2-digit',minute:'2-digit'})}
+              <span style={{ fontSize:10, color: selectedCode ? T.amber : T.light }}>
+                {syncing ? '🔄 Sync...' :
+                 selectedCode ? '⏸ Pause (đang mở đơn)' :
+                 '✓ ' + lastSync.toLocaleTimeString('vi-VN', {hour:'2-digit',minute:'2-digit'})}
               </span>
             )}
             <button onClick={syncKV} disabled={syncing}
@@ -14404,9 +14411,14 @@ function PackingModule({ user, allUsers, mobile, products }: any) {
 
   useEffect(() => {
     fetchData()
+  }, [])
+
+  // Auto-refresh mỗi 30 giây — PAUSE khi user đang mở đơn (tránh disrupt công việc đóng đơn)
+  useEffect(() => {
+    if (selectedCode) return  // user đang làm việc
     const interval = setInterval(fetchData, 30000)
     return () => clearInterval(interval)
-  }, [])
+  }, [selectedCode])
 
   const norm = (s: string) => (s||'').toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g,'').replace(/đ/g,'d').trim()
   const filterByQ = (list: any[]) => {
@@ -14499,11 +14511,18 @@ function PackingModule({ user, allUsers, mobile, products }: any) {
       <Topbar mobile={mobile} title="📸 Đóng đơn"
         subtitle={`${pendingOrds.length} chờ đóng • ${doneTodayOrds.length} đã xong hôm nay`}
         action={
-          <button onClick={fetchData}
-            style={{ padding:'5px 12px', borderRadius:20, border:`1px solid ${T.border}`,
-              background:'transparent', cursor:'pointer', fontFamily:'inherit', fontSize:11, color:T.med }}>
-            🔄 Refresh
-          </button>
+          <div style={{ display:'flex', gap:8, alignItems:'center' }}>
+            {selectedCode && (
+              <span style={{ fontSize:10, color:T.amber }}>
+                ⏸ Pause (đang mở đơn)
+              </span>
+            )}
+            <button onClick={fetchData}
+              style={{ padding:'5px 12px', borderRadius:20, border:`1px solid ${T.border}`,
+                background:'transparent', cursor:'pointer', fontFamily:'inherit', fontSize:11, color:T.med }}>
+              🔄 Refresh
+            </button>
+          </div>
         }/>
 
       {/* Tabs */}
