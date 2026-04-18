@@ -12,7 +12,7 @@ const db = createClient(SUPABASE_URL, SUPABASE_KEY)
 // APP_VERSION — dùng để invalidate cache localStorage mỗi khi deploy version mới
 // (ngăn bug quyền user bị "reset" do cache position cũ sau deploy)
 // ⚠️ MỖI LẦN DEPLOY FEATURE MỚI CÓ PERMISSION MỚI, BUMP SỐ NÀY:
-const APP_VERSION = '2026.04.17.v29'
+const APP_VERSION = '2026.04.17.v30'
 
 // ════════════════════════════════════════════════════════════════
 // AUDIT LOG — ghi nhận các hành động phá hoại data để trace lại
@@ -14630,6 +14630,18 @@ function PackingModule({ user, allUsers, mobile, products }: any) {
     setOrders(prev => prev.map((o: any) => o.order_code === orderCode ? {...o, ...upd} : o))
     setSelectedCode(null)
     alert(`✅ Đã hoàn tất đóng hàng${finalPackerIds.length>1?` (${finalPackerIds.length} người cùng đóng)`:''}`)
+
+    // Trigger AI check async — KHÔNG await, không chặn flow
+    // Edge function sẽ tự update DB khi xong, NV không cần đợi
+    fetch(`${SUPABASE_URL}/functions/v1/ai-check-order`, {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${SUPABASE_ANON}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({ order_code: orderCode }),
+    }).catch(() => { /* silent — AI check là optional */ })
+
     return true
   }
 
@@ -14654,6 +14666,19 @@ function PackingModule({ user, allUsers, mobile, products }: any) {
     const next = current.filter(id => id !== user.id)
     const upd: any = { active_packers: next, updated_at: new Date().toISOString() }
     await db.from('packing_workflow').update(upd).eq('order_code', orderCode)
+    setOrders(prev => prev.map((o: any) => o.order_code === orderCode ? {...o, ...upd} : o))
+  }
+
+  // QM review AI flag: 'qm_ok' = AI đúng, 'qm_wrong' = AI sai
+  const reviewAiFlag = async (orderCode: string, verdict: 'qm_ok'|'qm_wrong') => {
+    const upd: any = {
+      ai_check_status: verdict,
+      ai_qm_reviewed_by: user.id,
+      ai_qm_reviewed_at: new Date().toISOString(),
+      updated_at: new Date().toISOString(),
+    }
+    const { error } = await db.from('packing_workflow').update(upd).eq('order_code', orderCode)
+    if (error) { alert('❌ Lỗi: ' + error.message); return }
     setOrders(prev => prev.map((o: any) => o.order_code === orderCode ? {...o, ...upd} : o))
   }
 
@@ -14822,6 +14847,27 @@ function PackingModule({ user, allUsers, mobile, products }: any) {
                         {finalPackerIds.length > 0 && <>📮 Đóng: {finalPackerNames}</>}
                       </div>
                     )}
+                    {/* AI check badge */}
+                    {tab === 'done_today' && o.ai_check_status && (
+                      <div style={{ marginTop:5, padding:'3px 8px', borderRadius:6, fontSize:9, fontWeight:700,
+                        ...(o.ai_check_status === 'pending' ? { background:T.bg, color:T.light } :
+                            o.ai_check_status === 'matched' ? { background:T.greenBg, color:T.green } :
+                            o.ai_check_status === 'qm_ok'   ? { background:T.greenBg, color:T.green } :
+                            o.ai_check_status === 'qm_wrong'? { background:T.bg, color:T.light } :
+                            o.ai_check_status === 'mismatch'? { background:T.redBg, color:T.red } :
+                            o.ai_check_status === 'unclear' ? { background:T.amberBg, color:T.amber } :
+                            { background:T.bg, color:T.light }) }}>
+                        {o.ai_check_status === 'pending'  && '🤖 AI đang check...'}
+                        {o.ai_check_status === 'matched'  && '🤖✓ AI khớp'}
+                        {o.ai_check_status === 'qm_ok'    && '✓ QM đã duyệt (AI đúng)'}
+                        {o.ai_check_status === 'qm_wrong' && '✓ QM đã duyệt (AI sai)'}
+                        {o.ai_check_status === 'mismatch' && (
+                          <>🤖⚠️ AI LỆCH: đơn {o.ai_check_result?.order_total_qty ?? '?'} vs AI {o.ai_check_result?.ai_total_qty ?? '?'}</>
+                        )}
+                        {o.ai_check_status === 'unclear'  && '🤖❓ AI không rõ ảnh'}
+                        {o.ai_check_status === 'error'    && '🤖 AI lỗi'}
+                      </div>
+                    )}
                     {wasReverted && (
                       <div style={{ marginTop:5, padding:'3px 8px', borderRadius:6,
                         background:T.red, color:'#fff', fontSize:9, fontWeight:800, letterSpacing:.3 }}>
@@ -14872,6 +14918,7 @@ function PackingModule({ user, allUsers, mobile, products }: any) {
             onUpdateNoBox={(v: boolean) => updateNoBox(selected.order_code, v)}
             onJoinGroup={() => joinPackingGroup(selected.order_code)}
             onLeaveGroup={() => leavePackingGroup(selected.order_code)}
+            onAiReview={(verdict: 'qm_ok'|'qm_wrong') => reviewAiFlag(selected.order_code, verdict)}
             readOnly={selected.status === 'done' || !canPack}
           />
         )}
@@ -14931,6 +14978,89 @@ function JoinPackConfirmModal({ names, onCancel, onConfirm }: any) {
           </button>
         </div>
       </div>
+    </div>
+  )
+}
+
+// ── AiCheckBanner — hiển thị kết quả AI check + QM review ──
+function AiCheckBanner({ ord, onReview, canReview }: any) {
+  const status = ord.ai_check_status
+  const result = ord.ai_check_result || {}
+
+  const config: any = {
+    matched:  { bg:T.greenBg, border:T.green, color:T.green, icon:'🤖✓',
+                title:`AI đã check: ${result.order_total_qty ?? '?'} items khớp` },
+    qm_ok:    { bg:T.greenBg, border:T.green, color:T.green, icon:'✓',
+                title:`QM đã duyệt (AI đúng)` },
+    qm_wrong: { bg:T.bg, border:T.border, color:T.med, icon:'✓',
+                title:`QM đã duyệt (AI sai — đã bỏ qua)` },
+    mismatch: { bg:T.redBg, border:T.red, color:T.red, icon:'🤖⚠️',
+                title:`AI CHECK: Lệch ${Math.abs((result.ai_total_qty||0) - (result.order_total_qty||0))} items` },
+    unclear:  { bg:T.amberBg, border:T.amber, color:T.amber, icon:'🤖❓',
+                title:`AI không thể đếm chính xác` },
+    error:    { bg:T.bg, border:T.border, color:T.light, icon:'🤖',
+                title:`AI check lỗi` },
+  }
+  const c = config[status] || config.error
+
+  return (
+    <div style={{ padding:'10px 12px', marginBottom:12, background:c.bg,
+      border:`2px solid ${c.border}`, borderRadius:8 }}>
+      <div style={{ fontSize:12, fontWeight:800, color:c.color, marginBottom:6 }}>
+        {c.icon} {c.title}
+      </div>
+
+      {/* Chi tiết AI đếm */}
+      {(status === 'mismatch' || status === 'unclear' || status === 'matched') && (
+        <div style={{ fontSize:11, color:T.dark, lineHeight:1.6, marginBottom:canReview?10:0 }}>
+          <div>📋 <b>Đơn có:</b> {result.order_total_qty ?? '?'} items</div>
+          <div>🤖 <b>AI đếm được:</b> {result.ai_total_qty ?? '?'} items
+            {result.ai_confidence && <span style={{ color:T.light, fontSize:10 }}> (confidence: {result.ai_confidence})</span>}
+          </div>
+          {result.ai_description && (
+            <div style={{ marginTop:5, padding:'6px 8px', background:'#fff', borderRadius:4,
+              fontSize:10, color:T.med, lineHeight:1.5, fontStyle:'italic' }}>
+              💬 "{result.ai_description}"
+            </div>
+          )}
+          {result.unclear_reason && (
+            <div style={{ marginTop:3, fontSize:10, color:T.amber }}>
+              ⚠️ Lý do không rõ: {result.unclear_reason}
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* QM review buttons */}
+      {canReview && (
+        <div style={{ display:'flex', gap:8 }}>
+          <button onClick={() => {
+            if (confirm('Xác nhận AI báo ĐÚNG (đơn có sai sót cần xử lý)?')) onReview('qm_ok')
+          }}
+            style={{ flex:1, padding:'7px', borderRadius:6, border:`1px solid ${T.red}`,
+              background:'#fff', color:T.red, cursor:'pointer', fontFamily:'inherit',
+              fontSize:11, fontWeight:700 }}>
+            ⚠️ AI đúng (đơn có sai)
+          </button>
+          <button onClick={() => {
+            if (confirm('Xác nhận AI báo SAI (đơn thực tế OK, bỏ qua flag)?')) onReview('qm_wrong')
+          }}
+            style={{ flex:1, padding:'7px', borderRadius:6, border:`1px solid ${T.green}`,
+              background:'#fff', color:T.green, cursor:'pointer', fontFamily:'inherit',
+              fontSize:11, fontWeight:700 }}>
+            ✓ AI sai (đơn OK)
+          </button>
+        </div>
+      )}
+
+      {/* Đã QM reviewed — hiển thị ai + khi nào */}
+      {(status === 'qm_ok' || status === 'qm_wrong') && ord.ai_qm_reviewed_at && (
+        <div style={{ fontSize:10, color:T.light, marginTop:4 }}>
+          Reviewed: {new Date(ord.ai_qm_reviewed_at).toLocaleString('vi-VN', {
+            day:'2-digit', month:'2-digit', hour:'2-digit', minute:'2-digit'
+          })}
+        </div>
+      )}
     </div>
   )
 }
@@ -15018,7 +15148,7 @@ function ChangeLogBanner({ ord }: any) {
   )
 }
 
-function PackingDetailPanel({ ord, mobile, user, allUsers, products, onClose, onFinish, onUpdatePhotos, onUpdateNoBox, onJoinGroup, onLeaveGroup, readOnly }: any) {
+function PackingDetailPanel({ ord, mobile, user, allUsers, products, onClose, onFinish, onUpdatePhotos, onUpdateNoBox, onJoinGroup, onLeaveGroup, onAiReview, readOnly }: any) {
   const getName = (id: string) => allUsers.find((u: any) => u.id === id)?.name || '?'
   const totalItems = (ord.items || []).length
   const { min, max } = photoCountRangeV2(totalItems)
@@ -15130,6 +15260,12 @@ function PackingDetailPanel({ ord, mobile, user, allUsers, products, onClose, on
       {/* ══ BANNER đơn đã bị sửa ══ */}
       {(ord.modification_count || 0) > 0 && (
         <ChangeLogBanner ord={ord}/>
+      )}
+
+      {/* ══ AI CHECK BANNER ══ */}
+      {ord.ai_check_status && ord.ai_check_status !== 'pending' && (
+        <AiCheckBanner ord={ord} onReview={onAiReview}
+          canReview={!readOnly && (ord.ai_check_status === 'mismatch' || ord.ai_check_status === 'unclear')}/>
       )}
 
       {/* ══ Multi-packer: banner ai đang cùng đóng ══ */}
@@ -18202,59 +18338,65 @@ function SaleOrderTrackingModule({ user, allUsers, mobile }: any) {
 // ── Component hiển thị ảnh cho Sale trong trang Theo dõi đơn ──
 function TrackingOrderPhotos({ photosPicked, photosPacked, orderCode }: any) {
   const [showModal, setShowModal] = useState<string|null>(null)
-  const [activeTab, setActiveTab] = useState<'picked'|'packed'>('picked')
 
   const getUrl = (p: any): string => typeof p === 'string' ? p : (p?.url || '')
-  const photos = activeTab === 'picked' ? photosPicked : photosPacked
+  const getAt  = (p: any): string => typeof p === 'string' ? '' : (p?.at || '')
 
   const hasPicked = photosPicked.length > 0
   const hasPacked = photosPacked.length > 0
+  if (!hasPicked && !hasPacked) return null
+
+  const renderGrid = (photos: any[], accent: string) => (
+    <div style={{ display:'grid', gridTemplateColumns:'repeat(auto-fill, minmax(80px, 1fr))', gap:6 }}>
+      {photos.map((ph: any, i: number) => {
+        const url = getUrl(ph)
+        const at  = getAt(ph)
+        if (!url) return null
+        return (
+          <div key={i} style={{ position:'relative', borderRadius:6, overflow:'hidden',
+            border:`1px solid ${accent}`, cursor:'pointer', background:'#fff' }}
+            onClick={() => setShowModal(url)}>
+            <div style={{ aspectRatio:'1/1' }}>
+              <img src={url} alt={`${orderCode} ${i+1}`}
+                style={{ width:'100%', height:'100%', objectFit:'cover', display:'block' }}/>
+            </div>
+            {at && (
+              <div style={{ fontSize:8, color:T.light, padding:'2px 4px', background:T.bg,
+                textAlign:'center', lineHeight:1.2 }}>
+                {new Date(at).toLocaleTimeString('vi-VN', {hour:'2-digit', minute:'2-digit'})}
+              </div>
+            )}
+          </div>
+        )
+      })}
+    </div>
+  )
 
   return (
     <div style={{ marginBottom:10, padding:'10px 12px', background:'#fff', borderRadius:6,
       border:`1px solid ${T.border}` }}>
-      <div style={{ fontSize:11, fontWeight:700, color:T.med, marginBottom:8 }}>
+      <div style={{ fontSize:11, fontWeight:700, color:T.med, marginBottom:10 }}>
         📸 ẢNH ĐƠN HÀNG
       </div>
-      <div style={{ display:'flex', gap:6, marginBottom:10 }}>
-        {hasPicked && (
-          <button onClick={() => setActiveTab('picked')}
-            style={{ padding:'5px 12px', borderRadius:16, cursor:'pointer',
-              fontFamily:'inherit', fontSize:11, fontWeight:600,
-              border:`1.5px solid ${activeTab==='picked'?T.green:T.border}`,
-              background: activeTab==='picked'?T.greenBg:'#fff',
-              color: activeTab==='picked'?T.green:T.med }}>
-            📦 Hàng đã nhặt ({photosPicked.length})
-          </button>
-        )}
-        {hasPacked && (
-          <button onClick={() => setActiveTab('packed')}
-            style={{ padding:'5px 12px', borderRadius:16, cursor:'pointer',
-              fontFamily:'inherit', fontSize:11, fontWeight:600,
-              border:`1.5px solid ${activeTab==='packed'?T.blue:T.border}`,
-              background: activeTab==='packed'?T.blueBg:'#fff',
-              color: activeTab==='packed'?T.blue:T.med }}>
-            📮 Ảnh thùng ({photosPacked.length})
-          </button>
-        )}
-      </div>
-      <div style={{ display:'grid', gridTemplateColumns:'repeat(auto-fill, minmax(80px, 1fr))',
-        gap:6 }}>
-        {photos.map((ph: any, i: number) => {
-          const url = getUrl(ph)
-          if (!url) return null
-          return (
-            <div key={i} style={{ position:'relative', borderRadius:6, overflow:'hidden',
-              border:`1px solid ${T.border}`, cursor:'pointer' }}
-              onClick={() => setShowModal(url)}>
-              <div style={{ aspectRatio:'1/1' }}>
-                <img src={url} alt={`${orderCode} ${i+1}`}
-                  style={{ width:'100%', height:'100%', objectFit:'cover', display:'block' }}/>
-              </div>
-            </div>
-          )
-        })}
-      </div>
+
+      {hasPicked && (
+        <div style={{ marginBottom: hasPacked ? 14 : 0 }}>
+          <div style={{ fontSize:11, fontWeight:700, color:T.green, marginBottom:6 }}>
+            📦 Hàng đã nhặt ({photosPicked.length} ảnh)
+          </div>
+          {renderGrid(photosPicked, T.green)}
+        </div>
+      )}
+
+      {hasPacked && (
+        <div>
+          <div style={{ fontSize:11, fontWeight:700, color:T.blue, marginBottom:6 }}>
+            📮 Ảnh thùng đóng ({photosPacked.length} ảnh)
+          </div>
+          {renderGrid(photosPacked, T.blue)}
+        </div>
+      )}
+
       {showModal && (
         <div onClick={() => setShowModal(null)}
           style={{ position:'fixed', inset:0, background:'rgba(0,0,0,0.9)', zIndex:9999,
@@ -18262,6 +18404,12 @@ function TrackingOrderPhotos({ photosPicked, photosPacked, orderCode }: any) {
             cursor:'zoom-out' }}>
           <img src={showModal} alt="Preview"
             style={{ maxWidth:'100%', maxHeight:'100%', objectFit:'contain' }}/>
+          <button onClick={e => { e.stopPropagation(); setShowModal(null) }}
+            style={{ position:'absolute', top:20, right:20, width:40, height:40,
+              borderRadius:20, border:'none', background:'rgba(255,255,255,0.2)', color:'#fff',
+              cursor:'pointer', fontSize:20 }}>
+            ✕
+          </button>
         </div>
       )}
     </div>
