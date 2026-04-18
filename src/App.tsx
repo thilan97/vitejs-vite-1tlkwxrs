@@ -12,7 +12,7 @@ const db = createClient(SUPABASE_URL, SUPABASE_KEY)
 // APP_VERSION — dùng để invalidate cache localStorage mỗi khi deploy version mới
 // (ngăn bug quyền user bị "reset" do cache position cũ sau deploy)
 // ⚠️ MỖI LẦN DEPLOY FEATURE MỚI CÓ PERMISSION MỚI, BUMP SỐ NÀY:
-const APP_VERSION = '2026.04.17.v21'
+const APP_VERSION = '2026.04.17.v22'
 
 // ════════════════════════════════════════════════════════════════
 // AUDIT LOG — ghi nhận các hành động phá hoại data để trace lại
@@ -163,7 +163,7 @@ const getPerm = (user: any) => {
     handlePriority:     isAdmin || (pos.perm_handle_priority ?? false),
     viewWarehouseStats: isAdmin || (pos.perm_view_warehouse_stats ?? false) || (pos.perm_manage_inventory ?? false),
     manageSchedule:     isAdmin || (pos.perm_manage_warehouse_schedule ?? false) || (pos.perm_manage_inventory ?? false),
-    trackOrders:        isAdmin || (pos.perm_track_orders ?? false) || isSale,
+    trackOrders:        isAdmin || (pos.perm_track_orders ?? false) || (user?.dept_id === 'sale'),
   }
 }
 
