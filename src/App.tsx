@@ -12,7 +12,7 @@ const db = createClient(SUPABASE_URL, SUPABASE_KEY)
 // APP_VERSION — dùng để invalidate cache localStorage mỗi khi deploy version mới
 // (ngăn bug quyền user bị "reset" do cache position cũ sau deploy)
 // ⚠️ MỖI LẦN DEPLOY FEATURE MỚI CÓ PERMISSION MỚI, BUMP SỐ NÀY:
-const APP_VERSION = '2026.04.17.v14'
+const APP_VERSION = '2026.04.17.v15'
 
 // ════════════════════════════════════════════════════════════════
 // AUDIT LOG — ghi nhận các hành động phá hoại data để trace lại
@@ -161,6 +161,8 @@ const getPerm = (user: any) => {
     viewAuditLog:       isAdmin || (pos.perm_view_audit_log ?? false),
     submitPriority:     isAdmin || (pos.perm_submit_priority ?? false),
     handlePriority:     isAdmin || (pos.perm_handle_priority ?? false),
+    viewWarehouseStats: isAdmin || (pos.perm_view_warehouse_stats ?? false) || (pos.perm_manage_inventory ?? false),
+    manageSchedule:     isAdmin || (pos.perm_manage_warehouse_schedule ?? false) || (pos.perm_manage_inventory ?? false),
   }
 }
 
@@ -208,6 +210,8 @@ const ALL_PERMS = [
   { key:'perm_view_audit_log',       label:'Xem nhật ký hoạt động (Audit log)',  group:'Quản trị' },
   { key:'perm_submit_priority',      label:'Gửi phiếu ưu tiên (Sale)',           group:'Sale'     },
   { key:'perm_handle_priority',      label:'Nhận & xử lý phiếu ưu tiên (Kho)',   group:'Kho'      },
+  { key:'perm_view_warehouse_stats',     label:'Xem thống kê hiệu suất Kho',     group:'Kho'      },
+  { key:'perm_manage_warehouse_schedule', label:'Quản lý lịch Kho (QM Kho)',     group:'Kho'      },
 ]
 // ── UTILITIES ────────────────────────────────────
 const fmtNow   = () => new Date().toLocaleString('vi-VN',{hour:'2-digit',minute:'2-digit',day:'2-digit',month:'2-digit',year:'numeric'})
@@ -684,6 +688,8 @@ const NAV_GROUPS = (perm: any, deptId = '') => {
         (deptId==='kho'||perm.viewAllDashboard) && { id:'inventory', icon:'📦', label:'Kiểm kê kho' },
         hasPicking && { id:'picking', icon:'📥', label:'Nhặt hàng' },
         hasPicking && { id:'packing', icon:'📸', label:'Đóng đơn' },
+        { id:'schedule', icon:'📅', label:'Lịch Kho' },
+        perm.viewWarehouseStats && { id:'whstats', icon:'📊', label:'Hiệu suất Kho' },
         (perm.managePayment||perm.viewAllDashboard) && { id:'payment', icon:'💸', label:'Lệnh CK' },
       ].filter(Boolean)
     },
@@ -7016,6 +7022,8 @@ export default function App() {
           {validPage==='notifications' && <NotificationPage {...pp} groups={notifGroups} totalUnread={notifUnread} totalItems={notifTotal} reads={notificationReads} setReads={setNotificationReads} setPage={setPage}/>}
           {validPage==='picking'    && <PickingModule {...pp} products={products}/>}
           {validPage==='packing'    && <PackingModule {...pp} products={products}/>}
+          {validPage==='schedule'   && <WarehouseScheduleModule {...pp} leaveRequests={leaveRequests} attendance={attendance}/>}
+          {validPage==='whstats'    && <WarehouseStatsModule {...pp}/>}
           {validPage==='priority'   && <PriorityRequestModule {...pp}/>}
           {validPage==='audit'      && <AuditLogModule {...pp}/>}
           {validPage==='settings'   && <Settings {...pp} setUser={setUser} settings={settings} setSettings={setSettings} onManualReset={manualReset}/>}
@@ -15601,11 +15609,8 @@ function PhotoGallery({ title, photos, allUsers, orderCode, kind }: any) {
 
       if (files.length === 0) { alert('❌ Không tải được ảnh nào'); return }
 
-      const shareData: any = {
-        title: `${orderCode} — ${kind === 'picked' ? 'Ảnh hàng đã nhặt' : 'Ảnh thùng hàng'}`,
-        text: `Đơn ${orderCode} — ${files.length} ảnh`,
-        files,
-      }
+      // Chỉ share files, KHÔNG kèm title/text/url để tránh Zalo hiển thị link web
+      const shareData: any = { files }
 
       if (hasShareFiles && (navigator as any).canShare(shareData)) {
         await (navigator as any).share(shareData)
@@ -15638,10 +15643,7 @@ function PhotoGallery({ title, photos, allUsers, orderCode, kind }: any) {
       const filename = `${orderCode}_${kind}_${idx+1}.jpg`
       const file = new File([blob], filename, { type: blob.type || 'image/jpeg' })
 
-      const shareData: any = {
-        title: `${orderCode} — ảnh ${idx+1}`,
-        files: [file],
-      }
+      const shareData: any = { files: [file] }
 
       if ('share' in navigator && 'canShare' in navigator && (navigator as any).canShare(shareData)) {
         await (navigator as any).share(shareData)
@@ -15741,6 +15743,919 @@ function PhotoGallery({ title, photos, allUsers, orderCode, kind }: any) {
           </div>
         </div>
       )}
+    </div>
+  )
+}
+
+// ══════════════════════════════════════════════════════════════════════
+// ══ WAREHOUSE STATS — Thống kê hiệu suất NV đóng hàng ════════════════
+// ══════════════════════════════════════════════════════════════════════
+
+function WarehouseStatsModule({ user, allUsers, mobile }: any) {
+  const perm = getPerm(user)
+  const p = mobile ? '16px' : '24px'
+
+  // Filter
+  const now = new Date()
+  const [fromDate, setFromDate] = useState(() => {
+    const d = new Date(now.getFullYear(), now.getMonth(), 1)
+    return d.toISOString().split('T')[0]
+  })
+  const [toDate, setToDate] = useState(() => new Date().toISOString().split('T')[0])
+  const [preset, setPreset] = useState<'month'|'week'|'7d'|'30d'|'custom'>('month')
+
+  const [orders, setOrders] = useState<any[]>([])
+  const [loading, setLoading] = useState(true)
+
+  if (!perm.viewWarehouseStats) {
+    return (
+      <div style={{ padding:p, textAlign:'center', color:T.light, marginTop:40 }}>
+        <div style={{ fontSize:48, marginBottom:10 }}>🔒</div>
+        <div style={{ fontSize:14 }}>Bạn không có quyền xem thống kê hiệu suất kho.</div>
+      </div>
+    )
+  }
+
+  // Preset handlers
+  const applyPreset = (p: string) => {
+    const today = new Date()
+    let from = new Date(), to = new Date()
+    if (p === 'month')   { from = new Date(today.getFullYear(), today.getMonth(), 1) }
+    else if (p === 'week') {
+      const day = today.getDay() || 7
+      from = new Date(today); from.setDate(today.getDate() - day + 1)
+    }
+    else if (p === '7d')  { from = new Date(today); from.setDate(today.getDate() - 6) }
+    else if (p === '30d') { from = new Date(today); from.setDate(today.getDate() - 29) }
+    setFromDate(from.toISOString().split('T')[0])
+    setToDate(to.toISOString().split('T')[0])
+    setPreset(p as any)
+  }
+
+  const fetchOrders = async () => {
+    setLoading(true)
+    const fromISO = new Date(fromDate + 'T00:00:00').toISOString()
+    const toISO   = new Date(toDate   + 'T23:59:59').toISOString()
+    const { data } = await db.from('packing_workflow').select('*')
+      .eq('status', 'done')
+      .gte('packed_at', fromISO)
+      .lte('packed_at', toISO)
+      .limit(5000)
+    setOrders(data || [])
+    setLoading(false)
+  }
+
+  useEffect(() => { fetchOrders() }, [fromDate, toDate])
+
+  // Compute stats per packer
+  const stats = useMemo(() => {
+    const map = new Map<string, any>()
+    orders.forEach((o: any) => {
+      const pid = o.packed_by
+      if (!pid) return
+      if (!map.has(pid)) {
+        map.set(pid, {
+          user_id: pid,
+          order_count: 0,
+          total_value: 0,
+          total_items: 0,
+          total_sp_qty: 0,
+          sum_pack_duration_ms: 0,
+          pack_duration_count: 0,
+          modified_count: 0,
+          bookship_count: 0,
+          total_photos: 0,
+        })
+      }
+      const s = map.get(pid)
+      s.order_count += 1
+      s.total_value += Number(o.total_amount || 0)
+      const items = o.items || []
+      s.total_items += items.length
+      s.total_sp_qty += items.reduce((t: number, it: any) => t + Number(it.qty||0), 0)
+      if (o.picked_at && o.packed_at) {
+        const dur = new Date(o.packed_at).getTime() - new Date(o.picked_at).getTime()
+        if (dur > 0 && dur < 86400000 * 2) { // skip outliers > 2 days
+          s.sum_pack_duration_ms += dur
+          s.pack_duration_count += 1
+        }
+      }
+      if (o.had_mod_after_done) s.modified_count += 1
+      if (o.no_box) s.bookship_count += 1
+      s.total_photos += (o.photos_picked||[]).length + (o.photos_packed||[]).length
+    })
+    const arr = Array.from(map.values()).map(s => ({
+      ...s,
+      avg_value: s.order_count > 0 ? s.total_value / s.order_count : 0,
+      avg_pack_minutes: s.pack_duration_count > 0
+        ? Math.round(s.sum_pack_duration_ms / s.pack_duration_count / 60000)
+        : 0,
+      avg_photos: s.order_count > 0 ? (s.total_photos / s.order_count) : 0,
+      mod_rate: s.order_count > 0 ? (s.modified_count / s.order_count * 100) : 0,
+    }))
+    return arr.sort((a, b) => b.order_count - a.order_count)
+  }, [orders])
+
+  const totals = useMemo(() => ({
+    total_orders: orders.length,
+    total_value: orders.reduce((s, o: any) => s + Number(o.total_amount||0), 0),
+    total_staff: stats.length,
+  }), [orders, stats])
+
+  const getName = (id: string) => allUsers.find((u: any) => u.id === id)?.name || id.slice(0,8)
+  const fmtMoney = (n: number) => Number(n||0).toLocaleString('vi-VN')
+
+  const maxOrderCount = Math.max(1, ...stats.map(s => s.order_count))
+  const maxValue = Math.max(1, ...stats.map(s => s.total_value))
+
+  if (loading) return (
+    <div style={{ padding:p, textAlign:'center', color:T.light, paddingTop:40 }}>
+      ⏳ Đang tải thống kê...
+    </div>
+  )
+
+  return (
+    <div style={{ padding:`0 ${p} ${mobile?'80px':p}` }}>
+      <Topbar mobile={mobile} title="📊 Hiệu suất NV đóng hàng"
+        subtitle={`${totals.total_orders} đơn • ${fmtMoney(totals.total_value)} • ${totals.total_staff} NV`}/>
+
+      {/* Filter */}
+      <Card style={{ padding:12, marginBottom:12 }}>
+        <div style={{ display:'flex', gap:6, flexWrap:'wrap', marginBottom:10 }}>
+          {[
+            { id:'month', label:'Tháng này' },
+            { id:'week',  label:'Tuần này'  },
+            { id:'7d',    label:'7 ngày'    },
+            { id:'30d',   label:'30 ngày'   },
+          ].map((t: any) => (
+            <button key={t.id} onClick={() => applyPreset(t.id)}
+              style={{ padding:'4px 12px', borderRadius:16, cursor:'pointer',
+                fontFamily:'inherit', fontSize:11, fontWeight:600,
+                border:`1px solid ${preset===t.id?T.gold:T.border}`,
+                background: preset===t.id?T.goldBg:'#fff',
+                color: preset===t.id?T.goldText:T.med }}>
+              {t.label}
+            </button>
+          ))}
+        </div>
+        <div style={{ display:'flex', gap:8, alignItems:'center', flexWrap:'wrap' }}>
+          <label style={{ fontSize:11, color:T.med }}>Từ:</label>
+          <input type="date" value={fromDate} onChange={e => { setFromDate(e.target.value); setPreset('custom') }}
+            style={{ padding:'5px 10px', border:`1px solid ${T.border}`, borderRadius:6,
+              fontSize:11, fontFamily:'inherit' }}/>
+          <label style={{ fontSize:11, color:T.med }}>Đến:</label>
+          <input type="date" value={toDate} onChange={e => { setToDate(e.target.value); setPreset('custom') }}
+            style={{ padding:'5px 10px', border:`1px solid ${T.border}`, borderRadius:6,
+              fontSize:11, fontFamily:'inherit' }}/>
+        </div>
+      </Card>
+
+      {stats.length === 0 ? (
+        <div style={{ padding:'40px 20px', textAlign:'center', color:T.light, fontSize:13 }}>
+          Không có đơn nào đã đóng trong khoảng thời gian này.
+        </div>
+      ) : (
+        <>
+          {/* Bar chart: số đơn */}
+          <Card style={{ padding:16, marginBottom:12 }}>
+            <div style={{ fontSize:13, fontWeight:700, color:T.dark, marginBottom:12 }}>
+              📦 Số đơn đóng theo NV
+            </div>
+            <div style={{ display:'flex', flexDirection:'column', gap:10 }}>
+              {stats.map((s, idx) => (
+                <div key={s.user_id}>
+                  <div style={{ display:'flex', justifyContent:'space-between',
+                    fontSize:11, marginBottom:4 }}>
+                    <span style={{ color:T.dark, fontWeight: idx===0?700:500 }}>
+                      {idx===0 && '🥇 '}{idx===1 && '🥈 '}{idx===2 && '🥉 '}
+                      {getName(s.user_id)}
+                    </span>
+                    <span style={{ color:T.dark, fontWeight:700 }}>
+                      {s.order_count} đơn
+                    </span>
+                  </div>
+                  <div style={{ height:14, background:T.bg, borderRadius:7, overflow:'hidden' }}>
+                    <div style={{ height:'100%',
+                      background: idx===0 ? T.gold : (idx<3?T.blue:T.green),
+                      width:`${(s.order_count / maxOrderCount) * 100}%`,
+                      transition:'width .5s' }}/>
+                  </div>
+                </div>
+              ))}
+            </div>
+          </Card>
+
+          {/* Bar chart: giá trị */}
+          <Card style={{ padding:16, marginBottom:12 }}>
+            <div style={{ fontSize:13, fontWeight:700, color:T.dark, marginBottom:12 }}>
+              💰 Tổng giá trị đơn đã đóng
+            </div>
+            <div style={{ display:'flex', flexDirection:'column', gap:10 }}>
+              {[...stats].sort((a,b) => b.total_value - a.total_value).map((s, idx) => (
+                <div key={s.user_id}>
+                  <div style={{ display:'flex', justifyContent:'space-between',
+                    fontSize:11, marginBottom:4 }}>
+                    <span style={{ color:T.dark, fontWeight: idx===0?700:500 }}>
+                      {idx===0 && '🥇 '}{idx===1 && '🥈 '}{idx===2 && '🥉 '}
+                      {getName(s.user_id)}
+                    </span>
+                    <span style={{ color:T.goldText, fontWeight:700 }}>
+                      {fmtMoney(s.total_value)}
+                    </span>
+                  </div>
+                  <div style={{ height:14, background:T.bg, borderRadius:7, overflow:'hidden' }}>
+                    <div style={{ height:'100%',
+                      background:`linear-gradient(90deg, ${T.gold} 0%, #b8860b 100%)`,
+                      width:`${(s.total_value / maxValue) * 100}%`,
+                      transition:'width .5s' }}/>
+                  </div>
+                </div>
+              ))}
+            </div>
+          </Card>
+
+          {/* Bảng tổng hợp đầy đủ */}
+          <Card style={{ padding:0, marginBottom:12, overflow:'hidden' }}>
+            <div style={{ padding:'12px 16px', fontSize:13, fontWeight:700,
+              color:T.dark, borderBottom:`1px solid ${T.border}`, background:T.bg }}>
+              📊 Chi tiết hiệu suất
+            </div>
+            <div style={{ overflowX:'auto' }}>
+              <table style={{ width:'100%', borderCollapse:'collapse', fontSize:11 }}>
+                <thead>
+                  <tr style={{ background:T.bg, borderBottom:`2px solid ${T.border}` }}>
+                    <th style={{ padding:'10px 12px', textAlign:'left', fontWeight:700, color:T.med }}>NV</th>
+                    <th style={{ padding:'10px 8px', textAlign:'right', fontWeight:700, color:T.med }}>Đơn</th>
+                    <th style={{ padding:'10px 8px', textAlign:'right', fontWeight:700, color:T.med }}>Giá trị</th>
+                    <th style={{ padding:'10px 8px', textAlign:'right', fontWeight:700, color:T.med }}>TB/đơn</th>
+                    <th style={{ padding:'10px 8px', textAlign:'right', fontWeight:700, color:T.med }}>SP</th>
+                    <th style={{ padding:'10px 8px', textAlign:'right', fontWeight:700, color:T.med }}>TB phút</th>
+                    <th style={{ padding:'10px 8px', textAlign:'right', fontWeight:700, color:T.med }}>Bookship</th>
+                    <th style={{ padding:'10px 8px', textAlign:'right', fontWeight:700, color:T.med }}>Bị sửa</th>
+                    <th style={{ padding:'10px 8px', textAlign:'right', fontWeight:700, color:T.med }}>Ảnh/đơn</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {stats.map((s, idx) => (
+                    <tr key={s.user_id} style={{ borderBottom:`1px solid ${T.border}` }}>
+                      <td style={{ padding:'10px 12px', color:T.dark, fontWeight: idx===0?700:500 }}>
+                        {idx===0 && '🥇 '}{getName(s.user_id)}
+                      </td>
+                      <td style={{ padding:'10px 8px', textAlign:'right', color:T.dark, fontWeight:700 }}>
+                        {s.order_count}
+                      </td>
+                      <td style={{ padding:'10px 8px', textAlign:'right', color:T.goldText, fontWeight:600 }}>
+                        {fmtMoney(s.total_value)}
+                      </td>
+                      <td style={{ padding:'10px 8px', textAlign:'right', color:T.med }}>
+                        {fmtMoney(Math.round(s.avg_value))}
+                      </td>
+                      <td style={{ padding:'10px 8px', textAlign:'right', color:T.med }}>
+                        {s.total_sp_qty}
+                      </td>
+                      <td style={{ padding:'10px 8px', textAlign:'right', color:T.med }}>
+                        {s.avg_pack_minutes > 0 ? `${s.avg_pack_minutes}p` : '—'}
+                      </td>
+                      <td style={{ padding:'10px 8px', textAlign:'right', color:T.med }}>
+                        {s.bookship_count}
+                      </td>
+                      <td style={{ padding:'10px 8px', textAlign:'right',
+                        color: s.mod_rate > 10 ? T.red : T.med, fontWeight: s.mod_rate>10?700:400 }}>
+                        {s.modified_count} ({s.mod_rate.toFixed(0)}%)
+                      </td>
+                      <td style={{ padding:'10px 8px', textAlign:'right', color:T.med }}>
+                        {s.avg_photos.toFixed(1)}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </Card>
+
+          <div style={{ padding:'10px 12px', background:T.bg, borderRadius:6, fontSize:11,
+            color:T.med, lineHeight:1.6 }}>
+            <div><b>📖 Giải thích chỉ số:</b></div>
+            <div>• <b>TB/đơn</b>: Giá trị trung bình 1 đơn — cho biết NV thường đóng đơn lớn hay nhỏ</div>
+            <div>• <b>TB phút</b>: Thời gian trung bình từ lúc nhặt xong đến lúc đóng xong — càng thấp càng nhanh</div>
+            <div>• <b>Bookship</b>: Đơn bookship thường nhanh hơn đơn thùng thông thường</div>
+            <div>• <b>Bị sửa {'>'}10%</b>: Cần chú ý, có thể do đóng sai hoặc Sale thay đổi nhiều</div>
+            <div>• <b>Ảnh/đơn</b>: Số ảnh trung bình — mức độ cẩn thận chụp bằng chứng</div>
+          </div>
+        </>
+      )}
+    </div>
+  )
+}
+
+// ══════════════════════════════════════════════════════════════════════
+// ══ WAREHOUSE SCHEDULE — Lịch Kho ═════════════════════════════════════
+// ══════════════════════════════════════════════════════════════════════
+
+function WarehouseScheduleModule({ user, allUsers, leaveRequests, attendance, mobile }: any) {
+  const perm = getPerm(user)
+  const canManage = perm.manageSchedule
+  const p = mobile ? '16px' : '24px'
+
+  const now = new Date()
+  const [year, setYear]   = useState(now.getFullYear())
+  const [month, setMonth] = useState(now.getMonth())  // 0-indexed
+
+  const [schedules, setSchedules] = useState<any[]>([])     // raw rows
+  const [roles, setRoles]         = useState<any[]>([])
+  const [loading, setLoading]     = useState(true)
+  const [editCell, setEditCell]   = useState<{date:string, role_id:string}|null>(null)
+  const [showRotation, setShowRotation] = useState(false)
+  const [showCopyPrev, setShowCopyPrev] = useState(false)
+
+  // Fetch roles + schedules của tháng
+  const fetchAll = async () => {
+    setLoading(true)
+    const fromDate = `${year}-${String(month+1).padStart(2,'0')}-01`
+    const toDate = new Date(year, month+1, 0).toISOString().split('T')[0]
+
+    const [rolesRes, schedRes] = await Promise.all([
+      db.from('warehouse_schedule_roles').select('*').eq('active', true).order('sort_order'),
+      db.from('warehouse_schedule').select('*').gte('date', fromDate).lte('date', toDate),
+    ])
+    setRoles(rolesRes.data || [])
+    setSchedules(schedRes.data || [])
+    setLoading(false)
+  }
+
+  useEffect(() => { fetchAll() }, [year, month])
+
+  // Generate days of month
+  const daysInMonth = new Date(year, month+1, 0).getDate()
+  const days = Array.from({length: daysInMonth}, (_, i) => {
+    const date = new Date(year, month, i+1)
+    const dateStr = `${year}-${String(month+1).padStart(2,'0')}-${String(i+1).padStart(2,'0')}`
+    const dow = date.getDay() // 0=CN, 6=T7
+    return { date, dateStr, day: i+1, dow, isWeekend: dow === 0 || dow === 6 }
+  })
+
+  // Map schedule: (dateStr, role_id) → { user_ids }
+  const scheduleMap = useMemo(() => {
+    const m = new Map<string, any>()
+    schedules.forEach((s: any) => {
+      m.set(`${s.date}::${s.role_id}`, s)
+    })
+    return m
+  }, [schedules])
+
+  // Leave map: userId → Set<dateStr of leave>
+  const leaveMap = useMemo(() => {
+    const m = new Map<string, Set<string>>()
+    ;(leaveRequests || []).filter((r: any) => r.status === 'approved').forEach((r: any) => {
+      const from = new Date(r.from_date)
+      const to = new Date(r.to_date)
+      const uid = r.user_id
+      if (!m.has(uid)) m.set(uid, new Set())
+      for (let d = new Date(from); d <= to; d.setDate(d.getDate()+1)) {
+        m.get(uid)!.add(d.toISOString().split('T')[0])
+      }
+    })
+    return m
+  }, [leaveRequests])
+
+  // Detect conflicts: NV được xếp nhưng nghỉ phép ngày đó
+  const conflicts = useMemo(() => {
+    const list: any[] = []
+    schedules.forEach((s: any) => {
+      (s.user_ids || []).forEach((uid: string) => {
+        if (leaveMap.get(uid)?.has(s.date)) {
+          const role = roles.find(r => r.id === s.role_id)
+          const u = allUsers.find((u: any) => u.id === uid)
+          list.push({
+            date: s.date,
+            role_id: s.role_id,
+            role_name: role?.name || s.role_id,
+            user_id: uid,
+            user_name: u?.name || uid,
+          })
+        }
+      })
+    })
+    return list
+  }, [schedules, leaveMap, roles, allUsers])
+
+  // Save cell
+  const saveCell = async (dateStr: string, roleId: string, userIds: string[]) => {
+    const existing = scheduleMap.get(`${dateStr}::${roleId}`)
+    if (existing) {
+      await db.from('warehouse_schedule').update({
+        user_ids: userIds, updated_by: user.id, updated_at: new Date().toISOString(),
+      }).eq('id', existing.id)
+      setSchedules(prev => prev.map(s => s.id === existing.id
+        ? { ...s, user_ids: userIds, updated_at: new Date().toISOString() }
+        : s))
+    } else {
+      const rec = {
+        id: `ws_${dateStr}_${roleId}_${Date.now().toString(36)}`,
+        date: dateStr, role_id: roleId, user_ids: userIds,
+        updated_by: user.id, updated_at: new Date().toISOString(),
+        created_at: new Date().toISOString(),
+      }
+      await db.from('warehouse_schedule').insert(rec)
+      setSchedules(prev => [...prev, rec])
+    }
+  }
+
+  // Navigation
+  const prevMonth = () => {
+    if (month === 0) { setMonth(11); setYear(year-1) }
+    else setMonth(month-1)
+  }
+  const nextMonth = () => {
+    if (month === 11) { setMonth(0); setYear(year+1) }
+    else setMonth(month+1)
+  }
+
+  const monthLabel = `Tháng ${month+1}/${year}`
+
+  // Get name helper
+  const getName = (id: string) => {
+    const u = allUsers.find((u: any) => u.id === id)
+    return u?.name?.split(' ').pop() || u?.ini || id.slice(0,5)
+  }
+  const renderCellContent = (userIds: string[]) => {
+    if (userIds.length === 0) return <span style={{ color:T.light, fontStyle:'italic' }}>—</span>
+    return userIds.map(uid => getName(uid)).join('-')
+  }
+
+  // Today
+  const todayStr = new Date().toISOString().split('T')[0]
+
+  if (loading) return (
+    <div style={{ padding:p, textAlign:'center', color:T.light, paddingTop:40 }}>
+      ⏳ Đang tải lịch kho...
+    </div>
+  )
+
+  return (
+    <div style={{ padding:`0 ${p} ${mobile?'80px':p}` }}>
+      <Topbar mobile={mobile} title="📅 Lịch Kho"
+        subtitle={canManage ? 'QM Kho chia lịch theo ngày và vai trò' : 'Xem lịch làm việc của Kho'}
+        action={
+          canManage && (
+            <div style={{ display:'flex', gap:6 }}>
+              <button onClick={() => setShowCopyPrev(true)}
+                style={{ padding:'5px 12px', borderRadius:20, border:`1px solid ${T.border}`,
+                  background:'#fff', color:T.med, cursor:'pointer', fontFamily:'inherit',
+                  fontSize:11, fontWeight:600 }}>
+                📋 Copy tháng trước
+              </button>
+              <button onClick={() => setShowRotation(true)}
+                style={{ padding:'5px 12px', borderRadius:20, border:'none',
+                  background:T.gold, color:'#fff', cursor:'pointer', fontFamily:'inherit',
+                  fontSize:11, fontWeight:700 }}>
+                🔄 Tạo theo xoay ca
+              </button>
+            </div>
+          )
+        }/>
+
+      {/* Today schedule for Sale */}
+      {!canManage && (
+        <Card style={{ padding:14, marginBottom:12, background:T.goldBg, border:`1px solid ${T.gold}` }}>
+          <div style={{ fontSize:12, fontWeight:700, color:T.goldText, marginBottom:8 }}>
+            📍 Lịch hôm nay ({new Date().toLocaleDateString('vi-VN')})
+          </div>
+          <div style={{ display:'flex', flexWrap:'wrap', gap:8 }}>
+            {roles.map((r: any) => {
+              const sc = scheduleMap.get(`${todayStr}::${r.id}`)
+              const userIds = sc?.user_ids || []
+              return (
+                <div key={r.id} style={{ padding:'8px 12px', borderRadius:8, background:'#fff',
+                  border:`1px solid ${T.border}`, minWidth:150 }}>
+                  <div style={{ fontSize:10, color:T.light, fontWeight:600 }}>
+                    {r.icon} {r.name}
+                  </div>
+                  <div style={{ fontSize:12, color:T.dark, fontWeight:700, marginTop:3 }}>
+                    {userIds.length > 0 ? userIds.map(getName).join(', ') : '— trống —'}
+                  </div>
+                </div>
+              )
+            })}
+          </div>
+        </Card>
+      )}
+
+      {/* Navigation tháng */}
+      <Card style={{ padding:10, marginBottom:12, display:'flex', alignItems:'center',
+        justifyContent:'space-between' }}>
+        <button onClick={prevMonth}
+          style={{ padding:'5px 12px', borderRadius:6, border:`1px solid ${T.border}`,
+            background:'#fff', color:T.dark, cursor:'pointer', fontFamily:'inherit', fontSize:12 }}>
+          ◀ Trước
+        </button>
+        <div style={{ fontSize:15, fontWeight:700, color:T.dark }}>{monthLabel}</div>
+        <button onClick={nextMonth}
+          style={{ padding:'5px 12px', borderRadius:6, border:`1px solid ${T.border}`,
+            background:'#fff', color:T.dark, cursor:'pointer', fontFamily:'inherit', fontSize:12 }}>
+          Tiếp ▶
+        </button>
+      </Card>
+
+      {/* Conflicts warning */}
+      {conflicts.length > 0 && (
+        <Card style={{ padding:12, marginBottom:12, background:T.redBg, border:`1px solid ${T.red}` }}>
+          <div style={{ fontSize:12, fontWeight:700, color:T.red, marginBottom:6 }}>
+            ⚠️ CẢNH BÁO: {conflicts.length} xung đột với lịch nghỉ phép
+          </div>
+          <div style={{ fontSize:11, color:T.dark, maxHeight:100, overflowY:'auto' }}>
+            {conflicts.map((c, i) => (
+              <div key={i} style={{ padding:'2px 0' }}>
+                • <b>{c.user_name}</b> được xếp <b>{c.role_name}</b> ngày {c.date.split('-').reverse().join('/')} nhưng đã có đơn nghỉ phép duyệt
+              </div>
+            ))}
+          </div>
+        </Card>
+      )}
+
+      {/* Grid lịch */}
+      <Card style={{ padding:0, overflow:'hidden' }}>
+        <div style={{ overflowX:'auto' }}>
+          <table style={{ width:'100%', borderCollapse:'collapse', fontSize:11, minWidth:mobile?400:700 }}>
+            <thead>
+              <tr style={{ background:'#3b82f6' }}>
+                <th style={{ padding:'8px 6px', color:'#fff', fontWeight:700, textAlign:'center',
+                  minWidth:70, position:'sticky', left:0, background:'#3b82f6', zIndex:2 }}>
+                  Ngày
+                </th>
+                {roles.map((r: any) => (
+                  <th key={r.id} style={{ padding:'8px 6px', color:'#fff', fontWeight:700,
+                    textAlign:'center', minWidth:100 }}>
+                    {r.icon} {r.name}
+                  </th>
+                ))}
+              </tr>
+            </thead>
+            <tbody>
+              {days.map((d: any) => {
+                const isToday = d.dateStr === todayStr
+                const bgRow = d.isWeekend ? '#d4edda' : (isToday ? T.goldBg : '#fff')
+                return (
+                  <tr key={d.dateStr} style={{ background:bgRow, borderBottom:`1px solid ${T.border}` }}>
+                    <td style={{ padding:'6px 8px', textAlign:'center', fontWeight:700,
+                      color: isToday?T.goldText:T.dark,
+                      position:'sticky', left:0, background:bgRow, zIndex:1 }}>
+                      {d.day}/{month+1}
+                      <div style={{ fontSize:9, color:T.light, fontWeight:400 }}>
+                        {['CN','T2','T3','T4','T5','T6','T7'][d.dow]}
+                      </div>
+                    </td>
+                    {roles.map((r: any) => {
+                      const sc = scheduleMap.get(`${d.dateStr}::${r.id}`)
+                      const userIds = sc?.user_ids || []
+                      const hasConflict = userIds.some((uid: string) => leaveMap.get(uid)?.has(d.dateStr))
+                      return (
+                        <td key={r.id}
+                          onClick={canManage ? () => setEditCell({date:d.dateStr, role_id:r.id}) : undefined}
+                          style={{ padding:'6px 8px', textAlign:'center',
+                            cursor: canManage?'pointer':'default',
+                            color: hasConflict ? T.red : T.dark,
+                            fontWeight: hasConflict ? 700 : 500,
+                            fontSize: userIds.length > 2 ? 10 : 11 }}>
+                          {hasConflict && '⚠️ '}
+                          {renderCellContent(userIds)}
+                        </td>
+                      )
+                    })}
+                  </tr>
+                )
+              })}
+            </tbody>
+          </table>
+        </div>
+      </Card>
+
+      {!canManage && (
+        <div style={{ marginTop:10, fontSize:11, color:T.light, textAlign:'center' }}>
+          Chỉ QM Kho mới có thể chỉnh sửa lịch. Liên hệ QM nếu có thắc mắc.
+        </div>
+      )}
+
+      {/* Edit cell modal */}
+      {editCell && canManage && (
+        <ScheduleEditModal
+          date={editCell.date}
+          roleId={editCell.role_id}
+          role={roles.find(r => r.id === editCell.role_id)}
+          currentUserIds={scheduleMap.get(`${editCell.date}::${editCell.role_id}`)?.user_ids || []}
+          allUsers={allUsers.filter((u: any) => u.dept_id === 'kho')}
+          leaveMap={leaveMap}
+          onSave={(uids: string[]) => {
+            saveCell(editCell.date, editCell.role_id, uids)
+            setEditCell(null)
+          }}
+          onClose={() => setEditCell(null)}
+        />
+      )}
+
+      {/* Rotation modal */}
+      {showRotation && canManage && (
+        <RotationWizard
+          roles={roles}
+          year={year} month={month}
+          khoUsers={allUsers.filter((u: any) => u.dept_id === 'kho')}
+          existingSchedules={schedules}
+          onApply={async (entries: any[]) => {
+            // entries: [{date, role_id, user_ids}]
+            for (const e of entries) {
+              await saveCell(e.date, e.role_id, e.user_ids)
+            }
+            setShowRotation(false)
+            fetchAll()
+          }}
+          onClose={() => setShowRotation(false)}
+        />
+      )}
+
+      {/* Copy previous month */}
+      {showCopyPrev && canManage && (
+        <CopyPrevMonthModal
+          year={year} month={month}
+          daysInCurrent={daysInMonth}
+          onApply={async (prevMonth: number, prevYear: number) => {
+            const fromDate = `${prevYear}-${String(prevMonth+1).padStart(2,'0')}-01`
+            const toDate = new Date(prevYear, prevMonth+1, 0).toISOString().split('T')[0]
+            const { data } = await db.from('warehouse_schedule').select('*')
+              .gte('date', fromDate).lte('date', toDate)
+            if (!data || data.length === 0) {
+              alert('❌ Tháng trước không có lịch nào để copy.')
+              return
+            }
+            const prevFirstDow = new Date(prevYear, prevMonth, 1).getDay()
+            const curFirstDow = new Date(year, month, 1).getDay()
+            // Copy theo thứ trong tuần (align dow) — an toàn hơn copy theo ngày
+            for (const rec of data) {
+              const oldDate = new Date(rec.date)
+              const oldDay = oldDate.getDate()
+              if (oldDay > daysInMonth) continue
+              const newDate = `${year}-${String(month+1).padStart(2,'0')}-${String(oldDay).padStart(2,'0')}`
+              await saveCell(newDate, rec.role_id, rec.user_ids || [])
+            }
+            alert('✅ Đã copy lịch từ tháng trước')
+            setShowCopyPrev(false)
+            fetchAll()
+          }}
+          onClose={() => setShowCopyPrev(false)}
+        />
+      )}
+    </div>
+  )
+}
+
+// ── Modal chọn NV cho 1 ô ──
+function ScheduleEditModal({ date, roleId, role, currentUserIds, allUsers, leaveMap, onSave, onClose }: any) {
+  const [selected, setSelected] = useState<Set<string>>(new Set(currentUserIds))
+  const toggle = (uid: string) => {
+    const s = new Set(selected)
+    if (s.has(uid)) s.delete(uid); else s.add(uid)
+    setSelected(s)
+  }
+  const dateLabel = date.split('-').reverse().join('/')
+
+  return (
+    <div style={{ position:'fixed', inset:0, background:'rgba(0,0,0,0.55)', zIndex:9999,
+      display:'flex', alignItems:'center', justifyContent:'center', padding:20 }}>
+      <div style={{ background:'#fff', borderRadius:12, maxWidth:480, width:'100%',
+        maxHeight:'85vh', overflow:'auto' }}>
+        <div style={{ padding:'14px 20px', background:T.goldBg, borderBottom:`1px solid ${T.gold}` }}>
+          <div style={{ fontSize:14, fontWeight:700, color:T.goldText }}>
+            {role?.icon} {role?.name} • {dateLabel}
+          </div>
+          <div style={{ fontSize:11, color:T.med, marginTop:3 }}>
+            Chọn NV thực hiện vai trò này (có thể chọn nhiều người)
+          </div>
+        </div>
+        <div style={{ padding:16 }}>
+          <div style={{ display:'flex', flexDirection:'column', gap:6, maxHeight:360, overflowY:'auto' }}>
+            {allUsers.map((u: any) => {
+              const onLeave = leaveMap.get(u.id)?.has(date)
+              const sel = selected.has(u.id)
+              return (
+                <label key={u.id} style={{ display:'flex', alignItems:'center', gap:10, padding:'8px 10px',
+                  borderRadius:6, cursor:'pointer',
+                  background: sel ? T.goldBg : '#fff',
+                  border:`1px solid ${sel?T.gold:T.border}` }}>
+                  <input type="checkbox" checked={sel} onChange={() => toggle(u.id)}
+                    style={{ width:16, height:16, cursor:'pointer', accentColor:T.gold }}/>
+                  <div style={{ flex:1 }}>
+                    <div style={{ fontSize:12, fontWeight:600, color:T.dark }}>
+                      {u.name}
+                      {u.position_name && <span style={{ color:T.light, fontWeight:400 }}> • {u.position_name}</span>}
+                    </div>
+                  </div>
+                  {onLeave && (
+                    <span style={{ padding:'2px 8px', background:T.redBg, color:T.red,
+                      borderRadius:10, fontSize:9, fontWeight:700 }}>
+                      ⚠️ NGHỈ PHÉP
+                    </span>
+                  )}
+                </label>
+              )
+            })}
+          </div>
+        </div>
+        <div style={{ display:'flex', gap:10, padding:16, borderTop:`1px solid ${T.border}` }}>
+          <button onClick={onClose}
+            style={{ flex:1, padding:'9px', borderRadius:6, border:`1px solid ${T.border}`,
+              background:'#fff', color:T.med, cursor:'pointer', fontFamily:'inherit', fontSize:13 }}>
+            Hủy
+          </button>
+          <button onClick={() => onSave(Array.from(selected))}
+            style={{ flex:2, padding:'9px', borderRadius:6, border:'none',
+              background:T.gold, color:'#fff', cursor:'pointer',
+              fontFamily:'inherit', fontSize:13, fontWeight:700 }}>
+            💾 Lưu ({selected.size} NV)
+          </button>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+// ── Rotation Wizard: nhập 1 chu kỳ → auto xoay cả tháng ──
+function RotationWizard({ roles, year, month, khoUsers, existingSchedules, onApply, onClose }: any) {
+  const [cycleDays, setCycleDays] = useState(4)
+  // pattern[cycleIndex][roleId] = set of user_ids
+  const [pattern, setPattern] = useState<Map<string, Set<string>>>(new Map())
+  const [overwrite, setOverwrite] = useState(false)
+
+  const key = (cycleIdx: number, roleId: string) => `${cycleIdx}::${roleId}`
+
+  const togglePatternUser = (cycleIdx: number, roleId: string, uid: string) => {
+    const k = key(cycleIdx, roleId)
+    const cur = pattern.get(k) || new Set<string>()
+    const nextSet = new Set(cur)
+    if (nextSet.has(uid)) nextSet.delete(uid); else nextSet.add(uid)
+    const next = new Map(pattern)
+    next.set(k, nextSet)
+    setPattern(next)
+  }
+
+  const apply = () => {
+    const daysInMonth = new Date(year, month+1, 0).getDate()
+    const entries: any[] = []
+    for (let day = 1; day <= daysInMonth; day++) {
+      const dateStr = `${year}-${String(month+1).padStart(2,'0')}-${String(day).padStart(2,'0')}`
+      const cycleIdx = (day - 1) % cycleDays
+      roles.forEach((r: any) => {
+        const users = pattern.get(key(cycleIdx, r.id))
+        if (users && users.size > 0) {
+          // Skip nếu overwrite=false và đã có schedule
+          const ex = existingSchedules.find((s: any) => s.date === dateStr && s.role_id === r.id)
+          if (ex && !overwrite) return
+          entries.push({
+            date: dateStr,
+            role_id: r.id,
+            user_ids: Array.from(users),
+          })
+        }
+      })
+    }
+    if (entries.length === 0) {
+      alert('❌ Chưa nhập NV nào vào chu kỳ. Hãy tick ít nhất 1 NV ở 1 ngày.')
+      return
+    }
+    if (!confirm(`Sẽ tạo/cập nhật ${entries.length} ô lịch cho cả tháng. Tiếp tục?`)) return
+    onApply(entries)
+  }
+
+  return (
+    <div style={{ position:'fixed', inset:0, background:'rgba(0,0,0,0.55)', zIndex:9999,
+      display:'flex', alignItems:'center', justifyContent:'center', padding:20 }}>
+      <div style={{ background:'#fff', borderRadius:12, maxWidth:720, width:'100%',
+        maxHeight:'90vh', overflow:'auto' }}>
+        <div style={{ padding:'14px 20px', background:T.goldBg, borderBottom:`1px solid ${T.gold}` }}>
+          <div style={{ fontSize:14, fontWeight:700, color:T.goldText }}>
+            🔄 Tạo lịch theo xoay ca — Tháng {month+1}/{year}
+          </div>
+          <div style={{ fontSize:11, color:T.med, marginTop:3 }}>
+            Nhập NV cho từng ngày trong chu kỳ. Hệ thống sẽ tự lặp lại cho cả tháng.
+          </div>
+        </div>
+        <div style={{ padding:16 }}>
+          <div style={{ marginBottom:12, display:'flex', alignItems:'center', gap:10 }}>
+            <label style={{ fontSize:12, color:T.med, fontWeight:600 }}>Số ngày/chu kỳ:</label>
+            <select value={cycleDays} onChange={e => setCycleDays(Number(e.target.value))}
+              style={{ padding:'5px 10px', border:`1px solid ${T.border}`, borderRadius:6,
+                fontSize:12, fontFamily:'inherit', background:'#fff' }}>
+              {[2,3,4,5,6,7].map(n => <option key={n} value={n}>{n} ngày</option>)}
+            </select>
+            <span style={{ fontSize:11, color:T.light }}>
+              (VD: 4 = cứ 4 ngày xoay 1 lần)
+            </span>
+          </div>
+
+          <div style={{ marginBottom:12 }}>
+            {Array.from({length: cycleDays}, (_, i) => (
+              <Card key={i} style={{ padding:10, marginBottom:8, background:T.bg }}>
+                <div style={{ fontSize:12, fontWeight:700, color:T.dark, marginBottom:8 }}>
+                  📅 Ngày {i+1} trong chu kỳ
+                </div>
+                <div style={{ display:'grid',
+                  gridTemplateColumns:'repeat(auto-fit, minmax(200px, 1fr))', gap:8 }}>
+                  {roles.map((r: any) => {
+                    const selected = pattern.get(key(i, r.id)) || new Set()
+                    return (
+                      <div key={r.id} style={{ padding:8, background:'#fff', borderRadius:6,
+                        border:`1px solid ${T.border}` }}>
+                        <div style={{ fontSize:10, fontWeight:700, color:T.med, marginBottom:5 }}>
+                          {r.icon} {r.name}
+                        </div>
+                        <div style={{ display:'flex', flexWrap:'wrap', gap:4 }}>
+                          {khoUsers.map((u: any) => {
+                            const sel = selected.has(u.id)
+                            return (
+                              <button key={u.id}
+                                onClick={() => togglePatternUser(i, r.id, u.id)}
+                                style={{ padding:'3px 8px', borderRadius:12,
+                                  border:`1px solid ${sel?T.gold:T.border}`,
+                                  background: sel?T.gold:'#fff',
+                                  color: sel?'#fff':T.dark,
+                                  cursor:'pointer', fontFamily:'inherit',
+                                  fontSize:10, fontWeight:sel?700:500 }}>
+                                {u.name.split(' ').pop()}
+                              </button>
+                            )
+                          })}
+                        </div>
+                      </div>
+                    )
+                  })}
+                </div>
+              </Card>
+            ))}
+          </div>
+
+          <label style={{ display:'flex', alignItems:'center', gap:8, padding:10,
+            background:T.amberBg, borderRadius:6, border:`1px solid ${T.amber}`, cursor:'pointer' }}>
+            <input type="checkbox" checked={overwrite}
+              onChange={e => setOverwrite(e.target.checked)}
+              style={{ width:16, height:16, cursor:'pointer' }}/>
+            <span style={{ fontSize:11, color:T.amber, fontWeight:600 }}>
+              Ghi đè lịch đã có (nếu không tick, chỉ điền vào ô trống)
+            </span>
+          </label>
+        </div>
+        <div style={{ display:'flex', gap:10, padding:16, borderTop:`1px solid ${T.border}` }}>
+          <button onClick={onClose}
+            style={{ flex:1, padding:'9px', borderRadius:6, border:`1px solid ${T.border}`,
+              background:'#fff', color:T.med, cursor:'pointer', fontFamily:'inherit', fontSize:13 }}>
+            Hủy
+          </button>
+          <button onClick={apply}
+            style={{ flex:2, padding:'9px', borderRadius:6, border:'none',
+              background:T.gold, color:'#fff', cursor:'pointer',
+              fontFamily:'inherit', fontSize:13, fontWeight:700 }}>
+            🔄 Áp dụng cho cả tháng
+          </button>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+// ── Copy prev month modal ──
+function CopyPrevMonthModal({ year, month, daysInCurrent, onApply, onClose }: any) {
+  const prevM = month === 0 ? 11 : month-1
+  const prevY = month === 0 ? year-1 : year
+
+  return (
+    <div style={{ position:'fixed', inset:0, background:'rgba(0,0,0,0.55)', zIndex:9999,
+      display:'flex', alignItems:'center', justifyContent:'center', padding:20 }}>
+      <div style={{ background:'#fff', borderRadius:12, maxWidth:420, width:'100%' }}>
+        <div style={{ padding:'14px 20px', background:T.bg, borderBottom:`1px solid ${T.border}` }}>
+          <div style={{ fontSize:14, fontWeight:700, color:T.dark }}>
+            📋 Copy lịch từ tháng trước
+          </div>
+        </div>
+        <div style={{ padding:20 }}>
+          <div style={{ fontSize:12, color:T.dark, lineHeight:1.6 }}>
+            Copy lịch từ <b>Tháng {prevM+1}/{prevY}</b> sang <b>Tháng {month+1}/{year}</b>.
+          </div>
+          <div style={{ fontSize:11, color:T.amber, marginTop:10, padding:10,
+            background:T.amberBg, borderRadius:6, border:`1px solid ${T.amber}` }}>
+            ⚠️ Lịch hiện tại của tháng {month+1} sẽ bị ghi đè nếu ngày + vai trò tương ứng tồn tại ở tháng trước.
+          </div>
+        </div>
+        <div style={{ display:'flex', gap:10, padding:16, borderTop:`1px solid ${T.border}` }}>
+          <button onClick={onClose}
+            style={{ flex:1, padding:'9px', borderRadius:6, border:`1px solid ${T.border}`,
+              background:'#fff', color:T.med, cursor:'pointer', fontFamily:'inherit', fontSize:13 }}>
+            Hủy
+          </button>
+          <button onClick={() => onApply(prevM, prevY)}
+            style={{ flex:1, padding:'9px', borderRadius:6, border:'none',
+              background:T.gold, color:'#fff', cursor:'pointer',
+              fontFamily:'inherit', fontSize:13, fontWeight:700 }}>
+            📋 Copy
+          </button>
+        </div>
+      </div>
     </div>
   )
 }
