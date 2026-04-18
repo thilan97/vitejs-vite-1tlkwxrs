@@ -12,7 +12,7 @@ const db = createClient(SUPABASE_URL, SUPABASE_KEY)
 // APP_VERSION — dùng để invalidate cache localStorage mỗi khi deploy version mới
 // (ngăn bug quyền user bị "reset" do cache position cũ sau deploy)
 // ⚠️ MỖI LẦN DEPLOY FEATURE MỚI CÓ PERMISSION MỚI, BUMP SỐ NÀY:
-const APP_VERSION = '2026.04.17.v39'
+const APP_VERSION = '2026.04.17.v40'
 
 // ════════════════════════════════════════════════════════════════
 // AUDIT LOG — ghi nhận các hành động phá hoại data để trace lại
@@ -508,12 +508,16 @@ const Sel = ({ label, value, onChange, options, disabled }: any) => {
 
 const TH = ({ cols }: any) => (
   <thead><tr style={{ background:T.bg }}>
-    {cols.map((h: string, i: number) => (
-      <th key={i} style={{ padding:`${SP[3]}px ${SP[4]}px`, textAlign:'left',
-        fontSize:FS.xs, fontWeight:700,
-        color:T.light, textTransform:'uppercase', letterSpacing:.8,
-        borderBottom:`1px solid ${T.border}` }}>{h}</th>
-    ))}
+    {cols.map((h: any, i: number) => {
+      const label = typeof h === 'string' ? h : h.label
+      const align = typeof h === 'string' ? 'left' : (h.align || 'left')
+      return (
+        <th key={i} style={{ padding:`${SP[3]}px ${SP[4]}px`, textAlign:align,
+          fontSize:FS.xs, fontWeight:700,
+          color:T.light, textTransform:'uppercase', letterSpacing:.8,
+          borderBottom:`1px solid ${T.border}` }}>{label}</th>
+      )
+    })}
   </tr></thead>
 )
 
@@ -2172,58 +2176,109 @@ function Templates({ templates, setTemplates, allUsers, mobile }: any) {
         action={<GoldBtn small onClick={openCreate}>+ Thêm template</GoldBtn>}/>
 
       {deptGroups.map(group => group.items.length === 0 ? null : (
-        <Card key={group.dept} style={{ padding:0, overflow:'hidden', marginBottom:16 }}>
-          <div style={{ background:DEPT_COLOR[group.dept], padding:'11px 16px' }}>
-            <span style={{ color:'#fff', fontWeight:700, fontSize:14 }}>{group.name} — {group.items.length} template</span>
+        <Card key={group.dept} style={{ padding:0, overflow:'hidden', marginBottom:SP[4] }}>
+          <div style={{ background:DEPT_COLOR[group.dept], padding:`${SP[3]}px ${SP[4]}px` }}>
+            <span style={{ color:'#fff', fontWeight:700, fontSize:FS.md, letterSpacing:.2 }}>
+              {group.name} — {group.items.length} template
+            </span>
           </div>
-          <table style={{ width:'100%', borderCollapse:'collapse' }}>
-            <TH cols={['Công việc','Giao cho','Tần suất','Ưu tiên','Khung giờ','Trạng thái','']}/>
-            <tbody>
-              {group.items.map((tp: any, i: number) => {
-                const assignee = allUsers.find((u: any) => u.id === tp.assignee_id)
-                return (
-                  <tr key={tp.id} style={{ background:i%2===0?'#fff':T.bg, borderBottom:`1px solid ${T.border}`, opacity:tp.active?1:0.5 }}>
-                    <td style={{ padding:'9px 13px' }}>
-                      <div style={{ fontSize:13, fontWeight:500, color:T.dark }}>{tp.title}</div>
-                      {tp.description && <div style={{ fontSize:11, color:T.light }}>{tp.description}</div>}
-                    </td>
-                    <td style={{ padding:'9px 13px' }}>{assignee && <Av u={assignee} size={22} showTitle/>}</td>
-                    <td style={{ padding:'9px 13px' }}>
-                      <span style={{ fontSize:10, fontWeight:600, padding:'2px 7px', borderRadius:20,
-                        color:FREQ_COLOR[tp.freq]?.color, background:FREQ_COLOR[tp.freq]?.bg }}>{tp.freq}</span>
-                      {tp.freq==='Hàng tháng' && tp.day_of_month && (
-                        <div style={{ fontSize:10, color:T.light, marginTop:2 }}>
-                          {Number(tp.day_of_month)===99 ? '📅 Cuối tháng' : `📅 Ngày ${tp.day_of_month}`}
+          <div style={{ overflowX:'auto' }}>
+            <table style={{ width:'100%', borderCollapse:'collapse', tableLayout:'fixed', minWidth:920 }}>
+              <colgroup>
+                <col style={{ width:'28%' }}/>{/* Công việc */}
+                <col style={{ width:'18%' }}/>{/* Giao cho */}
+                <col style={{ width:'12%' }}/>{/* Tần suất */}
+                <col style={{ width:'9%'  }}/>{/* Ưu tiên */}
+                <col style={{ width:'13%' }}/>{/* Khung giờ */}
+                <col style={{ width:'10%' }}/>{/* Trạng thái */}
+                <col style={{ width:'10%' }}/>{/* Actions */}
+              </colgroup>
+              <TH cols={[
+                { label:'Công việc', align:'left' },
+                { label:'Giao cho',  align:'left' },
+                { label:'Tần suất',  align:'center' },
+                { label:'Ưu tiên',   align:'center' },
+                { label:'Khung giờ', align:'center' },
+                { label:'Trạng thái', align:'center' },
+                { label:'', align:'center' },
+              ]}/>
+              <tbody>
+                {group.items.map((tp: any, i: number) => {
+                  const assignee = allUsers.find((u: any) => u.id === tp.assignee_id)
+                  return (
+                    <tr key={tp.id} style={{ background:i%2===0?'#fff':T.bg,
+                      borderBottom:`1px solid ${T.border}`, opacity:tp.active?1:0.5 }}>
+                      {/* Công việc */}
+                      <td style={{ padding:`${SP[2]}px ${SP[3]}px`, verticalAlign:'middle' }}>
+                        <div style={{ fontSize:FS.base, fontWeight:600, color:T.dark, lineHeight:1.3 }}>
+                          {tp.title}
                         </div>
-                      )}
-                      {tp.freq==='Ngày cụ thể' && tp.specific_date && (
-                        <div style={{ fontSize:10, color:'#7C3AED', marginTop:2, fontWeight:600 }}>
-                          📅 {new Date(tp.specific_date).toLocaleDateString('vi-VN',{day:'2-digit',month:'2-digit',year:'numeric'})}
+                        {tp.description && (
+                          <div style={{ fontSize:FS.xs, color:T.light, marginTop:2,
+                            overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap' }}>
+                            {tp.description}
+                          </div>
+                        )}
+                      </td>
+                      {/* Giao cho */}
+                      <td style={{ padding:`${SP[2]}px ${SP[3]}px`, verticalAlign:'middle' }}>
+                        {assignee && <Av u={assignee} size={22} showTitle/>}
+                      </td>
+                      {/* Tần suất */}
+                      <td style={{ padding:`${SP[2]}px ${SP[3]}px`, verticalAlign:'middle', textAlign:'center' }}>
+                        <span style={{ fontSize:FS.xs, fontWeight:600, padding:'3px 8px', borderRadius:RD.full,
+                          color:FREQ_COLOR[tp.freq]?.color, background:FREQ_COLOR[tp.freq]?.bg,
+                          display:'inline-block', whiteSpace:'nowrap' }}>{tp.freq}</span>
+                        {tp.freq==='Hàng tháng' && tp.day_of_month && (
+                          <div style={{ fontSize:FS.xs, color:T.light, marginTop:3 }}>
+                            {Number(tp.day_of_month)===99 ? '📅 Cuối tháng' : `📅 Ngày ${tp.day_of_month}`}
+                          </div>
+                        )}
+                        {tp.freq==='Ngày cụ thể' && tp.specific_date && (
+                          <div style={{ fontSize:FS.xs, color:T.purple, marginTop:3, fontWeight:600 }}>
+                            📅 {new Date(tp.specific_date).toLocaleDateString('vi-VN',{day:'2-digit',month:'2-digit',year:'numeric'})}
+                          </div>
+                        )}
+                      </td>
+                      {/* Ưu tiên */}
+                      <td style={{ padding:`${SP[2]}px ${SP[3]}px`, verticalAlign:'middle', textAlign:'center' }}>
+                        <Badge cfg={PRI_CFG[tp.priority]} small/>
+                      </td>
+                      {/* Khung giờ */}
+                      <td style={{ padding:`${SP[2]}px ${SP[3]}px`, verticalAlign:'middle',
+                        textAlign:'center', fontSize:FS.sm, fontWeight:600, color:T.dark }}>
+                        <div>🕐 {timeRange(tp)}</div>
+                        <div style={{ fontSize:FS.xs, color:T.light, fontWeight:400, marginTop:2 }}>
+                          {tp.mins} phút
                         </div>
-                      )}
-                    </td>
-                    <td style={{ padding:'9px 13px' }}><Badge cfg={PRI_CFG[tp.priority]} small/></td>
-                    <td style={{ padding:'9px 13px', fontSize:12, fontWeight:600, color:T.dark }}>
-                      🕐 {timeRange(tp)}
-                      <div style={{ fontSize:10, color:T.light }}>{tp.mins} phút</div>
-                    </td>
-                    <td style={{ padding:'9px 13px' }}>
-                      <span style={{ fontSize:10, fontWeight:600, padding:'2px 7px', borderRadius:20,
-                        color:tp.active?T.green:T.gray, background:tp.active?T.greenBg:T.grayBg }}>
-                        {tp.active?'Đang dùng':'Tắt'}
-                      </span>
-                    </td>
-                    <td style={{ padding:'9px 13px' }}>
-                      <div style={{ display:'flex', gap:6 }}>
-                        <button onClick={() => openEdit(tp)} style={{ padding:'4px 10px', borderRadius:6, border:`1px solid ${T.border}`, background:'transparent', cursor:'pointer', fontSize:11, fontFamily:'inherit', color:T.med }}>Sửa</button>
-                        <button onClick={() => remove(tp.id)} style={{ padding:'4px 10px', borderRadius:6, border:`1px solid ${T.redBg}`, background:T.redBg, cursor:'pointer', fontSize:11, fontFamily:'inherit', color:T.red }}>Xóa</button>
-                      </div>
-                    </td>
-                  </tr>
-                )
-              })}
-            </tbody>
-          </table>
+                      </td>
+                      {/* Trạng thái */}
+                      <td style={{ padding:`${SP[2]}px ${SP[3]}px`, verticalAlign:'middle', textAlign:'center' }}>
+                        <span style={{ fontSize:FS.xs, fontWeight:600, padding:'3px 8px', borderRadius:RD.full,
+                          color:tp.active?T.green:T.gray, background:tp.active?T.greenBg:T.grayBg,
+                          display:'inline-block', whiteSpace:'nowrap' }}>
+                          {tp.active?'Đang dùng':'Tắt'}
+                        </span>
+                      </td>
+                      {/* Actions */}
+                      <td style={{ padding:`${SP[2]}px ${SP[3]}px`, verticalAlign:'middle' }}>
+                        <div style={{ display:'flex', gap:SP[1], justifyContent:'center' }}>
+                          <button onClick={() => openEdit(tp)}
+                            style={{ padding:'4px 10px', borderRadius:RD.sm, border:`1px solid ${T.border}`,
+                              background:'transparent', cursor:'pointer', fontSize:FS.xs,
+                              fontFamily:'inherit', color:T.med }}>Sửa</button>
+                          <button onClick={() => remove(tp.id)}
+                            style={{ padding:'4px 10px', borderRadius:RD.sm, border:`1px solid ${T.redBg}`,
+                              background:T.redBg, cursor:'pointer', fontSize:FS.xs,
+                              fontFamily:'inherit', color:T.red }}>Xóa</button>
+                        </div>
+                      </td>
+                    </tr>
+                  )
+                })}
+              </tbody>
+            </table>
+          </div>
         </Card>
       ))}
 
