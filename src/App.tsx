@@ -12,7 +12,7 @@ const db = createClient(SUPABASE_URL, SUPABASE_KEY)
 // APP_VERSION — dùng để invalidate cache localStorage mỗi khi deploy version mới
 // (ngăn bug quyền user bị "reset" do cache position cũ sau deploy)
 // ⚠️ MỖI LẦN DEPLOY FEATURE MỚI CÓ PERMISSION MỚI, BUMP SỐ NÀY:
-const APP_VERSION = '2026.04.17.v15'
+const APP_VERSION = '2026.04.17.v18'
 
 // ════════════════════════════════════════════════════════════════
 // AUDIT LOG — ghi nhận các hành động phá hoại data để trace lại
@@ -13304,6 +13304,16 @@ function PickingModule({ user, allUsers, mobile, products }: any) {
   const [selectedCode, setSelectedCode] = useState<string|null>(null)
   const [searchQ, setSearchQ] = useState('')
   const [tab, setTab] = useState<'todo'|'done_today'>('todo')
+  // Cutoff date: chỉ hiển thị đơn từ ngày này trở đi (null = không filter)
+  const [cutoffDate, setCutoffDate] = useState<string|null>(null)
+  const [showCutoffModal, setShowCutoffModal] = useState(false)
+
+  const fetchCutoff = async () => {
+    const { data } = await db.from('settings')
+      .select('picking_start_date').eq('id','main').maybeSingle()
+    setCutoffDate(data?.picking_start_date || null)
+  }
+  useEffect(() => { fetchCutoff() }, [])
 
   const fetchData = async (quiet=false) => {
     if (!quiet) setSyncing(true)
@@ -13348,15 +13358,22 @@ function PickingModule({ user, allUsers, mobile, products }: any) {
     return list.filter((o: any) => norm(`${o.order_code} ${o.customer_name} ${o.sold_by_name}`).includes(q))
   }
 
+  // Cutoff filter: ẩn đơn có purchase_date < cutoff (nếu có set)
+  const cutoffFilter = (o: any) => {
+    if (!cutoffDate) return true
+    if (!o.purchase_date) return true
+    return new Date(o.purchase_date) >= new Date(cutoffDate + 'T00:00:00')
+  }
+
   // Tab 'todo': đơn status='picking' (chờ nhặt)
-  const todoOrders = filterByQ(orders.filter((o: any) => o.status === 'picking')
+  const todoOrders = filterByQ(orders.filter((o: any) => o.status === 'picking' && cutoffFilter(o))
     .sort((a: any, b: any) => new Date(a.purchase_date).getTime() - new Date(b.purchase_date).getTime()))
 
   // Tab 'done_today': đơn đã nhặt xong hôm nay (picked_at = today, status='packing' hoặc 'done')
   const todayStart = new Date()
   todayStart.setHours(0,0,0,0)
   const doneTodayOrders = filterByQ(orders.filter((o: any) =>
-    o.picked_at && new Date(o.picked_at) >= todayStart
+    o.picked_at && new Date(o.picked_at) >= todayStart && cutoffFilter(o)
   ).sort((a: any, b: any) => new Date(b.picked_at).getTime() - new Date(a.picked_at).getTime()))
 
   const displayOrders = tab === 'todo' ? todoOrders : doneTodayOrders
@@ -13463,6 +13480,43 @@ function PickingModule({ user, allUsers, mobile, products }: any) {
           </div>
         }/>
 
+      {/* Cutoff banner — Giai đoạn chuyển giao */}
+      {cutoffDate ? (
+        <Card style={{ padding:10, marginBottom:10, background:T.goldBg,
+          border:`1px solid ${T.gold}` }}>
+          <div style={{ display:'flex', alignItems:'center', justifyContent:'space-between', gap:10, flexWrap:'wrap' }}>
+            <div style={{ fontSize:11, color:T.goldText }}>
+              🚦 Chỉ theo dõi đơn từ <b>{cutoffDate.split('-').reverse().join('/')}</b> trở đi.
+              Đơn cũ xử lý theo quy trình cũ được bỏ qua.
+            </div>
+            {isAdmin && (
+              <button onClick={() => setShowCutoffModal(true)}
+                style={{ padding:'4px 10px', borderRadius:12, border:`1px solid ${T.gold}`,
+                  background:'#fff', color:T.goldText, cursor:'pointer', fontFamily:'inherit',
+                  fontSize:10, fontWeight:600, whiteSpace:'nowrap' }}>
+                🔧 Đổi ngày
+              </button>
+            )}
+          </div>
+        </Card>
+      ) : (
+        isAdmin && (
+          <Card style={{ padding:10, marginBottom:10, background:T.bg, border:`1px dashed ${T.border}` }}>
+            <div style={{ display:'flex', alignItems:'center', justifyContent:'space-between', gap:10, flexWrap:'wrap' }}>
+              <div style={{ fontSize:11, color:T.light }}>
+                ℹ️ Chưa set ngày bắt đầu — tất cả đơn có "Đã đóng" đều được sync
+              </div>
+              <button onClick={() => setShowCutoffModal(true)}
+                style={{ padding:'4px 10px', borderRadius:12, border:`1px solid ${T.gold}`,
+                  background:T.goldBg, color:T.goldText, cursor:'pointer', fontFamily:'inherit',
+                  fontSize:10, fontWeight:600, whiteSpace:'nowrap' }}>
+                🚦 Set ngày bắt đầu
+              </button>
+            </div>
+          </Card>
+        )
+      )}
+
       {/* Tabs */}
       <div style={{ display:'flex', gap:6, marginBottom:14, flexWrap:'wrap' }}>
         {[
@@ -13556,6 +13610,174 @@ function PickingModule({ user, allUsers, mobile, products }: any) {
             canPick={canPick && selected.status === 'picking'}
           />
         )}
+      </div>
+
+      {showCutoffModal && isAdmin && (
+        <CutoffDateModal
+          user={user}
+          currentDate={cutoffDate}
+          orderCount={orders.filter((o: any) =>
+            (o.status === 'picking' || o.status === 'packing') &&
+            (!cutoffDate || new Date(o.purchase_date) < new Date((cutoffDate||'') + 'T00:00:00'))
+          ).length}
+          onSave={async (newDate: string|null) => {
+            const { error } = await db.from('settings').update({
+              picking_start_date: newDate,
+              picking_start_note: newDate ? `Set bởi ${user.name || user.ini} lúc ${new Date().toLocaleString('vi-VN')}` : '',
+            }).eq('id', 'main')
+            if (error) { alert('❌ Lỗi: ' + error.message); return }
+            setCutoffDate(newDate)
+            setShowCutoffModal(false)
+            alert(newDate
+              ? `✅ Đã set ngày bắt đầu = ${newDate.split('-').reverse().join('/')}\nLần sync tiếp theo sẽ bỏ qua đơn trước ngày này.`
+              : '✅ Đã xoá ngày bắt đầu. Tất cả đơn "Đã đóng" sẽ được sync.'
+            )
+          }}
+          onCleanupOld={async () => {
+            if (!cutoffDate) return
+            const cutoffISO = new Date(cutoffDate + 'T00:00:00').toISOString()
+            const toDelete = orders.filter((o: any) =>
+              (o.status === 'picking' || o.status === 'packing') &&
+              o.purchase_date && new Date(o.purchase_date) < new Date(cutoffDate + 'T00:00:00')
+            )
+            if (toDelete.length === 0) {
+              alert('Không có đơn nào cần dọn dẹp.')
+              return
+            }
+            if (!confirm(`Xoá ${toDelete.length} đơn cũ (trước ngày ${cutoffDate.split('-').reverse().join('/')}) đang ở trạng thái picking/packing?\n\nHành động này không thể hoàn tác.`)) return
+            const codes = toDelete.map(o => o.order_code)
+            for (const code of codes) {
+              await logAudit({
+                user, action: 'delete', table: 'packing_workflow', recordId: code,
+                snapshot: toDelete.find(o => o.order_code === code),
+                note: `Dọn dẹp đơn cũ (trước cutoff ${cutoffDate})`,
+              })
+            }
+            await db.from('packing_workflow').delete().in('order_code', codes)
+            setOrders(prev => prev.filter(o => !codes.includes(o.order_code)))
+            alert(`✅ Đã xoá ${codes.length} đơn cũ. Đã ghi vào audit log.`)
+          }}
+          onClose={() => setShowCutoffModal(false)}
+        />
+      )}
+    </div>
+  )
+}
+
+// ── Modal set cutoff date ──
+function CutoffDateModal({ user, currentDate, orderCount, onSave, onCleanupOld, onClose }: any) {
+  const [date, setDate] = useState<string>(currentDate || new Date().toISOString().split('T')[0])
+  const [mode, setMode] = useState<'keep'|'clear'>(currentDate ? 'keep' : 'keep')
+
+  return (
+    <div style={{ position:'fixed', inset:0, background:'rgba(0,0,0,0.55)', zIndex:9999,
+      display:'flex', alignItems:'center', justifyContent:'center', padding:20 }}>
+      <div style={{ background:'#fff', borderRadius:12, maxWidth:520, width:'100%',
+        maxHeight:'90vh', overflow:'auto' }}>
+        <div style={{ padding:'14px 20px', background:T.goldBg, borderBottom:`1px solid ${T.gold}` }}>
+          <div style={{ fontSize:14, fontWeight:700, color:T.goldText }}>
+            🚦 Ngày bắt đầu sync đơn
+          </div>
+          <div style={{ fontSize:11, color:T.med, marginTop:3 }}>
+            Giai đoạn chuyển giao: bỏ qua đơn cũ đã xử lý theo quy trình cũ
+          </div>
+        </div>
+
+        <div style={{ padding:20 }}>
+          <div style={{ fontSize:12, color:T.dark, lineHeight:1.6, marginBottom:14 }}>
+            Chọn ngày bắt đầu theo dõi. Hệ thống sẽ <b>chỉ sync đơn có ngày tạo (purchase_date) từ ngày này trở đi</b>. Đơn cũ hơn sẽ bị bỏ qua.
+          </div>
+
+          <label style={{ fontSize:11, color:T.med, fontWeight:600, display:'block', marginBottom:4 }}>
+            Ngày bắt đầu
+          </label>
+          <input type="date" value={date} onChange={e => setDate(e.target.value)}
+            max={new Date().toISOString().split('T')[0]}
+            style={{ width:'100%', padding:'10px 13px', border:`1px solid ${T.border}`, borderRadius:6,
+              fontSize:14, fontFamily:'inherit', color:T.dark, background:'#fff', outline:'none',
+              boxSizing:'border-box' as any, marginBottom:14 }}/>
+
+          <div style={{ display:'flex', gap:6, marginBottom:14, flexWrap:'wrap' }}>
+            <button onClick={() => setDate(new Date().toISOString().split('T')[0])}
+              style={{ padding:'4px 10px', borderRadius:12, border:`1px solid ${T.border}`,
+                background:'#fff', color:T.med, cursor:'pointer', fontFamily:'inherit',
+                fontSize:10, fontWeight:600 }}>
+              Hôm nay
+            </button>
+            <button onClick={() => {
+              const d = new Date(); d.setDate(d.getDate() + 1)
+              setDate(d.toISOString().split('T')[0])
+            }}
+              style={{ padding:'4px 10px', borderRadius:12, border:`1px solid ${T.border}`,
+                background:'#fff', color:T.med, cursor:'pointer', fontFamily:'inherit',
+                fontSize:10, fontWeight:600 }}>
+              Mai
+            </button>
+            <button onClick={() => {
+              const d = new Date(); d.setDate(d.getDate() + 7 - d.getDay())
+              setDate(d.toISOString().split('T')[0])
+            }}
+              style={{ padding:'4px 10px', borderRadius:12, border:`1px solid ${T.border}`,
+                background:'#fff', color:T.med, cursor:'pointer', fontFamily:'inherit',
+                fontSize:10, fontWeight:600 }}>
+              CN tuần này
+            </button>
+          </div>
+
+          {currentDate && orderCount > 0 && (
+            <Card style={{ padding:12, marginBottom:14, background:T.amberBg,
+              border:`1px solid ${T.amber}` }}>
+              <div style={{ fontSize:11, color:T.amber, fontWeight:700, marginBottom:4 }}>
+                ⚠️ Có <b>{orderCount}</b> đơn cũ (trước {currentDate.split('-').reverse().join('/')}) vẫn đang ở trạng thái picking/packing
+              </div>
+              <div style={{ fontSize:10, color:T.dark, marginBottom:8, lineHeight:1.5 }}>
+                Các đơn này đã được lọc khỏi list nhưng vẫn còn trong database. Có thể xoá hẳn để dọn dẹp.
+              </div>
+              <button onClick={onCleanupOld}
+                style={{ padding:'5px 12px', borderRadius:6, border:`1px solid ${T.red}`,
+                  background:'#fff', color:T.red, cursor:'pointer', fontFamily:'inherit',
+                  fontSize:11, fontWeight:700 }}>
+                🗑️ Xoá {orderCount} đơn cũ
+              </button>
+            </Card>
+          )}
+
+          <div style={{ padding:10, background:T.bg, borderRadius:6, fontSize:10,
+            color:T.med, lineHeight:1.5 }}>
+            💡 <b>Gợi ý chọn ngày:</b>
+            <br/>• Ngày đầu tiên anh dùng quy trình mới (VD: hôm nay nếu go-live ngay)
+            <br/>• Hoặc ngày thông báo chính thức cho NV Kho dùng app
+            <br/>• Sale cũng nên được thông báo: "Từ ngày X, chỉ đơn mới mới vào hệ thống chụp ảnh"
+          </div>
+        </div>
+
+        <div style={{ display:'flex', gap:10, padding:16, borderTop:`1px solid ${T.border}` }}>
+          <button onClick={onClose}
+            style={{ flex:1, padding:'9px', borderRadius:6, border:`1px solid ${T.border}`,
+              background:'#fff', color:T.med, cursor:'pointer', fontFamily:'inherit', fontSize:13 }}>
+            Hủy
+          </button>
+          {currentDate && (
+            <button onClick={() => {
+              if (!confirm('Xoá ngày bắt đầu? Tất cả đơn "Đã đóng" sẽ được sync lại.')) return
+              onSave(null)
+            }}
+              style={{ padding:'9px 12px', borderRadius:6, border:`1px solid ${T.border}`,
+                background:'#fff', color:T.red, cursor:'pointer', fontFamily:'inherit',
+                fontSize:11, fontWeight:600 }}>
+              🗑️ Xoá set
+            </button>
+          )}
+          <button onClick={() => onSave(date)}
+            disabled={!date}
+            style={{ flex:2, padding:'9px', borderRadius:6, border:'none',
+              background: date ? T.gold : T.border,
+              color: date ? '#fff' : T.light,
+              cursor: date ? 'pointer' : 'not-allowed',
+              fontFamily:'inherit', fontSize:13, fontWeight:700 }}>
+            💾 Lưu ngày bắt đầu
+          </button>
+        </div>
       </div>
     </div>
   )
@@ -15590,7 +15812,6 @@ function PhotoGallery({ title, photos, allUsers, orderCode, kind }: any) {
   const shareAll = async () => {
     setSharing(true)
     try {
-      // Check Web Share API với files support
       const hasShareFiles = 'share' in navigator && 'canShare' in navigator
       const files: File[] = []
 
@@ -15609,13 +15830,13 @@ function PhotoGallery({ title, photos, allUsers, orderCode, kind }: any) {
 
       if (files.length === 0) { alert('❌ Không tải được ảnh nào'); return }
 
-      // Chỉ share files, KHÔNG kèm title/text/url để tránh Zalo hiển thị link web
+      // Chỉ share files, không kèm title/text/url
       const shareData: any = { files }
 
       if (hasShareFiles && (navigator as any).canShare(shareData)) {
         await (navigator as any).share(shareData)
       } else {
-        // Fallback: download từng file về máy
+        // Fallback: download từng file
         for (const file of files) {
           const url = URL.createObjectURL(file)
           const a = document.createElement('a')
