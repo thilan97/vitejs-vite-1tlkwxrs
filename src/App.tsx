@@ -12,7 +12,7 @@ const db = createClient(SUPABASE_URL, SUPABASE_KEY)
 // APP_VERSION — dùng để invalidate cache localStorage mỗi khi deploy version mới
 // (ngăn bug quyền user bị "reset" do cache position cũ sau deploy)
 // ⚠️ MỖI LẦN DEPLOY FEATURE MỚI CÓ PERMISSION MỚI, BUMP SỐ NÀY:
-const APP_VERSION = '2026.04.17.v22'
+const APP_VERSION = '2026.04.17.v23'
 
 // ════════════════════════════════════════════════════════════════
 // AUDIT LOG — ghi nhận các hành động phá hoại data để trace lại
@@ -6811,6 +6811,46 @@ function TaskNotifBanner({ user, tasks, allUsers, setPage, onDismiss }: any) {
       </div>
     </div>
   )
+}
+
+// ══ ERROR BOUNDARY — bắt lỗi render, hiển thị message thay vì màn đen ══
+class AppErrorBoundary extends React.Component<
+  { children: any },
+  { error: any; info: any }
+> {
+  constructor(props: any) {
+    super(props)
+    this.state = { error: null, info: null }
+  }
+  componentDidCatch(error: any, info: any) {
+    this.setState({ error, info })
+    console.error('[AppErrorBoundary]', error, info)
+  }
+  render() {
+    if (this.state.error) {
+      return (
+        <div style={{ padding: 32, fontFamily: 'monospace', maxWidth: 800, margin: '0 auto' }}>
+          <h2 style={{ color: '#B91C1C' }}>⚠️ Lỗi hiển thị</h2>
+          <p style={{ color: '#555' }}>
+            Vui lòng chụp màn hình này và báo lại cho Admin.
+          </p>
+          <pre style={{ background: '#FEE2E2', padding: 16, borderRadius: 8,
+            fontSize: 12, overflow: 'auto', whiteSpace: 'pre-wrap' }}>
+            {String(this.state.error?.message || this.state.error)}
+            {'\n\n'}
+            {this.state.info?.componentStack?.slice(0, 800)}
+          </pre>
+          <button onClick={() => window.location.reload()}
+            style={{ marginTop: 16, padding: '10px 24px', background: '#C4973A',
+              color: '#fff', border: 'none', borderRadius: 8, cursor: 'pointer',
+              fontSize: 14, fontWeight: 700 }}>
+            🔄 Tải lại trang
+          </button>
+        </div>
+      )
+    }
+    return this.props.children
+  }
 }
 
 export default function App() {
@@ -16041,6 +16081,7 @@ function OrderLookupTab({ user, allUsers, mobile }: any) {
 function PhotoGallery({ title, photos, allUsers, orderCode, kind }: any) {
   const [previewIdx, setPreviewIdx] = useState<number|null>(null)
   const [sharing, setSharing] = useState(false)
+  const [downloading, setDownloading] = useState(false)
 
   const getUrl = (p: any): string => typeof p === 'string' ? p : (p?.url || '')
   const getAt  = (p: any): string => typeof p === 'string' ? '' : (p?.at || '')
@@ -16129,7 +16170,6 @@ function PhotoGallery({ title, photos, allUsers, orderCode, kind }: any) {
   }
 
   // Download toàn bộ ảnh về máy (cho Sale chia sẻ KH)
-  const [downloading, setDownloading] = useState(false)
   const downloadAll = async () => {
     if (photos.length === 0) return
     setDownloading(true)
