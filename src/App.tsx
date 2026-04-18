@@ -12,7 +12,7 @@ const db = createClient(SUPABASE_URL, SUPABASE_KEY)
 // APP_VERSION — dùng để invalidate cache localStorage mỗi khi deploy version mới
 // (ngăn bug quyền user bị "reset" do cache position cũ sau deploy)
 // ⚠️ MỖI LẦN DEPLOY FEATURE MỚI CÓ PERMISSION MỚI, BUMP SỐ NÀY:
-const APP_VERSION = '2026.04.17.v28'
+const APP_VERSION = '2026.04.17.v29'
 
 // ════════════════════════════════════════════════════════════════
 // AUDIT LOG — ghi nhận các hành động phá hoại data để trace lại
@@ -15023,6 +15023,7 @@ function PackingDetailPanel({ ord, mobile, user, allUsers, products, onClose, on
   const totalItems = (ord.items || []).length
   const { min, max } = photoCountRangeV2(totalItems)
   const [showImgModal, setShowImgModal] = useState<string|null>(null)
+  const [previewPhotoUrl, setPreviewPhotoUrl] = useState<string|null>(null)
 
   // Multi-packer info
   const activePackerIds: string[] = ord.active_packers || []
@@ -15287,7 +15288,7 @@ function PackingDetailPanel({ ord, mobile, user, allUsers, products, onClose, on
                   return (
                     <div key={i} style={{ position:'relative', borderRadius:6, overflow:'hidden',
                       border:`1px solid ${T.border}`, cursor:'pointer', background:'#fff' }}
-                      onClick={() => setShowImgModal(url)}>
+                      onClick={() => setPreviewPhotoUrl(url)}>
                       <div style={{ aspectRatio:'1/1', overflow:'hidden' }}>
                         <img src={url} alt={`Ảnh nhặt ${i+1}`}
                           style={{ width:'100%', height:'100%', objectFit:'cover', display:'block' }}/>
@@ -15381,6 +15382,23 @@ function PackingDetailPanel({ ord, mobile, user, allUsers, products, onClose, on
 
       {showImgModal && (
         <ProductImageModalV2 code={showImgModal} onClose={() => setShowImgModal(null)}/>
+      )}
+
+      {/* Preview ảnh đã nhặt — fullscreen, click để đóng */}
+      {previewPhotoUrl && (
+        <div onClick={() => setPreviewPhotoUrl(null)}
+          style={{ position:'fixed', inset:0, background:'rgba(0,0,0,0.9)', zIndex:9999,
+            display:'flex', alignItems:'center', justifyContent:'center', padding:20,
+            cursor:'zoom-out' }}>
+          <img src={previewPhotoUrl} alt="Preview"
+            style={{ maxWidth:'100%', maxHeight:'100%', objectFit:'contain' }}/>
+          <button onClick={e => { e.stopPropagation(); setPreviewPhotoUrl(null) }}
+            style={{ position:'absolute', top:20, right:20, width:40, height:40,
+              borderRadius:20, border:'none', background:'rgba(255,255,255,0.2)', color:'#fff',
+              cursor:'pointer', fontSize:20, fontFamily:'inherit' }}>
+            ✕
+          </button>
+        </div>
       )}
     </div>
   )
