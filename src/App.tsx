@@ -12,7 +12,7 @@ const db = createClient(SUPABASE_URL, SUPABASE_KEY)
 // APP_VERSION — dùng để invalidate cache localStorage mỗi khi deploy version mới
 // (ngăn bug quyền user bị "reset" do cache position cũ sau deploy)
 // ⚠️ MỖI LẦN DEPLOY FEATURE MỚI CÓ PERMISSION MỚI, BUMP SỐ NÀY:
-const APP_VERSION = '2026.04.17.v37'
+const APP_VERSION = '2026.04.17.v38'
 
 // ════════════════════════════════════════════════════════════════
 // AUDIT LOG — ghi nhận các hành động phá hoại data để trace lại
@@ -1415,12 +1415,21 @@ function Dashboard({ user, checklist, tasks, allUsers, attendance, leaveRequests
           { label:'Vắng hôm nay',   val:`${absentCount}/${staffCount}`,  icon:'🏠', color:T.amber },
           { label:'Chờ duyệt',      val:pendingLeave+pendingOT,          icon:'⏳', color:T.purple},
         ].map((k, i) => (
-          <div key={i} style={{ background:T.card, border:`1px solid ${T.border}`, borderRadius:11, padding:'14px 16px' }}>
-            <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:8 }}>
-              <span style={{ fontSize:10, fontWeight:600, color:T.light, textTransform:'uppercase', letterSpacing:.4 }}>{k.label}</span>
-              <span style={{ fontSize:16 }}>{k.icon}</span>
+          <div key={i} style={{ background:T.card, border:`1px solid ${T.border}`,
+            borderRadius:RD.lg, padding:`${SP[3]}px ${SP[4]}px`,
+            transition:'all .15s' }}
+            onMouseEnter={e => (e.currentTarget.style.borderColor = T.gold,
+                                e.currentTarget.style.boxShadow = '0 2px 8px rgba(0,0,0,0.04)')}
+            onMouseLeave={e => (e.currentTarget.style.borderColor = T.border,
+                                e.currentTarget.style.boxShadow = 'none')}>
+            <div style={{ display:'flex', justifyContent:'space-between',
+              alignItems:'center', marginBottom:SP[2] }}>
+              <span style={{ fontSize:FS.xs, fontWeight:700, color:T.light,
+                textTransform:'uppercase', letterSpacing:.8 }}>{k.label}</span>
+              <span style={{ fontSize:FS.lg }}>{k.icon}</span>
             </div>
-            <div style={{ fontSize:24, fontWeight:700, color:k.color }}>{k.val}</div>
+            <div style={{ fontSize:FS.x2l, fontWeight:800, color:k.color,
+              lineHeight:1.1, letterSpacing:-.5 }}>{k.val}</div>
           </div>
         ))}
       </div>
@@ -1957,10 +1966,7 @@ function Tasks({ user, tasks, setTasks, addLog, allUsers, mobile }: any) {
       <FilterBar/>
 
       {mine.length === 0 ? (
-        <Card style={{ textAlign:'center', padding:'40px', color:T.light }}>
-          <div style={{ fontSize:32, marginBottom:8 }}>📌</div>
-          <div style={{ fontSize:14 }}>Không có task nào</div>
-        </Card>
+        <EmptyState icon={Ico.pin} title="Không có task nào"/>
       ) : mobile ? (
         <div style={{ display:'flex', flexDirection:'column', gap:10 }}>
           {mine.map((t: any) => {
@@ -2655,6 +2661,7 @@ function Overtime({ user, allUsers, mobile }: any) {
   const [reviewNotes, setReviewNotes] = useState('')
   const [form, setForm]             = useState({ date:'', start_time:'', end_time:'', reason:'' })
   const [tab, setTab]               = useState('mine')
+  const [expandedOtId, setExpandedOtId] = useState<string|null>(null)
   const [monthFilter, setMonthFilter] = useState(() => {
     const now = new Date()
     return `${now.getFullYear()}-${String(now.getMonth()+1).padStart(2,'0')}`
@@ -2760,10 +2767,7 @@ function Overtime({ user, allUsers, mobile }: any) {
               style={{ padding:'7px 11px', border:`1px solid ${T.border}`, borderRadius:8, fontSize:13, fontFamily:'inherit', color:T.dark, background:'#fff',colorScheme:'light', cursor:'pointer' }}/>
           </div>
           {otByUser.length===0 ? (
-            <Card style={{ textAlign:'center', padding:'40px', color:T.light }}>
-              <div style={{ fontSize:32, marginBottom:8 }}>⏱️</div>
-              <div style={{ fontSize:14 }}>Không có OT trong tháng {mmo}/{myr}</div>
-            </Card>
+            <EmptyState icon={Ico.clock} title={`Không có OT trong tháng ${mmo}/${myr}`}/>
           ) : (
             <Card style={{ padding:0, overflow:'hidden' }}>
               <table style={{ width:'100%', borderCollapse:'collapse' }}>
@@ -2790,54 +2794,89 @@ function Overtime({ user, allUsers, mobile }: any) {
           )}
         </div>
       ) : (
-        <div style={{ display:'flex', flexDirection:'column', gap:10 }}>
+        <div style={{ display:'flex', flexDirection:'column', gap:8 }}>
           {displayList.length===0 ? (
-            <Card style={{ textAlign:'center', padding:'40px', color:T.light }}>
-              <div style={{ fontSize:32, marginBottom:8 }}>⏱️</div>
-              <div style={{ fontSize:14 }}>{tab==='pending'?'Không có đơn chờ duyệt':'Chưa có đơn OT nào'}</div>
-            </Card>
+            <EmptyState icon={Ico.clock}
+              title={tab==='pending'?'Không có đơn chờ duyệt':'Chưa có đơn OT nào'}/>
           ) : displayList.map((r: any) => {
             const req = allUsers.find((u: any) => u.id===r.user_id)
             const rev = allUsers.find((u: any) => u.id===r.reviewed_by)
             const sc  = RS[r.status] || {}
             const canReview = canApprove && r.status==='pending' && (canAll || dids.includes(r.user_id))
             const canDelete = canAll || r.user_id===user.id
+            const isExpanded = expandedOtId === r.id
             return (
               <div key={r.id} style={{ background:T.card,
                 border:`1px solid ${r.status==='pending'?T.amber:T.border}`,
-                borderRadius:12, padding:'16px 18px' }}>
-                <div style={{ display:'flex', justifyContent:'space-between', alignItems:'flex-start', flexWrap:'wrap', gap:10 }}>
-                  <div style={{ flex:1 }}>
-                    <div style={{ display:'flex', gap:10, alignItems:'center', marginBottom:6, flexWrap:'wrap' }}>
-                      {req && <Av u={req} size={28} showTitle/>}
-                      <span style={{ fontSize:13, fontWeight:700, padding:'2px 9px', borderRadius:20, color:T.goldText, background:T.goldBg }}>
-                        ⏱️ {r.hours}h OT
+                borderRadius:RD.lg, overflow:'hidden', transition:'all .15s' }}>
+                {/* COMPACT ROW */}
+                <div onClick={() => setExpandedOtId(isExpanded ? null : r.id)}
+                  style={{ padding: mobile?'10px 12px':'10px 14px', cursor:'pointer',
+                    display:'flex', alignItems:'center', gap:10,
+                    background: isExpanded ? T.bg : 'transparent' }}>
+                  {req && <Av u={req} size={mobile?28:32}/>}
+                  <div style={{ flex:1, minWidth:0 }}>
+                    <div style={{ display:'flex', gap:8, alignItems:'center', marginBottom:2, flexWrap:'wrap' }}>
+                      <span style={{ fontSize:FS.base, fontWeight:700, color:T.dark,
+                        overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap',
+                        maxWidth: mobile?120:220 }}>
+                        {req?.name || '—'}
                       </span>
+                      <Badge tone="gold" size="xs">⏱️ {r.hours}h OT</Badge>
                     </div>
-                    <div style={{ fontSize:12, color:T.dark, marginBottom:3 }}>📅 {fmtDate(r.date)} · {r.start_time} → {r.end_time}</div>
-                    <div style={{ fontSize:12, color:T.med }}>Lý do: {r.reason}</div>
-                    {r.review_notes && <div style={{ fontSize:11, color:T.blue, marginTop:4 }}>💬 {r.review_notes}</div>}
-                    {rev && <div style={{ fontSize:11, color:T.light, marginTop:3 }}>Xử lý bởi {rev.name} • {r.reviewed_at}</div>}
-                    <div style={{ fontSize:11, color:T.light, marginTop:3 }}>Gửi lúc: {r.created_at}</div>
+                    <div style={{ fontSize:FS.sm, color:T.med,
+                      overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap' }}>
+                      📅 {fmtDate(r.date)} · {r.start_time}–{r.end_time} · {r.reason}
+                    </div>
                   </div>
-                  <div style={{ display:'flex', flexDirection:'column', gap:6, alignItems:'flex-end' }}>
-                    <span style={{ fontSize:11, fontWeight:700, padding:'4px 10px', borderRadius:20, color:sc.color, background:sc.bg }}>{sc.label}</span>
-                    {canReview && (
-                      <button onClick={() => { setReviewItem(r); setReviewNotes('') }}
-                        style={{ padding:'6px 13px', borderRadius:7, border:`1.5px solid ${T.gold}`,
-                          background:T.goldBg, cursor:'pointer', fontSize:12, fontFamily:'inherit', color:T.goldText, fontWeight:600 }}>
-                        Xem xét
-                      </button>
-                    )}
-                    {canDelete && r.status==='pending' && (
-                      <button onClick={() => remove(r.id)}
-                        style={{ padding:'5px 11px', borderRadius:7, border:`1px solid ${T.redBg}`,
-                          background:T.redBg, cursor:'pointer', fontSize:11, fontFamily:'inherit', color:T.red }}>
-                        🗑️ Xóa
-                      </button>
-                    )}
+                  <div style={{ display:'flex', flexDirection:'column', gap:4,
+                    alignItems:'flex-end', flexShrink:0 }}>
+                    <Badge tone={r.status==='approved'?'success':r.status==='rejected'?'danger':'warning'} size="xs">
+                      {sc.label}
+                    </Badge>
+                    <span style={{ fontSize:FS.xs, color:T.light }}>{isExpanded?'▲':'▼'}</span>
                   </div>
                 </div>
+
+                {/* EXPANDED */}
+                {isExpanded && (
+                  <div style={{ padding:`${SP[3]}px ${SP[4]}px`,
+                    borderTop:`1px solid ${T.border}`, background:'#fff' }}>
+                    <div style={{ fontSize:FS.sm, color:T.dark, marginBottom:SP[1] }}>
+                      <b>Thời gian:</b> {fmtDate(r.date)} · {r.start_time} → {r.end_time} ({r.hours}h)
+                    </div>
+                    <div style={{ fontSize:FS.sm, color:T.med, marginBottom:SP[1] }}>
+                      <b>Lý do:</b> {r.reason}
+                    </div>
+                    <div style={{ fontSize:FS.xs, color:T.light, marginBottom:SP[2] }}>
+                      Gửi lúc: {r.created_at}
+                    </div>
+                    {r.review_notes && (
+                      <div style={{ fontSize:FS.sm, color:T.blue, padding:`${SP[1]}px ${SP[2]}px`,
+                        background:T.blueBg, borderRadius:RD.sm, marginBottom:SP[2] }}>
+                        💬 <b>Phản hồi:</b> {r.review_notes}
+                      </div>
+                    )}
+                    {rev && r.reviewed_at && (
+                      <div style={{ fontSize:FS.xs, color:T.light, marginBottom:SP[2] }}>
+                        Xử lý bởi <b style={{ color:T.dark }}>{rev.name}</b> • {r.reviewed_at}
+                      </div>
+                    )}
+                    <div style={{ display:'flex', gap:SP[2], flexWrap:'wrap' }}>
+                      {canReview && (
+                        <Btn size="sm" onClick={(e: any) => { e.stopPropagation(); setReviewItem(r); setReviewNotes('') }}>
+                          Xem xét
+                        </Btn>
+                      )}
+                      {canDelete && r.status==='pending' && (
+                        <Btn variant="danger" size="sm" icon={Ico.trash(12)}
+                          onClick={(e: any) => { e.stopPropagation(); remove(r.id) }}>
+                          Xoá
+                        </Btn>
+                      )}
+                    </div>
+                  </div>
+                )}
               </div>
             )
           })}
@@ -3072,12 +3111,8 @@ function Leave({ user, allUsers, leaveRequests, setLeaveRequests, mobile }: any)
       </div>
 
       {displayList.length === 0 ? (
-        <Card style={{ textAlign:'center', padding:'40px', color:T.light }}>
-          <div style={{ fontSize:32, marginBottom:8 }}>🏖️</div>
-          <div style={{ fontSize:14, fontWeight:500 }}>
-            {tab==='pending' ? 'Không có đơn chờ duyệt' : 'Chưa có đơn nghỉ phép nào'}
-          </div>
-        </Card>
+        <EmptyState icon={Ico.palm}
+          title={tab==='pending' ? 'Không có đơn chờ duyệt' : 'Chưa có đơn nghỉ phép nào'}/>
       ) : (
         <div style={{ display:'flex', flexDirection:'column', gap:8 }}>
           {displayList.map((r: any) => {
@@ -3981,10 +4016,7 @@ function ShortageItems({ user, allUsers, mobile, products, setProducts }: any) {
           )}
 
           {tabData[mgrTab]?.length === 0 ? (
-            <Card style={{ textAlign:'center', padding:'40px', color:T.light }}>
-              <div style={{ fontSize:32, marginBottom:8 }}>📦</div>
-              <div>Không có mục nào</div>
-            </Card>
+            <EmptyState icon={Ico.alertTri} title="Không có mục nào"/>
           ) : (
             <div style={{ background:T.card, borderRadius:12, border:`1px solid ${T.border}`, overflow:'hidden' }}>
               {/* ── Sticky header (desktop only) ── */}
@@ -7982,12 +8014,9 @@ function WrongOrders({ user, allUsers, wrongOrders, setWrongOrders, mobile }: an
         </div>
       ) : (
       <>{filtered.length===0
-        ? <Card style={{ textAlign:'center', padding:'40px', color:T.light }}>
-            <div style={{ fontSize:32, marginBottom:8 }}>⚠️</div>
-            <div style={{ fontSize:13 }}>Không có đơn sai nào trong tháng này</div>
-          </Card>
-        : <div style={{ background:T.card, borderRadius:12, border:`1px solid ${T.border}`,
-            boxShadow:'0 1px 4px rgba(0,0,0,0.06)', overflow:'hidden' }}>
+        ? <EmptyState icon={Ico.alertTri} title="Không có đơn sai nào" description="Không có đơn sai nào trong tháng này."/>
+        : <div style={{ background:T.card, borderRadius:RD.lg, border:`1px solid ${T.border}`,
+            boxShadow:'0 1px 3px rgba(0,0,0,0.04)', overflow:'hidden' }}>
 
             {/* ── Header ── */}
             {!mobile && (
@@ -9186,11 +9215,9 @@ function InventoryModule({ user, allUsers, products, invSessions, setInvSessions
       {tab==='check' && (
         <div style={{display:'flex',flexDirection:'column',gap:12}}>
           {!openSession ? (
-            <Card style={{textAlign:'center',padding:'40px'}}>
-              <div style={{fontSize:32,marginBottom:8}}>📋</div>
-              <div style={{fontSize:13,color:T.light,marginBottom:16}}>Không có phiên kiểm kê nào đang mở</div>
-              {canManage && <GoldBtn small onClick={() => setShowCreate(true)}>+ Tạo phiên KK mới</GoldBtn>}
-            </Card>
+            <EmptyState icon={Ico.clipboard}
+              title="Không có phiên kiểm kê nào đang mở"
+              action={canManage && <Btn onClick={() => setShowCreate(true)} icon={Ico.plus(14)}>Tạo phiên KK mới</Btn>}/>
           ) : (
             <>
               {/* QM Monitor View OR NV own list */}
@@ -12331,15 +12358,9 @@ function ExpiryModule({ user, mobile, products, batches, setBatches }: any) {
               )
             })}
             {Object.keys(batchTotalByCode).length === 0 && (
-              <div style={{ padding:'32px 24px', textAlign:'center' }}>
-                <div style={{ fontSize:32, marginBottom:12 }}>📦</div>
-                <div style={{ fontSize:14, fontWeight:600, color:T.dark, marginBottom:8 }}>
-                  Chưa có lô hàng nào
-                </div>
-                <div style={{ fontSize:12, color:T.light, lineHeight:1.6 }}>
-                  Nhấn <b>+ Thêm lô</b> để thêm thủ công, hoặc dùng <b>📤 Import Excel</b> để import hàng loạt từ file mẫu.
-                </div>
-              </div>
+              <EmptyState icon={Ico.boxes}
+                title="Chưa có lô hàng nào"
+                description="Nhấn + Thêm lô để thêm thủ công, hoặc dùng Import Excel để nhập hàng loạt từ file mẫu."/>
             )}
           </div>
         </div>
@@ -19019,9 +19040,9 @@ function SaleOrderTrackingModule({ user, allUsers, mobile }: any) {
           ⏳ Đang tải...
         </div>
       ) : filtered.length === 0 ? (
-        <div style={{ padding:'40px 20px', textAlign:'center', color:T.light }}>
-          {searchQ ? `Không có đơn nào khớp "${searchQ}"` : 'Không có đơn nào trong khoảng thời gian này.'}
-        </div>
+        <EmptyState icon={Ico.truck}
+          title={searchQ ? `Không có đơn nào khớp "${searchQ}"` : 'Không có đơn nào'}
+          description={searchQ ? 'Thử từ khoá khác hoặc mở rộng khoảng thời gian.' : 'Không có đơn nào trong khoảng thời gian đã chọn.'}/>
       ) : (
         <div style={{ display:'flex', flexDirection:'column', gap:10 }}>
           {filtered.map((o: any) => {
@@ -19036,22 +19057,22 @@ function SaleOrderTrackingModule({ user, allUsers, mobile }: any) {
                 onClick={() => setExpanded(isExp ? null : o.order_code)}>
 
                 {/* Card header */}
-                <div style={{ padding:'12px 14px',
+                <div style={{ padding:`${SP[3]}px ${SP[4]}px`,
                   borderLeft:`4px solid ${pending.color}`,
                   background: wasReverted ? '#fff5f5' : '#fff' }}>
                   <div style={{ display:'flex', justifyContent:'space-between',
-                    alignItems:'flex-start', gap:10 }}>
+                    alignItems:'flex-start', gap:SP[2] }}>
                     <div style={{ flex:1, minWidth:0 }}>
-                      <div style={{ display:'flex', alignItems:'center', gap:8, flexWrap:'wrap' }}>
-                        <span style={{ fontSize:13, fontWeight:700, color:T.dark }}>
+                      <div style={{ display:'flex', alignItems:'center', gap:SP[2], flexWrap:'wrap' }}>
+                        <span style={{ fontSize:FS.base, fontWeight:700, color:T.dark }}>
                           {o.order_code}
                         </span>
-                        <span style={{ fontSize:12, color:T.med }}>
+                        <span style={{ fontSize:FS.sm, color:T.med }}>
                           {o.customer_name}
                         </span>
                       </div>
-                      <div style={{ fontSize:10, color:T.light, marginTop:3, display:'flex',
-                        gap:10, flexWrap:'wrap' }}>
+                      <div style={{ fontSize:FS.xs, color:T.light, marginTop:3, display:'flex',
+                        gap:SP[2], flexWrap:'wrap' }}>
                         {!isSale && o.sold_by_name && (
                           <span>Sale: <b style={{ color:T.dark }}>{o.sold_by_name}</b></span>
                         )}
@@ -19066,13 +19087,13 @@ function SaleOrderTrackingModule({ user, allUsers, mobile }: any) {
                     </div>
                     {/* Status badge */}
                     <div style={{ flexShrink:0, textAlign:'right' }}>
-                      <div style={{ padding:'3px 10px', borderRadius:12,
+                      <div style={{ padding:'3px 10px', borderRadius:RD.full,
                         background: pending.color + '20', color: pending.color,
-                        fontSize:10, fontWeight:700, marginBottom:3 }}>
+                        fontSize:FS.xs, fontWeight:700, marginBottom:3 }}>
                         {pending.step}
                       </div>
                       {pending.step !== 'Hoàn tất' && pending.step !== 'Đã huỷ' && (
-                        <div style={{ fontSize:9, color:T.light }}>
+                        <div style={{ fontSize:FS.xs, color:T.light }}>
                           ⏱ {pendingDuration(pending.since, null)}
                         </div>
                       )}
@@ -19080,10 +19101,8 @@ function SaleOrderTrackingModule({ user, allUsers, mobile }: any) {
                   </div>
 
                   {wasReverted && (
-                    <div style={{ marginTop:6, padding:'3px 8px', borderRadius:6,
-                      background:T.red, color:'#fff', fontSize:9, fontWeight:800,
-                      display:'inline-block' }}>
-                      🚨 ĐÃ SỬA SAU KHI ĐÓNG — ĐANG XỬ LẠI
+                    <div style={{ marginTop:SP[1], display:'inline-block' }}>
+                      <Badge tone="danger" size="xs">🚨 ĐÃ SỬA SAU KHI ĐÓNG — ĐANG XỬ LẠI</Badge>
                     </div>
                   )}
                 </div>
