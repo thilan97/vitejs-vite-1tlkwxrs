@@ -12,7 +12,7 @@ const db = createClient(SUPABASE_URL, SUPABASE_KEY)
 // APP_VERSION — dùng để invalidate cache localStorage mỗi khi deploy version mới
 // (ngăn bug quyền user bị "reset" do cache position cũ sau deploy)
 // ⚠️ MỖI LẦN DEPLOY FEATURE MỚI CÓ PERMISSION MỚI, BUMP SỐ NÀY:
-const APP_VERSION = '2026.04.17.v20'
+const APP_VERSION = '2026.04.17.v21'
 
 // ════════════════════════════════════════════════════════════════
 // AUDIT LOG — ghi nhận các hành động phá hoại data để trace lại
@@ -163,6 +163,7 @@ const getPerm = (user: any) => {
     handlePriority:     isAdmin || (pos.perm_handle_priority ?? false),
     viewWarehouseStats: isAdmin || (pos.perm_view_warehouse_stats ?? false) || (pos.perm_manage_inventory ?? false),
     manageSchedule:     isAdmin || (pos.perm_manage_warehouse_schedule ?? false) || (pos.perm_manage_inventory ?? false),
+    trackOrders:        isAdmin || (pos.perm_track_orders ?? false) || isSale,
   }
 }
 
@@ -212,6 +213,7 @@ const ALL_PERMS = [
   { key:'perm_handle_priority',      label:'Nhận & xử lý phiếu ưu tiên (Kho)',   group:'Kho'      },
   { key:'perm_view_warehouse_stats',     label:'Xem thống kê hiệu suất Kho',     group:'Kho'      },
   { key:'perm_manage_warehouse_schedule', label:'Quản lý lịch Kho (QM Kho)',     group:'Kho'      },
+  { key:'perm_track_orders',             label:'Theo dõi đơn hàng (Sale)',       group:'Sale'     },
 ]
 // ── UTILITIES ────────────────────────────────────
 const fmtNow   = () => new Date().toLocaleString('vi-VN',{hour:'2-digit',minute:'2-digit',day:'2-digit',month:'2-digit',year:'numeric'})
@@ -688,6 +690,7 @@ const NAV_GROUPS = (perm: any, deptId = '') => {
         (deptId==='kho'||perm.viewAllDashboard) && { id:'inventory', icon:'📦', label:'Kiểm kê kho' },
         hasPicking && { id:'picking', icon:'📥', label:'Nhặt hàng' },
         hasPicking && { id:'packing', icon:'📸', label:'Đóng đơn' },
+        (perm.trackOrders) && { id:'trackorders', icon:'📦', label:'Theo dõi đơn' },
         { id:'schedule', icon:'📅', label:'Lịch Kho' },
         perm.viewWarehouseStats && { id:'whstats', icon:'📊', label:'Hiệu suất Kho' },
         (perm.managePayment||perm.viewAllDashboard) && { id:'payment', icon:'💸', label:'Lệnh CK' },
@@ -7232,6 +7235,7 @@ export default function App() {
           {validPage==='notifications' && <NotificationPage {...pp} groups={notifGroups} totalUnread={notifUnread} totalItems={notifTotal} reads={notificationReads} setReads={setNotificationReads} setPage={setPage} overdueMeta={overdueMeta} overdueLoading={overdueLoading} overdueRefresh={() => fetchOverdueOrders(settings?.overdue_days_threshold ?? 7, true)}/>}
           {validPage==='picking'    && <PickingModule {...pp} products={products}/>}
           {validPage==='packing'    && <PackingModule {...pp} products={products}/>}
+          {validPage==='trackorders' && <SaleOrderTrackingModule {...pp}/>}
           {validPage==='schedule'   && <WarehouseScheduleModule {...pp} leaveRequests={leaveRequests} attendance={attendance}/>}
           {validPage==='whstats'    && <WarehouseStatsModule {...pp}/>}
           {validPage==='priority'   && <PriorityRequestModule {...pp}/>}
@@ -14964,7 +14968,8 @@ function PackingDetailPanel({ ord, mobile, user, allUsers, products, onClose, on
 function PhotoSection({ title, subtitle, photos, min, max, readOnly, orderCode, photoType, onUpdate, userId }: any) {
   const [uploading, setUploading] = useState(false)
   const [previewIdx, setPreviewIdx] = useState<number|null>(null)
-  const fileInputRef = useRef<HTMLInputElement>(null)
+  const fileInputCameraRef = useRef<HTMLInputElement>(null)
+  const fileInputGalleryRef = useRef<HTMLInputElement>(null)
 
   // Helper: normalize photo entry (string URL hoặc object {url, at, by})
   const getUrl = (p: any): string => typeof p === 'string' ? p : (p?.url || '')
@@ -14972,8 +14977,7 @@ function PhotoSection({ title, subtitle, photos, min, max, readOnly, orderCode, 
 
   const canAddMore = !readOnly && photos.length < max
 
-  const handleFileSelect = async (e: any) => {
-    const files: FileList = e.target.files
+  const handleFiles = async (files: FileList) => {
     if (!files || files.length === 0) return
     if (photos.length + files.length > max) {
       alert(`❌ Đã vượt số ảnh tối đa (${max}).`)
@@ -15004,7 +15008,8 @@ function PhotoSection({ title, subtitle, photos, min, max, readOnly, orderCode, 
       alert('❌ Lỗi: ' + e.message)
     } finally {
       setUploading(false)
-      if (fileInputRef.current) fileInputRef.current.value = ''
+      if (fileInputCameraRef.current)  fileInputCameraRef.current.value = ''
+      if (fileInputGalleryRef.current) fileInputGalleryRef.current.value = ''
     }
   }
 
@@ -15065,19 +15070,44 @@ function PhotoSection({ title, subtitle, photos, min, max, readOnly, orderCode, 
             </div>
           )
         })}
+
+        {/* Nút upload: tách camera và thư viện */}
         {canAddMore && (
-          <label style={{ display:'flex', alignItems:'center', justifyContent:'center', aspectRatio:'1/1',
-            borderRadius:6, border:`2px dashed ${T.gold}`, background:T.goldBg,
-            cursor:uploading?'wait':'pointer',
-            color:T.goldText, fontSize:10, fontWeight:600, textAlign:'center', flexDirection:'column', gap:2 }}>
-            {uploading ? '⏳' : <>
-              <span style={{ fontSize:18 }}>📷</span>
-              <span>Chụp</span>
-            </>}
-            <input ref={fileInputRef} type="file" accept="image/*" capture="environment" multiple
-              onChange={handleFileSelect} disabled={uploading}
-              style={{ display:'none' }}/>
-          </label>
+          <>
+            {/* 📷 Chụp ảnh (mở camera) */}
+            <label style={{ display:'flex', alignItems:'center', justifyContent:'center',
+              aspectRatio:'1/1', borderRadius:6,
+              border:`2px dashed ${T.gold}`, background:T.goldBg,
+              cursor:uploading?'wait':'pointer',
+              color:T.goldText, fontSize:10, fontWeight:600,
+              textAlign:'center', flexDirection:'column', gap:2 }}>
+              {uploading ? '⏳' : <>
+                <span style={{ fontSize:18 }}>📷</span>
+                <span>Chụp ảnh</span>
+              </>}
+              <input ref={fileInputCameraRef} type="file" accept="image/*"
+                capture="environment"
+                onChange={e => e.target.files && handleFiles(e.target.files)}
+                disabled={uploading} style={{ display:'none' }}/>
+            </label>
+
+            {/* 🖼 Chọn từ thư viện (multi-select, không mở camera) */}
+            <label style={{ display:'flex', alignItems:'center', justifyContent:'center',
+              aspectRatio:'1/1', borderRadius:6,
+              border:`2px dashed ${T.blue||'#3b82f6'}`, background:'#eff6ff',
+              cursor:uploading?'wait':'pointer',
+              color:T.blue||'#3b82f6', fontSize:10, fontWeight:600,
+              textAlign:'center', flexDirection:'column', gap:2 }}>
+              {uploading ? '⏳' : <>
+                <span style={{ fontSize:18 }}>🖼</span>
+                <span>Thư viện</span>
+              </>}
+              <input ref={fileInputGalleryRef} type="file" accept="image/*"
+                multiple
+                onChange={e => e.target.files && handleFiles(e.target.files)}
+                disabled={uploading} style={{ display:'none' }}/>
+            </label>
+          </>
         )}
       </div>
 
@@ -16098,6 +16128,33 @@ function PhotoGallery({ title, photos, allUsers, orderCode, kind }: any) {
     }
   }
 
+  // Download toàn bộ ảnh về máy (cho Sale chia sẻ KH)
+  const [downloading, setDownloading] = useState(false)
+  const downloadAll = async () => {
+    if (photos.length === 0) return
+    setDownloading(true)
+    let ok = 0
+    for (let i = 0; i < photos.length; i++) {
+      const url = getUrl(photos[i])
+      if (!url) continue
+      try {
+        const res = await fetch(url)
+        const blob = await res.blob()
+        const blobUrl = URL.createObjectURL(blob)
+        const a = document.createElement('a')
+        a.href = blobUrl
+        a.download = `${orderCode}_${kind}_${i+1}.jpg`
+        document.body.appendChild(a); a.click()
+        document.body.removeChild(a)
+        setTimeout(() => URL.revokeObjectURL(blobUrl), 1000)
+        ok++
+        await new Promise(r => setTimeout(r, 150))
+      } catch {}
+    }
+    setDownloading(false)
+    alert(`✅ Đã tải ${ok}/${photos.length} ảnh về máy.\nMở Zalo → đính kèm ảnh từ thư mục Downloads để gửi KH.`)
+  }
+
   return (
     <div style={{ marginBottom:10 }}>
       <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:6 }}>
@@ -16110,6 +16167,13 @@ function PhotoGallery({ title, photos, allUsers, orderCode, kind }: any) {
               background:'#fff', color:T.med, cursor:'pointer', fontFamily:'inherit',
               fontSize:10, fontWeight:600 }}>
             🔗 Copy link
+          </button>
+          <button onClick={downloadAll} disabled={downloading}
+            style={{ padding:'4px 10px', borderRadius:12, border:`1px solid ${T.green}`,
+              background:T.greenBg, color:T.green,
+              cursor:downloading?'wait':'pointer', fontFamily:'inherit',
+              fontSize:10, fontWeight:600 }}>
+            {downloading ? '⏳' : `📥 Tải ${photos.length} ảnh`}
           </button>
           <button onClick={shareAll} disabled={sharing}
             style={{ padding:'4px 10px', borderRadius:12, border:`1px solid ${T.blue}`,
@@ -17087,6 +17151,398 @@ function CopyPrevMonthModal({ year, month, daysInCurrent, onApply, onClose }: an
           </button>
         </div>
       </div>
+    </div>
+  )
+}
+
+// ══════════════════════════════════════════════════════════════════════
+// ══ SALE ORDER TRACKING — Theo dõi đơn hàng (cho Sale) ════════════════
+// ══════════════════════════════════════════════════════════════════════
+
+// Helper tính pending duration giữa 2 mốc
+function pendingDuration(from: string | null, to: string | null): string {
+  if (!from) return ''
+  const end = to ? new Date(to) : new Date()
+  const ms = end.getTime() - new Date(from).getTime()
+  if (ms < 0) return ''
+  const mins = Math.floor(ms / 60000)
+  if (mins < 60) return `${mins} phút`
+  const hrs = Math.floor(mins / 60)
+  if (hrs < 24) return `${hrs}h${mins % 60 > 0 ? ` ${mins % 60}p` : ''}`
+  const days = Math.floor(hrs / 24)
+  return `${days} ngày${hrs % 24 > 0 ? ` ${hrs % 24}h` : ''}`
+}
+
+// Trạng thái đang pending
+function getPendingStep(o: any): { step: string; color: string; since: string } {
+  if (!o.detected_at) {
+    return { step: 'Kho chưa nhận đơn', color: '#ef4444', since: o.purchase_date }
+  }
+  if (!o.picked_at) {
+    return { step: 'Đang chờ nhặt hàng', color: '#f59e0b', since: o.detected_at }
+  }
+  if (!o.packed_at) {
+    return { step: 'Đang chờ đóng gói', color: '#3b82f6', since: o.picked_at }
+  }
+  if (o.status === 'done') {
+    return { step: 'Hoàn tất', color: '#22c55e', since: o.packed_at }
+  }
+  if (o.status === 'cancelled') {
+    return { step: 'Đã huỷ', color: '#9ca3af', since: o.updated_at }
+  }
+  return { step: o.status, color: '#9ca3af', since: o.updated_at }
+}
+
+function SaleOrderTrackingModule({ user, allUsers, mobile }: any) {
+  const perm   = getPerm(user)
+  const isAdmin = perm.viewAllDashboard
+  // QM = có quyền approve leave (proxy cho quản lý)
+  const isQM    = perm.approveLeave || isAdmin
+  const isSale  = user?.dept_id === 'sale' && !isAdmin
+  const p = mobile ? '16px' : '24px'
+
+  const [orders, setOrders] = useState<any[]>([])
+  const [loading, setLoading] = useState(true)
+  const [searchQ, setSearchQ] = useState('')
+  const [statusFilter, setStatusFilter] = useState<string>('active')
+  const [dayRange, setDayRange] = useState(7)
+  const [expanded, setExpanded] = useState<string|null>(null)
+
+  const norm = (s: string) => (s||'').toLowerCase().normalize('NFD')
+    .replace(/[\u0300-\u036f]/g,'').replace(/đ/g,'d').trim()
+
+  const fetchOrders = async () => {
+    setLoading(true)
+    const fromDate = new Date(Date.now() - dayRange * 86400000).toISOString()
+    let query = db.from('packing_workflow').select('*')
+      .gte('purchase_date', fromDate)
+      .order('purchase_date', { ascending: false })
+      .limit(1000)
+
+    // Sale chỉ thấy đơn của mình
+    // Kho/QM/Admin thấy tất cả
+    const { data } = await query
+    let list = data || []
+
+    // Filter phía client cho Sale: match sold_by_name với user.name
+    if (isSale) {
+      list = list.filter((o: any) => {
+        const sbn = norm(o.sold_by_name || '')
+        const un  = norm(user.name || '')
+        // fuzzy: sbn chứa un hoặc un chứa sbn (xử lý trường hợp tên KV có suffix)
+        return sbn.includes(un) || un.includes(sbn)
+      })
+    }
+
+    setOrders(list)
+    setLoading(false)
+  }
+
+  useEffect(() => { fetchOrders() }, [dayRange])
+
+  const getName = (id: string) => allUsers.find((u: any) => u.id === id)?.name || '?'
+
+  // Filter theo status tab
+  const statusGroups: Record<string, (o: any) => boolean> = {
+    active:    (o) => ['picking', 'packing'].includes(o.status),
+    done:      (o) => o.status === 'done',
+    cancelled: (o) => o.status === 'cancelled',
+    all:       ()  => true,
+  }
+
+  // Filter theo search
+  const filtered = orders.filter(o => {
+    if (!statusGroups[statusFilter]?.(o)) return false
+    if (!searchQ.trim()) return true
+    const tokens = norm(searchQ).split(/\s+/).filter(Boolean)
+    const hay = norm(`${o.order_code} ${o.customer_name} ${o.sold_by_name}`)
+    return tokens.every(t => hay.includes(t))
+  })
+
+  const counts = {
+    active:    orders.filter(o => ['picking','packing'].includes(o.status)).length,
+    done:      orders.filter(o => o.status === 'done').length,
+    cancelled: orders.filter(o => o.status === 'cancelled').length,
+    all:       orders.length,
+  }
+
+  const fmtTime = (iso: string | null) => {
+    if (!iso) return null
+    return new Date(iso).toLocaleString('vi-VN', {
+      hour: '2-digit', minute: '2-digit', day: '2-digit', month: '2-digit'
+    })
+  }
+
+  const fmtMoney = (n: number) => Number(n||0).toLocaleString('vi-VN')
+
+  const STEPS = [
+    { key: 'purchase_date', label: 'Tạo đơn KV',    icon: '📋' },
+    { key: 'detected_at',   label: 'Kho nhận đơn',   icon: '📥' },
+    { key: 'picked_at',     label: 'Nhặt xong',      icon: '✅' },
+    { key: 'packed_at',     label: 'Đóng xong',      icon: '📦' },
+  ]
+
+  return (
+    <div style={{ padding:`0 ${p} ${mobile?'80px':p}` }}>
+      <Topbar mobile={mobile} title="📦 Theo dõi đơn hàng"
+        subtitle={isSale ? `Đơn của bạn trong ${dayRange} ngày gần đây` : `Tất cả đơn — ${dayRange} ngày`}
+        action={
+          <button onClick={fetchOrders}
+            style={{ padding:'5px 12px', borderRadius:20, border:`1px solid ${T.border}`,
+              background:'transparent', cursor:'pointer', fontFamily:'inherit', fontSize:11, color:T.med }}>
+            🔄 Refresh
+          </button>
+        }/>
+
+      {/* Filters */}
+      <Card style={{ padding:12, marginBottom:12 }}>
+        <input value={searchQ} onChange={e => setSearchQ(e.target.value)}
+          placeholder="🔍 Tìm theo mã đơn, tên KH..."
+          style={{ width:'100%', padding:'9px 12px', border:`1px solid ${T.border}`, borderRadius:8,
+            fontSize:12, fontFamily:'inherit', color:T.dark, background:'#fff', outline:'none',
+            boxSizing:'border-box' as any, marginBottom:10 }}/>
+        <div style={{ display:'flex', gap:8, flexWrap:'wrap', alignItems:'center' }}>
+          <select value={dayRange} onChange={e => setDayRange(Number(e.target.value))}
+            style={{ padding:'5px 10px', border:`1px solid ${T.border}`, borderRadius:6,
+              fontSize:11, fontFamily:'inherit', background:'#fff', outline:'none' }}>
+            <option value={3}>3 ngày</option>
+            <option value={7}>7 ngày</option>
+            <option value={15}>15 ngày</option>
+            <option value={30}>30 ngày</option>
+          </select>
+          {!isSale && (
+            <div style={{ fontSize:11, color:T.light }}>
+              Hiển thị tất cả nhân viên
+            </div>
+          )}
+        </div>
+      </Card>
+
+      {/* Status tabs */}
+      <div style={{ display:'flex', gap:6, marginBottom:12, flexWrap:'wrap' }}>
+        {[
+          { id:'active',    label:`⏳ Đang xử lý`, count: counts.active },
+          { id:'done',      label:`✅ Hoàn tất`,    count: counts.done },
+          { id:'cancelled', label:`❌ Đã huỷ`,      count: counts.cancelled },
+          { id:'all',       label:`📋 Tất cả`,      count: counts.all },
+        ].map(t => (
+          <button key={t.id} onClick={() => setStatusFilter(t.id)}
+            style={{ padding:'5px 13px', borderRadius:20, cursor:'pointer',
+              fontFamily:'inherit', fontSize:11,
+              border:`1.5px solid ${statusFilter===t.id?T.gold:T.border}`,
+              background: statusFilter===t.id?T.goldBg:'transparent',
+              color: statusFilter===t.id?T.goldText:T.med,
+              fontWeight: statusFilter===t.id?700:400 }}>
+            {t.label} {t.count > 0 && `(${t.count})`}
+          </button>
+        ))}
+      </div>
+
+      {loading ? (
+        <div style={{ padding:'40px 20px', textAlign:'center', color:T.light }}>
+          ⏳ Đang tải...
+        </div>
+      ) : filtered.length === 0 ? (
+        <div style={{ padding:'40px 20px', textAlign:'center', color:T.light }}>
+          {searchQ ? `Không có đơn nào khớp "${searchQ}"` : 'Không có đơn nào trong khoảng thời gian này.'}
+        </div>
+      ) : (
+        <div style={{ display:'flex', flexDirection:'column', gap:10 }}>
+          {filtered.map((o: any) => {
+            const isExp = expanded === o.order_code
+            const pending = getPendingStep(o)
+            const modCount = o.modification_count || 0
+            const wasReverted = o.had_mod_after_done
+
+            return (
+              <Card key={o.order_code}
+                style={{ padding:0, overflow:'hidden', cursor:'pointer' }}
+                onClick={() => setExpanded(isExp ? null : o.order_code)}>
+
+                {/* Card header */}
+                <div style={{ padding:'12px 14px',
+                  borderLeft:`4px solid ${pending.color}`,
+                  background: wasReverted ? '#fff5f5' : '#fff' }}>
+                  <div style={{ display:'flex', justifyContent:'space-between',
+                    alignItems:'flex-start', gap:10 }}>
+                    <div style={{ flex:1, minWidth:0 }}>
+                      <div style={{ display:'flex', alignItems:'center', gap:8, flexWrap:'wrap' }}>
+                        <span style={{ fontSize:13, fontWeight:700, color:T.dark }}>
+                          {o.order_code}
+                        </span>
+                        <span style={{ fontSize:12, color:T.med }}>
+                          {o.customer_name}
+                        </span>
+                      </div>
+                      <div style={{ fontSize:10, color:T.light, marginTop:3, display:'flex',
+                        gap:10, flexWrap:'wrap' }}>
+                        {!isSale && o.sold_by_name && (
+                          <span>Sale: <b style={{ color:T.dark }}>{o.sold_by_name}</b></span>
+                        )}
+                        <span>💰 {fmtMoney(o.total_amount)}</span>
+                        <span>📅 {fmtTime(o.purchase_date)}</span>
+                        {modCount > 0 && (
+                          <span style={{ color:T.amber, fontWeight:600 }}>
+                            📝 Đã sửa {modCount}×
+                          </span>
+                        )}
+                      </div>
+                    </div>
+                    {/* Status badge */}
+                    <div style={{ flexShrink:0, textAlign:'right' }}>
+                      <div style={{ padding:'3px 10px', borderRadius:12,
+                        background: pending.color + '20', color: pending.color,
+                        fontSize:10, fontWeight:700, marginBottom:3 }}>
+                        {pending.step}
+                      </div>
+                      {pending.step !== 'Hoàn tất' && pending.step !== 'Đã huỷ' && (
+                        <div style={{ fontSize:9, color:T.light }}>
+                          ⏱ {pendingDuration(pending.since, null)}
+                        </div>
+                      )}
+                    </div>
+                  </div>
+
+                  {wasReverted && (
+                    <div style={{ marginTop:6, padding:'3px 8px', borderRadius:6,
+                      background:T.red, color:'#fff', fontSize:9, fontWeight:800,
+                      display:'inline-block' }}>
+                      🚨 ĐÃ SỬA SAU KHI ĐÓNG — ĐANG XỬ LẠI
+                    </div>
+                  )}
+                </div>
+
+                {/* Expanded: full timeline */}
+                {isExp && (
+                  <div style={{ padding:'14px 16px', borderTop:`1px solid ${T.border}`,
+                    background:T.bg }} onClick={e => e.stopPropagation()}>
+
+                    {/* Timeline */}
+                    <div style={{ marginBottom:14 }}>
+                      <div style={{ fontSize:11, fontWeight:700, color:T.med, marginBottom:10 }}>
+                        ⏱ TIMELINE
+                      </div>
+                      <div style={{ position:'relative', paddingLeft:20 }}>
+                        {/* Vertical line */}
+                        <div style={{ position:'absolute', left:7, top:8, bottom:8,
+                          width:2, background:T.border }}/>
+
+                        {STEPS.map((step, idx) => {
+                          const ts = o[step.key]
+                          const isDone = !!ts
+                          const isCurrentPending = !isDone && idx > 0 && !!o[STEPS[idx-1].key]
+                          const nextTs = STEPS[idx+1] ? o[STEPS[idx+1].key] : null
+                          const duration = ts ? pendingDuration(ts, nextTs) : null
+
+                          return (
+                            <div key={step.key} style={{ display:'flex', alignItems:'flex-start',
+                              gap:10, marginBottom:12, position:'relative' }}>
+                              {/* Dot */}
+                              <div style={{ width:16, height:16, borderRadius:8, flexShrink:0,
+                                marginTop:1, zIndex:1,
+                                background: isDone ? T.green : (isCurrentPending ? T.amber : T.border),
+                                border:`2px solid ${isDone ? T.green : (isCurrentPending ? T.amber : T.border)}`,
+                                display:'flex', alignItems:'center', justifyContent:'center',
+                                fontSize:8, color:'#fff', fontWeight:800 }}>
+                                {isDone ? '✓' : (isCurrentPending ? '!' : '')}
+                              </div>
+                              <div style={{ flex:1 }}>
+                                <div style={{ fontSize:11, fontWeight:600,
+                                  color: isDone ? T.dark : (isCurrentPending ? T.amber : T.light) }}>
+                                  {step.icon} {step.label}
+                                </div>
+                                {isDone ? (
+                                  <div style={{ fontSize:10, color:T.light, marginTop:1 }}>
+                                    {fmtTime(ts)}
+                                    {duration && nextTs && (
+                                      <span style={{ color:T.med }}> → mất {duration}</span>
+                                    )}
+                                    {duration && !nextTs && o.status !== 'done' && (
+                                      <span style={{ color:T.amber, fontWeight:600 }}>
+                                        {' '}→ ⏳ đang chờ bước tiếp {duration}
+                                      </span>
+                                    )}
+                                  </div>
+                                ) : (
+                                  isCurrentPending && (
+                                    <div style={{ fontSize:10, color:T.amber, fontWeight:600, marginTop:1 }}>
+                                      ⏳ Đang chờ — {pendingDuration(o[STEPS[idx-1].key], null)} kể từ bước trước
+                                    </div>
+                                  )
+                                )}
+                              </div>
+                            </div>
+                          )
+                        })}
+                      </div>
+                    </div>
+
+                    {/* NV thực hiện */}
+                    <div style={{ padding:'8px 10px', background:'#fff', borderRadius:6,
+                      border:`1px solid ${T.border}`, marginBottom:10, fontSize:11 }}>
+                      <div style={{ fontWeight:700, color:T.med, marginBottom:6 }}>
+                        👤 NHÂN VIÊN THỰC HIỆN
+                      </div>
+                      <div style={{ display:'flex', flexWrap:'wrap', gap:8 }}>
+                        {o.assigned_to && (
+                          <div style={{ padding:'4px 10px', borderRadius:12, background:T.bg,
+                            border:`1px solid ${T.border}` }}>
+                            <span style={{ fontSize:9, color:T.light }}>Nhặt: </span>
+                            <span style={{ color:T.dark, fontWeight:600 }}>{getName(o.assigned_to)}</span>
+                          </div>
+                        )}
+                        {o.packed_by && (
+                          <div style={{ padding:'4px 10px', borderRadius:12, background:T.bg,
+                            border:`1px solid ${T.border}` }}>
+                            <span style={{ fontSize:9, color:T.light }}>Đóng: </span>
+                            <span style={{ color:T.dark, fontWeight:600 }}>{getName(o.packed_by)}</span>
+                          </div>
+                        )}
+                        {o.printed_by_name && (
+                          <div style={{ padding:'4px 10px', borderRadius:12, background:T.bg,
+                            border:`1px solid ${T.border}` }}>
+                            <span style={{ fontSize:9, color:T.light }}>In phiếu: </span>
+                            <span style={{ color:T.dark, fontWeight:600 }}>{o.printed_by_name}</span>
+                          </div>
+                        )}
+                      </div>
+                    </div>
+
+                    {/* Thay đổi nếu có */}
+                    {modCount > 0 && (o.change_log||[]).length > 0 && (
+                      <div style={{ padding:'8px 10px', background:T.amberBg, borderRadius:6,
+                        border:`1px solid ${T.amber}`, marginBottom:10, fontSize:11 }}>
+                        <div style={{ fontWeight:700, color:T.amber, marginBottom:6 }}>
+                          📝 LỊCH SỬ SỬA ĐƠN ({modCount} lần)
+                        </div>
+                        {(o.change_log||[]).map((entry: any, i: number) => (
+                          <div key={i} style={{ padding:'5px 0',
+                            borderBottom: i < o.change_log.length-1 ? `1px solid ${T.border}` : 'none' }}>
+                            <div style={{ fontSize:9, color:T.light }}>
+                              🕒 {fmtTime(entry.at)} — lúc đơn đang {entry.status_at_time}
+                            </div>
+                            <div style={{ fontSize:11, color:T.dark, fontWeight:600, marginTop:2 }}>
+                              {entry.summary}
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+
+                    {/* Note */}
+                    {o.description_kv && (
+                      <div style={{ padding:'8px 10px', background:T.goldBg, borderRadius:6,
+                        border:`1px solid ${T.goldBorder}`, fontSize:11, color:T.dark }}>
+                        📝 {o.description_kv}
+                      </div>
+                    )}
+                  </div>
+                )}
+              </Card>
+            )
+          })}
+        </div>
+      )}
     </div>
   )
 }
