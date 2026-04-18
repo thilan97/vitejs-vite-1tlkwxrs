@@ -12,7 +12,7 @@ const db = createClient(SUPABASE_URL, SUPABASE_KEY)
 // APP_VERSION — dùng để invalidate cache localStorage mỗi khi deploy version mới
 // (ngăn bug quyền user bị "reset" do cache position cũ sau deploy)
 // ⚠️ MỖI LẦN DEPLOY FEATURE MỚI CÓ PERMISSION MỚI, BUMP SỐ NÀY:
-const APP_VERSION = '2026.04.17.v35'
+const APP_VERSION = '2026.04.17.v36'
 
 // ════════════════════════════════════════════════════════════════
 // AUDIT LOG — ghi nhận các hành động phá hoại data để trace lại
@@ -961,106 +961,238 @@ function Sidebar(props: any) {
 
 function BottomNav({ page, setPage, user, pendingLeave, pendingOT, notifUnread, onLogout }: any) {
   const perm   = getPerm(user)
-  const groups = NAV_GROUPS(perm, user?.dept_id||'')
+  const allGroups = NAV_GROUPS(perm, user?.dept_id||'')
   const activeGroup = getGroupForPage(page, perm, user?.dept_id||'')
-  const [showSubTabs, setShowSubTabs] = useState(false)
+  const [drawerOpen, setDrawerOpen] = useState(false)
 
-  const handleGroupClick = (group: any) => {
-    if (activeGroup?.id === group.id) {
-      setShowSubTabs(v => !v)
-    } else {
-      // Navigate to first page of group
-      const firstPage = group.pages[0]?.id
-      if (firstPage) { setPage(firstPage); setShowSubTabs(false) }
+  // Role-based primary tabs (4 tabs)
+  // Logic: mỗi role có 4 group được "ưu tiên" hiển thị trực tiếp
+  const pickPrimaryTabs = (): any[] => {
+    const byId = new Map<string, any>()
+    allGroups.forEach((g: any) => byId.set(g.id, g))
+
+    const isAdmin  = perm.viewAllDashboard
+    const deptId   = user?.dept_id
+    const priorityByRole: Record<string, string[]> = {
+      admin: ['dashboard', 'warehouse', 'sales', 'work'],
+      kho:   ['dashboard', 'warehouse', 'work', 'hr'],
+      sale:  ['dashboard', 'sales', 'work', 'hr'],
+      vp:    ['dashboard', 'work', 'hr', 'admin'],
     }
+    const key = isAdmin ? 'admin' : (deptId === 'kho' ? 'kho' : (deptId === 'sale' ? 'sale' : 'vp'))
+    const primaryIds = priorityByRole[key]
+    const primary = primaryIds.map(id => byId.get(id)).filter(Boolean)
+
+    // Fallback: nếu không đủ (user role yếu), fill từ available groups
+    if (primary.length < 4) {
+      for (const g of allGroups) {
+        if (primary.length >= 4) break
+        if (!primary.find((p: any) => p.id === g.id)) primary.push(g)
+      }
+    }
+    return primary.slice(0, 4)
   }
+
+  const primaryTabs = pickPrimaryTabs()
+  const primaryIds = new Set(primaryTabs.map((g: any) => g.id))
+  const otherGroups = allGroups.filter((g: any) => !primaryIds.has(g.id))
+
+  const handleTabClick = (group: any) => {
+    setDrawerOpen(false)
+    // Luôn nhảy đến trang đầu nhóm (không cần toggle sub-tabs)
+    const firstPage = group.pages[0]?.id
+    if (firstPage) setPage(firstPage)
+  }
+
+  // Tính badge cho mỗi group (tổng notifications trong group)
+  const getGroupBadge = (group: any): number => {
+    let total = 0
+    if (group.id === 'hr') total += pendingLeave + pendingOT
+    if (group.id === 'dashboard' || group.id === 'notifications_only') total += (notifUnread || 0)
+    return total
+  }
+
+  // Badge cho nút "Khác": tổng notification của các group không primary
+  const otherBadge = otherGroups.reduce((sum: number, g: any) => sum + getGroupBadge(g), 0)
 
   return (
     <>
-      {/* Sub-tab strip — hiện khi tap vào group đang active */}
-      {showSubTabs && activeGroup && activeGroup.pages.length > 1 && (
-        <div style={{ position:'fixed', bottom:60, left:0, right:0, background:T.sidebar,
-          borderTop:`1px solid ${T.sidebarBorder}`, zIndex:99 }}>
-          {/* User info */}
-          <div style={{ display:'flex', alignItems:'center', justifyContent:'space-between',
-            padding:'8px 14px', borderBottom:`1px solid ${T.sidebarBorder}` }}>
-            <div style={{ display:'flex', alignItems:'center', gap:8 }}>
-              <div style={{ width:26, height:26, borderRadius:'50%', background:DEPT_COLOR[user.dept_id]||T.gold,
-                display:'flex', alignItems:'center', justifyContent:'center', color:'#fff', fontSize:8, fontWeight:700 }}>{user.ini}</div>
-              <div>
-                <div style={{ color:T.dark, fontSize:11, fontWeight:600 }}>{user.name}</div>
-                <div style={{ color:T.gold, fontSize:9 }}>{user.position_name||user.dept_name}</div>
-              </div>
+      {/* ══ MORE DRAWER ══ — slide up from bottom */}
+      {drawerOpen && (
+        <>
+          {/* Backdrop */}
+          <div onClick={() => setDrawerOpen(false)}
+            style={{ position:'fixed', inset:0, background:'rgba(0,0,0,0.5)',
+              zIndex:98, animation:'fadeIn .2s ease-out' }}/>
+          {/* Drawer */}
+          <div style={{ position:'fixed', bottom:0, left:0, right:0, zIndex:99,
+            background:'#fff', borderTopLeftRadius:16, borderTopRightRadius:16,
+            maxHeight:'85vh', overflowY:'auto',
+            boxShadow:'0 -4px 20px rgba(0,0,0,0.15)',
+            paddingBottom:'env(safe-area-inset-bottom,0px)',
+            animation:'slideUp .25s ease-out' }}>
+            {/* Grab handle */}
+            <div style={{ display:'flex', justifyContent:'center', padding:'10px 0 4px' }}>
+              <div style={{ width:40, height:4, borderRadius:2, background:T.border }}/>
             </div>
-            <button onClick={() => { if(confirm('Đăng xuất?')) onLogout() }}
-              style={{ padding:'4px 10px', borderRadius:6, border:`1px solid ${T.redBg}`,
-                background:T.redBg, color:T.red, fontSize:11, cursor:'pointer', fontFamily:'inherit' }}>
-              🚪 Đăng xuất
-            </button>
+
+            {/* User card */}
+            <div style={{ display:'flex', alignItems:'center', gap:12,
+              padding:'10px 18px 14px', borderBottom:`1px solid ${T.border}` }}>
+              <div style={{ width:44, height:44, borderRadius:'50%',
+                background:DEPT_COLOR[user.dept_id]||T.gold,
+                display:'flex', alignItems:'center', justifyContent:'center',
+                color:'#fff', fontSize:14, fontWeight:700,
+                boxShadow:'0 2px 6px rgba(0,0,0,0.1)' }}>{user.ini}</div>
+              <div style={{ flex:1 }}>
+                <div style={{ color:T.dark, fontSize:FS.md, fontWeight:700 }}>{user.name}</div>
+                <div style={{ color:T.gold, fontSize:FS.xs, marginTop:2 }}>{user.position_name||user.dept_name}</div>
+              </div>
+              <button onClick={() => { if(confirm('Đăng xuất?')) onLogout() }}
+                style={{ padding:'7px 14px', borderRadius:RD.md, border:`1px solid ${T.redBg}`,
+                  background:T.redBg, color:T.red, fontSize:FS.sm, fontWeight:600,
+                  cursor:'pointer', fontFamily:'inherit' }}>
+                Đăng xuất
+              </button>
+            </div>
+
+            {/* Menu groups — ALL groups shown */}
+            <div style={{ padding:'8px 12px 18px' }}>
+              {allGroups.map((g: any) => {
+                const isActiveGroup = activeGroup?.id === g.id
+                return (
+                  <div key={g.id} style={{ marginBottom:6 }}>
+                    {/* Group header */}
+                    <div style={{ display:'flex', alignItems:'center', gap:7,
+                      padding:'8px 10px 4px',
+                      fontSize:FS.xs, fontWeight:800, letterSpacing:1.2,
+                      textTransform:'uppercase',
+                      color: isActiveGroup ? T.gold : T.light }}>
+                      <span style={{ display:'flex', alignItems:'center' }}>
+                        {typeof g.icon === 'function' ? g.icon(13) : g.icon}
+                      </span>
+                      <span style={{ flex:1 }}>{g.label}</span>
+                    </div>
+                    {/* Items */}
+                    {g.pages.map((item: any) => {
+                      const active = page === item.id
+                      const badge = item.id==='leave' ? pendingLeave
+                                  : item.id==='overtime' ? pendingOT
+                                  : item.id==='notifications' ? (notifUnread||0)
+                                  : 0
+                      return (
+                        <button key={item.id}
+                          onClick={() => { setPage(item.id); setDrawerOpen(false) }}
+                          style={{ width:'100%', display:'flex', alignItems:'center', gap:10,
+                            padding:'10px 14px', marginBottom:2, border:'none',
+                            borderRadius:RD.md, cursor:'pointer', fontFamily:'inherit',
+                            fontSize:FS.md, textAlign:'left',
+                            background: active
+                              ? 'linear-gradient(135deg, #C4973A 0%, #A07828 100%)'
+                              : 'transparent',
+                            color: active ? '#fff' : T.dark,
+                            fontWeight: active ? 700 : 500,
+                            boxShadow: active ? '0 2px 6px rgba(196,151,58,0.25)' : 'none' }}>
+                          <span style={{ display:'flex', alignItems:'center', width:20,
+                            color: active ? '#fff' : T.med, flexShrink:0 }}>
+                            {typeof item.icon === 'function' ? item.icon(17) : item.icon}
+                          </span>
+                          <span style={{ flex:1 }}>{item.label}</span>
+                          {badge>0 && (
+                            <span style={{ background: active ? 'rgba(255,255,255,0.3)' : T.red,
+                              color:'#fff', borderRadius:RD.full, fontSize:FS.xs, fontWeight:700,
+                              padding:'2px 7px', lineHeight:1 }}>{badge}</span>
+                          )}
+                        </button>
+                      )
+                    })}
+                  </div>
+                )
+              })}
+            </div>
           </div>
-          {/* Sub pages */}
-          <div style={{ display:'flex', flexWrap:'wrap', padding:'6px 8px', gap:4 }}>
-            {activeGroup.pages.map((item: any) => {
-              const active = page === item.id
-              const badge = item.id==='leave' ? pendingLeave
-                          : item.id==='overtime' ? pendingOT
-                          : item.id==='notifications' ? (notifUnread||0)
-                          : 0
-              return (
-                <button key={item.id} onClick={() => { setPage(item.id); setShowSubTabs(false) }}
-                  style={{ flex:'1 1 auto', display:'flex', alignItems:'center', justifyContent:'center',
-                    gap:6, padding:'8px 10px', borderRadius:8, border:'none',
-                    background:active?T.goldBg:'rgba(0,0,0,0.03)',
-                    color:active?T.goldText:T.sidebarText,
-                    cursor:'pointer', fontFamily:'inherit', fontSize:12,
-                    fontWeight:active?600:400, position:'relative' }}>
-                  <span style={{ display:'flex', alignItems:'center' }}>
-                    {typeof item.icon === 'function' ? item.icon(15) : item.icon}
-                  </span>
-                  <span>{item.label}</span>
-                  {badge>0 && <span style={{ position:'absolute', top:3, right:6, background:T.red,
-                    color:'#fff', borderRadius:10, fontSize:8, fontWeight:700, padding:'1px 4px' }}>{badge}</span>}
-                </button>
-              )
-            })}
-          </div>
-        </div>
+        </>
       )}
 
-      {/* Main bottom bar — 5 group icons */}
-      <div style={{ position:'fixed', bottom:0, left:0, right:0, background:T.sidebar,
-        display:'flex', borderTop:`1px solid ${T.sidebarBorder}`, zIndex:100,
-        paddingBottom:'env(safe-area-inset-bottom,0px)' }}>
-        {groups.map((group: any) => {
+      {/* ══ MAIN BOTTOM BAR — 4 primary tabs + Khác ══ */}
+      <nav style={{ position:'fixed', bottom:0, left:0, right:0, background:'#fff',
+        display:'flex', borderTop:`1px solid ${T.border}`, zIndex:100,
+        paddingBottom:'env(safe-area-inset-bottom,0px)',
+        boxShadow:'0 -1px 6px rgba(0,0,0,0.04)' }}>
+        {/* 4 primary tabs */}
+        {primaryTabs.map((group: any) => {
           const isActive = activeGroup?.id === group.id
-          const badge = group.id==='hr' ? pendingLeave+pendingOT
-                      : (group.id==='dashboard' || group.id==='notifications_only') ? (notifUnread||0)
-                      : 0
-          const hasMultiple = group.pages.length > 1
+          const badge = getGroupBadge(group)
           return (
-            <button key={group.id} onClick={() => handleGroupClick(group)}
+            <button key={group.id} onClick={() => handleTabClick(group)}
               style={{ flex:1, display:'flex', flexDirection:'column', alignItems:'center',
-                justifyContent:'center', padding:'10px 2px', border:'none',
-                background: isActive && showSubTabs ? 'rgba(196,151,58,0.15)' : 'transparent',
-                cursor:'pointer', position:'relative',
-                color:isActive?T.gold:T.sidebarMuted }}>
-              <span style={{ display:'flex', alignItems:'center', justifyContent:'center',
-                marginBottom:3, color: isActive?T.gold:T.sidebarMuted }}>
-                {typeof group.icon === 'function' ? group.icon(22) : <span style={{ fontSize:19 }}>{group.icon}</span>}
-              </span>
-              <span style={{ fontSize:9, fontWeight:isActive?700:500, fontFamily:'inherit',
-                letterSpacing:.2 }}>{group.label}</span>
-              {isActive && hasMultiple && (
-                <span style={{ fontSize:7, color:T.gold, marginTop:1 }}>
-                  {showSubTabs ? '▲' : '▼'}
-                </span>
+                justifyContent:'flex-start', padding:'8px 2px 6px', border:'none',
+                background:'transparent', cursor:'pointer', position:'relative',
+                minHeight:56,
+                color:isActive?T.gold:T.light,
+                transition:'color .15s' }}>
+              {/* Active indicator line on top */}
+              {isActive && (
+                <div style={{ position:'absolute', top:0, left:'25%', right:'25%',
+                  height:2.5, background:T.gold, borderRadius:2 }}/>
               )}
-              {badge>0 && <span style={{ position:'absolute', top:5, right:'calc(50% - 16px)',
-                background:T.red, color:'#fff', borderRadius:10, fontSize:8, fontWeight:700, padding:'1px 4px' }}>{badge}</span>}
+              <span style={{ display:'flex', alignItems:'center', justifyContent:'center',
+                marginBottom:3 }}>
+                {typeof group.icon === 'function' ? group.icon(22) : <span style={{ fontSize:20 }}>{group.icon}</span>}
+              </span>
+              <span style={{ fontSize:FS.xs, fontWeight:isActive?700:500, fontFamily:'inherit',
+                letterSpacing:.15, lineHeight:1 }}>
+                {group.label}
+              </span>
+              {badge>0 && (
+                <span style={{ position:'absolute', top:4, right:'calc(50% - 18px)',
+                  background:T.red, color:'#fff', borderRadius:RD.full,
+                  fontSize:FS.xs, fontWeight:700, padding:'1px 5px',
+                  lineHeight:1, minWidth:14, textAlign:'center' }}>{badge>9?'9+':badge}</span>
+              )}
             </button>
           )
         })}
-      </div>
+
+        {/* 5th tab: "Khác" to open drawer */}
+        <button onClick={() => setDrawerOpen(!drawerOpen)}
+          style={{ flex:1, display:'flex', flexDirection:'column', alignItems:'center',
+            justifyContent:'flex-start', padding:'8px 2px 6px', border:'none',
+            background:'transparent', cursor:'pointer', position:'relative',
+            minHeight:56,
+            color: drawerOpen ? T.gold : T.light,
+            transition:'color .15s' }}>
+          {drawerOpen && (
+            <div style={{ position:'absolute', top:0, left:'25%', right:'25%',
+              height:2.5, background:T.gold, borderRadius:2 }}/>
+          )}
+          <span style={{ display:'flex', alignItems:'center', justifyContent:'center',
+            marginBottom:3 }}>
+            {/* Hamburger icon */}
+            <svg width={22} height={22} viewBox="0 0 24 24" fill="none"
+              stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round"
+              style={{ display:'block' }}>
+              <line x1="3" y1="6" x2="21" y2="6"/>
+              <line x1="3" y1="12" x2="21" y2="12"/>
+              <line x1="3" y1="18" x2="21" y2="18"/>
+            </svg>
+          </span>
+          <span style={{ fontSize:FS.xs, fontWeight:drawerOpen?700:500, fontFamily:'inherit',
+            letterSpacing:.15, lineHeight:1 }}>Khác</span>
+          {otherBadge>0 && !drawerOpen && (
+            <span style={{ position:'absolute', top:4, right:'calc(50% - 18px)',
+              background:T.red, color:'#fff', borderRadius:RD.full,
+              fontSize:FS.xs, fontWeight:700, padding:'1px 5px',
+              lineHeight:1, minWidth:14, textAlign:'center' }}>{otherBadge>9?'9+':otherBadge}</span>
+          )}
+        </button>
+      </nav>
+
+      {/* Keyframes */}
+      <style>{`
+        @keyframes fadeIn { from { opacity:0 } to { opacity:1 } }
+        @keyframes slideUp { from { transform:translateY(100%) } to { transform:translateY(0) } }
+      `}</style>
     </>
   )
 }
@@ -7363,7 +7495,7 @@ export default function App() {
   })
 
   return (
-    <div style={{ display:'flex', minHeight:'100vh',
+    <div style={{ display:'flex', minHeight:'100vh', flexDirection: mobile?'column':'row',
       fontFamily:"'Segoe UI',system-ui,sans-serif", background:T.bg }}>
         {!mobile && (
           <Sidebar user={user} page={validPage} setPage={setPage}
@@ -7374,7 +7506,55 @@ export default function App() {
               setUser(null); setAllUsers([]); setChecklist([])
             }}/>
         )}
-        <main style={{ flex:1, overflowY:'auto', paddingTop:4, minWidth:0 }}>
+        {/* Mobile top bar — slim, professional */}
+        {mobile && (
+          <div style={{ position:'sticky', top:0, zIndex:50,
+            background:'#fff', borderBottom:`1px solid ${T.border}`,
+            padding:'10px 14px', display:'flex', alignItems:'center', gap:10,
+            boxShadow:'0 1px 3px rgba(0,0,0,0.03)' }}>
+            {/* Logo + brand */}
+            <div style={{ display:'flex', alignItems:'center', gap:8, flex:1 }}>
+              <div style={{ width:28, height:28, borderRadius:6,
+                background:T.goldBg, display:'flex', alignItems:'center', justifyContent:'center',
+                border:`1px solid ${T.goldBorder}` }}>
+                <span style={{ fontSize:12, fontWeight:900, color:T.goldText,
+                  fontFamily:'Georgia,serif', letterSpacing:.5 }}>LA</span>
+              </div>
+              <div style={{ display:'flex', flexDirection:'column', lineHeight:1.1 }}>
+                <span style={{ fontSize:13, fontWeight:700, color:T.dark, letterSpacing:.3 }}>
+                  Global Beauty
+                </span>
+                <span style={{ fontSize:9, color:T.light, letterSpacing:.5 }}>
+                  {user.position_name||user.dept_name}
+                </span>
+              </div>
+            </div>
+            {/* Notification bell */}
+            <button onClick={() => setPage('notifications')}
+              style={{ position:'relative', width:36, height:36, borderRadius:RD.md,
+                border:'none', background:T.bg, cursor:'pointer',
+                display:'flex', alignItems:'center', justifyContent:'center',
+                color:T.med }}>
+              {Ico.bell(18)}
+              {notifUnread > 0 && (
+                <span style={{ position:'absolute', top:4, right:4,
+                  background:T.red, color:'#fff', borderRadius:RD.full,
+                  fontSize:FS.xs, fontWeight:700, padding:'1px 5px',
+                  lineHeight:1, minWidth:14, textAlign:'center' }}>
+                  {notifUnread>9?'9+':notifUnread}
+                </span>
+              )}
+            </button>
+            {/* Avatar */}
+            <div style={{ width:32, height:32, borderRadius:'50%',
+              background:DEPT_COLOR[user.dept_id]||T.gold,
+              display:'flex', alignItems:'center', justifyContent:'center',
+              color:'#fff', fontSize:11, fontWeight:700,
+              boxShadow:'0 1px 3px rgba(0,0,0,0.15)' }}>{user.ini}</div>
+          </div>
+        )}
+        <main style={{ flex:1, overflowY:'auto', paddingTop:4, minWidth:0,
+          paddingBottom: mobile ? 68 : 0 }}>
           <PriorityAlertBanner user={user} onOpen={() => setPriorityAckOpen(true)}/>
           {validPage==='dashboard' && <Dashboard {...pp} checklist={checklist} tasks={tasks} attendance={attendance} leaveRequests={leaveRequests} otRequests={[]}/>}
           {validPage==='checklist'  && <Checklist {...pp} checklist={checklist} setChecklist={setChecklist} addLog={addLog}/>}
