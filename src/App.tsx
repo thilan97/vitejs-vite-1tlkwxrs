@@ -12,7 +12,7 @@ const db = createClient(SUPABASE_URL, SUPABASE_KEY)
 // APP_VERSION — dùng để invalidate cache localStorage mỗi khi deploy version mới
 // (ngăn bug quyền user bị "reset" do cache position cũ sau deploy)
 // ⚠️ MỖI LẦN DEPLOY FEATURE MỚI CÓ PERMISSION MỚI, BUMP SỐ NÀY:
-const APP_VERSION = '2026.04.17.v34'
+const APP_VERSION = '2026.04.17.v35'
 
 // ════════════════════════════════════════════════════════════════
 // AUDIT LOG — ghi nhận các hành động phá hoại data để trace lại
@@ -75,17 +75,77 @@ async function deleteWithAudit(opts: {
 
 // ── THEME ────────────────────────────────────────
 const T: any = {
+  // ═══ BRAND ═══
   gold:'#C4973A', goldBg:'#FFF8E8', goldText:'#7A5A10', goldBorder:'#E5CFA0',
   sidebar:'#FDF6E9', sidebarBorder:'#E8D5A3', sidebarText:'#5A4010', sidebarMuted:'#A08040',
+  // ═══ NEUTRAL ═══
   bg:'#F4F2EE', card:'#FFFFFF', rowAlt:'#FAFAF8', divider:'#E4DFD7',
   dark:'#1A1614', med:'#6B5F50', light:'#A09080', border:'#DDD8CF',
+  // ═══ SEMANTIC ═══
   green:'#15803D', greenBg:'#DCFCE7',
   amber:'#B45309', amberBg:'#FEF3C7',
   red:'#B91C1C', redBg:'#FEE2E2',
   blue:'#1D4ED8', blueBg:'#DBEAFE',
+  // ═══ LEGACY (still in use, keeping for backwards compat) ═══
   purple:'#7C3AED', purpleBg:'#EDE9FE',
   teal:'#0F766E', tealBg:'#CCFBF1',
   gray:'#6B7280', grayBg:'#F3F4F6',
+}
+
+// ── DESIGN TOKENS (v35 new system) ────────────────
+// Use these for new components. Gradually migrate old code.
+const FS = { xs:10, sm:12, base:13, md:14, lg:16, xl:20, x2l:24, x3l:32 } as const
+const SP = { 0.5:2, 1:4, 2:8, 3:12, 4:16, 5:20, 6:24, 8:32 } as const
+const RD = { sm:4, md:8, lg:12, xl:16, full:9999 } as const
+
+// ── ICONS — Line icons (Lucide-style), rendered inline SVG ────────
+// All icons are 24x24 stroke-width 2, use currentColor. Size prop scales.
+const Ico: any = {
+  _base: (paths: any, size = 18, strokeWidth = 2) => (
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="none"
+      stroke="currentColor" strokeWidth={strokeWidth} strokeLinecap="round" strokeLinejoin="round"
+      style={{ display:'inline-block', verticalAlign:'middle', flexShrink:0 }}>
+      {paths}
+    </svg>
+  ),
+  home:     (s?: number) => Ico._base(<><path d="m3 9 9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/><polyline points="9 22 9 12 15 12 15 22"/></>, s),
+  bell:     (s?: number) => Ico._base(<><path d="M6 8a6 6 0 0 1 12 0c0 7 3 9 3 9H3s3-2 3-9"/><path d="M10.3 21a1.94 1.94 0 0 0 3.4 0"/></>, s),
+  package:  (s?: number) => Ico._base(<><path d="M16.5 9.4l-9-5.19M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"/><polyline points="3.27 6.96 12 12.01 20.73 6.96"/><line x1="12" y1="22.08" x2="12" y2="12"/></>, s),
+  briefcase:(s?: number) => Ico._base(<><rect x="2" y="7" width="20" height="14" rx="2" ry="2"/><path d="M16 21V5a2 2 0 0 0-2-2h-4a2 2 0 0 0-2 2v16"/></>, s),
+  clipboard:(s?: number) => Ico._base(<><rect x="8" y="2" width="8" height="4" rx="1" ry="1"/><path d="M16 4h2a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h2"/></>, s),
+  users:    (s?: number) => Ico._base(<><path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M22 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></>, s),
+  settings: (s?: number) => Ico._base(<><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"/></>, s),
+  // Submenu icons (smaller, used inside groups)
+  inbox:    (s?: number) => Ico._base(<><polyline points="22 12 16 12 14 15 10 15 8 12 2 12"/><path d="M5.45 5.11 2 12v6a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2v-6l-3.45-6.89A2 2 0 0 0 16.76 4H7.24a2 2 0 0 0-1.79 1.11z"/></>, s),
+  camera:   (s?: number) => Ico._base(<><path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z"/><circle cx="12" cy="13" r="4"/></>, s),
+  boxes:    (s?: number) => Ico._base(<><path d="M2.97 12.92A2 2 0 0 0 2 14.63v3.24a2 2 0 0 0 .97 1.71l3 1.8a2 2 0 0 0 2.06 0L12 19v-5.5l-5-3-4.03 2.42zM7 16.5l-4.74-2.85M7 16.5l5-3M7 16.5v5.17M12 13.5V19l3.97 2.38a2 2 0 0 0 2.06 0l3-1.8a2 2 0 0 0 .97-1.71v-3.24a2 2 0 0 0-.97-1.71L17 10.5l-5 3zM17 16.5l-5-3M17 16.5l4.74-2.85M17 16.5v5.17M7.97 4.42A2 2 0 0 0 7 6.13v4.37l5 3 5-3V6.13a2 2 0 0 0-.97-1.71l-3-1.8a2 2 0 0 0-2.06 0l-3 1.8zM12 8l-5-3M12 8l5-3M12 8v5.5"/></>, s),
+  calendar: (s?: number) => Ico._base(<><rect x="3" y="4" width="18" height="18" rx="2" ry="2"/><line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="3" y1="10" x2="21" y2="10"/></>, s),
+  barChart: (s?: number) => Ico._base(<><line x1="12" y1="20" x2="12" y2="10"/><line x1="18" y1="20" x2="18" y2="4"/><line x1="6" y1="20" x2="6" y2="16"/></>, s),
+  pieChart: (s?: number) => Ico._base(<><path d="M21.21 15.89A10 10 0 1 1 8 2.83"/><path d="M22 12A10 10 0 0 0 12 2v10z"/></>, s),
+  truck:    (s?: number) => Ico._base(<><rect x="1" y="3" width="15" height="13"/><polygon points="16 8 20 8 23 11 23 16 16 16 16 8"/><circle cx="5.5" cy="18.5" r="2.5"/><circle cx="18.5" cy="18.5" r="2.5"/></>, s),
+  search:   (s?: number) => Ico._base(<><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></>, s),
+  tag:      (s?: number) => Ico._base(<><path d="M20.59 13.41l-7.17 7.17a2 2 0 0 1-2.83 0L2 12V2h10l8.59 8.59a2 2 0 0 1 0 2.82z"/><line x1="7" y1="7" x2="7.01" y2="7"/></>, s),
+  rotate:   (s?: number) => Ico._base(<><polyline points="23 4 23 10 17 10"/><polyline points="1 20 1 14 7 14"/><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/></>, s),
+  alertTri: (s?: number) => Ico._base(<><path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></>, s),
+  cashDollar:(s?: number) => Ico._base(<><line x1="12" y1="1" x2="12" y2="23"/><path d="M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6"/></>, s),
+  check:    (s?: number) => Ico._base(<polyline points="20 6 9 17 4 12"/>, s),
+  checkBox: (s?: number) => Ico._base(<><polyline points="9 11 12 14 22 4"/><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/></>, s),
+  pin:      (s?: number) => Ico._base(<><line x1="12" y1="17" x2="12" y2="22"/><path d="M5 17h14v-1.76a2 2 0 0 0-1.11-1.79l-1.78-.9A2 2 0 0 1 15 10.76V6h1a2 2 0 0 0 2-2V3H6v1a2 2 0 0 0 2 2h1v4.76a2 2 0 0 1-1.11 1.79l-1.78.9A2 2 0 0 0 5 15.24z"/></>, s),
+  template: (s?: number) => Ico._base(<><rect x="3" y="3" width="18" height="18" rx="2" ry="2"/><line x1="3" y1="9" x2="21" y2="9"/><line x1="9" y1="21" x2="9" y2="9"/></>, s),
+  history:  (s?: number) => Ico._base(<><path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/><path d="M3 3v5h5"/><path d="M12 7v5l4 2"/></>, s),
+  clock:    (s?: number) => Ico._base(<><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></>, s),
+  sun:      (s?: number) => Ico._base(<><circle cx="12" cy="12" r="5"/><line x1="12" y1="1" x2="12" y2="3"/><line x1="12" y1="21" x2="12" y2="23"/><line x1="4.22" y1="4.22" x2="5.64" y2="5.64"/><line x1="18.36" y1="18.36" x2="19.78" y2="19.78"/><line x1="1" y1="12" x2="3" y2="12"/><line x1="21" y1="12" x2="23" y2="12"/><line x1="4.22" y1="19.78" x2="5.64" y2="18.36"/><line x1="18.36" y1="5.64" x2="19.78" y2="4.22"/></>, s),
+  palm:     (s?: number) => Ico._base(<><path d="M12 2v20M6 6c0 4 2 6 6 6s6-2 6-6M4 12c2 2 6 2 8 0"/></>, s),
+  fileText: (s?: number) => Ico._base(<><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/><polyline points="10 9 9 9 8 9"/></>, s),
+  megaphone:(s?: number) => Ico._base(<><path d="M3 11l18-5v12L3 14z"/><path d="M11.6 16.8a3 3 0 1 1-5.8-1.6"/></>, s),
+  network:  (s?: number) => Ico._base(<><rect x="16" y="16" width="6" height="6" rx="1"/><rect x="2" y="16" width="6" height="6" rx="1"/><rect x="9" y="2" width="6" height="6" rx="1"/><path d="M5 16v-3a1 1 0 0 1 1-1h12a1 1 0 0 1 1 1v3M12 12V8"/></>, s),
+  target:   (s?: number) => Ico._base(<><circle cx="12" cy="12" r="10"/><circle cx="12" cy="12" r="6"/><circle cx="12" cy="12" r="2"/></>, s),
+  scroll:   (s?: number) => Ico._base(<><path d="M19 17V5a2 2 0 0 0-2-2H4"/><path d="M8 21h12a2 2 0 0 0 2-2v-1a1 1 0 0 0-1-1H11a1 1 0 0 0-1 1v1a2 2 0 1 1-4 0V5a2 2 0 1 0-4 0v2a1 1 0 0 0 1 1h3"/></>, s),
+  stickyNote:(s?: number) => Ico._base(<><path d="M15.5 3H5a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2V8.5z"/><path d="M15 3v6h6"/></>, s),
+  plus:     (s?: number) => Ico._base(<><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></>, s),
+  trash:    (s?: number) => Ico._base(<><polyline points="3 6 5 6 21 6"/><path d="M19 6l-2 14a2 2 0 0 1-2 2H9a2 2 0 0 1-2-2L5 6M10 11v6M14 11v6M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></>, s),
+  edit:     (s?: number) => Ico._base(<><path d="M12 20h9"/><path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4L16.5 3.5z"/></>, s),
+  x:        (s?: number) => Ico._base(<><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></>, s),
 }
 
 const DEPT_COLOR: any = { kho:'#1A56A8', sale:'#15803D', vp:'#C2410C', all:'#6B7280' }
@@ -668,70 +728,86 @@ const NAV_GROUPS = (perm: any, deptId = '') => {
   const hasPicking    = perm.pickOrders || perm.packOrders || perm.assignPacking
 
   const groups = [
+    // ══ HOME ══
     hasDashboard && {
-      id:'dashboard', icon:'📊', label:'Tổng quan',
+      id:'dashboard', icon:Ico.home, emoji:'🏠', label:'Tổng quan',
       pages:[
-        { id:'dashboard', icon:'📊', label:'Dashboard' },
-        { id:'notifications', icon:'🔔', label:'Thông báo' },
+        { id:'dashboard', icon:Ico.pieChart, emoji:'📊', label:'Dashboard' },
+        { id:'notifications', icon:Ico.bell, emoji:'🔔', label:'Thông báo' },
       ]
     },
     !hasDashboard && {
-      id:'notifications_only', icon:'🔔', label:'Thông báo',
-      pages:[{ id:'notifications', icon:'🔔', label:'Thông báo' }]
+      id:'notifications_only', icon:Ico.bell, emoji:'🔔', label:'Thông báo',
+      pages:[{ id:'notifications', icon:Ico.bell, emoji:'🔔', label:'Thông báo' }]
     },
+
+    // ══ KHO VẬN ══
     {
-      id:'work', icon:'✅', label:'Công việc',
+      id:'warehouse', icon:Ico.package, emoji:'📦', label:'Kho vận',
       pages:[
-        (perm.submitPriority || perm.handlePriority) && { id:'priority', icon:'🚨', label:'Phiếu ưu tiên' },
-        { id:'checklist',  icon:'✅', label:'Checklist'  },
-        { id:'tasks',      icon:'📌', label:'Giao việc'  },
-        perm.manageTemplate && { id:'templates', icon:'📋', label:'Template' },
-        { id:'history',    icon:'🗂️', label:'Lịch sử'   },
-        (deptId==='kho'||perm.viewAllDashboard) && { id:'inventory', icon:'📦', label:'Kiểm kê kho' },
-        hasPicking && { id:'picking', icon:'📥', label:'Nhặt hàng' },
-        hasPicking && { id:'packing', icon:'📸', label:'Đóng đơn' },
-        (perm.trackOrders) && { id:'trackorders', icon:'📦', label:'Theo dõi đơn' },
-        { id:'schedule', icon:'📅', label:'Lịch Kho' },
-        perm.viewWarehouseStats && { id:'whstats', icon:'📊', label:'Hiệu suất Kho' },
-        (perm.managePayment||perm.viewAllDashboard) && { id:'payment', icon:'💸', label:'Lệnh CK' },
+        hasPicking && { id:'picking', icon:Ico.inbox, emoji:'📥', label:'Nhặt hàng' },
+        hasPicking && { id:'packing', icon:Ico.camera, emoji:'📸', label:'Đóng đơn' },
+        (deptId==='kho'||perm.viewAllDashboard) && { id:'inventory', icon:Ico.boxes, emoji:'📦', label:'Kiểm kê kho' },
+        (deptId==='sale' || deptId==='kho' || perm.viewAllDashboard) && { id:'expiry', icon:Ico.calendar, emoji:'📅', label:'Date SP' },
+        perm.viewWarehouseStats && { id:'whstats', icon:Ico.barChart, emoji:'📊', label:'Hiệu suất Kho' },
+        { id:'schedule', icon:Ico.calendar, emoji:'🗓️', label:'Lịch Kho' },
       ].filter(Boolean)
     },
-    hasAttendance && {
-      id:'hr', icon:'👥', label:'Nhân sự',
+
+    // ══ BÁN HÀNG ══
+    {
+      id:'sales', icon:Ico.briefcase, emoji:'💼', label:'Bán hàng',
       pages:[
-        { id:'attendance', icon:'🕐', label:'Chấm công' },
-        { id:'overtime',   icon:'⏰', label:'Làm thêm'  },
-        { id:'leave',      icon:'🏖️', label:'Nghỉ phép' },
+        (perm.trackOrders) && { id:'trackorders', icon:Ico.truck, emoji:'🚚', label:'Theo dõi đơn' },
+        (deptId==='sale' || perm.viewAllDashboard || perm.editPrice || perm.managePrograms) && { id:'pricelist', icon:Ico.tag, emoji:'💰', label:'Báo giá & CTKM' },
+        { id:'shortage', icon:Ico.alertTri, emoji:'⚠️', label:'Hàng thiếu' },
+        { id:'returns',  icon:Ico.rotate, emoji:'🔄', label:'Hàng hoàn' },
+        { id:'wrongord', icon:Ico.alertTri, emoji:'❗', label:'Đơn sai' },
+        (perm.managePayment||perm.viewAllDashboard) && { id:'payment', icon:Ico.cashDollar, emoji:'💸', label:'Lệnh CK' },
+      ].filter(Boolean)
+    },
+
+    // ══ CÔNG VIỆC ══
+    {
+      id:'work', icon:Ico.clipboard, emoji:'✅', label:'Công việc',
+      pages:[
+        { id:'checklist', icon:Ico.checkBox, emoji:'✅', label:'Checklist' },
+        { id:'tasks',     icon:Ico.pin, emoji:'📌', label:'Giao việc' },
+        (perm.submitPriority || perm.handlePriority) && { id:'priority', icon:Ico.alertTri, emoji:'🚨', label:'Phiếu ưu tiên' },
+        perm.manageTemplate && { id:'templates', icon:Ico.template, emoji:'📋', label:'Template' },
+        { id:'history',   icon:Ico.history, emoji:'🗂️', label:'Lịch sử' },
+        { id:'notes',     icon:Ico.stickyNote, emoji:'📝', label:'Ghi chú' },
+      ].filter(Boolean)
+    },
+
+    // ══ NHÂN SỰ ══
+    hasAttendance && {
+      id:'hr', icon:Ico.users, emoji:'👥', label:'Nhân sự',
+      pages:[
+        { id:'attendance', icon:Ico.clock, emoji:'🕐', label:'Chấm công' },
+        { id:'overtime',   icon:Ico.sun, emoji:'⏰', label:'Làm thêm' },
+        { id:'leave',      icon:Ico.palm, emoji:'🏖️', label:'Nghỉ phép' },
+        { id:'orgchart',   icon:Ico.network, emoji:'🏢', label:'Sơ đồ tổ chức' },
       ]
     },
     !hasAttendance && {
-      id:'hr', icon:'👥', label:'Nhân sự',
+      id:'hr', icon:Ico.users, emoji:'👥', label:'Nhân sự',
       pages:[
-        { id:'overtime',   icon:'⏰', label:'Làm thêm'  },
-        { id:'leave',      icon:'🏖️', label:'Nghỉ phép' },
+        { id:'overtime',   icon:Ico.sun, emoji:'⏰', label:'Làm thêm' },
+        { id:'leave',      icon:Ico.palm, emoji:'🏖️', label:'Nghỉ phép' },
+        { id:'orgchart',   icon:Ico.network, emoji:'🏢', label:'Sơ đồ tổ chức' },
       ]
     },
 
+    // ══ QUẢN TRỊ ══
     {
-      id:'reports', icon:'📋', label:'Báo cáo',
+      id:'admin', icon:Ico.settings, emoji:'⚙️', label:'Quản trị',
       pages:[
-        { id:'shortage', icon:'📦', label:'Hàng thiếu'  },
-        { id:'returns',  icon:'🔄', label:'Hàng hoàn'   },
-        { id:'wrongord', icon:'⚠️', label:'Đơn sai'     },
-        { id:'expiry',   icon:'📅', label:'Date SP'      },
-        (deptId==='sale' || perm.viewAllDashboard || perm.editPrice || perm.managePrograms) && { id:'pricelist', icon:'💰', label:'Báo giá & CTKM' },
-      ].filter(Boolean)
-       .filter(p => p.id!=='expiry'   || deptId==='sale' || deptId==='kho' || perm.viewAllDashboard)
-    },
-    {
-      id:'manage', icon:'⚙️', label:'Quản lý',
-      pages:[
-        { id:'announce',  icon:'📣', label:'Thông báo'  },
-        { id:'orgchart',  icon:'🏢', label:'Sơ đồ'      },
-        perm.manageUsers     && { id:'users',     icon:'👥', label:'Nhân viên' },
-        perm.managePositions && { id:'positions',  icon:'🎯', label:'Vị trí'   },
-        perm.viewAuditLog    && { id:'audit',     icon:'📜', label:'Nhật ký'   },
-        { id:'settings',  icon:'⚙️', label:'Cài đặt'   },
+        perm.manageUsers     && { id:'users',     icon:Ico.users, emoji:'👥', label:'Nhân viên' },
+        perm.managePositions && { id:'positions', icon:Ico.target, emoji:'🎯', label:'Vị trí' },
+        perm.viewAuditLog    && { id:'audit',     icon:Ico.scroll, emoji:'📜', label:'Nhật ký' },
+        { id:'announce',  icon:Ico.megaphone, emoji:'📣', label:'Thông báo' },
+        { id:'settings',  icon:Ico.settings, emoji:'⚙️', label:'Cài đặt' },
       ].filter(Boolean)
     },
   ].filter(Boolean) as any[]
@@ -778,12 +854,14 @@ function Sidebar(props: any) {
           return (
             <div key={group.id} style={{ marginBottom:6 }}>
               {/* Section label */}
-              <div style={{ display:'flex', alignItems:'center', gap:6,
+              <div style={{ display:'flex', alignItems:'center', gap:7,
                 padding:'6px 8px 3px',
                 fontSize:9, fontWeight:800, letterSpacing:1.4,
                 textTransform:'uppercase',
                 color:isActiveGroup ? T.gold : T.sidebarMuted }}>
-                <span style={{ fontSize:10 }}>{group.icon}</span>
+                <span style={{ display:'flex', alignItems:'center' }}>
+                  {typeof group.icon === 'function' ? group.icon(13) : group.icon}
+                </span>
                 <span style={{ flex:1 }}>{group.label}</span>
                 {groupBadge>0 && (
                   <span style={{ background:T.red, color:'#fff', borderRadius:20,
@@ -829,8 +907,9 @@ function Sidebar(props: any) {
                         ;(e.currentTarget as any).style.color = T.sidebarText
                       }
                     }}>
-                    <span style={{ fontSize:14, width:18, textAlign:'center', flexShrink:0 }}>
-                      {item.icon}
+                    <span style={{ display:'flex', alignItems:'center', justifyContent:'center',
+                      width:18, flexShrink:0 }}>
+                      {typeof item.icon === 'function' ? item.icon(15) : item.icon}
                     </span>
                     <span style={{ flex:1, letterSpacing:.1 }}>{item.label}</span>
                     {badge>0 && (
@@ -935,7 +1014,9 @@ function BottomNav({ page, setPage, user, pendingLeave, pendingOT, notifUnread, 
                     color:active?T.goldText:T.sidebarText,
                     cursor:'pointer', fontFamily:'inherit', fontSize:12,
                     fontWeight:active?600:400, position:'relative' }}>
-                  <span>{item.icon}</span>
+                  <span style={{ display:'flex', alignItems:'center' }}>
+                    {typeof item.icon === 'function' ? item.icon(15) : item.icon}
+                  </span>
                   <span>{item.label}</span>
                   {badge>0 && <span style={{ position:'absolute', top:3, right:6, background:T.red,
                     color:'#fff', borderRadius:10, fontSize:8, fontWeight:700, padding:'1px 4px' }}>{badge}</span>}
@@ -963,8 +1044,11 @@ function BottomNav({ page, setPage, user, pendingLeave, pendingOT, notifUnread, 
                 background: isActive && showSubTabs ? 'rgba(196,151,58,0.15)' : 'transparent',
                 cursor:'pointer', position:'relative',
                 color:isActive?T.gold:T.sidebarMuted }}>
-              <span style={{ fontSize:19, marginBottom:2 }}>{group.icon}</span>
-              <span style={{ fontSize:9, fontWeight:isActive?700:400, fontFamily:'inherit',
+              <span style={{ display:'flex', alignItems:'center', justifyContent:'center',
+                marginBottom:3, color: isActive?T.gold:T.sidebarMuted }}>
+                {typeof group.icon === 'function' ? group.icon(22) : <span style={{ fontSize:19 }}>{group.icon}</span>}
+              </span>
+              <span style={{ fontSize:9, fontWeight:isActive?700:500, fontFamily:'inherit',
                 letterSpacing:.2 }}>{group.label}</span>
               {isActive && hasMultiple && (
                 <span style={{ fontSize:7, color:T.gold, marginTop:1 }}>
@@ -7320,6 +7404,7 @@ export default function App() {
           {validPage==='priority'   && <PriorityRequestModule {...pp}/>}
           {validPage==='audit'      && <AuditLogModule {...pp}/>}
           {validPage==='settings'   && <Settings {...pp} setUser={setUser} settings={settings} setSettings={setSettings} onManualReset={manualReset}/>}
+          {validPage==='notes'      && <PersonalNotesModule user={user} mobile={mobile}/>}
         </main>
         {mobile && <BottomNav user={user} page={validPage} setPage={setPage} pendingLeave={pendingLeave} pendingOT={pendingOT} notifUnread={notifUnread} onLogout={() => {
           localStorage.removeItem('la_user')
@@ -15842,6 +15927,340 @@ function PhotoSection({ title, subtitle, photos, min, max, readOnly, orderCode, 
           </div>
         </div>
       )}
+    </div>
+  )
+}
+
+
+// ══════════════════════════════════════════════════════════════════════
+// ══ PERSONAL NOTES MODULE — Ghi chú cá nhân ══════════════════════════
+// ══════════════════════════════════════════════════════════════════════
+function PersonalNotesModule({ user, mobile }: any) {
+  const p = mobile ? '16px' : '24px'
+  const [notes, setNotes] = useState<any[]>([])
+  const [loading, setLoading] = useState(true)
+  const [searchQ, setSearchQ] = useState('')
+  const [editingId, setEditingId] = useState<string|null>(null)
+  const [showNew, setShowNew] = useState(false)
+
+  // Note colors
+  const COLORS: any = {
+    default: { bg:'#FFFFFF',  border:T.border, name:'Trắng' },
+    yellow:  { bg:'#FFF8E8',  border:'#E5CFA0', name:'Vàng' },
+    green:   { bg:'#DCFCE7',  border:'#86EFAC', name:'Xanh lá' },
+    blue:    { bg:'#DBEAFE',  border:'#93C5FD', name:'Xanh dương' },
+    red:     { bg:'#FEE2E2',  border:'#FCA5A5', name:'Đỏ' },
+  }
+
+  // Fetch notes
+  const fetchNotes = async () => {
+    setLoading(true)
+    const { data, error } = await db.from('personal_notes').select('*')
+      .eq('user_id', user.id)
+      .order('is_pinned', { ascending:false })
+      .order('updated_at', { ascending:false })
+    if (!error) setNotes(data || [])
+    setLoading(false)
+  }
+
+  useEffect(() => { fetchNotes() }, [])
+
+  // Fuzzy search (Vietnamese-aware)
+  const norm = (s: string) => (s||'').toLowerCase().normalize('NFD')
+    .replace(/[\u0300-\u036f]/g,'').replace(/đ/g,'d').trim()
+
+  const filtered = (() => {
+    const q = norm(searchQ)
+    if (!q) return notes
+    const tokens = q.split(/\s+/).filter(Boolean)
+    return notes.filter((n: any) => {
+      const text = norm(n.title + ' ' + n.content)
+      return tokens.every(t => text.includes(t))
+    })
+  })()
+
+  // Create new note
+  const createNote = async () => {
+    const id = `note_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`
+    const newNote = {
+      id, user_id:user.id,
+      title:'', content:'',
+      is_pinned:false, color:'default',
+      created_at:new Date().toISOString(),
+      updated_at:new Date().toISOString(),
+    }
+    const { error } = await db.from('personal_notes').insert(newNote)
+    if (error) { alert('❌ Lỗi: ' + error.message); return }
+    setNotes([newNote, ...notes])
+    setEditingId(id)
+    setShowNew(false)
+  }
+
+  // Save note
+  const saveNote = async (id: string, updates: any) => {
+    const upd = { ...updates, updated_at:new Date().toISOString() }
+    const { error } = await db.from('personal_notes').update(upd).eq('id', id).eq('user_id', user.id)
+    if (error) { alert('❌ Lỗi: ' + error.message); return }
+    setNotes(notes.map(n => n.id === id ? { ...n, ...upd } : n))
+  }
+
+  // Delete note
+  const deleteNote = async (id: string) => {
+    if (!confirm('Xoá ghi chú này?')) return
+    const { error } = await db.from('personal_notes').delete().eq('id', id).eq('user_id', user.id)
+    if (error) { alert('❌ Lỗi: ' + error.message); return }
+    setNotes(notes.filter(n => n.id !== id))
+    if (editingId === id) setEditingId(null)
+  }
+
+  // Toggle pin
+  const togglePin = async (id: string) => {
+    const note = notes.find(n => n.id === id)
+    if (!note) return
+    await saveNote(id, { is_pinned: !note.is_pinned })
+    // Resort after pin change
+    fetchNotes()
+  }
+
+  const fmtDate = (iso: string) => {
+    const d = new Date(iso)
+    const today = new Date()
+    const isToday = d.toDateString() === today.toDateString()
+    if (isToday) return d.toLocaleTimeString('vi-VN', {hour:'2-digit', minute:'2-digit'})
+    const diff = Math.floor((today.getTime() - d.getTime()) / 86400000)
+    if (diff === 1) return 'Hôm qua'
+    if (diff < 7) return `${diff} ngày trước`
+    return d.toLocaleDateString('vi-VN', {day:'2-digit', month:'2-digit', year:'2-digit'})
+  }
+
+  return (
+    <div style={{ padding:p }}>
+      {/* Topbar */}
+      <div style={{ display:'flex', alignItems:'center', gap:12, marginBottom:16, flexWrap:'wrap' }}>
+        <div style={{ flex:1, minWidth:200 }}>
+          <div style={{ display:'flex', alignItems:'center', gap:8, marginBottom:4 }}>
+            <span style={{ color:T.gold, display:'flex', alignItems:'center' }}>
+              {Ico.stickyNote(22)}
+            </span>
+            <h2 style={{ margin:0, fontSize:FS.xl, fontWeight:800, color:T.dark }}>
+              Ghi chú cá nhân
+            </h2>
+          </div>
+          <div style={{ fontSize:FS.sm, color:T.light }}>
+            {loading ? 'Đang tải...' : `${notes.length} ghi chú${searchQ ? ` • ${filtered.length} kết quả` : ''}`}
+          </div>
+        </div>
+        <button onClick={createNote}
+          style={{ display:'flex', alignItems:'center', gap:6,
+            padding:'10px 16px', borderRadius:RD.md, border:'none',
+            background:T.gold, color:'#fff', cursor:'pointer',
+            fontFamily:'inherit', fontSize:FS.md, fontWeight:600,
+            boxShadow:'0 2px 8px rgba(196,151,58,0.3)' }}>
+          {Ico.plus(16)}
+          <span>Thêm ghi chú</span>
+        </button>
+      </div>
+
+      {/* Search */}
+      <div style={{ position:'relative', marginBottom:16 }}>
+        <span style={{ position:'absolute', left:12, top:'50%', transform:'translateY(-50%)',
+          color:T.light, display:'flex', alignItems:'center' }}>
+          {Ico.search(16)}
+        </span>
+        <input value={searchQ} onChange={e => setSearchQ(e.target.value)}
+          placeholder="Tìm trong ghi chú..."
+          style={{ width:'100%', padding:'10px 12px 10px 38px',
+            borderRadius:RD.md, border:`1px solid ${T.border}`,
+            fontSize:FS.md, fontFamily:'inherit', outline:'none',
+            background:'#fff', color:T.dark, boxSizing:'border-box' }}/>
+      </div>
+
+      {/* Notes grid */}
+      {loading ? (
+        <div style={{ textAlign:'center', padding:40, color:T.light, fontSize:FS.md }}>
+          ⏳ Đang tải...
+        </div>
+      ) : filtered.length === 0 ? (
+        <div style={{ textAlign:'center', padding:'60px 20px', color:T.light }}>
+          <div style={{ display:'inline-flex', marginBottom:12, color:T.light }}>
+            {Ico.stickyNote(48)}
+          </div>
+          <div style={{ fontSize:FS.md, marginBottom:6 }}>
+            {searchQ ? 'Không tìm thấy ghi chú nào.' : 'Chưa có ghi chú nào.'}
+          </div>
+          {!searchQ && (
+            <button onClick={createNote}
+              style={{ marginTop:12, padding:'8px 16px', borderRadius:RD.md,
+                border:`1.5px solid ${T.gold}`, background:T.goldBg, color:T.goldText,
+                cursor:'pointer', fontFamily:'inherit', fontSize:FS.sm, fontWeight:600 }}>
+              + Tạo ghi chú đầu tiên
+            </button>
+          )}
+        </div>
+      ) : (
+        <div style={{ display:'grid',
+          gridTemplateColumns: mobile ? '1fr' : 'repeat(auto-fill, minmax(260px, 1fr))',
+          gap:12 }}>
+          {filtered.map((n: any) => {
+            const isEditing = editingId === n.id
+            const color = COLORS[n.color] || COLORS.default
+            return (
+              <NoteCard key={n.id} note={n} color={color} isEditing={isEditing}
+                mobile={mobile}
+                onStartEdit={() => setEditingId(n.id)}
+                onStopEdit={() => setEditingId(null)}
+                onSave={(updates: any) => saveNote(n.id, updates)}
+                onDelete={() => deleteNote(n.id)}
+                onTogglePin={() => togglePin(n.id)}
+                fmtDate={fmtDate}
+                colors={COLORS}/>
+            )
+          })}
+        </div>
+      )}
+    </div>
+  )
+}
+
+// Individual note card with view/edit state
+function NoteCard({ note, color, isEditing, mobile, onStartEdit, onStopEdit, onSave, onDelete, onTogglePin, fmtDate, colors }: any) {
+  const [title, setTitle] = useState(note.title || '')
+  const [content, setContent] = useState(note.content || '')
+  const [showColorPicker, setShowColorPicker] = useState(false)
+
+  // Sync local state when entering edit mode
+  useEffect(() => {
+    if (isEditing) {
+      setTitle(note.title || '')
+      setContent(note.content || '')
+    }
+  }, [isEditing])
+
+  const handleSave = () => {
+    if (title !== note.title || content !== note.content) {
+      onSave({ title, content })
+    }
+    onStopEdit()
+  }
+
+  const setColor = (c: string) => {
+    onSave({ color: c })
+    setShowColorPicker(false)
+  }
+
+  if (isEditing) {
+    return (
+      <div style={{ background:color.bg, border:`2px solid ${T.gold}`,
+        borderRadius:RD.lg, padding:12, boxShadow:'0 4px 12px rgba(0,0,0,0.1)',
+        display:'flex', flexDirection:'column', minHeight:200 }}>
+        <input value={title} onChange={e => setTitle(e.target.value)}
+          placeholder="Tiêu đề..."
+          autoFocus
+          style={{ border:'none', background:'transparent',
+            fontSize:FS.lg, fontWeight:700, color:T.dark,
+            fontFamily:'inherit', outline:'none', marginBottom:8,
+            padding:'4px 0', width:'100%', boxSizing:'border-box' }}/>
+        <textarea value={content} onChange={e => setContent(e.target.value)}
+          placeholder="Nội dung..."
+          style={{ flex:1, border:'none', background:'transparent',
+            fontSize:FS.md, color:T.dark, fontFamily:'inherit',
+            outline:'none', resize:'none', minHeight:100, width:'100%',
+            padding:'4px 0', boxSizing:'border-box', lineHeight:1.5 }}/>
+
+        {/* Color picker */}
+        {showColorPicker && (
+          <div style={{ display:'flex', gap:6, margin:'8px 0',
+            padding:8, background:'#fff', borderRadius:RD.md,
+            border:`1px solid ${T.border}` }}>
+            {Object.entries(colors).map(([key, c]: any) => (
+              <button key={key} onClick={() => setColor(key)}
+                title={c.name}
+                style={{ width:22, height:22, borderRadius:'50%',
+                  border: note.color === key ? `2px solid ${T.gold}` : `1px solid ${c.border}`,
+                  background:c.bg, cursor:'pointer', padding:0 }}/>
+            ))}
+          </div>
+        )}
+
+        {/* Toolbar */}
+        <div style={{ display:'flex', alignItems:'center', gap:6, marginTop:8,
+          paddingTop:8, borderTop:`1px solid ${color.border}` }}>
+          <button onClick={() => setShowColorPicker(!showColorPicker)}
+            title="Đổi màu"
+            style={{ padding:6, border:'none', background:'transparent',
+              cursor:'pointer', color:T.med, borderRadius:RD.sm,
+              display:'flex', alignItems:'center' }}>
+            <div style={{ width:16, height:16, borderRadius:'50%',
+              background:color.bg, border:`1.5px solid ${color.border}` }}/>
+          </button>
+          <button onClick={onTogglePin}
+            title={note.is_pinned ? 'Bỏ ghim' : 'Ghim lên đầu'}
+            style={{ padding:6, border:'none', background:'transparent',
+              cursor:'pointer', color: note.is_pinned ? T.gold : T.med,
+              borderRadius:RD.sm, display:'flex', alignItems:'center' }}>
+            {Ico.pin(16)}
+          </button>
+          <button onClick={onDelete}
+            title="Xoá"
+            style={{ padding:6, border:'none', background:'transparent',
+              cursor:'pointer', color:T.red, borderRadius:RD.sm,
+              display:'flex', alignItems:'center' }}>
+            {Ico.trash(16)}
+          </button>
+          <div style={{ flex:1 }}/>
+          <button onClick={handleSave}
+            style={{ padding:'6px 14px', borderRadius:RD.md, border:'none',
+              background:T.gold, color:'#fff', cursor:'pointer',
+              fontFamily:'inherit', fontSize:FS.sm, fontWeight:600 }}>
+            Xong
+          </button>
+        </div>
+      </div>
+    )
+  }
+
+  // View mode
+  return (
+    <div onClick={onStartEdit}
+      style={{ background:color.bg, border:`1px solid ${color.border}`,
+        borderRadius:RD.lg, padding:12, cursor:'pointer',
+        transition:'all .15s', display:'flex', flexDirection:'column',
+        minHeight:120, position:'relative' }}
+      onMouseEnter={e => (e.currentTarget.style.transform = 'translateY(-2px)',
+                          e.currentTarget.style.boxShadow = '0 4px 12px rgba(0,0,0,0.08)')}
+      onMouseLeave={e => (e.currentTarget.style.transform = '',
+                          e.currentTarget.style.boxShadow = '')}>
+      {note.is_pinned && (
+        <div style={{ position:'absolute', top:8, right:8, color:T.gold,
+          display:'flex', alignItems:'center' }}>
+          {Ico.pin(14)}
+        </div>
+      )}
+      {note.title && (
+        <div style={{ fontSize:FS.md, fontWeight:700, color:T.dark,
+          marginBottom:6, paddingRight: note.is_pinned ? 20 : 0,
+          overflow:'hidden', textOverflow:'ellipsis',
+          display:'-webkit-box', WebkitLineClamp:2, WebkitBoxOrient:'vertical' }}>
+          {note.title}
+        </div>
+      )}
+      {note.content && (
+        <div style={{ fontSize:FS.sm, color:T.med, flex:1,
+          whiteSpace:'pre-wrap', lineHeight:1.5,
+          overflow:'hidden', textOverflow:'ellipsis',
+          display:'-webkit-box', WebkitLineClamp:6, WebkitBoxOrient:'vertical' }}>
+          {note.content}
+        </div>
+      )}
+      {!note.title && !note.content && (
+        <div style={{ fontSize:FS.sm, color:T.light, fontStyle:'italic' }}>
+          (Ghi chú trống — nhấn để chỉnh sửa)
+        </div>
+      )}
+      <div style={{ fontSize:FS.xs, color:T.light, marginTop:8,
+        paddingTop:6, borderTop:`1px solid ${color.border}` }}>
+        {fmtDate(note.updated_at)}
+      </div>
     </div>
   )
 }
