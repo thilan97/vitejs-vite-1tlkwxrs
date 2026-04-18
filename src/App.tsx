@@ -12,7 +12,7 @@ const db = createClient(SUPABASE_URL, SUPABASE_KEY)
 // APP_VERSION — dùng để invalidate cache localStorage mỗi khi deploy version mới
 // (ngăn bug quyền user bị "reset" do cache position cũ sau deploy)
 // ⚠️ MỖI LẦN DEPLOY FEATURE MỚI CÓ PERMISSION MỚI, BUMP SỐ NÀY:
-const APP_VERSION = '2026.04.17.v40'
+const APP_VERSION = '2026.04.17.v41'
 
 // ════════════════════════════════════════════════════════════════
 // AUDIT LOG — ghi nhận các hành động phá hoại data để trace lại
@@ -2825,26 +2825,54 @@ function Overtime({ user, allUsers, mobile }: any) {
             <EmptyState icon={Ico.clock} title={`Không có OT trong tháng ${mmo}/${myr}`}/>
           ) : (
             <Card style={{ padding:0, overflow:'hidden' }}>
-              <table style={{ width:'100%', borderCollapse:'collapse' }}>
-                <TH cols={['Nhân viên','Số lần OT','Tổng giờ','Chi tiết ngày OT']}/>
-                <tbody>
-                  {otByUser.map((u: any, i: number) => (
-                    <tr key={u.id} style={{ background:i%2===0?'#fff':T.bg, borderBottom:`1px solid ${T.border}` }}>
-                      <td style={{ padding:'12px 14px' }}>
-                        <div style={{ fontSize:13, fontWeight:600, color:T.dark }}>{u.name}</div>
-                        <div style={{ fontSize:10, color:T.gold }}>{u.position_name||u.dept_name}</div>
-                      </td>
-                      <td style={{ padding:'12px', textAlign:'center', fontSize:14, fontWeight:700, color:T.blue }}>{u.reqs.length}</td>
-                      <td style={{ padding:'12px', textAlign:'center', fontSize:14, fontWeight:700, color:T.amber }}>{u.totalHours}h</td>
-                      <td style={{ padding:'12px', fontSize:11, color:T.med }}>
-                        {u.reqs.map((r: any) => (
-                          <div key={r.id}>{fmtDate(r.date)}: {r.start_time}–{r.end_time} ({r.hours}h)</div>
-                        ))}
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
+              <div style={{ overflowX:'auto' }}>
+                <table style={{ width:'100%', borderCollapse:'collapse',
+                  tableLayout:'fixed', minWidth:720 }}>
+                  <colgroup>
+                    <col style={{ width:'30%' }}/>{/* Nhân viên */}
+                    <col style={{ width:'14%' }}/>{/* Số lần */}
+                    <col style={{ width:'14%' }}/>{/* Tổng giờ */}
+                    <col style={{ width:'42%' }}/>{/* Chi tiết */}
+                  </colgroup>
+                  <TH cols={[
+                    { label:'Nhân viên', align:'left' },
+                    { label:'Số lần OT', align:'center' },
+                    { label:'Tổng giờ', align:'center' },
+                    { label:'Chi tiết ngày OT', align:'left' },
+                  ]}/>
+                  <tbody>
+                    {otByUser.map((u: any, i: number) => (
+                      <tr key={u.id} style={{ background:i%2===0?'#fff':T.bg,
+                        borderBottom:`1px solid ${T.border}` }}>
+                        <td style={{ padding:`${SP[3]}px ${SP[4]}px`, verticalAlign:'top' }}>
+                          <div style={{ fontSize:FS.base, fontWeight:600, color:T.dark }}>{u.name}</div>
+                          <div style={{ fontSize:FS.xs, color:T.gold, fontWeight:600, marginTop:2 }}>
+                            {u.position_name||u.dept_name}
+                          </div>
+                        </td>
+                        <td style={{ padding:`${SP[3]}px`, verticalAlign:'top', textAlign:'center',
+                          fontSize:FS.lg, fontWeight:800, color:T.blue }}>
+                          {u.reqs.length}
+                        </td>
+                        <td style={{ padding:`${SP[3]}px`, verticalAlign:'top', textAlign:'center',
+                          fontSize:FS.lg, fontWeight:800, color:T.amber }}>
+                          {u.totalHours}h
+                        </td>
+                        <td style={{ padding:`${SP[3]}px ${SP[4]}px`, verticalAlign:'top',
+                          fontSize:FS.sm, color:T.med, lineHeight:1.7 }}>
+                          {u.reqs.map((r: any) => (
+                            <div key={r.id} style={{ display:'flex', gap:SP[2], alignItems:'baseline' }}>
+                              <span style={{ color:T.dark, fontWeight:600, minWidth:90 }}>{fmtDate(r.date)}</span>
+                              <span>{r.start_time}–{r.end_time}</span>
+                              <span style={{ color:T.amber, fontWeight:600 }}>({r.hours}h)</span>
+                            </div>
+                          ))}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
             </Card>
           )}
         </div>
@@ -5587,7 +5615,7 @@ function OrgChart({ user, allUsers, positions, mobile }: any) {
     const hasChildren = node.children && node.children.length > 0
 
     return (
-      <li style={{ listStyle:'none', display:'flex', flexDirection:'column', alignItems:'center', position:'relative' }}>
+      <div style={{ display:'flex', flexDirection:'column', alignItems:'center', position:'relative' }}>
         {/* ─ Node box ─ */}
         <div
           onClick={() => hasChildren && setCollapsed(c => !c)}
@@ -5633,58 +5661,65 @@ function OrgChart({ user, allUsers, positions, mobile }: any) {
 
         {/* ─ Children với CSS tree lines ─ */}
         {hasChildren && !collapsed && (
-          <ul style={{
+          <div style={{
             display: 'flex',
-            gap: 0,
-            padding: 0,
-            margin: 0,
-            paddingTop: 32,
+            justifyContent: 'center',
+            paddingTop: 28,
             position: 'relative',
           }}>
-            {/* Đường dọc từ parent xuống */}
-            <li style={{
-              position: 'absolute', top: 0, left: '50%',
-              width: 2, height: 32,
+            {/* Đường dọc TỪ parent xuống đến đường ngang (ở giữa cha + nửa padding trên) */}
+            <div style={{
+              position: 'absolute',
+              top: 0, left: '50%',
+              width: 2, height: 14,
               background: deptColor + '80',
               transform: 'translateX(-50%)',
-              listStyle: 'none',
             }}/>
+            {/* Đường ngang nối các con (chỉ vẽ nếu > 1 con) */}
+            {node.children.length > 1 && (
+              <div style={{
+                position: 'absolute',
+                top: 14, height: 2,
+                background: deptColor + '80',
+                // Ngang chỉ từ tâm con đầu đến tâm con cuối:
+                // Con đầu ở left padding 12px, con cuối ở right padding 12px
+                // → đường ngang kéo từ (center-first) đến (center-last)
+                // Mỗi con chiếm 1 flex item với padding 0 12px
+                // Chúng ta dùng: left = (first child center), right = (last child center)
+                // Dễ nhất: set đường ngang full width NHƯNG trừ đi nửa con đầu + nửa con cuối
+                // Vì mỗi con có cùng width → margin trên = (1/n)/2 của tổng
+                left: `calc((100% / ${node.children.length}) / 2)`,
+                right: `calc((100% / ${node.children.length}) / 2)`,
+              }}/>
+            )}
+            {/* Các node con */}
             {node.children.map((child: any, ci: number) => {
-              const isOnly = node.children.length === 1
-              const isFirst = ci === 0
-              const isLast = ci === node.children.length - 1
               const childColor = DEPT_COLOR[child.dept_id] || T.gold
               return (
-                <li key={child.id} style={{
-                  listStyle: 'none',
+                <div key={child.id} style={{
+                  flex: '1 1 0',
                   display: 'flex',
                   flexDirection: 'column',
                   alignItems: 'center',
                   padding: '0 12px',
                   position: 'relative',
+                  minWidth: 0,
                 }}>
-                  {/* Đường ngang nối các anh em */}
-                  {!isOnly && (
-                    <div style={{
-                      position: 'absolute', top: 0, height: 2,
-                      background: deptColor + '60',
-                      left: isFirst ? '50%' : 0,
-                      right: isLast ? '50%' : 0,
-                    }}/>
-                  )}
-                  {/* Đường dọc từ đường ngang xuống node con */}
+                  {/* Đường dọc từ đường ngang (top: 14) xuống node con (top: 28) */}
                   <div style={{
-                    width: 2, height: 22,
+                    position: 'absolute',
+                    top: 14, left: '50%',
+                    width: 2, height: 14,
                     background: childColor + '80',
-                    flexShrink: 0,
+                    transform: 'translateX(-50%)',
                   }}/>
                   <NodeCard node={child}/>
-                </li>
+                </div>
               )
             })}
-          </ul>
+          </div>
         )}
-      </li>
+      </div>
     )
   }
 
@@ -5698,16 +5733,14 @@ function OrgChart({ user, allUsers, positions, mobile }: any) {
         )}/>
 
       {positions.length === 0 ? (
-        <Card style={{ textAlign:'center', padding:'48px', color:T.light }}>
-          <div style={{ fontSize:36, marginBottom:10 }}>🏢</div>
-          <div style={{ fontSize:14, fontWeight:500 }}>Chưa có sơ đồ tổ chức</div>
-          <div style={{ fontSize:12, marginTop:6 }}>Vào mục Vị trí để tạo cấu trúc công ty</div>
-        </Card>
+        <EmptyState icon={Ico.network}
+          title="Chưa có sơ đồ tổ chức"
+          description="Vào mục Vị trí để tạo cấu trúc công ty"/>
       ) : (
-        <div style={{ overflowX:'auto', overflowY:'visible', paddingBottom:32, paddingTop:8 }}>
-          <ul style={{ display:'flex', gap:0, padding:0, margin:0, justifyContent:'center', minWidth:'max-content' }}>
+        <div style={{ overflowX:'auto', overflowY:'visible', paddingBottom:SP[6], paddingTop:SP[2] }}>
+          <div style={{ display:'flex', gap:SP[6], justifyContent:'center', minWidth:'max-content' }}>
             {tree.map(node => <NodeCard key={node.id} node={node}/>)}
-          </ul>
+          </div>
         </div>
       )}
 
@@ -5753,10 +5786,7 @@ function History({ user, history, allUsers, mobile }: any) {
     <div style={{ padding:`0 ${p} ${mobile?'80px':p}` }}>
       <Topbar mobile={mobile} title="Lịch sử công việc" subtitle="Kết quả các kỳ đã qua"/>
       {myH.length === 0 ? (
-        <Card style={{ textAlign:'center', padding:'48px', color:T.light }}>
-          <div style={{ fontSize:36, marginBottom:10 }}>🗂️</div>
-          <div style={{ fontSize:14, fontWeight:500 }}>Chưa có lịch sử</div>
-        </Card>
+        <EmptyState icon={Ico.history} title="Chưa có lịch sử" description="Các công việc đã hoàn thành sẽ hiển thị tại đây."/>
       ) : (<>
         <div style={{ display:'flex', gap:8, marginBottom:14, flexWrap:'wrap' }}>
           {([['date','📅 Theo ngày'],['person','👤 Theo người']] as [string,string][]).map(([m, l]) => (
@@ -5790,35 +5820,49 @@ function History({ user, history, allUsers, mobile }: any) {
                 </div>
                 <div>
                   {/* Grid header */}
-                  <div style={{ display:'grid', gridTemplateColumns:'1fr 100px 70px 80px 80px',
-                    padding:'6px 14px', background:T.bg, borderBottom:`1px solid ${T.border}`,
-                    fontSize:10, fontWeight:700, color:T.light, textTransform:'uppercase', letterSpacing:.5, gap:8 }}>
-                    <span>Công việc</span><span>Nhân viên</span>
+                  <div style={{ display:'grid',
+                    gridTemplateColumns:'minmax(0,1fr) 170px 110px 130px 100px',
+                    padding:`${SP[2]}px ${SP[4]}px`, background:T.bg,
+                    borderBottom:`1px solid ${T.border}`,
+                    fontSize:FS.xs, fontWeight:700, color:T.light,
+                    textTransform:'uppercase', letterSpacing:.8, gap:SP[3] }}>
+                    <span>Công việc</span>
+                    <span>Nhân viên</span>
                     <span style={{ textAlign:'center' }}>Tần suất</span>
                     <span style={{ textAlign:'center' }}>Kết quả</span>
-                    <span>Xong lúc</span>
+                    <span style={{ textAlign:'right' }}>Xong lúc</span>
                   </div>
                     {items.map((h: any, i: number) => {
                       const assignee = allUsers.find((u: any) => u.id===h.assignee_id)
                       return (
                         <div key={h.id||i} style={{ display:'grid',
-                          gridTemplateColumns:'1fr 100px 70px 80px 80px',
-                          padding:'9px 14px', gap:8, alignItems:'center',
+                          gridTemplateColumns:'minmax(0,1fr) 170px 110px 130px 100px',
+                          padding:`${SP[3]}px ${SP[4]}px`, gap:SP[3], alignItems:'center',
                           borderBottom:i<items.length-1?`1px solid ${T.border}`:'none',
                           background:i%2===0?'#fff':T.rowAlt }}>
-                          <div style={{ fontSize:12, fontWeight:500, color:T.dark, lineHeight:1.4 }}>{h.title}</div>
-                          <div>{assignee && <Av u={assignee} size={22} showTitle/>}</div>
-                          <div style={{ textAlign:'center' }}>
-                            <span style={{ fontSize:10, fontWeight:600, padding:'2px 7px', borderRadius:20,
-                              color:FREQ_COLOR[h.freq]?.color, background:FREQ_COLOR[h.freq]?.bg }}>{h.freq}</span>
+                          <div style={{ fontSize:FS.base, fontWeight:500, color:T.dark,
+                            lineHeight:1.4, minWidth:0,
+                            overflow:'hidden', textOverflow:'ellipsis' }}>{h.title}</div>
+                          <div style={{ minWidth:0 }}>
+                            {assignee && <Av u={assignee} size={24} showTitle/>}
                           </div>
                           <div style={{ textAlign:'center' }}>
-                            <span style={{ fontSize:11, fontWeight:600, padding:'3px 9px', borderRadius:20,
-                              color:h.status==='done'?T.green:T.red, background:h.status==='done'?T.greenBg:T.redBg }}>
+                            <span style={{ fontSize:FS.xs, fontWeight:600, padding:'3px 9px',
+                              borderRadius:RD.full, display:'inline-block', whiteSpace:'nowrap',
+                              color:FREQ_COLOR[h.freq]?.color, background:FREQ_COLOR[h.freq]?.bg }}>
+                              {h.freq}
+                            </span>
+                          </div>
+                          <div style={{ textAlign:'center' }}>
+                            <span style={{ fontSize:FS.xs, fontWeight:600, padding:'3px 9px',
+                              borderRadius:RD.full, display:'inline-block', whiteSpace:'nowrap',
+                              color:h.status==='done'?T.green:T.red,
+                              background:h.status==='done'?T.greenBg:T.redBg }}>
                               {h.status==='done'?'✅ Hoàn thành':'❌ Chưa xong'}
                             </span>
                           </div>
-                          <div style={{ fontSize:11, color:h.done_at?T.green:T.light }}>{h.done_at||'—'}</div>
+                          <div style={{ fontSize:FS.xs, color:h.done_at?T.green:T.light,
+                            textAlign:'right', whiteSpace:'nowrap' }}>{h.done_at||'—'}</div>
                         </div>
                       )
                     })}
