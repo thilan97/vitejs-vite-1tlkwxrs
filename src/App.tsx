@@ -12,7 +12,7 @@ const db = createClient(SUPABASE_URL, SUPABASE_KEY)
 // APP_VERSION — dùng để invalidate cache localStorage mỗi khi deploy version mới
 // (ngăn bug quyền user bị "reset" do cache position cũ sau deploy)
 // ⚠️ MỖI LẦN DEPLOY FEATURE MỚI CÓ PERMISSION MỚI, BUMP SỐ NÀY:
-const APP_VERSION = '2026.04.17.v38'
+const APP_VERSION = '2026.04.17.v39'
 
 // ════════════════════════════════════════════════════════════════
 // AUDIT LOG — ghi nhận các hành động phá hoại data để trace lại
@@ -357,8 +357,8 @@ const Card = ({ children, style, onClick }: any) => (
   </div>
 )
 
-// ── Badge — compact status indicator ──
-const Badge = ({ children, tone='neutral', size='sm', style }: any) => {
+// ── Tag — compact status indicator with tone ──
+const Tag = ({ children, tone='neutral', size='sm', style }: any) => {
   const tones: any = {
     neutral: { bg:T.bg,      color:T.med,      border:T.border },
     gold:    { bg:T.goldBg,  color:T.goldText, border:T.goldBorder },
@@ -2822,7 +2822,7 @@ function Overtime({ user, allUsers, mobile }: any) {
                         maxWidth: mobile?120:220 }}>
                         {req?.name || '—'}
                       </span>
-                      <Badge tone="gold" size="xs">⏱️ {r.hours}h OT</Badge>
+                      <Tag tone="gold" size="xs">⏱️ {r.hours}h OT</Tag>
                     </div>
                     <div style={{ fontSize:FS.sm, color:T.med,
                       overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap' }}>
@@ -2831,9 +2831,9 @@ function Overtime({ user, allUsers, mobile }: any) {
                   </div>
                   <div style={{ display:'flex', flexDirection:'column', gap:4,
                     alignItems:'flex-end', flexShrink:0 }}>
-                    <Badge tone={r.status==='approved'?'success':r.status==='rejected'?'danger':'warning'} size="xs">
+                    <Tag tone={r.status==='approved'?'success':r.status==='rejected'?'danger':'warning'} size="xs">
                       {sc.label}
-                    </Badge>
+                    </Tag>
                     <span style={{ fontSize:FS.xs, color:T.light }}>{isExpanded?'▲':'▼'}</span>
                   </div>
                 </div>
@@ -19102,7 +19102,7 @@ function SaleOrderTrackingModule({ user, allUsers, mobile }: any) {
 
                   {wasReverted && (
                     <div style={{ marginTop:SP[1], display:'inline-block' }}>
-                      <Badge tone="danger" size="xs">🚨 ĐÃ SỬA SAU KHI ĐÓNG — ĐANG XỬ LẠI</Badge>
+                      <Tag tone="danger" size="xs">🚨 ĐÃ SỬA SAU KHI ĐÓNG — ĐANG XỬ LẠI</Tag>
                     </div>
                   )}
                 </div>
