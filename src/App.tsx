@@ -12,7 +12,7 @@ const db = createClient(SUPABASE_URL, SUPABASE_KEY)
 // APP_VERSION — dùng để invalidate cache localStorage mỗi khi deploy version mới
 // (ngăn bug quyền user bị "reset" do cache position cũ sau deploy)
 // ⚠️ MỖI LẦN DEPLOY FEATURE MỚI CÓ PERMISSION MỚI, BUMP SỐ NÀY:
-const APP_VERSION = '2026.04.17.v36'
+const APP_VERSION = '2026.04.17.v37'
 
 // ════════════════════════════════════════════════════════════════
 // AUDIT LOG — ghi nhận các hành động phá hoại data để trace lại
@@ -340,37 +340,116 @@ const Av = ({ u, size = 32, showDept = false, showTitle = false }: any) => (
   </div>
 )
 
+// ══ CORE PRIMITIVES (refactored v36) ═══════════════
+// Use design tokens (FS, SP, RD). All primitives share consistent visual language.
+
 const Card = ({ children, style, onClick }: any) => (
-  <div onClick={onClick} style={{ background:T.card, border:`1px solid ${T.border}`, borderRadius:12, padding:'18px 22px',
-    boxShadow:'0 1px 4px rgba(0,0,0,0.06)', ...style }}>
+  <div onClick={onClick} style={{
+    background: T.card,
+    border: `1px solid ${T.border}`,
+    borderRadius: RD.lg,
+    padding: `${SP[4]}px ${SP[5]}px`,
+    boxShadow: '0 1px 3px rgba(0,0,0,0.04)',
+    ...(onClick ? { cursor:'pointer', transition:'all .15s' } : {}),
+    ...style
+  }}>
     {children}
   </div>
 )
 
-const GoldBtn = ({ onClick, children, small, outline, danger, disabled }: any) => (
-  <button onClick={onClick} disabled={disabled} style={{
-    background: danger?T.red:outline?'transparent':T.gold,
-    color: (danger||!outline)?'#fff':T.gold,
-    border:`1.5px solid ${danger?T.red:T.gold}`,
-    borderRadius:8, padding:small?'6px 13px':'8px 18px',
-    fontSize:small?12:13, fontWeight:600,
-    cursor:disabled?'not-allowed':'pointer',
-    fontFamily:'inherit', opacity:disabled?0.5:1,
-  }}>{children}</button>
-)
+// ── Badge — compact status indicator ──
+const Badge = ({ children, tone='neutral', size='sm', style }: any) => {
+  const tones: any = {
+    neutral: { bg:T.bg,      color:T.med,      border:T.border },
+    gold:    { bg:T.goldBg,  color:T.goldText, border:T.goldBorder },
+    success: { bg:T.greenBg, color:T.green,    border:'transparent' },
+    warning: { bg:T.amberBg, color:T.amber,    border:'transparent' },
+    danger:  { bg:T.redBg,   color:T.red,      border:'transparent' },
+    info:    { bg:T.blueBg,  color:T.blue,     border:'transparent' },
+  }
+  const t = tones[tone] || tones.neutral
+  const sizing = size === 'xs'
+    ? { padding:'1px 6px', fontSize:FS.xs }
+    : size === 'md'
+    ? { padding:'3px 10px', fontSize:FS.sm }
+    : { padding:'2px 8px', fontSize:FS.xs }
+  return (
+    <span style={{
+      display:'inline-flex', alignItems:'center', gap:4,
+      borderRadius: RD.full,
+      background: t.bg, color: t.color,
+      border: `1px solid ${t.border}`,
+      fontWeight: 600, lineHeight: 1.4,
+      ...sizing, ...style
+    }}>{children}</span>
+  )
+}
+
+// ── Btn — unified button (replaces GoldBtn, supports all variants) ──
+const Btn = ({ onClick, children, variant='primary', size='md', disabled, type, style, icon }: any) => {
+  const variants: any = {
+    primary:   { bg: T.gold,    color:'#fff', border: T.gold,
+                 hoverBg: '#A07828', shadow: '0 2px 6px rgba(196,151,58,0.3)' },
+    secondary: { bg: '#fff',    color: T.goldText, border: T.gold, hoverBg: T.goldBg, shadow:'none' },
+    ghost:     { bg: 'transparent', color: T.med, border: 'transparent', hoverBg: T.bg, shadow:'none' },
+    danger:    { bg: '#fff',    color: T.red, border: T.red, hoverBg: T.redBg, shadow:'none' },
+    dangerSolid:{ bg: T.red,    color: '#fff', border: T.red, hoverBg: '#991B1B', shadow:'0 2px 6px rgba(185,28,28,0.25)' },
+    success:   { bg: T.green,   color: '#fff', border: T.green, hoverBg: '#166534', shadow:'0 2px 6px rgba(21,128,61,0.25)' },
+  }
+  const v = variants[variant] || variants.primary
+  const sizes: any = {
+    sm: { height:32, padding:'0 12px', fontSize:FS.sm },
+    md: { height:38, padding:'0 16px', fontSize:FS.md },
+    lg: { height:44, padding:'0 20px', fontSize:FS.md },
+  }
+  const s = sizes[size] || sizes.md
+  return (
+    <button onClick={onClick} type={type} disabled={disabled}
+      style={{
+        display:'inline-flex', alignItems:'center', justifyContent:'center', gap:6,
+        background: v.bg, color: v.color,
+        border: `1.5px solid ${v.border}`,
+        borderRadius: RD.md,
+        fontWeight: 600, fontFamily: 'inherit',
+        cursor: disabled ? 'not-allowed' : 'pointer',
+        opacity: disabled ? 0.5 : 1,
+        transition: 'all .15s',
+        boxShadow: disabled ? 'none' : v.shadow,
+        whiteSpace: 'nowrap',
+        ...s, ...style
+      }}
+      onMouseEnter={e => !disabled && ((e.currentTarget as any).style.background = v.hoverBg)}
+      onMouseLeave={e => !disabled && ((e.currentTarget as any).style.background = v.bg)}>
+      {icon && <span style={{ display:'flex', alignItems:'center' }}>{icon}</span>}
+      {children}
+    </button>
+  )
+}
+
+// ── GoldBtn — legacy alias, kept for backwards compat ──
+const GoldBtn = ({ onClick, children, small, outline, danger, disabled }: any) => {
+  const variant = danger ? 'dangerSolid' : outline ? 'secondary' : 'primary'
+  const size = small ? 'sm' : 'md'
+  return <Btn onClick={onClick} variant={variant} size={size} disabled={disabled}>{children}</Btn>
+}
 
 const Modal = ({ open, onClose, title, children, wide }: any) => {
   if (!open) return null
   return (
     <div style={{ position:'fixed', inset:0, background:'rgba(0,0,0,0.5)', zIndex:1000,
-      display:'flex', alignItems:'center', justifyContent:'center', padding:16 }}
+      display:'flex', alignItems:'center', justifyContent:'center', padding:SP[4] }}
       onClick={onClose}>
-      <div style={{ background:'#fff', borderRadius:16, padding:'24px 28px',
-        width:'100%', maxWidth:wide?680:480, maxHeight:'88vh', overflowY:'auto' }}
+      <div style={{ background:'#fff', borderRadius:RD.xl, padding:`${SP[5]}px ${SP[6]}px`,
+        width:'100%', maxWidth:wide?680:480, maxHeight:'88vh', overflowY:'auto',
+        boxShadow:'0 20px 60px rgba(0,0,0,0.25)' }}
         onClick={e => e.stopPropagation()}>
-        <div style={{ display:'flex', alignItems:'center', justifyContent:'space-between', marginBottom:18 }}>
-          <h3 style={{ margin:0, color:T.dark, fontSize:16, fontWeight:700 }}>{title}</h3>
-          <button onClick={onClose} style={{ background:'none', border:'none', cursor:'pointer', fontSize:20, color:T.light }}>✕</button>
+        <div style={{ display:'flex', alignItems:'center', justifyContent:'space-between',
+          marginBottom:SP[4] }}>
+          <h3 style={{ margin:0, color:T.dark, fontSize:FS.lg, fontWeight:700, letterSpacing:.2 }}>{title}</h3>
+          <button onClick={onClose} style={{ background:'none', border:'none', cursor:'pointer',
+            color:T.light, display:'flex', padding:4, borderRadius:RD.sm }}>
+            {Ico.x(20)}
+          </button>
         </div>
         {children}
       </div>
@@ -378,36 +457,120 @@ const Modal = ({ open, onClose, title, children, wide }: any) => {
   )
 }
 
-const Inp = ({ label, value, onChange, type='text', placeholder, min, max, disabled }: any) => (
-  <div style={{ marginBottom:13 }}>
-    {label && <div style={{ fontSize:12, fontWeight:500, color:T.med, marginBottom:5 }}>{label}</div>}
-    <input type={type} value={value} min={min} max={max} disabled={disabled}
-      onChange={e => onChange(e.target.value)} placeholder={placeholder}
-      style={{ width:'100%', padding:'8px 11px', border:`1px solid ${T.border}`, borderRadius:8,
-        fontSize:13, fontFamily:'inherit', color:T.dark, background:disabled?T.bg:'#fff',
-        boxSizing:'border-box', outline:'none', opacity:disabled?0.6:1 }}/>
-  </div>
-)
+const Inp = ({ label, value, onChange, type='text', placeholder, min, max, disabled }: any) => {
+  const [focused, setFocused] = useState(false)
+  return (
+    <div style={{ marginBottom:SP[3] }}>
+      {label && <div style={{ fontSize:FS.sm, fontWeight:600, color:T.med,
+        marginBottom:SP[1], letterSpacing:.1 }}>{label}</div>}
+      <input type={type} value={value} min={min} max={max} disabled={disabled}
+        onChange={e => onChange(e.target.value)} placeholder={placeholder}
+        onFocus={() => setFocused(true)} onBlur={() => setFocused(false)}
+        style={{
+          width:'100%', padding:'9px 12px',
+          border:`1.5px solid ${focused ? T.gold : T.border}`,
+          borderRadius: RD.md,
+          fontSize: FS.md, fontFamily:'inherit',
+          color: T.dark, background: disabled ? T.bg : '#fff',
+          boxSizing:'border-box', outline:'none',
+          opacity: disabled ? 0.6 : 1,
+          transition: 'border-color .15s, box-shadow .15s',
+          boxShadow: focused ? `0 0 0 3px rgba(196,151,58,0.1)` : 'none',
+        }}/>
+    </div>
+  )
+}
 
-const Sel = ({ label, value, onChange, options, disabled }: any) => (
-  <div style={{ marginBottom:13 }}>
-    {label && <div style={{ fontSize:12, fontWeight:500, color:T.med, marginBottom:5 }}>{label}</div>}
-    <select value={value} onChange={e => onChange(e.target.value)} disabled={disabled}
-      style={{ width:'100%', padding:'8px 11px', border:`1px solid ${T.border}`, borderRadius:8,
-        fontSize:13, fontFamily:'inherit', color:T.dark, background:T.bg, outline:'none', cursor:'pointer' }}>
-      {options.map((o: any) => <option key={o.value} value={o.value}>{o.label}</option>)}
-    </select>
-  </div>
-)
+const Sel = ({ label, value, onChange, options, disabled }: any) => {
+  const [focused, setFocused] = useState(false)
+  return (
+    <div style={{ marginBottom:SP[3] }}>
+      {label && <div style={{ fontSize:FS.sm, fontWeight:600, color:T.med,
+        marginBottom:SP[1], letterSpacing:.1 }}>{label}</div>}
+      <select value={value} onChange={e => onChange(e.target.value)} disabled={disabled}
+        onFocus={() => setFocused(true)} onBlur={() => setFocused(false)}
+        style={{
+          width:'100%', padding:'9px 12px',
+          border:`1.5px solid ${focused ? T.gold : T.border}`,
+          borderRadius: RD.md,
+          fontSize: FS.md, fontFamily:'inherit',
+          color: T.dark, background:'#fff',
+          outline:'none', cursor: disabled ? 'not-allowed' : 'pointer',
+          opacity: disabled ? 0.6 : 1,
+          transition: 'border-color .15s, box-shadow .15s',
+          boxShadow: focused ? `0 0 0 3px rgba(196,151,58,0.1)` : 'none',
+        }}>
+        {options.map((o: any) => <option key={o.value} value={o.value}>{o.label}</option>)}
+      </select>
+    </div>
+  )
+}
 
 const TH = ({ cols }: any) => (
   <thead><tr style={{ background:T.bg }}>
     {cols.map((h: string, i: number) => (
-      <th key={i} style={{ padding:'10px 13px', textAlign:'left', fontSize:10, fontWeight:600,
-        color:T.light, textTransform:'uppercase', letterSpacing:.5,
+      <th key={i} style={{ padding:`${SP[3]}px ${SP[4]}px`, textAlign:'left',
+        fontSize:FS.xs, fontWeight:700,
+        color:T.light, textTransform:'uppercase', letterSpacing:.8,
         borderBottom:`1px solid ${T.border}` }}>{h}</th>
     ))}
   </tr></thead>
+)
+
+// ── Tabs — horizontal tab navigation ──
+// Usage: <Tabs value={tab} onChange={setTab} items={[{id, label, badge?, icon?}, ...]} />
+const Tabs = ({ value, onChange, items, style }: any) => (
+  <div style={{ display:'flex', gap:SP[1], flexWrap:'wrap', ...style }}>
+    {items.map((item: any) => {
+      const active = value === item.id
+      return (
+        <button key={item.id} onClick={() => onChange(item.id)}
+          style={{
+            display:'inline-flex', alignItems:'center', gap:6,
+            padding:'7px 14px',
+            border: `1.5px solid ${active ? T.gold : T.border}`,
+            background: active ? T.goldBg : '#fff',
+            color: active ? T.goldText : T.med,
+            borderRadius: RD.full,
+            fontFamily:'inherit', fontSize:FS.sm,
+            fontWeight: active ? 700 : 500,
+            cursor:'pointer',
+            transition:'all .12s',
+            letterSpacing:.1,
+          }}>
+          {item.icon && (
+            <span style={{ display:'flex', alignItems:'center' }}>
+              {typeof item.icon === 'function' ? item.icon(14) : item.icon}
+            </span>
+          )}
+          <span>{item.label}</span>
+          {typeof item.badge === 'number' && item.badge > 0 && (
+            <span style={{
+              background: active ? T.gold : T.border,
+              color: active ? '#fff' : T.med,
+              fontSize: FS.xs, fontWeight: 700,
+              padding: '1px 7px', borderRadius: RD.full, lineHeight: 1.3,
+            }}>{item.badge}</span>
+          )}
+        </button>
+      )
+    })}
+  </div>
+)
+
+// ── EmptyState — consistent empty-content placeholder ──
+const EmptyState = ({ icon, title, description, action }: any) => (
+  <div style={{ textAlign:'center', padding:`${SP[8]}px ${SP[5]}px`,
+    color:T.light }}>
+    {icon && (
+      <div style={{ display:'inline-flex', marginBottom:SP[3], color:T.light, opacity:0.6 }}>
+        {typeof icon === 'function' ? icon(48) : icon}
+      </div>
+    )}
+    {title && <div style={{ fontSize:FS.md, color:T.med, marginBottom: description?SP[1]:0, fontWeight:600 }}>{title}</div>}
+    {description && <div style={{ fontSize:FS.sm, color:T.light, marginBottom:action?SP[3]:0 }}>{description}</div>}
+    {action}
+  </div>
 )
 
 const Topbar = ({ title, subtitle, action, mobile }: any) => (
