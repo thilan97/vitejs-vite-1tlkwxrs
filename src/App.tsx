@@ -12,7 +12,7 @@ const db = createClient(SUPABASE_URL, SUPABASE_KEY)
 // APP_VERSION — dùng để invalidate cache localStorage mỗi khi deploy version mới
 // (ngăn bug quyền user bị "reset" do cache position cũ sau deploy)
 // ⚠️ MỖI LẦN DEPLOY FEATURE MỚI CÓ PERMISSION MỚI, BUMP SỐ NÀY:
-const APP_VERSION = '2026.04.17.v32'
+const APP_VERSION = '2026.04.17.v33'
 
 // ════════════════════════════════════════════════════════════════
 // AUDIT LOG — ghi nhận các hành động phá hoại data để trace lại
@@ -13764,6 +13764,8 @@ function PickingModule({ user, allUsers, mobile, products }: any) {
       picking_started_at: ord.picking_started_at || new Date().toISOString(),
       updated_at: new Date().toISOString(),
     }
+    // Ghi nhận NV đầu tiên tác động vào đơn là người nhặt
+    if (!ord.assigned_to) upd.assigned_to = user.id
     await db.from('packing_workflow').update(upd).eq('order_code', orderCode)
     setOrders(prev => prev.map((o: any) => o.order_code === orderCode ? {...o, ...upd} : o))
   }
@@ -13785,6 +13787,8 @@ function PickingModule({ user, allUsers, mobile, products }: any) {
       picking_started_at: ord.picking_started_at || now,
       updated_at: now,
     }
+    // Ghi nhận NV đầu tiên tác động vào đơn là người nhặt
+    if (!ord.assigned_to) upd.assigned_to = user.id
     await db.from('packing_workflow').update(upd).eq('order_code', orderCode)
     setOrders(prev => prev.map((o: any) => o.order_code === orderCode ? {...o, ...upd} : o))
   }
@@ -13819,11 +13823,13 @@ function PickingModule({ user, allUsers, mobile, products }: any) {
     if (!allPicked) {
       if (!confirm('Còn SP chưa nhặt đủ. Xác nhận hoàn tất nhặt?')) return
     }
-    const upd = {
+    const upd: any = {
       status: 'packing',
       picked_at: new Date().toISOString(),
       updated_at: new Date().toISOString(),
     }
+    // Đảm bảo có người nhặt được ghi nhận
+    if (!ord.assigned_to) upd.assigned_to = user.id
     const { error } = await db.from('packing_workflow').update(upd).eq('order_code', orderCode)
     if (error) { alert('❌ Lỗi: ' + error.message); return }
     setOrders(prev => prev.map((o: any) => o.order_code === orderCode ? {...o, ...upd} : o))
@@ -14901,10 +14907,15 @@ function PackingModule({ user, allUsers, mobile, products }: any) {
                     {/* Tab 'Chờ đóng': tên NV nhặt + thời điểm chuyển sang đóng + active packers nếu có */}
                     {tab === 'pending' && (
                       <>
-                        {pickerName && (
+                        {pickerName ? (
                           <div style={{ fontSize:10, color:T.med, marginTop:3 }}>
                             📥 Nhặt bởi: <b style={{ color:T.dark }}>{pickerName}</b>
                             {pickedAtTxt && <span style={{ color:T.light }}> • {pickedAtTxt}</span>}
+                          </div>
+                        ) : pickedAtTxt && (
+                          <div style={{ fontSize:10, color:T.med, marginTop:3 }}>
+                            📥 Nhặt xong lúc <b style={{ color:T.dark }}>{pickedAtTxt}</b>
+                            <span style={{ color:T.light, fontStyle:'italic' }}> (không rõ NV)</span>
                           </div>
                         )}
                         {activePackerIds.length > 0 && (
