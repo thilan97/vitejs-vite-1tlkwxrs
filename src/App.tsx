@@ -12,7 +12,7 @@ const db = createClient(SUPABASE_URL, SUPABASE_KEY)
 // APP_VERSION — dùng để invalidate cache localStorage mỗi khi deploy version mới
 // (ngăn bug quyền user bị "reset" do cache position cũ sau deploy)
 // ⚠️ MỖI LẦN DEPLOY FEATURE MỚI CÓ PERMISSION MỚI, BUMP SỐ NÀY:
-const APP_VERSION = '2026.04.17.v19'
+const APP_VERSION = '2026.04.17.v20'
 
 // ════════════════════════════════════════════════════════════════
 // AUDIT LOG — ghi nhận các hành động phá hoại data để trace lại
@@ -6131,7 +6131,7 @@ function useNotifications({ user, wrongOrders, returnSlips, shortageItems, batch
   return { groups, totalUnread, totalItems }
 }
 
-function NotificationPage({ user, mobile, groups, totalUnread, totalItems, reads, setReads, setPage }: any) {
+function NotificationPage({ user, mobile, groups, totalUnread, totalItems, reads, setReads, setPage, overdueMeta, overdueLoading, overdueRefresh }: any) {
   const [collapsed, setCollapsed] = useState<Set<string>>(new Set())
   const [overdueDetail, setOverdueDetail] = useState<any>(null)
   const p = mobile ? '16px' : '24px'
@@ -6212,6 +6212,36 @@ function NotificationPage({ user, mobile, groups, totalUnread, totalItems, reads
             ✓ Đánh dấu tất cả đã đọc
           </button>
         )}/>
+
+      {/* Overdue cache info + refresh button */}
+      {overdueMeta && overdueRefresh && (
+        <div style={{ marginBottom:10, padding:'8px 12px', background:T.bg, borderRadius:6,
+          border:`1px solid ${T.border}`, display:'flex', justifyContent:'space-between',
+          alignItems:'center', gap:10, flexWrap:'wrap', fontSize:10 }}>
+          <div style={{ color:T.med, lineHeight:1.5 }}>
+            🕐 Đơn quá hạn —
+            {overdueMeta.fromCache ? (
+              <span> dùng cache {overdueMeta.cacheAgeSec > 60
+                ? `${Math.floor(overdueMeta.cacheAgeSec/60)} phút`
+                : `${overdueMeta.cacheAgeSec}s`} trước</span>
+            ) : (
+              <span> vừa quét xong ({overdueMeta.durationMs ? `${(overdueMeta.durationMs/1000).toFixed(1)}s` : '?'})</span>
+            )}
+            {overdueMeta.scanned !== undefined && (
+              <span> • scan {overdueMeta.scanned} đơn → {overdueMeta.total} quá hạn</span>
+            )}
+          </div>
+          <button onClick={overdueRefresh} disabled={overdueLoading}
+            style={{ padding:'4px 10px', borderRadius:12, border:`1px solid ${T.gold}`,
+              background: overdueLoading ? T.bg : T.goldBg,
+              color: T.goldText,
+              cursor: overdueLoading?'wait':'pointer',
+              fontFamily:'inherit', fontSize:10, fontWeight:600,
+              whiteSpace:'nowrap' }}>
+            {overdueLoading ? '⏳ Đang quét...' : '🔄 Quét lại'}
+          </button>
+        </div>
+      )}
 
       {groups.length === 0 ? (
         <div style={{ padding:'60px 20px', textAlign:'center', color:T.light }}>
@@ -6830,6 +6860,45 @@ export default function App() {
   const [taskNotiDismissed, setTaskNotiDismissed] = useState(false)
   const [priorityAckOpen, setPriorityAckOpen] = useState(false)
   const [overdueOrders, setOverdueOrders] = useState<any[]>([])
+  const [overdueMeta, setOverdueMeta] = useState<any>(null)  // { scannedAt, fromCache, cacheAgeSec, total, scanned }
+  const [overdueLoading, setOverdueLoading] = useState(false)
+
+  const fetchOverdueOrders = async (threshold = 7, forceRefresh = false) => {
+    setOverdueLoading(true)
+    try {
+      const qs = new URLSearchParams({ threshold: String(threshold) })
+      if (forceRefresh) qs.set('refresh', '1')
+      const res = await fetch(
+        `https://uzloxzrqtzuucxlokqfm.supabase.co/functions/v1/kiotviet-orders?${qs.toString()}`,
+        { headers: { 'Authorization': `Bearer ${SUPABASE_ANON}` } }
+      )
+      if (!res.ok) {
+        console.error('[Overdue] HTTP', res.status, await res.text())
+        return
+      }
+      const json = await res.json()
+      ;(window as any).__overdueDebug = { ...json, fetchedAt: new Date().toISOString() }
+      if (json.error) { console.error('[Overdue]', json.error); return }
+      if (Array.isArray(json.data)) {
+        setOverdueOrders(json.data)
+        setOverdueMeta({
+          scannedAt: json.scannedAt,
+          fromCache: json.fromCache,
+          cacheAgeSec: json.cacheAgeSec,
+          total: json.total,
+          scanned: json.scanned,
+          durationMs: json.durationMs,
+          hint: json.hint,
+          breakdown: json.breakdown,
+        })
+        console.log(`[Overdue] ${json.fromCache ? 'Cache' : 'Fresh'} ${json.data.length} đơn quá hạn, scanned ${json.scanned}`)
+      }
+    } catch(e: any) {
+      console.error('[Overdue] Exception:', e?.message || e)
+    } finally {
+      setOverdueLoading(false)
+    }
+  }
   const [notificationReads, setNotificationReads] = useState<Set<string>>(new Set())
   const [priceConfigs, setPriceConfigs]   = useState<any[]>([])
   const [priceTiers, setPriceTiers]       = useState<any[]>([])
@@ -7025,37 +7094,7 @@ export default function App() {
           if (data) setNotificationReads(new Set(data.map((r: any) => r.noti_key)))
         })
       // Fetch đơn hàng quá hạn từ KiotViet (qua Edge Function)
-      ;(async () => {
-        try {
-          const threshold = stData?.overdue_days_threshold ?? 7
-          console.log('[Overdue] Fetching with threshold:', threshold)
-          const res = await fetch(
-            `https://uzloxzrqtzuucxlokqfm.supabase.co/functions/v1/kiotviet-orders?threshold=${threshold}`,
-            { headers: { 'Authorization': `Bearer ${SUPABASE_ANON}` } }
-          )
-          console.log('[Overdue] HTTP status:', res.status, res.statusText)
-          if (!res.ok) {
-            const errText = await res.text()
-            console.error('[Overdue] Fetch failed. Response:', errText)
-            ;(window as any).__overdueDebug = { error: errText, status: res.status, time: new Date().toISOString() }
-            return
-          }
-          const json = await res.json()
-          console.log('[Overdue] Response:', { total: json.total, scanned: json.scanned, breakdown: json.breakdown, error: json.error })
-          ;(window as any).__overdueDebug = { ...json, time: new Date().toISOString() }
-          if (json.error) {
-            console.error('[Overdue] Edge Function error:', json.error)
-            return
-          }
-          if (Array.isArray(json.data)) {
-            console.log(`[Overdue] Loaded ${json.data.length} overdue orders`)
-            setOverdueOrders(json.data)
-          }
-        } catch(e: any) {
-          console.error('[Overdue] Fetch exception:', e?.message || e)
-          ;(window as any).__overdueDebug = { exception: e?.message, time: new Date().toISOString() }
-        }
-      })()
+      fetchOverdueOrders(stData?.overdue_days_threshold ?? 7, false)
       // Fetch return slips for notifications (last 30 days)
       const thirtyAgo = new Date(Date.now()-30*86400000).toISOString().split('T')[0]
       db.from('return_items').select('id,slip_id,sale_id,created_at,created_by,date')
@@ -7190,7 +7229,7 @@ export default function App() {
           {validPage==='expiry'     && <ExpiryModule {...pp} products={products} batches={batches} setBatches={setBatches}/>}
           {validPage==='payment'    && <PaymentModule {...pp}/>}
           {validPage==='pricelist'  && <PriceModule {...pp} products={products} priceConfigs={priceConfigs} setPriceConfigs={setPriceConfigs} priceTiers={priceTiers} setPriceTiers={setPriceTiers} priceHistory={priceHistory} setPriceHistory={setPriceHistory} brandPrograms={brandPrograms} setBrandPrograms={setBrandPrograms}/>}
-          {validPage==='notifications' && <NotificationPage {...pp} groups={notifGroups} totalUnread={notifUnread} totalItems={notifTotal} reads={notificationReads} setReads={setNotificationReads} setPage={setPage}/>}
+          {validPage==='notifications' && <NotificationPage {...pp} groups={notifGroups} totalUnread={notifUnread} totalItems={notifTotal} reads={notificationReads} setReads={setNotificationReads} setPage={setPage} overdueMeta={overdueMeta} overdueLoading={overdueLoading} overdueRefresh={() => fetchOverdueOrders(settings?.overdue_days_threshold ?? 7, true)}/>}
           {validPage==='picking'    && <PickingModule {...pp} products={products}/>}
           {validPage==='packing'    && <PackingModule {...pp} products={products}/>}
           {validPage==='schedule'   && <WarehouseScheduleModule {...pp} leaveRequests={leaveRequests} attendance={attendance}/>}
