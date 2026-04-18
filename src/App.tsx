@@ -12,7 +12,7 @@ const db = createClient(SUPABASE_URL, SUPABASE_KEY)
 // APP_VERSION — dùng để invalidate cache localStorage mỗi khi deploy version mới
 // (ngăn bug quyền user bị "reset" do cache position cũ sau deploy)
 // ⚠️ MỖI LẦN DEPLOY FEATURE MỚI CÓ PERMISSION MỚI, BUMP SỐ NÀY:
-const APP_VERSION = '2026.04.17.v18'
+const APP_VERSION = '2026.04.17.v19'
 
 // ════════════════════════════════════════════════════════════════
 // AUDIT LOG — ghi nhận các hành động phá hoại data để trace lại
@@ -6105,7 +6105,7 @@ function useNotifications({ user, wrongOrders, returnSlips, shortageItems, batch
         title: `${o.code} — ${o.customerName||'KH lẻ'}`,
         meta: `Sale: ${o.soldByName||'?'} • ${o.daysOld}N trước`,
         timestamp: o.purchaseDate, urgency: o.daysOld>14?'high':'med',
-        targetPage: 'dashboard',
+        overdueOrder: o,  // payload để mở modal chi tiết
       }))
     } else if (isSale) {
       items = all.filter((o: any) => norm2(o.soldByName||'') === norm2(user.name||'')).map((o: any) => ({
@@ -6113,7 +6113,7 @@ function useNotifications({ user, wrongOrders, returnSlips, shortageItems, batch
         title: `${o.code} — ${o.customerName||'KH lẻ'}`,
         meta: `${o.daysOld}N trước • Kiểm tra và xử lý`,
         timestamp: o.purchaseDate, urgency: o.daysOld>14?'high':'med',
-        targetPage: 'dashboard',
+        overdueOrder: o,  // payload để mở modal chi tiết
       }))
     }
     if (items.length>0) groups.push({ id:'overdue', title:`🕐 Đơn KiotViet quá ${threshold} ngày`, items })
@@ -6133,6 +6133,7 @@ function useNotifications({ user, wrongOrders, returnSlips, shortageItems, batch
 
 function NotificationPage({ user, mobile, groups, totalUnread, totalItems, reads, setReads, setPage }: any) {
   const [collapsed, setCollapsed] = useState<Set<string>>(new Set())
+  const [overdueDetail, setOverdueDetail] = useState<any>(null)
   const p = mobile ? '16px' : '24px'
 
   const toggle = (gid: string) => {
@@ -6180,6 +6181,11 @@ function NotificationPage({ user, mobile, groups, totalUnread, totalItems, reads
 
   const handleItemClick = (item: any) => {
     markRead(item.key)
+    // Nếu là item đơn KV quá hạn → mở modal chi tiết
+    if (item.overdueOrder) {
+      setOverdueDetail(item.overdueOrder)
+      return
+    }
     if (item.targetPage) setPage(item.targetPage)
   }
 
@@ -6282,6 +6288,152 @@ function NotificationPage({ user, mobile, groups, totalUnread, totalItems, reads
           })}
         </div>
       )}
+
+      {overdueDetail && (
+        <OverdueOrderDetailModal order={overdueDetail} onClose={() => setOverdueDetail(null)}/>
+      )}
+    </div>
+  )
+}
+
+// ── Modal hiển thị chi tiết đơn KV quá hạn ──
+function OverdueOrderDetailModal({ order, onClose }: any) {
+  const fmtMoney = (n: number) => Number(n||0).toLocaleString('vi-VN')
+  const items = order.items || []
+  const totalItems = items.length
+  const totalQty = items.reduce((s: number, it: any) => s + (it.qty||0), 0)
+  const statusColor = order.status === 1 ? T.amber : T.blue
+  const statusLabel = order.status === 1 ? 'Phiếu tạm' : order.status === 5 ? 'Đã xác nhận — Kho chưa xử lý' : String(order.status)
+
+  return (
+    <div style={{ position:'fixed', inset:0, background:'rgba(0,0,0,0.55)', zIndex:9999,
+      display:'flex', alignItems:'center', justifyContent:'center', padding:20 }}
+      onClick={onClose}>
+      <div onClick={e => e.stopPropagation()}
+        style={{ background:'#fff', borderRadius:12, maxWidth:640, width:'100%',
+          maxHeight:'90vh', overflow:'auto', boxShadow:'0 8px 24px rgba(0,0,0,0.2)' }}>
+
+        {/* Header */}
+        <div style={{ padding:'16px 20px', borderBottom:`1px solid ${T.border}`,
+          position:'sticky', top:0, background:'#fff', zIndex:1 }}>
+          <div style={{ display:'flex', justifyContent:'space-between', alignItems:'flex-start', gap:10 }}>
+            <div style={{ flex:1 }}>
+              <div style={{ display:'flex', alignItems:'center', gap:10, flexWrap:'wrap' }}>
+                <div style={{ fontSize:16, fontWeight:800, color:T.dark }}>
+                  🕐 {order.code}
+                </div>
+                <div style={{ padding:'3px 10px', borderRadius:12,
+                  background: statusColor + '22', color: statusColor,
+                  fontSize:10, fontWeight:700 }}>
+                  {statusLabel}
+                </div>
+                <div style={{ padding:'3px 10px', borderRadius:12,
+                  background: order.daysOld > 14 ? T.redBg : T.amberBg,
+                  color: order.daysOld > 14 ? T.red : T.amber,
+                  fontSize:10, fontWeight:700 }}>
+                  Đã {order.daysOld} ngày
+                </div>
+              </div>
+              <div style={{ fontSize:13, color:T.dark, marginTop:6, fontWeight:600 }}>
+                {order.customerName}
+                {order.customerPhone && <span style={{ color:T.med, fontWeight:400 }}> • {order.customerPhone}</span>}
+              </div>
+              <div style={{ fontSize:11, color:T.med, marginTop:4 }}>
+                Sale: <b style={{ color:T.dark }}>{order.soldByName || '—'}</b>
+                {' • '}Ngày tạo: <b style={{ color:T.dark }}>{new Date(order.purchaseDate).toLocaleString('vi-VN')}</b>
+              </div>
+            </div>
+            <button onClick={onClose}
+              style={{ padding:'6px 10px', borderRadius:6, border:`1px solid ${T.border}`,
+                background:'#fff', color:T.med, cursor:'pointer', fontFamily:'inherit',
+                fontSize:12, flexShrink:0 }}>
+              ✕ Đóng
+            </button>
+          </div>
+        </div>
+
+        <div style={{ padding:20 }}>
+          {/* Ghi chú */}
+          {order.description ? (
+            <div style={{ marginBottom:14, padding:'10px 14px', background:T.goldBg,
+              border:`1px solid ${T.goldBorder}`, borderRadius:8 }}>
+              <div style={{ fontSize:10, color:T.goldText, fontWeight:700, marginBottom:4 }}>
+                📝 GHI CHÚ ĐƠN
+              </div>
+              <div style={{ fontSize:12, color:T.dark, lineHeight:1.5, whiteSpace:'pre-wrap' }}>
+                {order.description}
+              </div>
+            </div>
+          ) : (
+            <div style={{ marginBottom:14, padding:'8px 14px', background:T.bg,
+              borderRadius:8, fontSize:11, color:T.light, fontStyle:'italic' }}>
+              (Đơn chưa có ghi chú)
+            </div>
+          )}
+
+          {/* Items */}
+          <div style={{ marginBottom:14 }}>
+            <div style={{ fontSize:11, fontWeight:700, color:T.med, marginBottom:8,
+              display:'flex', justifyContent:'space-between' }}>
+              <span>📋 SẢN PHẨM ({totalItems} dòng • {totalQty} SP)</span>
+              <span style={{ color:T.goldText }}>Tổng: {fmtMoney(order.totalAmount)}</span>
+            </div>
+            {totalItems === 0 ? (
+              <div style={{ padding:20, textAlign:'center', color:T.light, fontSize:11,
+                background:T.bg, borderRadius:8 }}>
+                Không có dữ liệu SP
+              </div>
+            ) : (
+              <div style={{ display:'flex', flexDirection:'column', gap:6 }}>
+                {items.map((it: any, i: number) => (
+                  <div key={i} style={{ padding:10, borderRadius:8, background:'#fff',
+                    border:`1px solid ${T.border}` }}>
+                    <div style={{ display:'flex', justifyContent:'space-between',
+                      alignItems:'flex-start', gap:10, marginBottom:4 }}>
+                      <div style={{ flex:1, minWidth:0 }}>
+                        <div style={{ fontSize:12, fontWeight:700, color:T.dark, lineHeight:1.35 }}>
+                          {it.name}
+                        </div>
+                        <div style={{ fontSize:9, color:T.light, marginTop:2, display:'flex',
+                          gap:8, flexWrap:'wrap' }}>
+                          <span>{it.code}</span>
+                          {it.unit && <span>• {it.unit}</span>}
+                          <span>• Đơn giá: {fmtMoney(it.price)}</span>
+                          {it.discount > 0 && <span style={{ color:T.red }}>• CK: -{fmtMoney(it.discount)}</span>}
+                        </div>
+                      </div>
+                      <div style={{ textAlign:'right', flexShrink:0 }}>
+                        <div style={{ fontSize:18, fontWeight:800, color:T.dark, lineHeight:1 }}>
+                          ×{it.qty}
+                        </div>
+                        <div style={{ fontSize:10, color:T.goldText, fontWeight:600, marginTop:3 }}>
+                          {fmtMoney(it.subTotal)}
+                        </div>
+                      </div>
+                    </div>
+                    {it.note && (
+                      <div style={{ fontSize:10, color:T.amber, marginTop:4,
+                        padding:'3px 8px', background:T.amberBg, borderRadius:4 }}>
+                        💬 {it.note}
+                      </div>
+                    )}
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+
+          {/* Info */}
+          <div style={{ padding:10, background:T.bg, borderRadius:6, fontSize:10,
+            color:T.med, lineHeight:1.5 }}>
+            💡 <b>Hành động gợi ý:</b>
+            <br/>• {order.status === 1
+                ? 'Đơn đang ở Phiếu tạm — Sale cần chốt hoặc huỷ để không chiếm công nợ'
+                : 'Đơn đã xác nhận nhưng Kho chưa bắt đầu xử lý — cần nhắc Kho'}
+            <br/>• Kiểm tra trực tiếp đơn trên KiotViet để xem lịch sử + comment
+          </div>
+        </div>
+      </div>
     </div>
   )
 }
