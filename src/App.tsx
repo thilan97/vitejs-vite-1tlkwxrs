@@ -12,7 +12,7 @@ const db = createClient(SUPABASE_URL, SUPABASE_KEY)
 // APP_VERSION — dùng để invalidate cache localStorage mỗi khi deploy version mới
 // (ngăn bug quyền user bị "reset" do cache position cũ sau deploy)
 // ⚠️ MỖI LẦN DEPLOY FEATURE MỚI CÓ PERMISSION MỚI, BUMP SỐ NÀY:
-const APP_VERSION = '2026.04.17.v26'
+const APP_VERSION = '2026.04.17.v27'
 
 // ════════════════════════════════════════════════════════════════
 // AUDIT LOG — ghi nhận các hành động phá hoại data để trace lại
@@ -13761,6 +13761,27 @@ function PickingModule({ user, allUsers, mobile, products }: any) {
     setOrders(prev => prev.map((o: any) => o.order_code === orderCode ? {...o, ...upd} : o))
   }
 
+  // Nhặt đủ toàn bộ: set picked_qty = qty cho TẤT CẢ items, bỏ short
+  const markAllPicked = async (orderCode: string) => {
+    const ord = orders.find((o: any) => o.order_code === orderCode)
+    if (!ord) return
+    const now = new Date().toISOString()
+    const newItems = (ord.items || []).map((it: any) => ({
+      ...it,
+      picked_qty: it.qty,
+      short_qty: 0,
+      short_note: '',
+      picked_at: now,
+    }))
+    const upd: any = {
+      items: newItems,
+      picking_started_at: ord.picking_started_at || now,
+      updated_at: now,
+    }
+    await db.from('packing_workflow').update(upd).eq('order_code', orderCode)
+    setOrders(prev => prev.map((o: any) => o.order_code === orderCode ? {...o, ...upd} : o))
+  }
+
   const reportShort = async (orderCode: string, itemCode: string, shortQty: number, note: string) => {
     const ord = orders.find((o: any) => o.order_code === orderCode)
     if (!ord) return
@@ -13973,6 +13994,7 @@ function PickingModule({ user, allUsers, mobile, products }: any) {
             onClose={() => setSelectedCode(null)}
             onUpdateQty={(code: string, qty: number) => updatePickedQty(selected.order_code, code, qty)}
             onReportShort={(code: string, qty: number, note: string) => reportShort(selected.order_code, code, qty, note)}
+            onMarkAllPicked={() => markAllPicked(selected.order_code)}
             onFinish={() => finishPicking(selected.order_code)}
             canPick={canPick && selected.status === 'picking'}
           />
@@ -14151,7 +14173,7 @@ function CutoffDateModal({ user, currentDate, orderCount, onSave, onCleanupOld, 
 }
 
 // ── Picking Detail Panel (cột phải) ──
-function PickingDetailPanel({ ord, mobile, productMap, totalOrderedByCode, onClose, onUpdateQty, onReportShort, onFinish, canPick }: any) {
+function PickingDetailPanel({ ord, mobile, productMap, totalOrderedByCode, onClose, onUpdateQty, onReportShort, onMarkAllPicked, onFinish, canPick }: any) {
   const [searchSP, setSearchSP] = useState('')
   const [showShortModal, setShowShortModal] = useState<any>(null)
   const [showImgModal, setShowImgModal] = useState<string|null>(null)
@@ -14342,19 +14364,34 @@ function PickingDetailPanel({ ord, mobile, productMap, totalOrderedByCode, onClo
 
       {/* Footer */}
       {canPick && (
-        <div style={{ display:'flex', gap:8, paddingTop:10, borderTop:`1px solid ${T.border}` }}>
-          <button onClick={onClose}
-            style={{ flex:1, padding:'10px', borderRadius:6, border:`1px solid ${T.border}`,
-              background:'#fff', color:T.med, cursor:'pointer', fontFamily:'inherit', fontSize:13 }}>
-            ⏸ Tạm
-          </button>
-          <button onClick={onFinish}
-            style={{ flex:2, padding:'10px', borderRadius:6, border:'none',
-              background:`linear-gradient(135deg, ${T.green} 0%, #107035 100%)`, color:'#fff',
-              cursor:'pointer', fontFamily:'inherit', fontSize:13, fontWeight:700 }}>
-            ✓ Hoàn tất nhặt
-          </button>
-        </div>
+        <>
+          {/* Nút nhặt đủ toàn bộ */}
+          <div style={{ marginBottom:10 }}>
+            <button onClick={() => {
+              if (confirm(`Bạn xác nhận đã nhặt đủ đơn ${ord.order_code}?\n\nThao tác này sẽ đánh dấu TẤT CẢ sản phẩm là đã nhặt đủ số lượng yêu cầu.`)) {
+                onMarkAllPicked()
+              }
+            }}
+              style={{ width:'100%', padding:'10px', borderRadius:8, border:`2px dashed ${T.green}`,
+                background:T.greenBg, color:T.green, cursor:'pointer', fontFamily:'inherit',
+                fontSize:12, fontWeight:700 }}>
+              ✅ Nhặt đủ toàn bộ
+            </button>
+          </div>
+          <div style={{ display:'flex', gap:8, paddingTop:10, borderTop:`1px solid ${T.border}` }}>
+            <button onClick={onClose}
+              style={{ flex:1, padding:'10px', borderRadius:6, border:`1px solid ${T.border}`,
+                background:'#fff', color:T.med, cursor:'pointer', fontFamily:'inherit', fontSize:13 }}>
+              ⏸ Tạm
+            </button>
+            <button onClick={onFinish}
+              style={{ flex:2, padding:'10px', borderRadius:6, border:'none',
+                background:`linear-gradient(135deg, ${T.green} 0%, #107035 100%)`, color:'#fff',
+                cursor:'pointer', fontFamily:'inherit', fontSize:13, fontWeight:700 }}>
+              ✓ Hoàn tất nhặt
+            </button>
+          </div>
+        </>
       )}
 
       {showShortModal && (
@@ -15216,15 +15253,44 @@ function PackingDetailPanel({ ord, mobile, user, allUsers, products, onClose, on
           {/* Ảnh hàng đã nhặt (readonly info — đã chụp ở Phase 1) */}
           <div style={{ padding:'10px 12px', marginBottom:14, background:T.greenBg,
             border:`1px solid ${T.green}`, borderRadius:8 }}>
-            <div style={{ fontSize:12, fontWeight:700, color:T.green, marginBottom:2 }}>
+            <div style={{ fontSize:12, fontWeight:700, color:T.green, marginBottom:8 }}>
               ✓ Đã chụp {pickedCount} ảnh hàng đã nhặt
             </div>
+            {/* Thumbnails */}
+            {pickedCount > 0 && (
+              <div style={{ display:'grid', gridTemplateColumns:'repeat(auto-fill, minmax(80px, 1fr))',
+                gap:6, marginBottom:8 }}>
+                {(ord.photos_picked || []).map((ph: any, i: number) => {
+                  const url = typeof ph === 'string' ? ph : (ph?.url || '')
+                  const at  = typeof ph === 'string' ? '' : (ph?.at || '')
+                  if (!url) return null
+                  return (
+                    <div key={i} style={{ position:'relative', borderRadius:6, overflow:'hidden',
+                      border:`1px solid ${T.border}`, cursor:'pointer', background:'#fff' }}
+                      onClick={() => setShowImgModal(url)}>
+                      <div style={{ aspectRatio:'1/1', overflow:'hidden' }}>
+                        <img src={url} alt={`Ảnh nhặt ${i+1}`}
+                          style={{ width:'100%', height:'100%', objectFit:'cover', display:'block' }}/>
+                      </div>
+                      {at && (
+                        <div style={{ fontSize:8, color:T.light, padding:'2px 4px', background:T.bg,
+                          textAlign:'center', lineHeight:1.2 }}>
+                          {new Date(at).toLocaleTimeString('vi-VN', {hour:'2-digit', minute:'2-digit'})}
+                          {' '}
+                          {new Date(at).toLocaleDateString('vi-VN', {day:'2-digit', month:'2-digit'})}
+                        </div>
+                      )}
+                    </div>
+                  )
+                })}
+              </div>
+            )}
             {!readOnly && (
               <button onClick={() => { setPhase('gate'); setHasPassedGate(false) }}
-                style={{ marginTop:6, padding:'3px 10px', borderRadius:12, border:`1px solid ${T.green}`,
+                style={{ padding:'3px 10px', borderRadius:12, border:`1px solid ${T.green}`,
                   background:'#fff', color:T.green, cursor:'pointer', fontFamily:'inherit',
                   fontSize:10, fontWeight:600 }}>
-                📷 Chụp thêm / xem lại
+                📷 Chụp thêm ảnh hàng đã nhặt
               </button>
             )}
           </div>
@@ -18068,6 +18134,15 @@ function SaleOrderTrackingModule({ user, allUsers, mobile }: any) {
                       </div>
                     )}
 
+                    {/* Ảnh đơn hàng — cho Sale xem */}
+                    {((o.photos_picked || []).length > 0 || (o.photos_packed || []).length > 0) && (
+                      <TrackingOrderPhotos
+                        photosPicked={o.photos_picked || []}
+                        photosPacked={o.photos_packed || []}
+                        orderCode={o.order_code}
+                      />
+                    )}
+
                     {/* Note */}
                     {o.description_kv && (
                       <div style={{ padding:'8px 10px', background:T.goldBg, borderRadius:6,
@@ -18080,6 +18155,75 @@ function SaleOrderTrackingModule({ user, allUsers, mobile }: any) {
               </Card>
             )
           })}
+        </div>
+      )}
+    </div>
+  )
+}
+
+// ── Component hiển thị ảnh cho Sale trong trang Theo dõi đơn ──
+function TrackingOrderPhotos({ photosPicked, photosPacked, orderCode }: any) {
+  const [showModal, setShowModal] = useState<string|null>(null)
+  const [activeTab, setActiveTab] = useState<'picked'|'packed'>('picked')
+
+  const getUrl = (p: any): string => typeof p === 'string' ? p : (p?.url || '')
+  const photos = activeTab === 'picked' ? photosPicked : photosPacked
+
+  const hasPicked = photosPicked.length > 0
+  const hasPacked = photosPacked.length > 0
+
+  return (
+    <div style={{ marginBottom:10, padding:'10px 12px', background:'#fff', borderRadius:6,
+      border:`1px solid ${T.border}` }}>
+      <div style={{ fontSize:11, fontWeight:700, color:T.med, marginBottom:8 }}>
+        📸 ẢNH ĐƠN HÀNG
+      </div>
+      <div style={{ display:'flex', gap:6, marginBottom:10 }}>
+        {hasPicked && (
+          <button onClick={() => setActiveTab('picked')}
+            style={{ padding:'5px 12px', borderRadius:16, cursor:'pointer',
+              fontFamily:'inherit', fontSize:11, fontWeight:600,
+              border:`1.5px solid ${activeTab==='picked'?T.green:T.border}`,
+              background: activeTab==='picked'?T.greenBg:'#fff',
+              color: activeTab==='picked'?T.green:T.med }}>
+            📦 Hàng đã nhặt ({photosPicked.length})
+          </button>
+        )}
+        {hasPacked && (
+          <button onClick={() => setActiveTab('packed')}
+            style={{ padding:'5px 12px', borderRadius:16, cursor:'pointer',
+              fontFamily:'inherit', fontSize:11, fontWeight:600,
+              border:`1.5px solid ${activeTab==='packed'?T.blue:T.border}`,
+              background: activeTab==='packed'?T.blueBg:'#fff',
+              color: activeTab==='packed'?T.blue:T.med }}>
+            📮 Ảnh thùng ({photosPacked.length})
+          </button>
+        )}
+      </div>
+      <div style={{ display:'grid', gridTemplateColumns:'repeat(auto-fill, minmax(80px, 1fr))',
+        gap:6 }}>
+        {photos.map((ph: any, i: number) => {
+          const url = getUrl(ph)
+          if (!url) return null
+          return (
+            <div key={i} style={{ position:'relative', borderRadius:6, overflow:'hidden',
+              border:`1px solid ${T.border}`, cursor:'pointer' }}
+              onClick={() => setShowModal(url)}>
+              <div style={{ aspectRatio:'1/1' }}>
+                <img src={url} alt={`${orderCode} ${i+1}`}
+                  style={{ width:'100%', height:'100%', objectFit:'cover', display:'block' }}/>
+              </div>
+            </div>
+          )
+        })}
+      </div>
+      {showModal && (
+        <div onClick={() => setShowModal(null)}
+          style={{ position:'fixed', inset:0, background:'rgba(0,0,0,0.9)', zIndex:9999,
+            display:'flex', alignItems:'center', justifyContent:'center', padding:20,
+            cursor:'zoom-out' }}>
+          <img src={showModal} alt="Preview"
+            style={{ maxWidth:'100%', maxHeight:'100%', objectFit:'contain' }}/>
         </div>
       )}
     </div>
