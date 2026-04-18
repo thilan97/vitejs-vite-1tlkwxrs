@@ -12,7 +12,7 @@ const db = createClient(SUPABASE_URL, SUPABASE_KEY)
 // APP_VERSION — dùng để invalidate cache localStorage mỗi khi deploy version mới
 // (ngăn bug quyền user bị "reset" do cache position cũ sau deploy)
 // ⚠️ MỖI LẦN DEPLOY FEATURE MỚI CÓ PERMISSION MỚI, BUMP SỐ NÀY:
-const APP_VERSION = '2026.04.17.v31'
+const APP_VERSION = '2026.04.17.v32'
 
 // ════════════════════════════════════════════════════════════════
 // AUDIT LOG — ghi nhận các hành động phá hoại data để trace lại
@@ -13955,6 +13955,14 @@ function PickingModule({ user, allUsers, mobile, products }: any) {
                 const packedTime = o.packed_at
                   ? new Date(o.packed_at).toLocaleTimeString('vi-VN', {hour:'2-digit', minute:'2-digit'})
                   : null
+                const detectedTime = o.detected_at
+                  ? new Date(o.detected_at).toLocaleTimeString('vi-VN', {hour:'2-digit', minute:'2-digit'})
+                  : null
+                const detectedDate = o.detected_at
+                  ? new Date(o.detected_at).toLocaleDateString('vi-VN', {day:'2-digit', month:'2-digit'})
+                  : null
+                const isDetectedToday = o.detected_at &&
+                  new Date(o.detected_at).toDateString() === new Date().toDateString()
                 // Đơn đã đóng xong hay chưa
                 const fullyPacked = o.status === 'done' && !!o.packed_at
                 return (
@@ -13974,6 +13982,12 @@ function PickingModule({ user, allUsers, mobile, products }: any) {
                           Sale: {o.sold_by_name||'—'} • {daysOld>0?`${daysOld}N trước`:'hôm nay'}
                           {o.printed_by_name && <> • 🖨 {o.printed_by_name}</>}
                         </div>
+                        {/* Tab "Chờ nhặt" hiện thời điểm đơn được sync từ KV (có ghi chú "đã đóng") */}
+                        {tab === 'todo' && detectedTime && (
+                          <div style={{ fontSize:10, color:T.amber, marginTop:3, fontWeight:600 }}>
+                            📥 Vào kho: {isDetectedToday ? detectedTime : `${detectedDate} ${detectedTime}`}
+                          </div>
+                        )}
                         {/* Tab "Xong hôm nay" hiện timeline đầy đủ: Nhặt + Đã đóng */}
                         {tab === 'done_today' && (
                           <>
@@ -14856,6 +14870,18 @@ function PackingModule({ user, allUsers, mobile, products }: any) {
                 const getName = (id: string) => allUsers.find((u: any) => u.id === id)?.name || '?'
                 const activePackerNames = activePackerIds.map(getName).join(', ')
                 const finalPackerNames = finalPackerIds.map(getName).join(', ')
+                // Timestamps
+                const fmtTime = (iso: string|null) => {
+                  if (!iso) return null
+                  const d = new Date(iso)
+                  const isToday = d.toDateString() === new Date().toDateString()
+                  return isToday
+                    ? d.toLocaleTimeString('vi-VN', {hour:'2-digit', minute:'2-digit'})
+                    : d.toLocaleDateString('vi-VN', {day:'2-digit', month:'2-digit'}) + ' ' +
+                      d.toLocaleTimeString('vi-VN', {hour:'2-digit', minute:'2-digit'})
+                }
+                const pickedAtTxt = fmtTime(o.picked_at)
+                const packedAtTxt = fmtTime(o.packed_at)
                 return (
                   <Card key={o.order_code}
                     onClick={() => tryOpenOrder(o.order_code)}
@@ -14872,12 +14898,13 @@ function PackingModule({ user, allUsers, mobile, products }: any) {
                       {totalItems} SP • {Number(o.total_amount||0).toLocaleString('vi-VN')}đ
                       {o.no_box && <> • 📮 Bookship</>}
                     </div>
-                    {/* Tab 'Chờ đóng': tên NV nhặt + active packers nếu có */}
+                    {/* Tab 'Chờ đóng': tên NV nhặt + thời điểm chuyển sang đóng + active packers nếu có */}
                     {tab === 'pending' && (
                       <>
                         {pickerName && (
                           <div style={{ fontSize:10, color:T.med, marginTop:3 }}>
                             📥 Nhặt bởi: <b style={{ color:T.dark }}>{pickerName}</b>
+                            {pickedAtTxt && <span style={{ color:T.light }}> • {pickedAtTxt}</span>}
                           </div>
                         )}
                         {activePackerIds.length > 0 && (
@@ -14888,11 +14915,21 @@ function PackingModule({ user, allUsers, mobile, products }: any) {
                         )}
                       </>
                     )}
-                    {/* Tab 'Xong hôm nay': NV nhặt + NV đóng (tất cả) */}
+                    {/* Tab 'Xong hôm nay': NV nhặt + NV đóng (tất cả) + timeline */}
                     {tab === 'done_today' && (
-                      <div style={{ fontSize:10, color:T.green, marginTop:3, fontWeight:600 }}>
-                        {pickerName && <>👤 Nhặt: {pickerName}<br/></>}
-                        {finalPackerIds.length > 0 && <>📮 Đóng: {finalPackerNames}</>}
+                      <div style={{ marginTop:3 }}>
+                        {pickerName && (
+                          <div style={{ fontSize:10, color:T.green, fontWeight:600 }}>
+                            👤 Nhặt: {pickerName}
+                            {pickedAtTxt && <span style={{ color:T.light, fontWeight:400 }}> • {pickedAtTxt}</span>}
+                          </div>
+                        )}
+                        {finalPackerIds.length > 0 && (
+                          <div style={{ fontSize:10, color:T.blue, fontWeight:600, marginTop:1 }}>
+                            📮 Đóng: {finalPackerNames}
+                            {packedAtTxt && <span style={{ color:T.light, fontWeight:400 }}> • {packedAtTxt}</span>}
+                          </div>
+                        )}
                       </div>
                     )}
                     {/* AI check badge */}
