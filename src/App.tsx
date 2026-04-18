@@ -12,7 +12,7 @@ const db = createClient(SUPABASE_URL, SUPABASE_KEY)
 // APP_VERSION — dùng để invalidate cache localStorage mỗi khi deploy version mới
 // (ngăn bug quyền user bị "reset" do cache position cũ sau deploy)
 // ⚠️ MỖI LẦN DEPLOY FEATURE MỚI CÓ PERMISSION MỚI, BUMP SỐ NÀY:
-const APP_VERSION = '2026.04.17.v24'
+const APP_VERSION = '2026.04.17.v26'
 
 // ════════════════════════════════════════════════════════════════
 // AUDIT LOG — ghi nhận các hành động phá hoại data để trace lại
@@ -9167,6 +9167,9 @@ function InventoryModule({ user, allUsers, products, invSessions, setInvSessions
       {showWizard && (
         <SessionCreateWizard products={products} checks={checks} allUsers={allUsers}
           user={user} excludedCodes={excludedCodes}
+          lastKvSync={lastKvSync}
+          onSyncNow={syncKiotViet}
+          kvSyncing={kvSyncing}
           onCreated={(newS: any, newChecks: any[]) => {
             setInvSessions(prev => [newS, ...prev])
             setChecks(prev => [...prev, ...newChecks])
@@ -9563,7 +9566,95 @@ function InvMonitorView({ session, checks, allUsers, user, products, onStartMobi
 }
 
 // ── SessionCreateWizard — 3-step wizard ──────────────────
-function SessionCreateWizard({ products, checks, allUsers, user, excludedCodes, onCreated, onClose }: any) {
+// ── Helper: kiểm tra sync có quá cũ không (> 4 giờ) ──
+function isSyncTooOld(lastKvSync: string): boolean {
+  if (!lastKvSync) return true  // chưa sync lần nào → chặn
+  const ageMs = Date.now() - new Date(lastKvSync).getTime()
+  return ageMs > 4 * 3600 * 1000  // 4 giờ
+}
+
+// ── Banner cảnh báo tuổi sync ──
+function SyncAgeBanner({ lastKvSync, onSyncNow, kvSyncing }: any) {
+  if (!lastKvSync) {
+    return (
+      <div style={{ padding:'12px 14px', marginBottom:12, borderRadius:10,
+        background:T.redBg, border:`2px solid ${T.red}` }}>
+        <div style={{ fontSize:13, fontWeight:800, color:T.red, marginBottom:6 }}>
+          🚨 CHƯA SYNC DỮ LIỆU TỪ KIOTVIET
+        </div>
+        <div style={{ fontSize:11, color:T.dark, marginBottom:8, lineHeight:1.5 }}>
+          Bắt buộc phải sync trước khi tạo phiên kiểm kê.
+        </div>
+        <button onClick={onSyncNow} disabled={kvSyncing}
+          style={{ padding:'7px 14px', borderRadius:8, border:'none',
+            background:T.red, color:'#fff', cursor:kvSyncing?'wait':'pointer',
+            fontFamily:'inherit', fontSize:12, fontWeight:700 }}>
+          {kvSyncing ? '⏳ Đang sync...' : '🔄 Sync ngay từ KiotViet'}
+        </button>
+      </div>
+    )
+  }
+
+  const ageMs  = Date.now() - new Date(lastKvSync).getTime()
+  const ageMin = Math.floor(ageMs / 60000)
+  const ageHr  = Math.floor(ageMs / 3600000)
+  const ageTxt = ageHr >= 1 ? `${ageHr}h ${ageMin % 60}p` : `${ageMin} phút`
+  const syncedAt = new Date(lastKvSync).toLocaleString('vi-VN', {
+    day:'2-digit', month:'2-digit', hour:'2-digit', minute:'2-digit'
+  })
+
+  // < 30 phút → xanh, OK
+  if (ageMs < 30 * 60 * 1000) {
+    return (
+      <div style={{ padding:'10px 14px', marginBottom:12, borderRadius:10,
+        background:T.greenBg, border:`1px solid ${T.green}`, fontSize:12, color:T.green }}>
+        ✓ Data KiotViet mới — sync cách đây {ageTxt} ({syncedAt})
+      </div>
+    )
+  }
+
+  // 30 phút - 4 giờ → vàng, nên sync
+  if (ageMs < 4 * 3600 * 1000) {
+    return (
+      <div style={{ padding:'12px 14px', marginBottom:12, borderRadius:10,
+        background:T.amberBg, border:`2px solid ${T.amber}` }}>
+        <div style={{ fontSize:13, fontWeight:700, color:T.amber, marginBottom:4 }}>
+          ⚠️ Data sync cách đây {ageTxt}
+        </div>
+        <div style={{ fontSize:11, color:T.dark, marginBottom:8, lineHeight:1.5 }}>
+          Nên sync lại trước khi tạo phiên để đảm bảo số tồn chính xác. Lần sync cuối: {syncedAt}.
+        </div>
+        <button onClick={onSyncNow} disabled={kvSyncing}
+          style={{ padding:'6px 14px', borderRadius:8, border:`1px solid ${T.amber}`,
+            background:'#fff', color:T.amber, cursor:kvSyncing?'wait':'pointer',
+            fontFamily:'inherit', fontSize:12, fontWeight:700 }}>
+          {kvSyncing ? '⏳ Đang sync...' : '🔄 Sync lại'}
+        </button>
+      </div>
+    )
+  }
+
+  // > 4 giờ → đỏ, BẮT BUỘC sync
+  return (
+    <div style={{ padding:'12px 14px', marginBottom:12, borderRadius:10,
+      background:T.redBg, border:`2px solid ${T.red}` }}>
+      <div style={{ fontSize:13, fontWeight:800, color:T.red, marginBottom:4 }}>
+        🚨 DATA QUÁ CŨ — Sync cách đây {ageTxt}
+      </div>
+      <div style={{ fontSize:11, color:T.dark, marginBottom:8, lineHeight:1.5 }}>
+        Bắt buộc phải sync trước khi tạo phiên (nút "Tiếp theo" đã bị khóa). Lần sync cuối: {syncedAt}.
+      </div>
+      <button onClick={onSyncNow} disabled={kvSyncing}
+        style={{ padding:'7px 14px', borderRadius:8, border:'none',
+          background:T.red, color:'#fff', cursor:kvSyncing?'wait':'pointer',
+          fontFamily:'inherit', fontSize:12, fontWeight:700 }}>
+        {kvSyncing ? '⏳ Đang sync...' : '🔄 Sync ngay từ KiotViet'}
+      </button>
+    </div>
+  )
+}
+
+function SessionCreateWizard({ products, checks, allUsers, user, excludedCodes, onCreated, onClose, lastKvSync, onSyncNow, kvSyncing }: any) {
   const [step, setStep] = useState(1)
   const [date, setDate] = useState(new Date().toISOString().split('T')[0])
   const [note, setNote] = useState('')
@@ -9736,6 +9827,8 @@ function SessionCreateWizard({ products, checks, allUsers, user, excludedCodes, 
           {/* Step 1 */}
           {step===1 && (
             <div style={{maxWidth:480}}>
+              {/* Sync timestamp warning */}
+              <SyncAgeBanner lastKvSync={lastKvSync} onSyncNow={onSyncNow} kvSyncing={kvSyncing}/>
               <Inp label="Ngày kiểm kê *" type="date" value={date} onChange={(v) => setDate(v)}/>
               <Inp label="Ghi chú (tùy chọn)" value={note} onChange={(v) => setNote(v)}
                 placeholder="VD: Kiểm kê tuần 15 — nhóm A"/>
@@ -9971,7 +10064,7 @@ function SessionCreateWizard({ products, checks, allUsers, user, excludedCodes, 
             </button>
             {step < 3 ? (
               <GoldBtn small onClick={() => setStep(s => s+1)}
-                disabled={step===1?!date:step===2?selected.size===0:false}>
+                disabled={step===1?(!date || isSyncTooOld(lastKvSync)):step===2?selected.size===0:false}>
                 Tiếp theo →
               </GoldBtn>
             ) : (
@@ -13825,6 +13918,12 @@ function PickingModule({ user, allUsers, mobile, products }: any) {
                 const short = (o.items||[]).filter((it: any) => (it.short_qty||0) > 0).length
                 const isSelected = o.order_code === selectedCode
                 const daysOld = Math.floor((Date.now() - new Date(o.purchase_date).getTime())/86400000)
+                const pickerName = o.assigned_to
+                  ? (allUsers.find((u: any) => u.id === o.assigned_to)?.name || '?')
+                  : null
+                const pickedTime = o.picked_at
+                  ? new Date(o.picked_at).toLocaleTimeString('vi-VN', {hour:'2-digit', minute:'2-digit'})
+                  : null
                 return (
                   <Card key={o.order_code}
                     onClick={() => setSelectedCode(o.order_code)}
@@ -13842,6 +13941,13 @@ function PickingModule({ user, allUsers, mobile, products }: any) {
                           Sale: {o.sold_by_name||'—'} • {daysOld>0?`${daysOld}N trước`:'hôm nay'}
                           {o.printed_by_name && <> • 🖨 {o.printed_by_name}</>}
                         </div>
+                        {/* Tab "Xong hôm nay" hiện người nhặt + giờ xong */}
+                        {tab === 'done_today' && pickerName && (
+                          <div style={{ fontSize:10, color:T.green, marginTop:3, fontWeight:600 }}>
+                            👤 Nhặt: {pickerName}
+                            {pickedTime && <span style={{ color:T.light, fontWeight:400 }}> • {pickedTime}</span>}
+                          </div>
+                        )}
                       </div>
                       <div style={{ textAlign:'right', fontSize:10, color:T.med, flexShrink:0 }}>
                         <div style={{ fontWeight:700, color: pickedItems===totalItems?T.green:T.dark }}>
@@ -14398,6 +14504,7 @@ function PackingModule({ user, allUsers, mobile, products }: any) {
   const [tab, setTab]         = useState<'pending'|'done_today'|'lookup'>('pending')
   const [selectedCode, setSelectedCode] = useState<string|null>(null)
   const [searchQ, setSearchQ] = useState('')
+  const [joinConfirm, setJoinConfirm] = useState<any>(null)
 
   const fetchData = async () => {
     setLoading(true)
@@ -14469,9 +14576,15 @@ function PackingModule({ user, allUsers, mobile, products }: any) {
       )
       if (!ok) return
     }
+    // Multi-packer: packed_by_ids = union of (active_packers, current user)
+    // packed_by vẫn set = current user (người cuối bấm hoàn tất) cho backward compat
+    const activePackers: string[] = ord.active_packers || []
+    const finalPackerIds = Array.from(new Set([...activePackers, user.id]))
     const upd = {
       status: 'done',
       packed_by: user.id,
+      packed_by_ids: finalPackerIds,
+      active_packers: [],
       packed_at: new Date().toISOString(),
       updated_at: new Date().toISOString(),
     }
@@ -14479,8 +14592,32 @@ function PackingModule({ user, allUsers, mobile, products }: any) {
     if (error) { alert('❌ Lỗi: ' + error.message); return false }
     setOrders(prev => prev.map((o: any) => o.order_code === orderCode ? {...o, ...upd} : o))
     setSelectedCode(null)
-    alert('✅ Đã hoàn tất đóng hàng')
+    alert(`✅ Đã hoàn tất đóng hàng${finalPackerIds.length>1?` (${finalPackerIds.length} người cùng đóng)`:''}`)
     return true
+  }
+
+  // Thêm user vào active_packers khi qua Gate (chụp xong ảnh nhặt, chuẩn bị đóng)
+  const joinPackingGroup = async (orderCode: string) => {
+    const ord = orders.find((o: any) => o.order_code === orderCode)
+    if (!ord) return
+    const current: string[] = ord.active_packers || []
+    if (current.includes(user.id)) return  // đã trong group
+    const next = [...current, user.id]
+    const upd: any = { active_packers: next, updated_at: new Date().toISOString() }
+    await db.from('packing_workflow').update(upd).eq('order_code', orderCode)
+    setOrders(prev => prev.map((o: any) => o.order_code === orderCode ? {...o, ...upd} : o))
+  }
+
+  // Rời khỏi active_packers khi user đóng detail panel mà chưa hoàn tất
+  const leavePackingGroup = async (orderCode: string) => {
+    const ord = orders.find((o: any) => o.order_code === orderCode)
+    if (!ord) return
+    const current: string[] = ord.active_packers || []
+    if (!current.includes(user.id)) return
+    const next = current.filter(id => id !== user.id)
+    const upd: any = { active_packers: next, updated_at: new Date().toISOString() }
+    await db.from('packing_workflow').update(upd).eq('order_code', orderCode)
+    setOrders(prev => prev.map((o: any) => o.order_code === orderCode ? {...o, ...upd} : o))
   }
 
   const updatePhotoList = async (orderCode: string, type: 'picked'|'packed', newPhotos: string[]) => {
@@ -14580,9 +14717,18 @@ function PackingModule({ user, allUsers, mobile, products }: any) {
                 const modCount = o.modification_count || 0
                 const latestChange = (o.change_log||[])[((o.change_log||[]).length - 1)]
                 const wasReverted = o.had_mod_after_done === true
+                // Multi-packer info
+                const activePackerIds: string[] = o.active_packers || []
+                const finalPackerIds: string[] = o.packed_by_ids || (o.packed_by ? [o.packed_by] : [])
+                const pickerName = o.assigned_to
+                  ? (allUsers.find((u: any) => u.id === o.assigned_to)?.name || '?')
+                  : null
+                const getName = (id: string) => allUsers.find((u: any) => u.id === id)?.name || '?'
+                const activePackerNames = activePackerIds.map(getName).join(', ')
+                const finalPackerNames = finalPackerIds.map(getName).join(', ')
                 return (
                   <Card key={o.order_code}
-                    onClick={() => setSelectedCode(o.order_code)}
+                    onClick={() => tryOpenOrder(o.order_code)}
                     style={{ padding:10, cursor:'pointer',
                       borderLeft: wasReverted
                         ? `4px solid ${T.red}`
@@ -14596,6 +14742,29 @@ function PackingModule({ user, allUsers, mobile, products }: any) {
                       {totalItems} SP • {Number(o.total_amount||0).toLocaleString('vi-VN')}đ
                       {o.no_box && <> • 📮 Bookship</>}
                     </div>
+                    {/* Tab 'Chờ đóng': tên NV nhặt + active packers nếu có */}
+                    {tab === 'pending' && (
+                      <>
+                        {pickerName && (
+                          <div style={{ fontSize:10, color:T.med, marginTop:3 }}>
+                            📥 Nhặt bởi: <b style={{ color:T.dark }}>{pickerName}</b>
+                          </div>
+                        )}
+                        {activePackerIds.length > 0 && (
+                          <div style={{ marginTop:4, padding:'3px 8px', borderRadius:6,
+                            background:T.blue, color:'#fff', fontSize:9, fontWeight:700 }}>
+                            ⏳ ĐANG ĐÓNG: {activePackerNames}
+                          </div>
+                        )}
+                      </>
+                    )}
+                    {/* Tab 'Xong hôm nay': NV nhặt + NV đóng (tất cả) */}
+                    {tab === 'done_today' && (
+                      <div style={{ fontSize:10, color:T.green, marginTop:3, fontWeight:600 }}>
+                        {pickerName && <>👤 Nhặt: {pickerName}<br/></>}
+                        {finalPackerIds.length > 0 && <>📮 Đóng: {finalPackerNames}</>}
+                      </div>
+                    )}
                     {wasReverted && (
                       <div style={{ marginTop:5, padding:'3px 8px', borderRadius:6,
                         background:T.red, color:'#fff', fontSize:9, fontWeight:800, letterSpacing:.3 }}>
@@ -14644,11 +14813,67 @@ function PackingModule({ user, allUsers, mobile, products }: any) {
             onUpdatePhotos={(type: 'picked'|'packed', photos: string[]) =>
               updatePhotoList(selected.order_code, type, photos)}
             onUpdateNoBox={(v: boolean) => updateNoBox(selected.order_code, v)}
+            onJoinGroup={() => joinPackingGroup(selected.order_code)}
+            onLeaveGroup={() => leavePackingGroup(selected.order_code)}
             readOnly={selected.status === 'done' || !canPack}
           />
         )}
       </div>
       )}
+
+      {/* Modal xác nhận khi có NV khác đang đóng */}
+      {joinConfirm && (
+        <JoinPackConfirmModal
+          names={joinConfirm.names}
+          onCancel={() => setJoinConfirm(null)}
+          onConfirm={() => {
+            const code = joinConfirm.orderCode
+            setJoinConfirm(null)
+            setSelectedCode(code)
+          }}
+        />
+      )}
+    </div>
+  )
+}
+
+// ── Modal xác nhận đóng cùng ──
+function JoinPackConfirmModal({ names, onCancel, onConfirm }: any) {
+  return (
+    <div style={{ position:'fixed', inset:0, background:'rgba(0,0,0,0.55)', zIndex:9999,
+      display:'flex', alignItems:'center', justifyContent:'center', padding:20 }}>
+      <div style={{ background:'#fff', borderRadius:12, maxWidth:420, width:'100%' }}>
+        <div style={{ padding:'16px 20px', background:T.blueBg||'#DBEAFE',
+          borderBottom:`1px solid ${T.blue}` }}>
+          <div style={{ fontSize:14, fontWeight:800, color:T.blue }}>
+            ⚠️ Đơn hàng đang được đóng
+          </div>
+        </div>
+        <div style={{ padding:20 }}>
+          <div style={{ fontSize:13, color:T.dark, lineHeight:1.6, marginBottom:14 }}>
+            Đơn hàng này đã có <b style={{ color:T.blue }}>{names}</b> đóng.
+          </div>
+          <div style={{ fontSize:12, color:T.med, lineHeight:1.5,
+            padding:10, background:T.bg, borderRadius:6 }}>
+            💡 Nếu đóng cùng, bạn sẽ được ghi nhận là đồng đóng đơn này.
+            Hiệu suất sẽ được chia đều giữa các NV cùng đóng.
+          </div>
+        </div>
+        <div style={{ display:'flex', gap:10, padding:16, borderTop:`1px solid ${T.border}` }}>
+          <button onClick={onCancel}
+            style={{ flex:1, padding:'10px', borderRadius:8, border:`1px solid ${T.border}`,
+              background:'#fff', color:T.med, cursor:'pointer', fontFamily:'inherit',
+              fontSize:13, fontWeight:600 }}>
+            Không, để họ đóng
+          </button>
+          <button onClick={onConfirm}
+            style={{ flex:1, padding:'10px', borderRadius:8, border:'none',
+              background:T.blue, color:'#fff', cursor:'pointer', fontFamily:'inherit',
+              fontSize:13, fontWeight:700 }}>
+            ✓ Có, tôi đóng cùng
+          </button>
+        </div>
+      </div>
     </div>
   )
 }
@@ -14736,18 +14961,43 @@ function ChangeLogBanner({ ord }: any) {
   )
 }
 
-function PackingDetailPanel({ ord, mobile, user, allUsers, products, onClose, onFinish, onUpdatePhotos, onUpdateNoBox, readOnly }: any) {
+function PackingDetailPanel({ ord, mobile, user, allUsers, products, onClose, onFinish, onUpdatePhotos, onUpdateNoBox, onJoinGroup, onLeaveGroup, readOnly }: any) {
   const getName = (id: string) => allUsers.find((u: any) => u.id === id)?.name || '?'
   const totalItems = (ord.items || []).length
   const { min, max } = photoCountRangeV2(totalItems)
   const [showImgModal, setShowImgModal] = useState<string|null>(null)
 
+  // Multi-packer info
+  const activePackerIds: string[] = ord.active_packers || []
+  const otherPackers = activePackerIds.filter(id => id !== user?.id)
+  const hasOtherPackers = otherPackers.length > 0
+  const iAmInGroup = activePackerIds.includes(user?.id)
+
   // PHASE GATE: bắt buộc chụp ảnh hàng đã nhặt trước khi vào detail
-  // Nếu photos_picked đã đủ min từ trước (đơn làm dở) → vào thẳng DETAIL
-  const initialPhase = (ord.photos_picked||[]).length >= min ? 'detail' : 'gate'
+  // 1) Nếu photos_picked đã đủ min → vào thẳng DETAIL (đơn làm dở)
+  // 2) Nếu có NV khác đã đang đóng → skip gate (theo yêu cầu điểm 5) → vào thẳng DETAIL
+  //    Vì ảnh đã có từ trước bởi NV thứ nhất
+  const hasPhotosAlready = (ord.photos_picked||[]).length >= min
+  const initialPhase = (hasPhotosAlready || hasOtherPackers) ? 'detail' : 'gate'
   const [phase, setPhase] = useState<'gate'|'detail'>(initialPhase)
   // Một khi qua gate thì không quay lại, kể cả xoá ảnh
   const [hasPassedGate, setHasPassedGate] = useState(initialPhase === 'detail')
+
+  // Auto join group khi vào phase DETAIL (chỉ nếu chưa trong group + đơn chưa done + !readOnly)
+  useEffect(() => {
+    if (phase === 'detail' && !iAmInGroup && !readOnly && ord.status !== 'done' && onJoinGroup) {
+      onJoinGroup()
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [phase])
+
+  // Enhanced onClose: rời group nếu chưa hoàn tất (vẫn status packing)
+  const handleClose = () => {
+    if (iAmInGroup && ord.status !== 'done' && onLeaveGroup) {
+      onLeaveGroup()
+    }
+    onClose()
+  }
 
   // Map product → stock realtime
   const productMap = useMemo(() => {
@@ -14801,7 +15051,7 @@ function PackingDetailPanel({ ord, mobile, user, allUsers, products, onClose, on
               {ord.no_box && <span style={{ color:T.amber, fontWeight:600 }}>• 📮 Bookship (không đóng thùng)</span>}
             </div>
           </div>
-          <button onClick={onClose}
+          <button onClick={handleClose}
             style={{ padding:'5px 10px', borderRadius:6, border:`1px solid ${T.border}`,
               background:'#fff', color:T.med, cursor:'pointer', fontFamily:'inherit',
               fontSize:11, flexShrink:0 }}>
@@ -14822,6 +15072,32 @@ function PackingDetailPanel({ ord, mobile, user, allUsers, products, onClose, on
       {/* ══ BANNER đơn đã bị sửa ══ */}
       {(ord.modification_count || 0) > 0 && (
         <ChangeLogBanner ord={ord}/>
+      )}
+
+      {/* ══ Multi-packer: banner ai đang cùng đóng ══ */}
+      {activePackerIds.length > 0 && (
+        <div style={{ padding:'10px 14px', marginBottom:12, borderRadius:8,
+          background:T.blueBg||'#DBEAFE', border:`1px solid ${T.blue}` }}>
+          <div style={{ fontSize:12, fontWeight:700, color:T.blue, marginBottom:3 }}>
+            👥 ĐANG CÓ {activePackerIds.length} NGƯỜI ĐÓNG ĐƠN NÀY
+          </div>
+          <div style={{ fontSize:11, color:T.dark, lineHeight:1.5 }}>
+            {activePackerIds.map((id, idx) => {
+              const name = getName(id)
+              const isMe = id === user?.id
+              return (
+                <span key={id}>
+                  {idx > 0 && ', '}
+                  <b style={{ color: isMe ? T.green : T.blue }}>{name}{isMe ? ' (bạn)' : ''}</b>
+                </span>
+              )
+            })}
+            <br/>
+            <span style={{ color:T.med, fontSize:10 }}>
+              💡 Hiệu suất sẽ chia đều {activePackerIds.length} người. Bất kỳ ai chụp đủ ảnh thùng và bấm "Hoàn tất" là xong.
+            </span>
+          </div>
+        </div>
       )}
 
       {/* ══ PHASE 1: GATE — bắt buộc chụp ảnh hàng đã nhặt ══ */}
@@ -14851,7 +15127,7 @@ function PackingDetailPanel({ ord, mobile, user, allUsers, products, onClose, on
           />
 
           <div style={{ marginTop:16, display:'flex', gap:8 }}>
-            <button onClick={onClose}
+            <button onClick={handleClose}
               style={{ flex:1, padding:'11px', borderRadius:8, border:`1px solid ${T.border}`,
                 background:'#fff', color:T.med, cursor:'pointer', fontFamily:'inherit', fontSize:13 }}>
               ⏸ Để làm sau
@@ -14999,7 +15275,7 @@ function PackingDetailPanel({ ord, mobile, user, allUsers, products, onClose, on
           {/* Footer */}
           {!readOnly && (
             <div style={{ display:'flex', gap:8, paddingTop:14, marginTop:14, borderTop:`1px solid ${T.border}` }}>
-              <button onClick={onClose}
+              <button onClick={handleClose}
                 style={{ flex:1, padding:'10px', borderRadius:8, border:`1px solid ${T.border}`,
                   background:'#fff', color:T.med, cursor:'pointer', fontFamily:'inherit', fontSize:13 }}>
                 ⏸ Thoát
@@ -15723,20 +15999,25 @@ function PriorityRequestModule({ user, allUsers, mobile }: any) {
   const [showSubmit, setShowSubmit] = useState(false)
   const [searchQ, setSearchQ] = useState('')
 
-  const fetchData = async () => {
-    setLoading(true)
+  const fetchData = async (isInitial = false) => {
+    if (isInitial) setLoading(true)
     const { data } = await db.from('priority_requests').select('*')
       .order('created_at', { ascending: false })
       .limit(500)
     setRequests(data || [])
-    setLoading(false)
+    if (isInitial) setLoading(false)
   }
 
   useEffect(() => {
-    fetchData()
-    const interval = setInterval(fetchData, 20000)
-    return () => clearInterval(interval)
+    fetchData(true)
   }, [])
+
+  // Auto-refresh mỗi 20s — PAUSE khi đang mở modal submit (user đang gõ nội dung)
+  useEffect(() => {
+    if (showSubmit) return
+    const interval = setInterval(() => fetchData(false), 20000)
+    return () => clearInterval(interval)
+  }, [showSubmit])
 
   // Fuzzy search theo nội dung, tên người gửi
   const norm = (s: string) => (s||'').toLowerCase().normalize('NFD')
@@ -16320,6 +16601,7 @@ function WarehouseStatsModule({ user, allUsers, mobile }: any) {
 
   const [orders, setOrders] = useState<any[]>([])
   const [loading, setLoading] = useState(true)
+  const [viewTab, setViewTab] = useState<'pack'|'pick'|'sale'>('pack')
 
   if (!perm.viewWarehouseStats) {
     return (
@@ -16346,39 +16628,94 @@ function WarehouseStatsModule({ user, allUsers, mobile }: any) {
     setPreset(p as any)
   }
 
+  // Fetch đơn có picked_at HOẶC packed_at trong range (cho cả 3 tab)
   const fetchOrders = async () => {
     setLoading(true)
     const fromISO = new Date(fromDate + 'T00:00:00').toISOString()
     const toISO   = new Date(toDate   + 'T23:59:59').toISOString()
-    const { data } = await db.from('packing_workflow').select('*')
-      .eq('status', 'done')
-      .gte('packed_at', fromISO)
-      .lte('packed_at', toISO)
-      .limit(5000)
-    setOrders(data || [])
+    // Query 2 lần: đơn packed trong range, đơn picked trong range, rồi merge
+    const [packRes, pickRes] = await Promise.all([
+      db.from('packing_workflow').select('*')
+        .gte('packed_at', fromISO).lte('packed_at', toISO).limit(5000),
+      db.from('packing_workflow').select('*')
+        .gte('picked_at', fromISO).lte('picked_at', toISO).limit(5000),
+    ])
+    const merged = new Map<string, any>()
+    ;[...(packRes.data||[]), ...(pickRes.data||[])].forEach(o => merged.set(o.order_code, o))
+    setOrders(Array.from(merged.values()))
     setLoading(false)
   }
 
   useEffect(() => { fetchOrders() }, [fromDate, toDate])
 
-  // Compute stats per packer
-  const stats = useMemo(() => {
+  // In-range checks
+  const inRange = (iso: string|null) => {
+    if (!iso) return false
+    const t = new Date(iso).getTime()
+    return t >= new Date(fromDate + 'T00:00:00').getTime()
+        && t <= new Date(toDate   + 'T23:59:59').getTime()
+  }
+
+  // ═══ PACKER STATS (chia 1/N cho multi-packer) ═══
+  const packerStats = useMemo(() => {
     const map = new Map<string, any>()
     orders.forEach((o: any) => {
-      const pid = o.packed_by
-      if (!pid) return
+      if (o.status !== 'done' || !inRange(o.packed_at)) return
+      // packed_by_ids (array) hoặc fallback packed_by (single)
+      const ids: string[] = (o.packed_by_ids && o.packed_by_ids.length > 0)
+        ? o.packed_by_ids
+        : (o.packed_by ? [o.packed_by] : [])
+      if (ids.length === 0) return
+      const N = ids.length
+      ids.forEach(pid => {
+        if (!map.has(pid)) {
+          map.set(pid, {
+            user_id: pid, order_count: 0, total_value: 0, total_items: 0,
+            total_sp_qty: 0, sum_pack_duration_ms: 0, pack_duration_count: 0,
+            modified_count: 0, bookship_count: 0, total_photos: 0, shared_count: 0,
+          })
+        }
+        const s = map.get(pid)
+        s.order_count += 1 / N
+        s.total_value += Number(o.total_amount || 0) / N
+        const items = o.items || []
+        s.total_items += items.length / N
+        s.total_sp_qty += items.reduce((t: number, it: any) => t + Number(it.qty||0), 0) / N
+        if (o.picked_at && o.packed_at) {
+          const dur = new Date(o.packed_at).getTime() - new Date(o.picked_at).getTime()
+          if (dur > 0 && dur < 86400000 * 2) {
+            s.sum_pack_duration_ms += dur
+            s.pack_duration_count += 1
+          }
+        }
+        if (o.had_mod_after_done) s.modified_count += 1 / N
+        if (o.no_box) s.bookship_count += 1 / N
+        s.total_photos += ((o.photos_picked||[]).length + (o.photos_packed||[]).length) / N
+        if (N > 1) s.shared_count += 1
+      })
+    })
+    return Array.from(map.values()).map(s => ({
+      ...s,
+      avg_value: s.order_count > 0 ? s.total_value / s.order_count : 0,
+      avg_pack_minutes: s.pack_duration_count > 0
+        ? Math.round(s.sum_pack_duration_ms / s.pack_duration_count / 60000)
+        : 0,
+      avg_photos: s.order_count > 0 ? (s.total_photos / s.order_count) : 0,
+      mod_rate: s.order_count > 0 ? (s.modified_count / s.order_count * 100) : 0,
+    })).sort((a, b) => b.order_count - a.order_count)
+  }, [orders, fromDate, toDate])
+
+  // ═══ PICKER STATS ═══
+  const pickerStats = useMemo(() => {
+    const map = new Map<string, any>()
+    orders.forEach((o: any) => {
+      if (!o.assigned_to || !inRange(o.picked_at)) return
+      const pid = o.assigned_to
       if (!map.has(pid)) {
         map.set(pid, {
-          user_id: pid,
-          order_count: 0,
-          total_value: 0,
-          total_items: 0,
-          total_sp_qty: 0,
-          sum_pack_duration_ms: 0,
-          pack_duration_count: 0,
-          modified_count: 0,
-          bookship_count: 0,
-          total_photos: 0,
+          user_id: pid, order_count: 0, total_value: 0, total_items: 0,
+          total_sp_qty: 0, sum_pick_duration_ms: 0, pick_duration_count: 0,
+          short_count: 0,
         })
       }
       const s = map.get(pid)
@@ -16387,40 +16724,75 @@ function WarehouseStatsModule({ user, allUsers, mobile }: any) {
       const items = o.items || []
       s.total_items += items.length
       s.total_sp_qty += items.reduce((t: number, it: any) => t + Number(it.qty||0), 0)
-      if (o.picked_at && o.packed_at) {
-        const dur = new Date(o.packed_at).getTime() - new Date(o.picked_at).getTime()
-        if (dur > 0 && dur < 86400000 * 2) { // skip outliers > 2 days
-          s.sum_pack_duration_ms += dur
-          s.pack_duration_count += 1
+      // Duration từ detected_at → picked_at
+      if (o.detected_at && o.picked_at) {
+        const dur = new Date(o.picked_at).getTime() - new Date(o.detected_at).getTime()
+        if (dur > 0 && dur < 86400000 * 2) {
+          s.sum_pick_duration_ms += dur
+          s.pick_duration_count += 1
         }
       }
-      if (o.had_mod_after_done) s.modified_count += 1
-      if (o.no_box) s.bookship_count += 1
-      s.total_photos += (o.photos_picked||[]).length + (o.photos_packed||[]).length
+      // Đếm số item có short_qty
+      if ((items as any[]).some((it: any) => (it.short_qty||0) > 0)) s.short_count += 1
     })
-    const arr = Array.from(map.values()).map(s => ({
+    return Array.from(map.values()).map(s => ({
       ...s,
       avg_value: s.order_count > 0 ? s.total_value / s.order_count : 0,
-      avg_pack_minutes: s.pack_duration_count > 0
-        ? Math.round(s.sum_pack_duration_ms / s.pack_duration_count / 60000)
+      avg_pick_minutes: s.pick_duration_count > 0
+        ? Math.round(s.sum_pick_duration_ms / s.pick_duration_count / 60000)
         : 0,
-      avg_photos: s.order_count > 0 ? (s.total_photos / s.order_count) : 0,
-      mod_rate: s.order_count > 0 ? (s.modified_count / s.order_count * 100) : 0,
-    }))
-    return arr.sort((a, b) => b.order_count - a.order_count)
-  }, [orders])
+      short_rate: s.order_count > 0 ? (s.short_count / s.order_count * 100) : 0,
+    })).sort((a, b) => b.order_count - a.order_count)
+  }, [orders, fromDate, toDate])
+
+  // ═══ SALE STATS (theo sold_by_name) ═══
+  const saleStats = useMemo(() => {
+    const map = new Map<string, any>()
+    orders.forEach((o: any) => {
+      if (!o.sold_by_name) return
+      // Tính đơn Sale: đơn phải có picked_at HOẶC packed_at trong range
+      const pickedInRange = inRange(o.picked_at)
+      const packedInRange = inRange(o.packed_at)
+      if (!pickedInRange && !packedInRange) return
+      const key = o.sold_by_name
+      if (!map.has(key)) {
+        map.set(key, {
+          sold_by_name: key, picked_count: 0, packed_count: 0,
+          total_value_picked: 0, total_value_packed: 0,
+        })
+      }
+      const s = map.get(key)
+      if (pickedInRange) {
+        s.picked_count += 1
+        s.total_value_picked += Number(o.total_amount || 0)
+      }
+      if (packedInRange && o.status === 'done') {
+        s.packed_count += 1
+        s.total_value_packed += Number(o.total_amount || 0)
+      }
+    })
+    return Array.from(map.values())
+      .sort((a, b) => b.packed_count - a.packed_count)
+  }, [orders, fromDate, toDate])
 
   const totals = useMemo(() => ({
-    total_orders: orders.length,
-    total_value: orders.reduce((s, o: any) => s + Number(o.total_amount||0), 0),
-    total_staff: stats.length,
-  }), [orders, stats])
+    total_orders: orders.filter((o: any) => o.status === 'done' && inRange(o.packed_at)).length,
+    total_value: orders
+      .filter((o: any) => o.status === 'done' && inRange(o.packed_at))
+      .reduce((s, o: any) => s + Number(o.total_amount||0), 0),
+    total_packers: packerStats.length,
+    total_pickers: pickerStats.length,
+    total_picked: pickerStats.reduce((s, ps: any) => s + ps.order_count, 0),
+  }), [orders, packerStats, pickerStats])
 
   const getName = (id: string) => allUsers.find((u: any) => u.id === id)?.name || id.slice(0,8)
   const fmtMoney = (n: number) => Number(n||0).toLocaleString('vi-VN')
 
-  const maxOrderCount = Math.max(1, ...stats.map(s => s.order_count))
-  const maxValue = Math.max(1, ...stats.map(s => s.total_value))
+  // Chọn stats hiện tại theo tab
+  const stats = viewTab === 'pack' ? packerStats : viewTab === 'pick' ? pickerStats : []
+
+  const maxOrderCount = Math.max(1, ...stats.map((s: any) => s.order_count))
+  const maxValue = Math.max(1, ...stats.map((s: any) => s.total_value))
 
   if (loading) return (
     <div style={{ padding:p, textAlign:'center', color:T.light, paddingTop:40 }}>
@@ -16430,8 +16802,26 @@ function WarehouseStatsModule({ user, allUsers, mobile }: any) {
 
   return (
     <div style={{ padding:`0 ${p} ${mobile?'80px':p}` }}>
-      <Topbar mobile={mobile} title="📊 Hiệu suất NV đóng hàng"
-        subtitle={`${totals.total_orders} đơn • ${fmtMoney(totals.total_value)} • ${totals.total_staff} NV`}/>
+      <Topbar mobile={mobile} title="📊 Hiệu suất kho"
+        subtitle={`${totals.total_orders} đơn đóng • ${Math.round(totals.total_picked)} đơn nhặt • ${fmtMoney(totals.total_value)}đ`}/>
+
+      {/* Tab switcher */}
+      <div style={{ display:'flex', gap:6, marginBottom:12, flexWrap:'wrap' }}>
+        {[
+          { id:'pack', label:`📮 NV Đóng (${packerStats.length})` },
+          { id:'pick', label:`📥 NV Nhặt (${pickerStats.length})` },
+          { id:'sale', label:`👤 Theo Sale (${saleStats.length})` },
+        ].map((t: any) => (
+          <button key={t.id} onClick={() => setViewTab(t.id)}
+            style={{ padding:'6px 14px', borderRadius:20, cursor:'pointer',
+              fontFamily:'inherit', fontSize:12, fontWeight:600,
+              border:`1.5px solid ${viewTab===t.id?T.gold:T.border}`,
+              background: viewTab===t.id?T.goldBg:'#fff',
+              color: viewTab===t.id?T.goldText:T.med }}>
+            {t.label}
+          </button>
+        ))}
+      </div>
 
       {/* Filter */}
       <Card style={{ padding:12, marginBottom:12 }}>
@@ -16464,139 +16854,229 @@ function WarehouseStatsModule({ user, allUsers, mobile }: any) {
         </div>
       </Card>
 
-      {stats.length === 0 ? (
-        <div style={{ padding:'40px 20px', textAlign:'center', color:T.light, fontSize:13 }}>
-          Không có đơn nào đã đóng trong khoảng thời gian này.
-        </div>
-      ) : (
-        <>
-          {/* Bar chart: số đơn */}
-          <Card style={{ padding:16, marginBottom:12 }}>
-            <div style={{ fontSize:13, fontWeight:700, color:T.dark, marginBottom:12 }}>
-              📦 Số đơn đóng theo NV
-            </div>
-            <div style={{ display:'flex', flexDirection:'column', gap:10 }}>
-              {stats.map((s, idx) => (
-                <div key={s.user_id}>
-                  <div style={{ display:'flex', justifyContent:'space-between',
-                    fontSize:11, marginBottom:4 }}>
-                    <span style={{ color:T.dark, fontWeight: idx===0?700:500 }}>
-                      {idx===0 && '🥇 '}{idx===1 && '🥈 '}{idx===2 && '🥉 '}
-                      {getName(s.user_id)}
-                    </span>
-                    <span style={{ color:T.dark, fontWeight:700 }}>
-                      {s.order_count} đơn
-                    </span>
-                  </div>
-                  <div style={{ height:14, background:T.bg, borderRadius:7, overflow:'hidden' }}>
-                    <div style={{ height:'100%',
-                      background: idx===0 ? T.gold : (idx<3?T.blue:T.green),
-                      width:`${(s.order_count / maxOrderCount) * 100}%`,
-                      transition:'width .5s' }}/>
-                  </div>
-                </div>
-              ))}
-            </div>
-          </Card>
-
-          {/* Bar chart: giá trị */}
-          <Card style={{ padding:16, marginBottom:12 }}>
-            <div style={{ fontSize:13, fontWeight:700, color:T.dark, marginBottom:12 }}>
-              💰 Tổng giá trị đơn đã đóng
-            </div>
-            <div style={{ display:'flex', flexDirection:'column', gap:10 }}>
-              {[...stats].sort((a,b) => b.total_value - a.total_value).map((s, idx) => (
-                <div key={s.user_id}>
-                  <div style={{ display:'flex', justifyContent:'space-between',
-                    fontSize:11, marginBottom:4 }}>
-                    <span style={{ color:T.dark, fontWeight: idx===0?700:500 }}>
-                      {idx===0 && '🥇 '}{idx===1 && '🥈 '}{idx===2 && '🥉 '}
-                      {getName(s.user_id)}
-                    </span>
-                    <span style={{ color:T.goldText, fontWeight:700 }}>
-                      {fmtMoney(s.total_value)}
-                    </span>
-                  </div>
-                  <div style={{ height:14, background:T.bg, borderRadius:7, overflow:'hidden' }}>
-                    <div style={{ height:'100%',
-                      background:`linear-gradient(90deg, ${T.gold} 0%, #b8860b 100%)`,
-                      width:`${(s.total_value / maxValue) * 100}%`,
-                      transition:'width .5s' }}/>
-                  </div>
-                </div>
-              ))}
-            </div>
-          </Card>
-
-          {/* Bảng tổng hợp đầy đủ */}
-          <Card style={{ padding:0, marginBottom:12, overflow:'hidden' }}>
+      {/* ═══ TAB SALE: bảng theo sold_by_name ═══ */}
+      {viewTab === 'sale' && (
+        saleStats.length === 0 ? (
+          <div style={{ padding:'40px 20px', textAlign:'center', color:T.light, fontSize:13 }}>
+            Không có đơn nào được xử lý trong khoảng thời gian này.
+          </div>
+        ) : (
+          <Card style={{ padding:0, overflow:'hidden' }}>
             <div style={{ padding:'12px 16px', fontSize:13, fontWeight:700,
               color:T.dark, borderBottom:`1px solid ${T.border}`, background:T.bg }}>
-              📊 Chi tiết hiệu suất
+              👤 Đơn xử lý theo Sale
             </div>
             <div style={{ overflowX:'auto' }}>
-              <table style={{ width:'100%', borderCollapse:'collapse', fontSize:11 }}>
+              <table style={{ width:'100%', borderCollapse:'collapse', fontSize:12 }}>
                 <thead>
                   <tr style={{ background:T.bg, borderBottom:`2px solid ${T.border}` }}>
-                    <th style={{ padding:'10px 12px', textAlign:'left', fontWeight:700, color:T.med }}>NV</th>
-                    <th style={{ padding:'10px 8px', textAlign:'right', fontWeight:700, color:T.med }}>Đơn</th>
-                    <th style={{ padding:'10px 8px', textAlign:'right', fontWeight:700, color:T.med }}>Giá trị</th>
-                    <th style={{ padding:'10px 8px', textAlign:'right', fontWeight:700, color:T.med }}>TB/đơn</th>
-                    <th style={{ padding:'10px 8px', textAlign:'right', fontWeight:700, color:T.med }}>SP</th>
-                    <th style={{ padding:'10px 8px', textAlign:'right', fontWeight:700, color:T.med }}>TB phút</th>
-                    <th style={{ padding:'10px 8px', textAlign:'right', fontWeight:700, color:T.med }}>Bookship</th>
-                    <th style={{ padding:'10px 8px', textAlign:'right', fontWeight:700, color:T.med }}>Bị sửa</th>
-                    <th style={{ padding:'10px 8px', textAlign:'right', fontWeight:700, color:T.med }}>Ảnh/đơn</th>
+                    <th style={{ padding:'12px 14px', textAlign:'left', fontWeight:700, color:T.med }}>Sale</th>
+                    <th style={{ padding:'12px 10px', textAlign:'right', fontWeight:700, color:T.med }}>📥 Đơn nhặt</th>
+                    <th style={{ padding:'12px 10px', textAlign:'right', fontWeight:700, color:T.med }}>📮 Đơn đóng</th>
+                    <th style={{ padding:'12px 10px', textAlign:'right', fontWeight:700, color:T.med }}>💰 Giá trị đóng</th>
                   </tr>
                 </thead>
                 <tbody>
-                  {stats.map((s, idx) => (
-                    <tr key={s.user_id} style={{ borderBottom:`1px solid ${T.border}` }}>
-                      <td style={{ padding:'10px 12px', color:T.dark, fontWeight: idx===0?700:500 }}>
-                        {idx===0 && '🥇 '}{getName(s.user_id)}
+                  {saleStats.map((s: any, idx) => (
+                    <tr key={s.sold_by_name} style={{ borderBottom:`1px solid ${T.border}` }}>
+                      <td style={{ padding:'12px 14px', color:T.dark, fontWeight: idx===0?700:500 }}>
+                        {idx===0 && '🥇 '}{idx===1 && '🥈 '}{idx===2 && '🥉 '}
+                        {s.sold_by_name}
                       </td>
-                      <td style={{ padding:'10px 8px', textAlign:'right', color:T.dark, fontWeight:700 }}>
-                        {s.order_count}
+                      <td style={{ padding:'12px 10px', textAlign:'right', color:T.blue, fontWeight:700 }}>
+                        {s.picked_count}
                       </td>
-                      <td style={{ padding:'10px 8px', textAlign:'right', color:T.goldText, fontWeight:600 }}>
-                        {fmtMoney(s.total_value)}
+                      <td style={{ padding:'12px 10px', textAlign:'right', color:T.green, fontWeight:700 }}>
+                        {s.packed_count}
                       </td>
-                      <td style={{ padding:'10px 8px', textAlign:'right', color:T.med }}>
-                        {fmtMoney(Math.round(s.avg_value))}
-                      </td>
-                      <td style={{ padding:'10px 8px', textAlign:'right', color:T.med }}>
-                        {s.total_sp_qty}
-                      </td>
-                      <td style={{ padding:'10px 8px', textAlign:'right', color:T.med }}>
-                        {s.avg_pack_minutes > 0 ? `${s.avg_pack_minutes}p` : '—'}
-                      </td>
-                      <td style={{ padding:'10px 8px', textAlign:'right', color:T.med }}>
-                        {s.bookship_count}
-                      </td>
-                      <td style={{ padding:'10px 8px', textAlign:'right',
-                        color: s.mod_rate > 10 ? T.red : T.med, fontWeight: s.mod_rate>10?700:400 }}>
-                        {s.modified_count} ({s.mod_rate.toFixed(0)}%)
-                      </td>
-                      <td style={{ padding:'10px 8px', textAlign:'right', color:T.med }}>
-                        {s.avg_photos.toFixed(1)}
+                      <td style={{ padding:'12px 10px', textAlign:'right', color:T.goldText, fontWeight:600 }}>
+                        {fmtMoney(s.total_value_packed)}
                       </td>
                     </tr>
                   ))}
                 </tbody>
+                <tfoot>
+                  <tr style={{ background:T.goldBg, borderTop:`2px solid ${T.gold}` }}>
+                    <td style={{ padding:'12px 14px', color:T.dark, fontWeight:800 }}>TỔNG</td>
+                    <td style={{ padding:'12px 10px', textAlign:'right', color:T.blue, fontWeight:800 }}>
+                      {saleStats.reduce((s: number, x: any) => s + x.picked_count, 0)}
+                    </td>
+                    <td style={{ padding:'12px 10px', textAlign:'right', color:T.green, fontWeight:800 }}>
+                      {saleStats.reduce((s: number, x: any) => s + x.packed_count, 0)}
+                    </td>
+                    <td style={{ padding:'12px 10px', textAlign:'right', color:T.goldText, fontWeight:800 }}>
+                      {fmtMoney(saleStats.reduce((s: number, x: any) => s + x.total_value_packed, 0))}
+                    </td>
+                  </tr>
+                </tfoot>
               </table>
             </div>
           </Card>
+        )
+      )}
 
-          <div style={{ padding:'10px 12px', background:T.bg, borderRadius:6, fontSize:11,
-            color:T.med, lineHeight:1.6 }}>
-            <div><b>📖 Giải thích chỉ số:</b></div>
-            <div>• <b>TB/đơn</b>: Giá trị trung bình 1 đơn — cho biết NV thường đóng đơn lớn hay nhỏ</div>
-            <div>• <b>TB phút</b>: Thời gian trung bình từ lúc nhặt xong đến lúc đóng xong — càng thấp càng nhanh</div>
-            <div>• <b>Bookship</b>: Đơn bookship thường nhanh hơn đơn thùng thông thường</div>
-            <div>• <b>Bị sửa {'>'}10%</b>: Cần chú ý, có thể do đóng sai hoặc Sale thay đổi nhiều</div>
-            <div>• <b>Ảnh/đơn</b>: Số ảnh trung bình — mức độ cẩn thận chụp bằng chứng</div>
+      {/* ═══ TAB PACK / PICK: bar chart + bảng NV ═══ */}
+      {viewTab !== 'sale' && (
+        stats.length === 0 ? (
+          <div style={{ padding:'40px 20px', textAlign:'center', color:T.light, fontSize:13 }}>
+            Không có đơn nào {viewTab==='pack'?'đã đóng':'đã nhặt'} trong khoảng thời gian này.
           </div>
-        </>
+        ) : (
+          <>
+            {/* Bar chart: số đơn */}
+            <Card style={{ padding:16, marginBottom:12 }}>
+              <div style={{ fontSize:13, fontWeight:700, color:T.dark, marginBottom:12 }}>
+                {viewTab==='pack' ? '📮 Số đơn đóng theo NV' : '📥 Số đơn nhặt theo NV'}
+              </div>
+              <div style={{ display:'flex', flexDirection:'column', gap:10 }}>
+                {stats.map((s: any, idx) => (
+                  <div key={s.user_id}>
+                    <div style={{ display:'flex', justifyContent:'space-between',
+                      fontSize:11, marginBottom:4 }}>
+                      <span style={{ color:T.dark, fontWeight: idx===0?700:500 }}>
+                        {idx===0 && '🥇 '}{idx===1 && '🥈 '}{idx===2 && '🥉 '}
+                        {getName(s.user_id)}
+                        {viewTab==='pack' && s.shared_count > 0 && (
+                          <span style={{ fontSize:9, color:T.blue, marginLeft:6, fontWeight:600 }}>
+                            ({s.shared_count} đơn chia sẻ)
+                          </span>
+                        )}
+                      </span>
+                      <span style={{ color:T.dark, fontWeight:700 }}>
+                        {viewTab==='pack' ? s.order_count.toFixed(1) : s.order_count} đơn
+                      </span>
+                    </div>
+                    <div style={{ height:14, background:T.bg, borderRadius:7, overflow:'hidden' }}>
+                      <div style={{ height:'100%',
+                        background: idx===0 ? T.gold : (idx<3?T.blue:T.green),
+                        width:`${(s.order_count / maxOrderCount) * 100}%`,
+                        transition:'width .5s' }}/>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </Card>
+
+            {/* Bar chart: giá trị */}
+            <Card style={{ padding:16, marginBottom:12 }}>
+              <div style={{ fontSize:13, fontWeight:700, color:T.dark, marginBottom:12 }}>
+                {viewTab==='pack' ? '💰 Tổng giá trị đơn đã đóng' : '💰 Tổng giá trị đơn đã nhặt'}
+              </div>
+              <div style={{ display:'flex', flexDirection:'column', gap:10 }}>
+                {[...stats].sort((a: any, b: any) => b.total_value - a.total_value).map((s: any, idx) => (
+                  <div key={s.user_id}>
+                    <div style={{ display:'flex', justifyContent:'space-between',
+                      fontSize:11, marginBottom:4 }}>
+                      <span style={{ color:T.dark, fontWeight: idx===0?700:500 }}>
+                        {idx===0 && '🥇 '}{idx===1 && '🥈 '}{idx===2 && '🥉 '}
+                        {getName(s.user_id)}
+                      </span>
+                      <span style={{ color:T.goldText, fontWeight:700 }}>
+                        {fmtMoney(Math.round(s.total_value))}
+                      </span>
+                    </div>
+                    <div style={{ height:14, background:T.bg, borderRadius:7, overflow:'hidden' }}>
+                      <div style={{ height:'100%',
+                        background:`linear-gradient(90deg, ${T.gold} 0%, #b8860b 100%)`,
+                        width:`${(s.total_value / maxValue) * 100}%`,
+                        transition:'width .5s' }}/>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </Card>
+
+            {/* Bảng chi tiết */}
+            <Card style={{ padding:0, marginBottom:12, overflow:'hidden' }}>
+              <div style={{ padding:'12px 16px', fontSize:13, fontWeight:700,
+                color:T.dark, borderBottom:`1px solid ${T.border}`, background:T.bg }}>
+                📊 Chi tiết hiệu suất {viewTab==='pack'?'đóng':'nhặt'}
+              </div>
+              <div style={{ overflowX:'auto' }}>
+                <table style={{ width:'100%', borderCollapse:'collapse', fontSize:11 }}>
+                  <thead>
+                    <tr style={{ background:T.bg, borderBottom:`2px solid ${T.border}` }}>
+                      <th style={{ padding:'10px 12px', textAlign:'left', fontWeight:700, color:T.med }}>NV</th>
+                      <th style={{ padding:'10px 8px', textAlign:'right', fontWeight:700, color:T.med }}>Đơn</th>
+                      <th style={{ padding:'10px 8px', textAlign:'right', fontWeight:700, color:T.med }}>Giá trị</th>
+                      <th style={{ padding:'10px 8px', textAlign:'right', fontWeight:700, color:T.med }}>TB/đơn</th>
+                      <th style={{ padding:'10px 8px', textAlign:'right', fontWeight:700, color:T.med }}>SP</th>
+                      <th style={{ padding:'10px 8px', textAlign:'right', fontWeight:700, color:T.med }}>TB phút</th>
+                      {viewTab==='pack' && <>
+                        <th style={{ padding:'10px 8px', textAlign:'right', fontWeight:700, color:T.med }}>Bookship</th>
+                        <th style={{ padding:'10px 8px', textAlign:'right', fontWeight:700, color:T.med }}>Bị sửa</th>
+                        <th style={{ padding:'10px 8px', textAlign:'right', fontWeight:700, color:T.med }}>Ảnh/đơn</th>
+                      </>}
+                      {viewTab==='pick' && (
+                        <th style={{ padding:'10px 8px', textAlign:'right', fontWeight:700, color:T.med }}>Tỷ lệ thiếu</th>
+                      )}
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {stats.map((s: any, idx) => (
+                      <tr key={s.user_id} style={{ borderBottom:`1px solid ${T.border}` }}>
+                        <td style={{ padding:'10px 12px', color:T.dark, fontWeight: idx===0?700:500 }}>
+                          {idx===0 && '🥇 '}{getName(s.user_id)}
+                        </td>
+                        <td style={{ padding:'10px 8px', textAlign:'right', color:T.dark, fontWeight:700 }}>
+                          {viewTab==='pack' ? s.order_count.toFixed(1) : s.order_count}
+                        </td>
+                        <td style={{ padding:'10px 8px', textAlign:'right', color:T.goldText, fontWeight:600 }}>
+                          {fmtMoney(Math.round(s.total_value))}
+                        </td>
+                        <td style={{ padding:'10px 8px', textAlign:'right', color:T.med }}>
+                          {fmtMoney(Math.round(s.avg_value))}
+                        </td>
+                        <td style={{ padding:'10px 8px', textAlign:'right', color:T.med }}>
+                          {Math.round(s.total_sp_qty)}
+                        </td>
+                        <td style={{ padding:'10px 8px', textAlign:'right', color:T.med }}>
+                          {viewTab==='pack'
+                            ? (s.avg_pack_minutes > 0 ? `${s.avg_pack_minutes}p` : '—')
+                            : (s.avg_pick_minutes > 0 ? `${s.avg_pick_minutes}p` : '—')}
+                        </td>
+                        {viewTab==='pack' && <>
+                          <td style={{ padding:'10px 8px', textAlign:'right', color:T.med }}>
+                            {Math.round(s.bookship_count)}
+                          </td>
+                          <td style={{ padding:'10px 8px', textAlign:'right',
+                            color: s.mod_rate > 10 ? T.red : T.med, fontWeight: s.mod_rate>10?700:400 }}>
+                            {Math.round(s.modified_count)} ({s.mod_rate.toFixed(0)}%)
+                          </td>
+                          <td style={{ padding:'10px 8px', textAlign:'right', color:T.med }}>
+                            {s.avg_photos.toFixed(1)}
+                          </td>
+                        </>}
+                        {viewTab==='pick' && (
+                          <td style={{ padding:'10px 8px', textAlign:'right',
+                            color: s.short_rate > 10 ? T.amber : T.med }}>
+                            {s.short_count} ({s.short_rate.toFixed(0)}%)
+                          </td>
+                        )}
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </Card>
+
+            <div style={{ padding:'10px 12px', background:T.bg, borderRadius:6, fontSize:11,
+              color:T.med, lineHeight:1.6 }}>
+              {viewTab==='pack' && <>
+                <div><b>📖 Giải thích chỉ số:</b></div>
+                <div>• <b>Đơn chia sẻ</b>: đơn có nhiều NV cùng đóng, mỗi người tính 1/N</div>
+                <div>• <b>TB/đơn</b>: Giá trị trung bình 1 đơn</div>
+                <div>• <b>TB phút</b>: Thời gian từ lúc nhặt xong đến đóng xong</div>
+                <div>• <b>Bị sửa {'>'}10%</b>: Cần chú ý</div>
+              </>}
+              {viewTab==='pick' && <>
+                <div><b>📖 Giải thích chỉ số:</b></div>
+                <div>• <b>TB phút</b>: Thời gian từ lúc đơn xuất hiện trong hệ thống đến lúc nhặt xong</div>
+                <div>• <b>Tỷ lệ thiếu</b>: % đơn có báo thiếu hàng</div>
+              </>}
+            </div>
+          </>
+        )
       )}
     </div>
   )
