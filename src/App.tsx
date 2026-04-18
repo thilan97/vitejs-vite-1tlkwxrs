@@ -12,7 +12,7 @@ const db = createClient(SUPABASE_URL, SUPABASE_KEY)
 // APP_VERSION — dùng để invalidate cache localStorage mỗi khi deploy version mới
 // (ngăn bug quyền user bị "reset" do cache position cũ sau deploy)
 // ⚠️ MỖI LẦN DEPLOY FEATURE MỚI CÓ PERMISSION MỚI, BUMP SỐ NÀY:
-const APP_VERSION = '2026.04.17.v41'
+const APP_VERSION = '2026.04.17.v42'
 
 // ════════════════════════════════════════════════════════════════
 // AUDIT LOG — ghi nhận các hành động phá hoại data để trace lại
@@ -5608,115 +5608,162 @@ function OrgChart({ user, allUsers, positions, mobile }: any) {
     children: buildTree(pos.id),
   }))
 
-  // ── CSS tree node ──────────────────────────────
+  // State ở root để quản lý collapse + edges
+  const [collapsedIds, setCollapsedIds] = useState<Set<string>>(new Set())
+  const containerRef = useRef<HTMLDivElement>(null)
+  const nodeRefs = useRef<Map<string, HTMLDivElement>>(new Map())
+  const [edges, setEdges] = useState<Array<{from:{x:number,y:number}, to:{x:number,y:number}, color:string, id:string}>>([])
+  const [svgSize, setSvgSize] = useState({ w:0, h:0 })
+
+  // Collect các edge parent-child mà hiện đang visible (không bị collapse)
+  const visibleEdges = useMemo(() => {
+    const pairs: Array<[string, string, string]> = []
+    const walk = (nodes: any[]) => {
+      nodes.forEach(n => {
+        if (n.children?.length > 0 && !collapsedIds.has(n.id)) {
+          n.children.forEach((c: any) => {
+            pairs.push([n.id, c.id, DEPT_COLOR[c.dept_id] || T.gold])
+          })
+          walk(n.children)
+        }
+      })
+    }
+    walk(tree)
+    return pairs
+  }, [tree, collapsedIds])
+
+  // Measure DOM positions → compute edges
+  useEffect(() => {
+    const computeEdges = () => {
+      if (!containerRef.current) return
+      const containerRect = containerRef.current.getBoundingClientRect()
+      const newEdges: typeof edges = []
+
+      for (const [parentId, childId, color] of visibleEdges) {
+        const parentEl = nodeRefs.current.get(parentId)
+        const childEl  = nodeRefs.current.get(childId)
+        if (!parentEl || !childEl) continue
+        const pr = parentEl.getBoundingClientRect()
+        const cr = childEl.getBoundingClientRect()
+        // Điểm xuất: bottom center của parent
+        const fromX = pr.left - containerRect.left + pr.width / 2
+        const fromY = pr.bottom - containerRect.top
+        // Điểm đến: top center của child
+        const toX = cr.left - containerRect.left + cr.width / 2
+        const toY = cr.top - containerRect.top
+        newEdges.push({ from:{x:fromX, y:fromY}, to:{x:toX, y:toY}, color, id:`${parentId}->${childId}` })
+      }
+      setEdges(newEdges)
+      setSvgSize({
+        w: containerRef.current.scrollWidth,
+        h: containerRef.current.scrollHeight,
+      })
+    }
+
+    // Đo nhiều lần để handle fonts loading làm shift layout
+    computeEdges()
+    const t1 = setTimeout(computeEdges, 50)
+    const t2 = setTimeout(computeEdges, 200)
+    const t3 = setTimeout(computeEdges, 500)
+
+    const onResize = () => computeEdges()
+    window.addEventListener('resize', onResize)
+
+    return () => {
+      clearTimeout(t1); clearTimeout(t2); clearTimeout(t3)
+      window.removeEventListener('resize', onResize)
+    }
+  }, [visibleEdges])
+
+  // ── Node card (pure, KHÔNG có line nào — SVG overlay vẽ hết) ──
   const NodeCard = ({ node }: any) => {
-    const [collapsed, setCollapsed] = useState(false)
     const deptColor = DEPT_COLOR[node.dept_id] || T.gold
     const hasChildren = node.children && node.children.length > 0
+    const collapsed = collapsedIds.has(node.id)
+
+    const toggleCollapse = () => {
+      setCollapsedIds(prev => {
+        const next = new Set(prev)
+        if (next.has(node.id)) next.delete(node.id)
+        else next.add(node.id)
+        return next
+      })
+    }
 
     return (
-      <div style={{ display:'flex', flexDirection:'column', alignItems:'center', position:'relative' }}>
+      <div style={{ display:'flex', flexDirection:'column', alignItems:'center' }}>
         {/* ─ Node box ─ */}
         <div
-          onClick={() => hasChildren && setCollapsed(c => !c)}
+          ref={el => {
+            if (el) nodeRefs.current.set(node.id, el)
+            else nodeRefs.current.delete(node.id)
+          }}
+          onClick={() => hasChildren && toggleCollapse()}
           style={{
             background: T.card,
             border: `2px solid ${deptColor}`,
             borderRadius: 12,
             padding: '10px 16px',
-            minWidth: 150,
-            maxWidth: 190,
+            minWidth: 170,
+            maxWidth: 220,
             textAlign: 'center',
             cursor: hasChildren ? 'pointer' : 'default',
             position: 'relative',
             boxShadow: '0 2px 8px rgba(0,0,0,0.07)',
-            transition: 'box-shadow .2s',
+            transition: 'box-shadow .15s, transform .1s',
             userSelect: 'none',
           }}
+          onMouseEnter={e => {
+            (e.currentTarget as any).style.boxShadow = '0 4px 14px rgba(0,0,0,0.12)'
+          }}
+          onMouseLeave={e => {
+            (e.currentTarget as any).style.boxShadow = '0 2px 8px rgba(0,0,0,0.07)'
+          }}
         >
-          {/* Màu top accent */}
-          <div style={{ position:'absolute', top:0, left:16, right:16, height:3, background:deptColor, borderRadius:'0 0 4px 4px' }}/>
-          <div style={{ fontSize:10, fontWeight:700, color:deptColor, textTransform:'uppercase', letterSpacing:.8, marginBottom:6, marginTop:4 }}>
+          <div style={{ position:'absolute', top:0, left:16, right:16, height:3,
+            background:deptColor, borderRadius:'0 0 4px 4px' }}/>
+          <div style={{ fontSize:10, fontWeight:700, color:deptColor,
+            textTransform:'uppercase', letterSpacing:.8, marginBottom:8, marginTop:4 }}>
             {node.name}
           </div>
-          {node.users.length > 0 ? node.users.map((u: any) => (
-            <div key={u.id} style={{ display:'flex', alignItems:'center', justifyContent:'center', gap:7, marginBottom:4 }}>
-              <div style={{ width:30, height:30, borderRadius:'50%', background:deptColor, flexShrink:0,
-                display:'flex', alignItems:'center', justifyContent:'center',
-                color:'#fff', fontSize:10, fontWeight:700, border:`2px solid #fff`,
-                boxShadow:`0 0 0 2px ${deptColor}40` }}>
-                {u.ini}
-              </div>
-              <div style={{ fontSize:12, fontWeight:600, color:T.dark, textAlign:'left' }}>{u.name}</div>
+          {node.users.length > 0 ? (
+            <div style={{ display:'flex', flexDirection:'column', gap:5, alignItems:'flex-start' }}>
+              {node.users.map((u: any) => (
+                <div key={u.id} style={{ display:'flex', alignItems:'center', gap:7, width:'100%' }}>
+                  <div style={{ width:24, height:24, borderRadius:'50%', background:deptColor,
+                    flexShrink:0, display:'flex', alignItems:'center', justifyContent:'center',
+                    color:'#fff', fontSize:9, fontWeight:700 }}>
+                    {u.ini}
+                  </div>
+                  <span style={{ fontSize:12, color:T.dark, fontWeight:500, textAlign:'left' }}>{u.name}</span>
+                </div>
+              ))}
             </div>
-          )) : (
-            <div style={{ fontSize:10, color:T.light, fontStyle:'italic', padding:'4px 0' }}>Chưa có nhân viên</div>
+          ) : (
+            <div style={{ fontSize:11, color:T.light, fontStyle:'italic', padding:'4px 0' }}>
+              Chưa có nhân viên
+            </div>
           )}
           {hasChildren && (
-            <div style={{ marginTop:6, fontSize:10, color:deptColor, fontWeight:700 }}>
+            <div style={{ marginTop:8, paddingTop:6, fontSize:10, color:deptColor, fontWeight:700,
+              borderTop:`1px dashed ${deptColor}40` }}>
               {collapsed ? `▶ ${node.children.length} cấp dưới` : '▼ Thu gọn'}
             </div>
           )}
         </div>
 
-        {/* ─ Children với CSS tree lines ─ */}
+        {/* Children — KHÔNG có CSS line nào, SVG overlay vẽ */}
         {hasChildren && !collapsed && (
           <div style={{
             display: 'flex',
             justifyContent: 'center',
-            paddingTop: 28,
-            position: 'relative',
+            alignItems: 'flex-start',
+            marginTop: 32,
+            gap: 32,
           }}>
-            {/* Đường dọc TỪ parent xuống đến đường ngang (ở giữa cha + nửa padding trên) */}
-            <div style={{
-              position: 'absolute',
-              top: 0, left: '50%',
-              width: 2, height: 14,
-              background: deptColor + '80',
-              transform: 'translateX(-50%)',
-            }}/>
-            {/* Đường ngang nối các con (chỉ vẽ nếu > 1 con) */}
-            {node.children.length > 1 && (
-              <div style={{
-                position: 'absolute',
-                top: 14, height: 2,
-                background: deptColor + '80',
-                // Ngang chỉ từ tâm con đầu đến tâm con cuối:
-                // Con đầu ở left padding 12px, con cuối ở right padding 12px
-                // → đường ngang kéo từ (center-first) đến (center-last)
-                // Mỗi con chiếm 1 flex item với padding 0 12px
-                // Chúng ta dùng: left = (first child center), right = (last child center)
-                // Dễ nhất: set đường ngang full width NHƯNG trừ đi nửa con đầu + nửa con cuối
-                // Vì mỗi con có cùng width → margin trên = (1/n)/2 của tổng
-                left: `calc((100% / ${node.children.length}) / 2)`,
-                right: `calc((100% / ${node.children.length}) / 2)`,
-              }}/>
-            )}
-            {/* Các node con */}
-            {node.children.map((child: any, ci: number) => {
-              const childColor = DEPT_COLOR[child.dept_id] || T.gold
-              return (
-                <div key={child.id} style={{
-                  flex: '1 1 0',
-                  display: 'flex',
-                  flexDirection: 'column',
-                  alignItems: 'center',
-                  padding: '0 12px',
-                  position: 'relative',
-                  minWidth: 0,
-                }}>
-                  {/* Đường dọc từ đường ngang (top: 14) xuống node con (top: 28) */}
-                  <div style={{
-                    position: 'absolute',
-                    top: 14, left: '50%',
-                    width: 2, height: 14,
-                    background: childColor + '80',
-                    transform: 'translateX(-50%)',
-                  }}/>
-                  <NodeCard node={child}/>
-                </div>
-              )
-            })}
+            {node.children.map((child: any) => (
+              <NodeCard key={child.id} node={child}/>
+            ))}
           </div>
         )}
       </div>
@@ -5727,7 +5774,8 @@ function OrgChart({ user, allUsers, positions, mobile }: any) {
     <div style={{ padding:`0 ${p} ${mobile?'80px':p}` }}>
       <Topbar mobile={mobile} title="Sơ đồ tổ chức" subtitle="LA Global Beauty"
         action={canEdit && (
-          <div style={{ fontSize:11, color:T.light, padding:'6px 12px', background:T.bg, borderRadius:8, border:`1px solid ${T.border}` }}>
+          <div style={{ fontSize:11, color:T.light, padding:'6px 12px',
+            background:T.bg, borderRadius:8, border:`1px solid ${T.border}` }}>
             ⚙️ Chỉnh sửa trong mục Vị trí
           </div>
         )}/>
@@ -5738,8 +5786,32 @@ function OrgChart({ user, allUsers, positions, mobile }: any) {
           description="Vào mục Vị trí để tạo cấu trúc công ty"/>
       ) : (
         <div style={{ overflowX:'auto', overflowY:'visible', paddingBottom:SP[6], paddingTop:SP[2] }}>
-          <div style={{ display:'flex', gap:SP[6], justifyContent:'center', minWidth:'max-content' }}>
-            {tree.map(node => <NodeCard key={node.id} node={node}/>)}
+          <div ref={containerRef}
+            style={{ position:'relative', display:'flex',
+              gap:48, justifyContent:'center',
+              minWidth:'max-content', padding:'12px 24px' }}>
+            {/* SVG overlay — connector lines */}
+            <svg
+              width={svgSize.w || 100} height={svgSize.h || 100}
+              style={{ position:'absolute', top:0, left:0,
+                pointerEvents:'none', zIndex:0, overflow:'visible' }}>
+              {edges.map(e => {
+                // Right-angle connector: parent_bottom → midY → child_top
+                const midY = (e.from.y + e.to.y) / 2
+                return (
+                  <path key={e.id}
+                    d={`M ${e.from.x} ${e.from.y} L ${e.from.x} ${midY} L ${e.to.x} ${midY} L ${e.to.x} ${e.to.y}`}
+                    stroke={e.color} strokeWidth={2} fill="none"
+                    strokeLinecap="round" strokeLinejoin="round"
+                    opacity={0.55}/>
+                )
+              })}
+            </svg>
+            {/* Nodes — zIndex 1 để nằm trên SVG */}
+            <div style={{ display:'flex', gap:48, alignItems:'flex-start',
+              justifyContent:'center', position:'relative', zIndex:1 }}>
+              {tree.map(node => <NodeCard key={node.id} node={node}/>)}
+            </div>
           </div>
         </div>
       )}
