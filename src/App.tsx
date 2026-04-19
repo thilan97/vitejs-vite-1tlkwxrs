@@ -1417,7 +1417,6 @@ function Dashboard({ user, checklist, tasks, allUsers, attendance, leaveRequests
     : perm.viewDeptChecklist ? dids : [user.id]
 
   const myCl = checklist.filter((c: any) => rIds.includes(c.assignee_id))
-  const myTk = tasks.filter((t: any) => rIds.includes(t.assignee_id))
   const todayAtt = attendance.filter((a: any) => a.date === todayISO() && rIds.includes(a.user_id))
   const clDone = myCl.filter((c: any) => c.status === 'done').length
   const staffCount = allUsers.filter((u: any) => rIds.includes(u.id) && u.id !== 'admin').length
@@ -1427,22 +1426,314 @@ function Dashboard({ user, checklist, tasks, allUsers, attendance, leaveRequests
   const pendingOT = (otRequests||[]).filter((r: any) => r.status === 'pending' &&
     (perm.viewAllDashboard || (perm.approveOT && dids.includes(r.user_id)))).length
 
-  const staffStats = allUsers
-    .filter((u: any) => rIds.includes(u.id) && u.id !== 'admin')
+  const staffStats = useMemo(() => allUsers
+    .filter((u: any) => rIds.includes(u.id) && u.id !== 'admin' && !isTestAccount(u))
     .map((u: any) => {
       const uCl = checklist.filter((c: any) => c.assignee_id === u.id)
       const done = uCl.filter((c: any) => c.status === 'done').length
-      return { name:u.name, pos:u.position_name||'', done, total:uCl.length,
+      return { id:u.id, name:u.name, pos:u.position_name||'', dept:u.dept_id,
+        done, total:uCl.length,
         pct:uCl.length>0?Math.round(done/uCl.length*100):0 }
     })
-    .sort((a: any, b: any) => b.pct - a.pct)
+    .filter((s: any) => s.total > 0)
+    .sort((a: any, b: any) => b.pct - a.pct),
+    [allUsers, rIds, checklist])
 
   const deptStats = ['kho','sale','vp'].map(d => {
-    const du = allUsers.filter((u: any) => u.dept_id === d).map((u: any) => u.id)
+    const du = allUsers.filter((u: any) => u.dept_id === d && !isTestAccount(u)).map((u: any) => u.id)
     const dc = checklist.filter((c: any) => du.includes(c.assignee_id))
     const done = dc.filter((c: any) => c.status === 'done').length
     return { name:DEPT_NAME[d], done, total:dc.length, pct:dc.length>0?Math.round(done/dc.length*100):0, color:DEPT_COLOR[d] }
   })
+
+  // ═══════════════════════════════════════════════════════════════
+  // ═══ NEW: Today operational stats + warehouse performance ═══
+  // ═══════════════════════════════════════════════════════════════
+  const todayISOStr = todayISO()
+  const todayStartISO = `${todayISOStr}T00:00:00`
+  const todayEndISO   = `${todayISOStr}T23:59:59`
+
+  const [todayOrders, setTodayOrders]   = useState<any[]>([])
+  const [todayWrong,  setTodayWrong]    = useState<any[]>([])
+  const [todayReturns,setTodayReturns]  = useState<any[]>([])
+  const [loadingOps,  setLoadingOps]    = useState(true)
+
+  // KV Sales state
+  const [kvSalesRows,    setKvSalesRows]    = useState<any[]>([])
+  const [kvLastSyncAt,   setKvLastSyncAt]   = useState<string | null>(null)
+  const [kvSyncFromDate, setKvSyncFromDate] = useState<string>('')
+  const [kvSyncToDate,   setKvSyncToDate]   = useState<string>('')
+  const [kvSyncError,    setKvSyncError]    = useState<string | null>(null)
+  const [kvSyncing,      setKvSyncing]      = useState(false)
+
+  const showWhPerf     = perm.viewAllDashboard || perm.viewWarehouseStats || user.dept_id === 'kho'
+  const showWhPerfFull = perm.viewAllDashboard || perm.viewWarehouseStats
+  const showKvSales    = perm.viewAllDashboard || user.dept_id === 'sale'
+  const showKvSalesFull= perm.viewAllDashboard || perm.approveLeave /* QM Sale (Linh) có approveLeave của dept sale */
+
+  // Fetch today ops data
+  const fetchTodayOps = useCallback(async () => {
+    setLoadingOps(true)
+    try {
+      const [ordPicked, ordPacked, wrongRes, retRes] = await Promise.all([
+        db.from('packing_workflow').select('*').gte('picked_at', todayStartISO).lte('picked_at', todayEndISO).limit(2000),
+        db.from('packing_workflow').select('*').gte('packed_at', todayStartISO).lte('packed_at', todayEndISO).limit(2000),
+        db.from('wrong_orders').select('*').gte('created_at', todayStartISO).lte('created_at', todayEndISO).limit(500),
+        db.from('return_slips').select('*').eq('date', todayISOStr).limit(500),
+      ])
+      // Merge orders (dedupe theo order_code)
+      const merged = new Map<string, any>()
+      ;[...(ordPicked.data||[]), ...(ordPacked.data||[])].forEach((o: any) => merged.set(o.order_code, o))
+      setTodayOrders(Array.from(merged.values()))
+      setTodayWrong(wrongRes.data || [])
+      setTodayReturns(retRes.data || [])
+    } catch (e) {
+      console.warn('[Dashboard] fetchTodayOps error:', e)
+    } finally {
+      setLoadingOps(false)
+    }
+  }, [todayISOStr, todayStartISO, todayEndISO])
+
+  // Fetch KV sales data (from 1st of month to yesterday)
+  const fetchKvSales = useCallback(async () => {
+    try {
+      const now = new Date()
+      const firstOfMonth = new Date(now.getFullYear(), now.getMonth(), 1)
+      const yesterday = new Date(now); yesterday.setDate(yesterday.getDate() - 1)
+      const fromD = firstOfMonth.toISOString().split('T')[0]
+      const toD   = yesterday.toISOString().split('T')[0]
+      const [salesRes, setRes] = await Promise.all([
+        db.from('kiotviet_sales_daily').select('*')
+          .gte('date', fromD).lte('date', toD).limit(5000),
+        db.from('settings').select('kv_sales_last_sync_at, kv_sales_last_sync_from, kv_sales_last_sync_to, kv_sales_last_sync_error').eq('id', 'main').maybeSingle(),
+      ])
+      setKvSalesRows(salesRes.data || [])
+      if (setRes.data) {
+        setKvLastSyncAt(setRes.data.kv_sales_last_sync_at || null)
+        setKvSyncFromDate(setRes.data.kv_sales_last_sync_from || fromD)
+        setKvSyncToDate(setRes.data.kv_sales_last_sync_to || toD)
+        setKvSyncError(setRes.data.kv_sales_last_sync_error || null)
+      }
+    } catch (e) {
+      console.warn('[Dashboard] fetchKvSales error:', e)
+    }
+  }, [])
+
+  useEffect(() => {
+    fetchTodayOps()
+    if (showKvSales) fetchKvSales()
+    // refresh ops data mỗi 3 phút
+    const iv = setInterval(() => fetchTodayOps(), 180_000)
+    return () => clearInterval(iv)
+  }, [fetchTodayOps, fetchKvSales, showKvSales])
+
+  // Manual sync KV sales (admin only)
+  const handleSyncKv = async () => {
+    if (kvSyncing) return
+    if (!perm.viewAllDashboard) { alert('Chỉ admin/GĐ mới sync được'); return }
+    if (!confirm('Sync doanh số KiotViet cho tháng này (đến 0h hôm nay)?')) return
+    setKvSyncing(true)
+    try {
+      const res = await fetch(`${SUPABASE_URL}/functions/v1/kiotviet-sales-revenue`, {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${SUPABASE_ANON}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({}),
+      })
+      const data = await res.json()
+      if (!res.ok) throw new Error(data?.error || `HTTP ${res.status}`)
+      await fetchKvSales()
+      alert(`✅ Sync xong!\n${data.invoice_count} hóa đơn, ${data.sales_rows_count} dòng dữ liệu.`)
+    } catch (e: any) {
+      alert(`❌ Sync lỗi: ${e.message}`)
+    } finally {
+      setKvSyncing(false)
+    }
+  }
+
+  // ═══ Today operational stats ═══
+  const todayOps = useMemo(() => {
+    let picked = 0, packed = 0, photos = 0, aiReview = 0, totalValue = 0
+    todayOrders.forEach((o: any) => {
+      const pickedToday = o.picked_at && o.picked_at.slice(0, 10) === todayISOStr
+      const packedToday = o.packed_at && o.packed_at.slice(0, 10) === todayISOStr
+      if (pickedToday) picked += 1
+      if (packedToday && o.status === 'done') {
+        packed += 1
+        totalValue += Number(o.total_amount || 0)
+      }
+      if (pickedToday || packedToday) {
+        const ppk = Array.isArray(o.photos_picked) ? o.photos_picked.length : 0
+        const ppd = Array.isArray(o.photos_packed) ? o.photos_packed.length : 0
+        photos += ppk + ppd
+      }
+      // AI review: mismatch/unclear + chưa QM review
+      if (['mismatch','unclear'].includes(o.ai_check_status) && !o.ai_qm_reviewed_at) {
+        aiReview += 1
+      }
+    })
+    return { picked, packed, photos, aiReview, totalValue }
+  }, [todayOrders, todayISOStr])
+
+  // ═══ Today NV Kho performance ═══
+  const todayWhPerf = useMemo(() => {
+    // Chỉ NV Kho
+    const khoUsers = allUsers.filter((u: any) => u.dept_id === 'kho' && u.active !== false && !isTestAccount(u))
+    if (khoUsers.length === 0) return []
+
+    // Packer stats hôm nay (chia 1/N cho multi-packer)
+    const packMap = new Map<string, any>()
+    todayOrders.forEach((o: any) => {
+      if (o.status !== 'done') return
+      if (!o.packed_at || o.packed_at.slice(0, 10) !== todayISOStr) return
+      const ids: string[] = (o.packed_by_ids && o.packed_by_ids.length > 0)
+        ? o.packed_by_ids
+        : (o.packed_by ? [o.packed_by] : [])
+      if (ids.length === 0) return
+      const N = ids.length
+      ids.forEach((pid: string) => {
+        if (!packMap.has(pid)) packMap.set(pid, { packed: 0, items: 0 })
+        const s = packMap.get(pid)
+        s.packed += 1 / N
+        const itemsTotal = Array.isArray(o.items)
+          ? o.items.reduce((sum: number, it: any) => {
+              const qty = Number(it.qty||0) - Number(it.short_qty||0)
+              return sum + Math.max(0, qty)
+            }, 0) : 0
+        s.items += itemsTotal / N
+      })
+    })
+
+    // Picker stats hôm nay
+    const pickMap = new Map<string, number>()
+    todayOrders.forEach((o: any) => {
+      if (!o.picked_at || o.picked_at.slice(0, 10) !== todayISOStr) return
+      if (!o.picked_by) return
+      pickMap.set(o.picked_by, (pickMap.get(o.picked_by) || 0) + 1)
+    })
+
+    // Errors hôm nay
+    const errMap = new Map<string, number>()
+    todayWrong.forEach((w: any) => {
+      if (!w.violator_id) return
+      errMap.set(w.violator_id, (errMap.get(w.violator_id) || 0) + 1)
+    })
+    todayReturns.forEach((r: any) => {
+      if (!r.violator_id) return
+      errMap.set(r.violator_id, (errMap.get(r.violator_id) || 0) + 1)
+    })
+
+    // Hours hôm nay
+    const hourMap = new Map<string, number>()
+    attendance.forEach((a: any) => {
+      if (a.date !== todayISOStr || !a.user_id || !a.check_in || !a.check_out) return
+      const inT = new Date(`${a.date}T${a.check_in}`).getTime()
+      const outT = new Date(`${a.date}T${a.check_out}`).getTime()
+      if (outT <= inT) return
+      const h = (outT - inT) / 3600000
+      const netH = h > 6 ? h - 1 : h
+      hourMap.set(a.user_id, (hourMap.get(a.user_id) || 0) + netH)
+    })
+
+    // Build metrics per NV Kho
+    const metrics: any[] = []
+    khoUsers.forEach((u: any) => {
+      const packed = packMap.get(u.id)?.packed || 0
+      const items = packMap.get(u.id)?.items || 0
+      const picked = pickMap.get(u.id) || 0
+      const totalOps = packed + picked
+      const hours = hourMap.get(u.id) || 0
+      const errors = errMap.get(u.id) || 0
+      if (totalOps === 0 && hours === 0) return
+      metrics.push({
+        user_id: u.id, name: u.name, pos: u.position_name || '',
+        packed: Math.round(packed * 10) / 10,
+        picked,
+        items: Math.round(items),
+        total_ops: totalOps,
+        hours: Math.round(hours * 10) / 10,
+        errors,
+        ops_per_hour: hours > 0 ? totalOps / hours : 0,
+        error_rate: totalOps > 0 ? errors / totalOps : 0,
+      })
+    })
+
+    if (metrics.length === 0) return []
+
+    // Baseline để normalize
+    const opsPerHourList = metrics.filter(m => m.hours > 0).map(m => m.ops_per_hour).sort((a, b) => a - b)
+    const median = opsPerHourList.length > 0
+      ? opsPerHourList[Math.floor(opsPerHourList.length / 2)] : 1
+    const maxOps = Math.max(1, ...metrics.map(m => m.total_ops))
+
+    return metrics.map(m => {
+      const speed = m.hours > 0 && median > 0
+        ? Math.min(100, Math.round((m.ops_per_hour / median) * 50)) : 0
+      const volume = Math.round((m.total_ops / maxOps) * 100)
+      const quality = Math.max(0, Math.round((1 - m.error_rate) * 100))
+      const total = Math.round(speed * 0.5 + volume * 0.3 + quality * 0.2)
+      let grade = '🔴', gradeLabel = 'Dưới kỳ vọng'
+      if (total >= 90)      { grade = '🌟'; gradeLabel = 'Xuất sắc' }
+      else if (total >= 75) { grade = '✅'; gradeLabel = 'Đạt yêu cầu' }
+      else if (total >= 60) { grade = '⚠️'; gradeLabel = 'Cần cải thiện' }
+      return { ...m, speed, volume, quality, total, grade, gradeLabel }
+    }).sort((a, b) => b.total - a.total)
+  }, [allUsers, todayOrders, todayWrong, todayReturns, attendance, todayISOStr])
+
+  // ═══ KV Sales ranking ═══
+  const kvSalesRanking = useMemo(() => {
+    // Group theo sold_by_name (gộp tất cả ngày lại)
+    const map = new Map<string, any>()
+    kvSalesRows.forEach((r: any) => {
+      const key = r.sold_by_name || '(Không xác định)'
+      if (!map.has(key)) {
+        map.set(key, {
+          name: key, sold_by_id: r.sold_by_id,
+          invoice_count: 0, total_revenue: 0, total_discount: 0,
+        })
+      }
+      const s = map.get(key)
+      s.invoice_count += Number(r.invoice_count || 0)
+      s.total_revenue += Number(r.total_revenue || 0)
+      s.total_discount += Number(r.total_discount || 0)
+    })
+    return Array.from(map.values()).sort((a, b) => b.total_revenue - a.total_revenue)
+  }, [kvSalesRows])
+
+  const kvTotalRevenue = kvSalesRanking.reduce((s, x) => s + x.total_revenue, 0)
+  const kvTotalInvoices = kvSalesRanking.reduce((s, x) => s + x.invoice_count, 0)
+
+  // Hàm format date DD/MM
+  const fmtDM = (iso: string) => {
+    if (!iso) return '—'
+    const d = new Date(iso)
+    return `${String(d.getDate()).padStart(2,'0')}/${String(d.getMonth()+1).padStart(2,'0')}`
+  }
+  const fmtDMY = (iso: string) => {
+    if (!iso) return '—'
+    const d = new Date(iso)
+    return `${String(d.getDate()).padStart(2,'0')}/${String(d.getMonth()+1).padStart(2,'0')}/${d.getFullYear()}`
+  }
+  const fmtDT = (iso: string) => {
+    if (!iso) return '—'
+    const d = new Date(iso)
+    return `${String(d.getHours()).padStart(2,'0')}:${String(d.getMinutes()).padStart(2,'0')} ${String(d.getDate()).padStart(2,'0')}/${String(d.getMonth()+1).padStart(2,'0')}`
+  }
+  const fmtMoneyShort = (n: number) => Number(n||0).toLocaleString('vi-VN')
+
+  // Self entry (for NV Kho seeing only themselves)
+  const myPerfEntry = todayWhPerf.find((m: any) => m.user_id === user.id)
+  const myPerfRank  = myPerfEntry ? todayWhPerf.findIndex((m: any) => m.user_id === user.id) + 1 : 0
+
+  // Self KV sale entry (match by user name or kiotviet_user_id)
+  const normalizeStr = (s: string) => (s||'').toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g,'').replace(/đ/g,'d').trim()
+  const myKvEntry = kvSalesRanking.find((r: any) => {
+    if (user.kiotviet_user_id && r.sold_by_id === user.kiotviet_user_id) return true
+    return normalizeStr(r.name) === normalizeStr(user.name || '')
+  })
+  const myKvRank = myKvEntry ? kvSalesRanking.findIndex((r: any) => r === myKvEntry) + 1 : 0
 
   return (
     <div style={{ padding:`0 ${p} ${p}` }}>
@@ -1451,7 +1742,8 @@ function Dashboard({ user, checklist, tasks, allUsers, attendance, leaveRequests
         title={perm.viewAllDashboard?'Dashboard':perm.viewDeptChecklist?`Dashboard — ${user.dept_name}`:'Tổng quan'}
         subtitle={new Date().toLocaleDateString('vi-VN',{weekday:'long',day:'2-digit',month:'2-digit',year:'numeric'})}/>
 
-      <div style={{ display:'grid', gridTemplateColumns:mobile?'1fr 1fr':'repeat(4,1fr)', gap:10, marginBottom:16 }}>
+      {/* ═══ Row 1: 4 cards checklist/vắng/chờ duyệt ═══ */}
+      <div style={{ display:'grid', gridTemplateColumns:mobile?'1fr 1fr':'repeat(4,1fr)', gap:10, marginBottom:12 }}>
         {[
           { label:'Checklist xong', val:`${clDone}/${myCl.length}`,      icon:'✅', color:T.green },
           { label:'Checklist trễ',  val:myCl.filter(isOverdue).length,   icon:'🔴', color:T.red   },
@@ -1477,6 +1769,35 @@ function Dashboard({ user, checklist, tasks, allUsers, attendance, leaveRequests
         ))}
       </div>
 
+      {/* ═══ Row 2 [NEW]: 4 cards operational hôm nay ═══ */}
+      <div style={{ display:'grid', gridTemplateColumns:mobile?'1fr 1fr':'repeat(4,1fr)', gap:10, marginBottom:16 }}>
+        {[
+          { label:'Đơn đã nhặt',  val:loadingOps?'…':todayOps.picked,   icon:'📦', color:T.blue,   sub:'hôm nay' },
+          { label:'Đơn đã đóng',  val:loadingOps?'…':todayOps.packed,   icon:'✅', color:T.green,  sub:todayOps.totalValue>0?`${fmtMoneyShort(todayOps.totalValue)}đ`:'hôm nay' },
+          { label:'Tổng ảnh',     val:loadingOps?'…':todayOps.photos,   icon:'📸', color:T.teal,   sub:'nhặt + đóng' },
+          { label:'AI cần review',val:loadingOps?'…':todayOps.aiReview, icon:'🚨', color:todayOps.aiReview>0?T.red:T.light, sub:'lệch hoặc mờ' },
+        ].map((k, i) => (
+          <div key={i} style={{ background:T.card, border:`1px solid ${T.border}`,
+            borderRadius:RD.lg, padding:`${SP[3]}px ${SP[4]}px`,
+            transition:'all .15s' }}
+            onMouseEnter={e => (e.currentTarget.style.borderColor = T.gold,
+                                e.currentTarget.style.boxShadow = '0 2px 8px rgba(0,0,0,0.04)')}
+            onMouseLeave={e => (e.currentTarget.style.borderColor = T.border,
+                                e.currentTarget.style.boxShadow = 'none')}>
+            <div style={{ display:'flex', justifyContent:'space-between',
+              alignItems:'center', marginBottom:SP[2] }}>
+              <span style={{ fontSize:FS.xs, fontWeight:700, color:T.light,
+                textTransform:'uppercase', letterSpacing:.8 }}>{k.label}</span>
+              <span style={{ fontSize:FS.lg }}>{k.icon}</span>
+            </div>
+            <div style={{ fontSize:FS.x2l, fontWeight:800, color:k.color,
+              lineHeight:1.1, letterSpacing:-.5 }}>{k.val}</div>
+            {k.sub && <div style={{ fontSize:FS.xs, color:T.light, marginTop:3 }}>{k.sub}</div>}
+          </div>
+        ))}
+      </div>
+
+      {/* ═══ Row 3: Tiến độ PB + Tiến độ NV (gộp xếp hạng checklist top 5 vào cuối) ═══ */}
       <div style={{ display:'grid', gridTemplateColumns:mobile?'1fr':perm.viewAllDashboard?'1fr 1fr':'1fr 1fr', gap:14 }}>
         {perm.viewAllDashboard && (
           <Card>
@@ -1495,23 +1816,46 @@ function Dashboard({ user, checklist, tasks, allUsers, attendance, leaveRequests
           </Card>
         )}
         <Card>
-          <div style={{ fontSize:13, fontWeight:600, color:T.dark, marginBottom:12 }}>
-            {perm.viewAllDashboard||perm.viewDeptChecklist ? 'Tiến độ nhân viên' : 'Việc chưa xong hôm nay'}
-          </div>
-          {staffStats.length > 0 ? staffStats.slice(0,6).map((s: any, i: number) => (
-            <div key={i} style={{ marginBottom:10 }}>
-              <div style={{ display:'flex', justifyContent:'space-between', fontSize:12, marginBottom:4 }}>
-                <div>
-                  <span style={{ fontWeight:500, color:T.dark }}>{s.name}</span>
-                  {s.pos && <span style={{ fontSize:10, color:T.light, marginLeft:6 }}>{s.pos}</span>}
-                </div>
-                <span style={{ color:T.light }}>{s.done}/{s.total} — {s.pct}%</span>
-              </div>
-              <div style={{ height:6, background:T.border, borderRadius:3, overflow:'hidden' }}>
-                <div style={{ height:'100%', width:`${s.pct}%`, background:T.gold, borderRadius:3 }}/>
-              </div>
+          <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:12 }}>
+            <div style={{ fontSize:13, fontWeight:600, color:T.dark }}>
+              {perm.viewAllDashboard||perm.viewDeptChecklist ? 'Tiến độ nhân viên' : 'Việc chưa xong hôm nay'}
             </div>
-          )) : checklist.filter((c: any) => c.assignee_id === user.id && c.status !== 'done').slice(0,5).map((c: any) => (
+            {staffStats.length > 0 && (
+              <span style={{ fontSize:10, color:T.light }}>{staffStats.length} người</span>
+            )}
+          </div>
+          {staffStats.length > 0 ? (
+            <>
+              {/* Top 5 với progress bar */}
+              {staffStats.slice(0,5).map((s: any, i: number) => (
+                <div key={s.id} style={{ marginBottom:9 }}>
+                  <div style={{ display:'flex', justifyContent:'space-between', fontSize:12, marginBottom:3 }}>
+                    <div style={{ display:'flex', alignItems:'center', gap:6, minWidth:0 }}>
+                      <span style={{ fontSize:11, color:T.light, width:14, textAlign:'center', flexShrink:0 }}>
+                        {i===0?'🥇':i===1?'🥈':i===2?'🥉':i+1}
+                      </span>
+                      <span style={{ fontWeight:500, color:T.dark, overflow:'hidden',
+                        textOverflow:'ellipsis', whiteSpace:'nowrap' }}>{s.name}</span>
+                      {s.pos && !mobile && <span style={{ fontSize:10, color:T.light, marginLeft:4 }}>{s.pos}</span>}
+                    </div>
+                    <span style={{ color:T.light, flexShrink:0, marginLeft:6 }}>
+                      {s.done}/{s.total} · <b style={{ color:s.pct>=80?T.green:s.pct>=50?T.amber:T.red }}>{s.pct}%</b>
+                    </span>
+                  </div>
+                  <div style={{ height:5, background:T.border, borderRadius:3, overflow:'hidden' }}>
+                    <div style={{ height:'100%', width:`${s.pct}%`,
+                      background:s.pct>=80?T.green:s.pct>=50?T.amber:T.red, borderRadius:3 }}/>
+                  </div>
+                </div>
+              ))}
+              {staffStats.length > 5 && (
+                <div style={{ fontSize:11, color:T.light, textAlign:'center', marginTop:6, paddingTop:8,
+                  borderTop:`1px dashed ${T.border}` }}>
+                  + {staffStats.length - 5} người khác
+                </div>
+              )}
+            </>
+          ) : checklist.filter((c: any) => c.assignee_id === user.id && c.status !== 'done').slice(0,5).map((c: any) => (
             <div key={c.id} style={{ display:'flex', gap:8, padding:'7px 0', borderBottom:`1px solid ${T.border}` }}>
               <span>{isOverdue(c)?'🔴':'🕐'}</span>
               <div>
@@ -1523,26 +1867,249 @@ function Dashboard({ user, checklist, tasks, allUsers, attendance, leaveRequests
         </Card>
       </div>
 
-      {perm.viewAllDashboard && staffStats.length > 0 && (
+      {/* ═══ Row 4 [NEW]: Xếp hạng hiệu suất NV Kho hôm nay ═══ */}
+      {showWhPerf && (
         <Card style={{ marginTop:14 }}>
-          <div style={{ fontSize:13, fontWeight:600, color:T.dark, marginBottom:14 }}>🏆 Bảng xếp hạng hôm nay</div>
-          <div style={{ display:'grid', gridTemplateColumns:mobile?'1fr':'repeat(3,1fr)', gap:10 }}>
-            {staffStats.slice(0,9).map((s: any, i: number) => (
-              <div key={i} style={{ display:'flex', alignItems:'center', gap:10, padding:'8px 12px',
-                background:i===0?T.goldBg:T.bg, borderRadius:8,
-                border:`1px solid ${i===0?T.goldBorder:T.border}` }}>
-                <div style={{ fontSize:16, width:24, textAlign:'center' }}>
-                  {i===0?'🥇':i===1?'🥈':i===2?'🥉':i+1}
-                </div>
-                <div style={{ flex:1 }}>
-                  <div style={{ fontSize:12, fontWeight:600, color:T.dark }}>{s.name}</div>
-                  <div style={{ fontSize:10, color:T.light }}>{s.pos||`${s.done}/${s.total} việc`}</div>
-                </div>
-                <div style={{ fontSize:13, fontWeight:700,
-                  color:s.pct>=80?T.green:s.pct>=50?T.amber:T.red }}>{s.pct}%</div>
-              </div>
-            ))}
+          <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:12, flexWrap:'wrap', gap:6 }}>
+            <div style={{ fontSize:13, fontWeight:600, color:T.dark }}>
+              🏭 Xếp hạng hiệu suất NV Kho hôm nay
+            </div>
+            <div style={{ fontSize:10, color:T.light, fontStyle:'italic' }}>
+              Speed 50% · Volume 30% · Quality 20%
+            </div>
           </div>
+
+          {todayWhPerf.length === 0 ? (
+            <div style={{ fontSize:12, color:T.light, textAlign:'center', padding:'16px 0' }}>
+              Chưa có NV Kho nào có hoạt động hôm nay
+            </div>
+          ) : showWhPerfFull ? (
+            <>
+              {todayWhPerf.slice(0, 5).map((m: any, i: number) => (
+                <div key={m.user_id} style={{ display:'flex', alignItems:'center', gap:10,
+                  padding:'8px 10px', marginBottom:6,
+                  background:i===0?T.goldBg:T.bg,
+                  border:`1px solid ${i===0?T.goldBorder:T.border}`,
+                  borderRadius:RD.md }}>
+                  <div style={{ fontSize:14, width:22, textAlign:'center', fontWeight:700, color:T.dark }}>
+                    {i===0?'🥇':i===1?'🥈':i===2?'🥉':i+1}
+                  </div>
+                  <div style={{ flex:1, minWidth:0 }}>
+                    <div style={{ fontSize:12, fontWeight:600, color:T.dark,
+                      overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap' }}>
+                      {m.name} {m.user_id === user.id && <span style={{ fontSize:9, color:T.gold, marginLeft:4 }}>(bạn)</span>}
+                    </div>
+                    <div style={{ fontSize:10, color:T.light, marginTop:2 }}>
+                      📦 {m.picked} nhặt · ✅ {m.packed} đóng · 🧴 {m.items} SP
+                      {m.errors > 0 && <span style={{ color:T.red }}> · 🚨 {m.errors} lỗi</span>}
+                    </div>
+                  </div>
+                  <div style={{ textAlign:'right', flexShrink:0 }}>
+                    <div style={{ fontSize:14, fontWeight:700,
+                      color:m.total>=75?T.green:m.total>=60?T.amber:T.red }}>
+                      {m.grade} {m.total}
+                    </div>
+                    <div style={{ fontSize:9, color:T.light, marginTop:1 }}>{m.gradeLabel}</div>
+                  </div>
+                </div>
+              ))}
+              {todayWhPerf.length > 5 && (
+                <div style={{ fontSize:11, color:T.light, textAlign:'center', marginTop:6, paddingTop:6,
+                  borderTop:`1px dashed ${T.border}` }}>
+                  + {todayWhPerf.length - 5} NV khác — xem đầy đủ trong module 📊 Hiệu suất kho
+                </div>
+              )}
+            </>
+          ) : (
+            // NV Kho chỉ thấy bản thân
+            myPerfEntry ? (
+              <div style={{ padding:'10px 12px', background:T.goldBg,
+                border:`1px solid ${T.goldBorder}`, borderRadius:RD.md }}>
+                <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:10 }}>
+                  <div>
+                    <div style={{ fontSize:14, fontWeight:700, color:T.dark }}>
+                      {myPerfEntry.grade} {myPerfEntry.name}
+                    </div>
+                    <div style={{ fontSize:10, color:T.goldText, marginTop:2 }}>
+                      Hạng {myPerfRank}/{todayWhPerf.length} · {myPerfEntry.gradeLabel}
+                    </div>
+                  </div>
+                  <div style={{ fontSize:22, fontWeight:800,
+                    color:myPerfEntry.total>=75?T.green:myPerfEntry.total>=60?T.amber:T.red }}>
+                    {myPerfEntry.total}
+                  </div>
+                </div>
+                <div style={{ display:'grid', gridTemplateColumns:'repeat(3,1fr)', gap:8 }}>
+                  {[
+                    { label:'⚡ Speed',  val:myPerfEntry.speed,   weight:'50%' },
+                    { label:'📊 Volume', val:myPerfEntry.volume,  weight:'30%' },
+                    { label:'✓ Quality', val:myPerfEntry.quality, weight:'20%' },
+                  ].map(f => (
+                    <div key={f.label} style={{ background:'#fff', padding:'6px 8px',
+                      borderRadius:RD.sm, textAlign:'center' }}>
+                      <div style={{ fontSize:10, color:T.light }}>{f.label}</div>
+                      <div style={{ fontSize:16, fontWeight:700, color:T.dark, marginTop:2 }}>{f.val}</div>
+                      <div style={{ fontSize:9, color:T.light }}>x {f.weight}</div>
+                    </div>
+                  ))}
+                </div>
+                <div style={{ fontSize:10, color:T.goldText, marginTop:10,
+                  paddingTop:8, borderTop:`1px dashed ${T.goldBorder}` }}>
+                  📦 Đã nhặt {myPerfEntry.picked} đơn · ✅ Đã đóng {myPerfEntry.packed} đơn · 🧴 {myPerfEntry.items} SP
+                  {myPerfEntry.errors > 0 && <span style={{ color:T.red }}> · 🚨 {myPerfEntry.errors} lỗi</span>}
+                </div>
+              </div>
+            ) : (
+              <div style={{ fontSize:12, color:T.light, textAlign:'center', padding:'16px 0' }}>
+                Bạn chưa có hoạt động nhặt/đóng nào hôm nay
+              </div>
+            )
+          )}
+        </Card>
+      )}
+
+      {/* ═══ Row 5 [NEW]: Doanh số NV Sale từ KiotViet (tháng này) ═══ */}
+      {showKvSales && (
+        <Card style={{ marginTop:14 }}>
+          <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:10, flexWrap:'wrap', gap:6 }}>
+            <div style={{ fontSize:13, fontWeight:600, color:T.dark }}>
+              💼 Doanh số NV Sale — tháng này
+            </div>
+            {perm.viewAllDashboard && (
+              <button onClick={handleSyncKv} disabled={kvSyncing}
+                style={{ padding:'5px 12px', borderRadius:16, cursor:kvSyncing?'wait':'pointer',
+                  fontFamily:'inherit', fontSize:11, fontWeight:600,
+                  border:`1px solid ${T.gold}`,
+                  background: kvSyncing?T.bg:T.goldBg,
+                  color: T.goldText }}>
+                {kvSyncing ? '⏳ Đang sync...' : '🔄 Sync ngay từ KiotViet'}
+              </button>
+            )}
+          </div>
+
+          {/* Sync info */}
+          <div style={{ fontSize:11, color:T.light, marginBottom:12,
+            padding:'6px 10px', background:T.bg, borderRadius:RD.sm,
+            borderLeft:`3px solid ${kvSyncError ? T.red : T.blue}` }}>
+            {kvSalesRows.length === 0 && !kvLastSyncAt ? (
+              <span>Chưa có dữ liệu. {perm.viewAllDashboard ? 'Click "Sync ngay" để kéo dữ liệu từ KiotViet.' : 'Admin chưa sync lần nào.'}</span>
+            ) : (
+              <>
+                📅 Dữ liệu từ <b style={{ color:T.dark }}>{fmtDM(kvSyncFromDate)}</b> đến <b style={{ color:T.dark }}>{fmtDM(kvSyncToDate)}</b>
+                {' '}(đến 0h00 ngày {fmtDMY(kvSyncToDate && new Date(new Date(kvSyncToDate).getTime() + 86400000).toISOString())})
+                {' '}· Cập nhật lúc <b style={{ color:T.dark }}>{fmtDT(kvLastSyncAt||'')}</b>
+                {kvSyncError && <div style={{ color:T.red, marginTop:4 }}>❌ Lỗi lần sync cuối: {kvSyncError}</div>}
+              </>
+            )}
+          </div>
+
+          {kvSalesRanking.length === 0 ? (
+            <div style={{ fontSize:12, color:T.light, textAlign:'center', padding:'16px 0' }}>
+              Chưa có dữ liệu doanh số
+            </div>
+          ) : showKvSalesFull ? (
+            <>
+              {/* Stats tổng */}
+              <div style={{ display:'grid', gridTemplateColumns:mobile?'1fr 1fr':'repeat(3,1fr)',
+                gap:8, marginBottom:12 }}>
+                <div style={{ background:T.greenBg, padding:'8px 12px', borderRadius:RD.md,
+                  border:`1px solid ${T.green}20` }}>
+                  <div style={{ fontSize:10, color:T.green, fontWeight:700,
+                    textTransform:'uppercase', letterSpacing:.5 }}>Tổng doanh thu</div>
+                  <div style={{ fontSize:18, fontWeight:800, color:T.green, marginTop:2 }}>
+                    {fmtMoneyShort(kvTotalRevenue)}đ
+                  </div>
+                </div>
+                <div style={{ background:T.blueBg, padding:'8px 12px', borderRadius:RD.md,
+                  border:`1px solid ${T.blue}20` }}>
+                  <div style={{ fontSize:10, color:T.blue, fontWeight:700,
+                    textTransform:'uppercase', letterSpacing:.5 }}>Tổng hóa đơn</div>
+                  <div style={{ fontSize:18, fontWeight:800, color:T.blue, marginTop:2 }}>
+                    {kvTotalInvoices.toLocaleString('vi-VN')}
+                  </div>
+                </div>
+                <div style={{ background:T.goldBg, padding:'8px 12px', borderRadius:RD.md,
+                  border:`1px solid ${T.goldBorder}` }}>
+                  <div style={{ fontSize:10, color:T.goldText, fontWeight:700,
+                    textTransform:'uppercase', letterSpacing:.5 }}>Avg/đơn</div>
+                  <div style={{ fontSize:18, fontWeight:800, color:T.goldText, marginTop:2 }}>
+                    {kvTotalInvoices>0?fmtMoneyShort(Math.round(kvTotalRevenue/kvTotalInvoices)):0}đ
+                  </div>
+                </div>
+              </div>
+
+              {/* Ranking */}
+              <div style={{ overflow:'hidden', borderRadius:RD.md, border:`1px solid ${T.border}` }}>
+                <div style={{ display:'grid',
+                  gridTemplateColumns:mobile?'30px 1fr 70px 90px':'40px 1fr 100px 130px 100px',
+                  gap:4, padding:'8px 10px', background:T.bg,
+                  fontSize:10, fontWeight:700, color:T.light,
+                  textTransform:'uppercase', letterSpacing:.5,
+                  borderBottom:`1px solid ${T.border}` }}>
+                  <div>#</div>
+                  <div>NV Sale</div>
+                  {!mobile && <div style={{ textAlign:'right' }}>Số đơn</div>}
+                  <div style={{ textAlign:'right' }}>Đơn</div>
+                  <div style={{ textAlign:'right' }}>Doanh thu</div>
+                </div>
+                {kvSalesRanking.map((r: any, i: number) => (
+                  <div key={r.name} style={{ display:'grid',
+                    gridTemplateColumns:mobile?'30px 1fr 70px 90px':'40px 1fr 100px 130px 100px',
+                    gap:4, padding:'8px 10px', fontSize:12,
+                    background:i===0?T.goldBg:(i%2===1?T.rowAlt:T.card),
+                    borderBottom:i<kvSalesRanking.length-1?`1px solid ${T.border}`:'none',
+                    alignItems:'center' }}>
+                    <div style={{ fontWeight:700, color:T.dark }}>
+                      {i===0?'🥇':i===1?'🥈':i===2?'🥉':i+1}
+                    </div>
+                    <div style={{ fontWeight:600, color:T.dark,
+                      overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap' }}>
+                      {r.name}
+                    </div>
+                    {!mobile && (
+                      <div style={{ textAlign:'right', color:T.med }}>
+                        {r.invoice_count.toLocaleString('vi-VN')}
+                      </div>
+                    )}
+                    <div style={{ textAlign:'right', color:T.med, fontWeight:500 }}>
+                      {mobile ? r.invoice_count.toLocaleString('vi-VN') : (r.invoice_count>0?Math.round(r.total_revenue/r.invoice_count/1000).toLocaleString('vi-VN')+'k':'—')}
+                    </div>
+                    <div style={{ textAlign:'right', fontWeight:700, color:T.green }}>
+                      {fmtMoneyShort(r.total_revenue)}đ
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </>
+          ) : (
+            // NV Sale chỉ thấy bản thân
+            myKvEntry ? (
+              <div style={{ padding:'12px 14px', background:T.greenBg,
+                border:`1px solid ${T.green}30`, borderRadius:RD.md }}>
+                <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', flexWrap:'wrap', gap:8 }}>
+                  <div>
+                    <div style={{ fontSize:13, fontWeight:700, color:T.dark }}>{myKvEntry.name}</div>
+                    <div style={{ fontSize:11, color:T.green, marginTop:2 }}>
+                      Hạng {myKvRank}/{kvSalesRanking.length} · {myKvEntry.invoice_count} đơn
+                    </div>
+                  </div>
+                  <div style={{ textAlign:'right' }}>
+                    <div style={{ fontSize:20, fontWeight:800, color:T.green }}>
+                      {fmtMoneyShort(myKvEntry.total_revenue)}đ
+                    </div>
+                    <div style={{ fontSize:10, color:T.light }}>
+                      Avg {myKvEntry.invoice_count>0?fmtMoneyShort(Math.round(myKvEntry.total_revenue/myKvEntry.invoice_count)):0}đ/đơn
+                    </div>
+                  </div>
+                </div>
+              </div>
+            ) : (
+              <div style={{ fontSize:12, color:T.light, textAlign:'center', padding:'16px 0' }}>
+                Bạn chưa có doanh số ghi nhận từ KiotViet trong tháng này<br/>
+                <span style={{ fontSize:10, fontStyle:'italic' }}>(Nếu sai, liên hệ admin map tài khoản KiotViet)</span>
+              </div>
+            )
+          )}
         </Card>
       )}
     </div>
