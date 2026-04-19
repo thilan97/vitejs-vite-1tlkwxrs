@@ -12,7 +12,7 @@ const db = createClient(SUPABASE_URL, SUPABASE_KEY)
 // APP_VERSION — dùng để invalidate cache localStorage mỗi khi deploy version mới
 // (ngăn bug quyền user bị "reset" do cache position cũ sau deploy)
 // ⚠️ MỖI LẦN DEPLOY FEATURE MỚI CÓ PERMISSION MỚI, BUMP SỐ NÀY:
-const APP_VERSION = '2026.04.17.v51'
+const APP_VERSION = '2026.04.17.v52'
 
 // ════════════════════════════════════════════════════════════════
 // AUDIT LOG — ghi nhận các hành động phá hoại data để trace lại
@@ -6868,34 +6868,38 @@ function useNotifications({ user, wrongOrders, returnSlips, shortageItems, batch
 
   const groups: any[] = []
 
-  // ─ 1. Đơn sai pending (Sale) ─
-  if (isSale && !isAdmin) {
-    const items = (wrongOrders||[]).filter((r: any) =>
-      r.status==='pending' && (r.sale_id===user.id || !r.sale_id)
-    ).map((r: any) => ({
+  // ─ 1. Đơn sai pending (Sale / Admin) ─
+  if (isSale || isAdmin) {
+    const items = (wrongOrders||[]).filter((r: any) => {
+      if (r.status !== 'pending') return false
+      if (isAdmin) return true  // Admin thấy tất cả
+      return r.sale_id === user.id || !r.sale_id
+    }).map((r: any) => ({
       key: `wo:${r.id}`, icon:'🔴',
       title: `Đơn sai: ${r.order_code||r.id}`,
       meta: r.customer_name || 'Khách',
       timestamp: r.created_at, urgency:'high',
       targetPage: 'wrongord',
+      role: 'sale',
     }))
-    if (items.length>0) groups.push({ id:'wo', title:'🔴 Đơn sai chưa xử lý', items })
+    if (items.length>0) groups.push({ id:'wo', title:'🔴 Đơn sai chưa xử lý', items, role:'sale' })
   }
 
-  // ─ 2. Phiếu hoàn chưa điền (Sale) ─
-  if (isSale && !isAdmin) {
+  // ─ 2. Phiếu hoàn chưa điền (Sale / Admin) ─
+  if (isSale || isAdmin) {
     const items = (returnSlips||[]).filter((r: any) => !r.sale_id).map((r: any) => ({
       key: `ret:${r.slip_id}`, icon:'↩️',
       title: `Phiếu hoàn: ${r.slip_id}`,
       meta: 'Chưa điền thông tin',
       timestamp: r.created_at, urgency:'med',
       targetPage: 'returns',
+      role: 'sale',
     }))
-    if (items.length>0) groups.push({ id:'ret', title:'↩️ Phiếu hoàn chưa điền', items })
+    if (items.length>0) groups.push({ id:'ret', title:'↩️ Phiếu hoàn chưa điền', items, role:'sale' })
   }
 
-  // ─ 3. Hàng thiếu (QM Sale) ─
-  if (isMgrSale) {
+  // ─ 3. Hàng thiếu (QM Sale / Admin) ─
+  if (isMgrSale || isAdmin) {
     const items = (shortageItems||[]).filter((r: any) =>
       r.status==='pending' && !r.manager_note
     ).map((r: any) => ({
@@ -6904,12 +6908,13 @@ function useNotifications({ user, wrongOrders, returnSlips, shortageItems, batch
       meta: `Thiếu ${r.qty_short||0} ${r.unit||''}`.trim(),
       timestamp: r.created_at, urgency:'high',
       targetPage: 'shortage',
+      role: 'sale',
     }))
-    if (items.length>0) groups.push({ id:'shortage', title:'⚠️ Hàng thiếu chưa xử lý', items })
+    if (items.length>0) groups.push({ id:'shortage', title:'⚠️ Hàng thiếu chưa xử lý', items, role:'sale' })
   }
 
-  // ─ 4. Lô <6 tháng còn tồn (Sale) ─
-  if (isSale) {
+  // ─ 4. Lô <6 tháng còn tồn (Sale / Admin) ─
+  if (isSale || isAdmin) {
     const items = (batches||[]).filter((b: any) => {
       if (!b.expiry_date || (b.qty_remaining||0) <= 0) return false
       const exp = new Date(b.expiry_date)
@@ -6921,8 +6926,9 @@ function useNotifications({ user, wrongOrders, returnSlips, shortageItems, batch
       meta: `HSD: ${b.expiry_date}, còn ${b.qty_remaining}`,
       timestamp: b.last_updated_at || b.created_at, urgency:'med',
       targetPage: 'expiry',
+      role: 'kho',
     }))
-    if (items.length>0) groups.push({ id:'expiry', title:'📅 Date sản phẩm sắp hết', items })
+    if (items.length>0) groups.push({ id:'expiry', title:'📅 Date sản phẩm sắp hết', items, role:'kho' })
   }
 
   // ─ 5. Lô chưa update >7 ngày (QM Kho/Admin) ─
@@ -6937,8 +6943,9 @@ function useNotifications({ user, wrongOrders, returnSlips, shortageItems, batch
       meta: `Chưa update từ ${b.last_updated_at||b.created_at||'?'}`,
       timestamp: b.last_updated_at || b.created_at, urgency:'low',
       targetPage: 'expiry',
+      role: 'kho',
     }))
-    if (items.length>0) groups.push({ id:'stale', title:'🧮 Lô chưa update >7 ngày', items })
+    if (items.length>0) groups.push({ id:'stale', title:'🧮 Lô chưa update >7 ngày', items, role:'kho' })
   }
 
   // ─ 6. Lệnh CK chờ duyệt (Admin/canPay) ─
@@ -6949,22 +6956,26 @@ function useNotifications({ user, wrongOrders, returnSlips, shortageItems, batch
       meta: `${(o.amount||0).toLocaleString('vi-VN')}đ`,
       timestamp: o.created_at, urgency:'high',
       targetPage: 'payment',
+      role: 'admin',
     }))
-    if (items.length>0) groups.push({ id:'pay', title:'💰 Lệnh CK chờ duyệt', items })
+    if (items.length>0) groups.push({ id:'pay', title:'💰 Lệnh CK chờ duyệt', items, role:'admin' })
   }
 
-  // ─ 7. Lệnh CK đã paid chờ nhập KV (QM Sale) ─
-  if (isSale && !isAdmin) {
-    const items = (paymentOrders||[]).filter((o: any) =>
-      o.status === 'paid' && o.created_by === user.id
-    ).map((o: any) => ({
+  // ─ 7. Lệnh CK đã paid chờ nhập KV (QM Sale / Admin) ─
+  if ((isSale && !isAdmin) || isAdmin) {
+    const items = (paymentOrders||[]).filter((o: any) => {
+      if (o.status !== 'paid') return false
+      if (isAdmin) return true  // Admin thấy tất cả
+      return o.created_by === user.id
+    }).map((o: any) => ({
       key: `kiot:${o.id}`, icon:'📦',
       title: o.supplier_name || 'Supplier',
       meta: `${(o.amount||0).toLocaleString('vi-VN')}đ — chờ nhập KV`,
       timestamp: o.created_at, urgency:'med',
       targetPage: 'payment',
+      role: 'sale',
     }))
-    if (items.length>0) groups.push({ id:'kiot', title:'📦 CK đã paid chờ nhập KiotViet', items })
+    if (items.length>0) groups.push({ id:'kiot', title:'📦 CK đã paid chờ nhập KiotViet', items, role:'sale' })
   }
 
   // ─ 8. Đơn KV quá hạn ─
@@ -6993,7 +7004,7 @@ function useNotifications({ user, wrongOrders, returnSlips, shortageItems, batch
         overdueOrder: o,  // payload để mở modal chi tiết
       }))
     }
-    if (items.length>0) groups.push({ id:'overdue', title:`🕐 Đơn KiotViet quá ${threshold} ngày`, items })
+    if (items.length>0) groups.push({ id:'overdue', title:`🕐 Đơn KiotViet quá ${threshold} ngày`, items, role:'sale' })
   }
 
   groups.forEach((g: any) => {
@@ -7011,7 +7022,16 @@ function useNotifications({ user, wrongOrders, returnSlips, shortageItems, batch
 function NotificationPage({ user, mobile, groups, totalUnread, totalItems, reads, setReads, setPage, overdueMeta, overdueLoading, overdueRefresh }: any) {
   const [collapsed, setCollapsed] = useState<Set<string>>(new Set())
   const [overdueDetail, setOverdueDetail] = useState<any>(null)
+  const [roleFilter, setRoleFilter] = useState<'all'|'sale'|'kho'|'admin'>('all')
   const p = mobile ? '16px' : '24px'
+  const isAdminView = getPerm(user).viewAllDashboard
+
+  // Filter groups theo role (chỉ áp dụng cho admin)
+  const filteredGroups = isAdminView && roleFilter !== 'all'
+    ? groups.filter((g: any) => g.role === roleFilter)
+    : groups
+  const filteredUnread = filteredGroups.reduce((s: number, g: any) => s + (g.unread||0), 0)
+  const filteredTotal  = filteredGroups.reduce((s: number, g: any) => s + (g.total||0), 0)
 
   const toggle = (gid: string) => {
     setCollapsed(prev => {
@@ -7044,7 +7064,10 @@ function NotificationPage({ user, mobile, groups, totalUnread, totalItems, reads
   }
 
   const markAllRead = async () => {
-    const keys = groups.flatMap((g: any) => g.items.filter((it: any) => !it.isRead).map((it: any) => it.key))
+    const source = isAdminView && roleFilter !== 'all'
+      ? groups.filter((g: any) => g.role === roleFilter)
+      : groups
+    const keys = source.flatMap((g: any) => g.items.filter((it: any) => !it.isRead).map((it: any) => it.key))
     if (keys.length === 0) return
     setReads((prev: Set<string>) => new Set([...prev, ...keys]))
     try {
@@ -7080,8 +7103,8 @@ function NotificationPage({ user, mobile, groups, totalUnread, totalItems, reads
   return (
     <div style={{ padding:`0 ${p} ${mobile?'80px':p}` }}>
       <Topbar mobile={mobile} title="🔔 Thông báo"
-        subtitle={totalUnread>0 ? `${totalUnread} chưa đọc trong ${totalItems} thông báo` : 'Tất cả đã đọc'}
-        action={totalUnread>0 && (
+        subtitle={filteredUnread>0 ? `${filteredUnread} chưa đọc trong ${filteredTotal} thông báo` : (filteredTotal === 0 && roleFilter !== 'all' ? `Không có thông báo thuộc nhóm này` : 'Tất cả đã đọc')}
+        action={filteredUnread>0 && (
           <button onClick={markAllRead}
             style={{ padding:'6px 14px', borderRadius:20, border:`1px solid ${T.border}`,
               background:'transparent', cursor:'pointer', fontFamily:'inherit',
@@ -7089,6 +7112,28 @@ function NotificationPage({ user, mobile, groups, totalUnread, totalItems, reads
             ✓ Đánh dấu tất cả đã đọc
           </button>
         )}/>
+
+      {/* Role filter cho Admin */}
+      {isAdminView && (
+        <div style={{ display:'flex', gap:6, marginBottom:12, flexWrap:'wrap', alignItems:'center' }}>
+          <span style={{ fontSize:12, color:T.light, fontWeight:600 }}>Lọc theo vai trò:</span>
+          {[
+            { v:'all',   label:`📋 Tất cả (${groups.reduce((s: number,g: any) => s+(g.total||0),0)})` },
+            { v:'sale',  label:`💼 Sale (${groups.filter((g: any) => g.role==='sale').reduce((s: number,g: any) => s+(g.total||0),0)})` },
+            { v:'kho',   label:`📦 Kho (${groups.filter((g: any) => g.role==='kho').reduce((s: number,g: any) => s+(g.total||0),0)})` },
+            { v:'admin', label:`🛡️ Admin (${groups.filter((g: any) => g.role==='admin').reduce((s: number,g: any) => s+(g.total||0),0)})` },
+          ].map((f: any) => (
+            <button key={f.v} onClick={() => setRoleFilter(f.v)}
+              style={{ padding:'5px 12px', borderRadius:20, cursor:'pointer',
+                fontFamily:'inherit', fontSize:12, fontWeight:600,
+                border:`1.5px solid ${roleFilter===f.v?T.gold:T.border}`,
+                background: roleFilter===f.v?T.goldBg:'#fff',
+                color: roleFilter===f.v?T.goldText:T.med }}>
+              {f.label}
+            </button>
+          ))}
+        </div>
+      )}
 
       {/* Overdue cache info + refresh button */}
       {overdueMeta && overdueRefresh && (
@@ -7120,13 +7165,15 @@ function NotificationPage({ user, mobile, groups, totalUnread, totalItems, reads
         </div>
       )}
 
-      {groups.length === 0 ? (
+      {filteredGroups.length === 0 ? (
         <EmptyState icon={Ico.check}
-          title="Tuyệt vời!"
-          description="Không có thông báo nào đang chờ."/>
+          title={isAdminView && roleFilter !== 'all' ? 'Không có thông báo' : 'Tuyệt vời!'}
+          description={isAdminView && roleFilter !== 'all'
+            ? `Không có thông báo thuộc nhóm ${roleFilter === 'sale' ? 'Sale' : roleFilter === 'kho' ? 'Kho' : 'Admin'}.`
+            : 'Không có thông báo nào đang chờ.'}/>
       ) : (
         <div style={{ display:'flex', flexDirection:'column', gap:12 }}>
-          {groups.map((g: any) => {
+          {filteredGroups.map((g: any) => {
             const isCol = collapsed.has(g.id)
             return (
               <Card key={g.id} style={{ padding:0, overflow:'hidden' }}>
