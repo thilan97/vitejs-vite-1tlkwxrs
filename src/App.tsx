@@ -12,7 +12,7 @@ const db = createClient(SUPABASE_URL, SUPABASE_KEY)
 // APP_VERSION — dùng để invalidate cache localStorage mỗi khi deploy version mới
 // (ngăn bug quyền user bị "reset" do cache position cũ sau deploy)
 // ⚠️ MỖI LẦN DEPLOY FEATURE MỚI CÓ PERMISSION MỚI, BUMP SỐ NÀY:
-const APP_VERSION = '2026.04.19.v65'
+const APP_VERSION = '2026.04.19.v66'
 
 // ════════════════════════════════════════════════════════════════
 // AUDIT LOG — ghi nhận các hành động phá hoại data để trace lại
@@ -1024,6 +1024,8 @@ const NAV_GROUPS = (perm: any, deptId = '') => {
       pages:[
         { id:'attendance', icon:Ico.clock, emoji:'🕐', label:'Chấm công' },
         perm.viewAllDashboard && { id:'payroll_import', icon:Ico.inbox, emoji:'📥', label:'Import máy chấm công' },
+        perm.viewAllDashboard && { id:'payroll', icon:Ico.wallet, emoji:'💵', label:'Tính lương' },
+        { id:'my_payslip', icon:Ico.receipt, emoji:'💰', label:'Phiếu lương của tôi' },
         { id:'overtime',   icon:Ico.sun, emoji:'⏰', label:'Làm thêm' },
         { id:'leave',      icon:Ico.palm, emoji:'🏖️', label:'Nghỉ phép' },
         { id:'orgchart',   icon:Ico.network, emoji:'🏢', label:'Sơ đồ tổ chức' },
@@ -1032,6 +1034,7 @@ const NAV_GROUPS = (perm: any, deptId = '') => {
     !hasAttendance && {
       id:'hr', icon:Ico.users, emoji:'👥', label:'Nhân sự',
       pages:[
+        { id:'my_payslip', icon:Ico.receipt, emoji:'💰', label:'Phiếu lương của tôi' },
         { id:'overtime',   icon:Ico.sun, emoji:'⏰', label:'Làm thêm' },
         { id:'leave',      icon:Ico.palm, emoji:'🏖️', label:'Nghỉ phép' },
         { id:'orgchart',   icon:Ico.network, emoji:'🏢', label:'Sơ đồ tổ chức' },
@@ -8984,6 +8987,8 @@ export default function App() {
           {validPage==='templates'  && <Templates {...pp} templates={templates} setTemplates={setTemplates}/>}
           {validPage==='attendance' && <Attendance {...pp} leaveRequests={leaveRequests} attendance={attendance} setAttendance={setAttendance}/>}
           {validPage==='payroll_import' && <PayrollImportModule {...pp} attendance={attendance} setAttendance={setAttendance}/>}
+          {validPage==='payroll' && <PayrollModule {...pp}/>}
+          {validPage==='my_payslip' && <MyPayslipModule {...pp}/>}
           {validPage==='overtime'   && <Overtime {...pp}/>}
           {validPage==='announce'   && <Announcements {...pp}/>}
           {validPage==='leave'      && <Leave {...pp} leaveRequests={leaveRequests} setLeaveRequests={setLeaveReqs}/>}
@@ -18921,6 +18926,891 @@ function PayrollImportModule({ user, allUsers, mobile, attendance, setAttendance
           </div>
         </>
       )}
+    </div>
+  )
+}
+
+
+
+
+// ══════════════════════════════════════════════════════════════════════
+// ══ PAYROLL MODULE (Phase 2) — Tính lương tự động ═════════════════════
+// ══════════════════════════════════════════════════════════════════════
+// Sprint 1: Core compute engine + UI admin "Tính lương"
+// Sprint 2: Commission engine (HH Sale tier) + Import Excel flows
+// Sprint 3: Phiếu lương NV + Export Excel
+
+// ──────────────────────────────────────────────────────────────────────
+// COMPUTE ENGINE — pure functions, không UI
+// ──────────────────────────────────────────────────────────────────────
+
+// Tính LCB theo tỷ lệ giờ thực vs giờ chuẩn
+// Kho: LCB × (giờ_BT / (số_ngày_làm_việc × 8))
+// Sales: 40k/h × OT_hours + LCB × (work_days / total_working_days)
+// Kế toán: LCB × (giờ_BT / (ngày_làm × 7.5))
+// Part-time: 30k × giờ_BT
+// PTC (Hùng): LCB flat
+function computeSalaryAmounts(opts: {
+  positionType: string,  // 'Kho' | 'Sales' | 'Kế toán' | 'Kế toán thuế' | 'Part-time' | 'Quản lý kho' | 'Phụ trách chung'
+  baseSalary: number,
+  workHoursRegular: number,
+  ot150Hours: number,
+  ot200Hours: number,
+  totalWorkingDaysInMonth: number,  // Số ngày làm việc chuẩn trong tháng (loại trừ CN + ngày nghỉ lý do)
+}): { workAmount: number, ot150Amount: number, ot200Amount: number } {
+  const { positionType, baseSalary, workHoursRegular, ot150Hours, ot200Hours, totalWorkingDaysInMonth } = opts
+
+  const isKho = positionType === 'Kho' || positionType === 'Quản lý kho'
+  const isSale = positionType === 'Sales'
+  const isKT = positionType === 'Kế toán' || positionType === 'Kế toán thuế'
+  const isPartTime = positionType === 'Part-time'
+  const isPTC = positionType === 'Phụ trách chung'
+
+  const stdHoursPerDay = (isKho) ? 8 : 7.5
+  const standardMonthHours = totalWorkingDaysInMonth * stdHoursPerDay
+
+  let workAmount = 0
+  let ot150Amount = 0
+  let ot200Amount = 0
+
+  if (isPartTime) {
+    // 30k/giờ × số giờ làm
+    workAmount = Math.round(workHoursRegular * 30000)
+    ot150Amount = 0  // PT thường không có OT
+    ot200Amount = 0
+  } else if (isPTC) {
+    // LCB flat
+    workAmount = baseSalary
+    ot150Amount = 0
+    ot200Amount = 0
+  } else if (isSale) {
+    // LCB × tỷ lệ + OT flat 40k/h
+    workAmount = standardMonthHours > 0 
+      ? Math.round((workHoursRegular / standardMonthHours) * baseSalary)
+      : 0
+    ot150Amount = Math.round(ot150Hours * 40000)
+    ot200Amount = Math.round(ot200Hours * 40000 * 2)  // OT200 flat rate × 2
+  } else {
+    // Kho, KT: LCB × tỷ lệ giờ + OT 150% và 200% theo đơn giá
+    workAmount = standardMonthHours > 0
+      ? Math.round((workHoursRegular / standardMonthHours) * baseSalary)
+      : 0
+    const hourlyRate = standardMonthHours > 0 ? baseSalary / standardMonthHours : 0
+    ot150Amount = Math.round(ot150Hours * hourlyRate * 1.5)
+    ot200Amount = Math.round(ot200Hours * hourlyRate * 2.0)
+  }
+
+  return { workAmount, ot150Amount, ot200Amount }
+}
+
+
+// Đếm số ngày làm việc chuẩn trong tháng (loại bỏ CN + ngày nghỉ có lý do)
+function countWorkingDaysInMonth(month: number, year: number, paidLeaveDates: string[]): number {
+  const daysInMonth = new Date(year, month, 0).getDate()
+  let count = 0
+  for (let d = 1; d <= daysInMonth; d++) {
+    const date = new Date(year, month - 1, d)
+    const dow = date.getDay()  // 0 = Sunday
+    const dateStr = `${year}-${String(month).padStart(2, '0')}-${String(d).padStart(2, '0')}`
+    if (dow === 0) continue  // Bỏ CN
+    if (paidLeaveDates.includes(dateStr)) continue  // Bỏ ngày nghỉ có lý do
+    count++
+  }
+  return count
+}
+
+
+// Quyết định NV có được chuyên cần không
+// Chuyên cần: 500k/tháng nếu NKP = 0. Sales/Part-time/KT thuế không áp dụng.
+function isAttendanceBonusEligible(positionType: string, nkpDays: number, hasAttendanceBonusFlag: boolean): boolean {
+  if (!hasAttendanceBonusFlag) return false  // Flag từ salary_config
+  if (positionType === 'Sales' || positionType === 'Part-time' || positionType === 'Kế toán thuế') return false
+  return nkpDays === 0
+}
+
+
+// Compute toàn bộ lương 1 NV (tổng hợp từ attendance + config + other income + revenue)
+function computeMonthlyPayroll(opts: {
+  user: any,           // { id, name, dept_id }
+  salaryConfig: any,   // { position_type, base_salary, has_bhxh, has_attendance_bonus, has_inspection_bonus, is_sale_manager }
+  attendanceRecords: any[],  // attendance của NV trong tháng đó
+  month: number,
+  year: number,
+  paidLeaveDates: string[],  // ['2026-02-10', ...]
+  bhxhAmount: number,        // Từ payroll_config (557550)
+  lunchPerDay: number,       // 30000
+  attendanceBonusAmount: number, // 500000
+  inspectionBonusAmount: number, // 300000
+  otherIncomeTotal: number,
+  shortageLossTotal: number,
+  commissionTotal: number,
+  manualAdjust: number,
+}) {
+  const { user, salaryConfig, attendanceRecords, month, year, paidLeaveDates } = opts
+  const sc = salaryConfig
+
+  // 1. Tổng hợp attendance
+  let workHoursRegular = 0, ot150Hours = 0, ot200Hours = 0
+  let totalWorkDays = 0, totalLeaveDays = 0, totalNkpDays = 0, lunchDays = 0
+
+  for (const a of attendanceRecords) {
+    workHoursRegular += Number(a.work_hours_regular || 0)
+    ot150Hours += Number(a.ot_150_hours || 0)
+    ot200Hours += Number(a.ot_200_hours || 0)
+    if (a.lunch_eligible) lunchDays++
+    if (a.status === 'Đi làm') totalWorkDays++
+    else if (a.status === 'Nghỉ') totalLeaveDays++
+    else if (a.status === 'Nghỉ không phép' || a.status === 'NKP') totalNkpDays++
+  }
+
+  // 2. Tính số ngày làm việc chuẩn tháng
+  const totalWorkingDaysInMonth = countWorkingDaysInMonth(month, year, paidLeaveDates)
+
+  // 3. Tính lương công + OT
+  const { workAmount, ot150Amount, ot200Amount } = computeSalaryAmounts({
+    positionType: sc.position_type,
+    baseSalary: sc.base_salary,
+    workHoursRegular, ot150Hours, ot200Hours,
+    totalWorkingDaysInMonth,
+  })
+
+  // 4. Các khoản cộng/trừ
+  const lunchAmount = lunchDays * opts.lunchPerDay
+  const attBonusAmount = isAttendanceBonusEligible(sc.position_type, totalNkpDays, sc.has_attendance_bonus)
+    ? opts.attendanceBonusAmount : 0
+  const inspectionBonusAmount = sc.has_inspection_bonus ? opts.inspectionBonusAmount : 0
+  const bhxhDeduction = sc.has_bhxh ? opts.bhxhAmount : 0
+
+  // 5. Tổng kết
+  const finalSalary = workAmount + ot150Amount + ot200Amount
+    + lunchAmount + attBonusAmount + inspectionBonusAmount
+    + opts.commissionTotal + opts.otherIncomeTotal
+    - bhxhDeduction - opts.shortageLossTotal
+    + opts.manualAdjust
+
+  return {
+    user_id: user.id,
+    month, year,
+    position_type: sc.position_type,
+    base_salary: sc.base_salary,
+    has_bhxh: sc.has_bhxh,
+    has_attendance_bonus: sc.has_attendance_bonus,
+    has_inspection_bonus: sc.has_inspection_bonus,
+    is_sale_manager: sc.is_sale_manager,
+    
+    total_work_days: totalWorkDays,
+    total_leave_days: totalLeaveDays,
+    total_nkp_days: totalNkpDays,
+    work_hours_regular: workHoursRegular,
+    ot_150_hours: ot150Hours,
+    ot_200_hours: ot200Hours,
+    lunch_days: lunchDays,
+    
+    salary_work_amount: workAmount,
+    salary_ot_150_amount: ot150Amount,
+    salary_ot_200_amount: ot200Amount,
+    lunch_amount: lunchAmount,
+    attendance_bonus_amount: attBonusAmount,
+    inspection_bonus_amount: inspectionBonusAmount,
+    bhxh_deduction: bhxhDeduction,
+    commission_total: opts.commissionTotal,
+    other_income_total: opts.otherIncomeTotal,
+    shortage_loss_total: opts.shortageLossTotal,
+    manual_adjust: opts.manualAdjust,
+    final_salary: finalSalary,
+  }
+}
+
+
+// ──────────────────────────────────────────────────────────────────────
+// COMMISSION ENGINE — progressive HH Sale
+// ──────────────────────────────────────────────────────────────────────
+
+// Tier LCB Sale (T3/2026 config)
+const COMMISSION_LCB_TIERS = [
+  { threshold: 500000000, ratio: 1.0 },    // ≥500M → 100% LCB
+  { threshold: 350000000, ratio: 0.8 },    // 350-499M → 80%
+  { threshold: 200000000, ratio: 0.6 },    // 200-349M → 60%
+  { threshold: 100000000, ratio: 0.4 },    // 100-199M → 40%
+  { threshold: 0,         ratio: 0.0 },    // <100M → 0%
+]
+
+// Progressive HH khách cũ (theo bậc)
+// Tier 1: ≥500M-1.5B → 0.2%
+// Tier 2: 1.5B-3B → 0.3%
+// Tier 3: 3B+ → 0.5%
+const COMMISSION_OLD_CLIENT_TIERS = [
+  { from: 500000000,  to: 1500000000,  rate: 0.002 },
+  { from: 1500000000, to: 3000000000,  rate: 0.003 },
+  { from: 3000000000, to: Infinity,    rate: 0.005 },
+]
+
+function computeCommission(opts: {
+  dsKhachCu: number,
+  dsKhachMoi: number,
+  baseSalary: number,  // LCB Sale (thường 4M)
+  isSaleManager: boolean,
+  allSaleRevenues?: Array<{ ds_khach_cu: number, ds_khach_moi: number }>,  // All sales cùng team
+  ownTotalDs?: number,  // Own DS cho QL
+}): {
+  tyLeLcb: number,
+  lcbDat: number,
+  hhKhachCu: number,
+  hhKhachMoi: number,
+  hhTuyenDuoi: number,
+  hhTotal: number,
+} {
+  const { dsKhachCu, dsKhachMoi, baseSalary, isSaleManager } = opts
+  const totalDs = dsKhachCu + dsKhachMoi
+
+  // 1. Tỷ lệ LCB theo totalDs
+  let tyLeLcb = 0
+  for (const t of COMMISSION_LCB_TIERS) {
+    if (totalDs >= t.threshold) { tyLeLcb = t.ratio; break }
+  }
+  const lcbDat = Math.round(baseSalary * tyLeLcb)
+
+  // 2. HH khách cũ (progressive)
+  let hhKhachCu = 0
+  if (totalDs >= 500000000) {
+    let remain = dsKhachCu
+    for (const t of COMMISSION_OLD_CLIENT_TIERS) {
+      if (remain <= 0) break
+      const tierFrom = t.from, tierTo = t.to
+      // Portion of dsKhachCu trong khoảng [tierFrom, tierTo]
+      const cappedLow = Math.max(0, Math.min(dsKhachCu, tierFrom))
+      const cappedHigh = Math.min(dsKhachCu, tierTo)
+      const inTier = Math.max(0, cappedHigh - cappedLow)
+      hhKhachCu += Math.round(inTier * t.rate)
+    }
+  }
+
+  // 3. HH khách mới (flat 1%)
+  const hhKhachMoi = Math.round(dsKhachMoi * 0.01)
+
+  // 4. HH Tuyến dưới (chỉ cho QL Sale - Linh sâu)
+  let hhTuyenDuoi = 0
+  if (isSaleManager && opts.allSaleRevenues) {
+    // Công thức Linh sâu: own × 0.05% + (team_total - own) × 0.075%
+    const teamTotalDs = opts.allSaleRevenues.reduce((s, r) => s + r.ds_khach_cu + r.ds_khach_moi, 0)
+    const ownDs = opts.ownTotalDs || 0
+    const otherDs = Math.max(0, teamTotalDs - ownDs)
+    hhTuyenDuoi = Math.round(ownDs * 0.0005) + Math.round(otherDs * 0.00075)
+  }
+
+  const hhTotal = hhKhachCu + hhKhachMoi + hhTuyenDuoi
+
+  return { tyLeLcb, lcbDat, hhKhachCu, hhKhachMoi, hhTuyenDuoi, hhTotal }
+}
+
+
+// Format tiền VND (3.456.789 đ)
+function fmtMoney(n: number): string {
+  if (n === 0) return '0'
+  const sign = n < 0 ? '-' : ''
+  return sign + Math.abs(Math.round(n)).toLocaleString('vi-VN')
+}
+
+
+// ──────────────────────────────────────────────────────────────────────
+// UI MODULE — Admin "Tính lương"
+// ──────────────────────────────────────────────────────────────────────
+function PayrollModule({ user, allUsers, mobile }: any) {
+  const perm = getPerm(user)
+  const p = mobile ? '16px' : '24px'
+
+  const [month, setMonth]           = useState(new Date().getMonth() + 1)
+  const [year, setYear]             = useState(new Date().getFullYear())
+  const [loading, setLoading]       = useState(false)
+  const [error, setError]           = useState('')
+  const [salaryConfigs, setSalaryConfigs] = useState<any[]>([])
+  const [payrollConfig, setPayrollConfig] = useState<any>(null)
+  const [paidLeaveDates, setPaidLeaveDates] = useState<string[]>([])
+  const [payrolls, setPayrolls]     = useState<any[]>([])
+  const [otherIncomes, setOtherIncomes] = useState<any[]>([])
+  const [shortageLoss, setShortageLoss] = useState<any[]>([])
+  const [revenues, setRevenues]     = useState<any[]>([])
+  const [attendanceMonth, setAttendanceMonth] = useState<any[]>([])
+  const [detailModalUser, setDetailModalUser] = useState<any>(null)
+
+  // Load all data khi month/year change
+  useEffect(() => {
+    (async () => {
+      setLoading(true)
+      try {
+        const [sc, pc, pr, oi, sl, rv, att] = await Promise.all([
+          db.from('salary_config').select('*').is('effective_to', null),
+          db.from('payroll_config').select('*').maybeSingle(),
+          db.from('monthly_payroll').select('*').eq('month', month).eq('year', year),
+          db.from('monthly_other_income').select('*').eq('month', month).eq('year', year),
+          db.from('monthly_shortage_loss').select('*').eq('month', month).eq('year', year),
+          db.from('monthly_revenue').select('*').eq('month', month).eq('year', year),
+          db.from('attendance').select('*')
+            .gte('date', `${year}-${String(month).padStart(2,'0')}-01`)
+            .lte('date', `${year}-${String(month).padStart(2,'0')}-31`),
+        ])
+        setSalaryConfigs(sc.data || [])
+        setPayrollConfig(pc.data || {})
+        
+        // Extract paid_leave_dates cho tháng hiện tại
+        const pldJson = pc.data?.paid_leave_dates || []
+        const datesThisMonth = pldJson
+          .map((x: any) => typeof x === 'string' ? x : x.date)
+          .filter((d: string) => d && d.startsWith(`${year}-${String(month).padStart(2,'0')}`))
+        setPaidLeaveDates(datesThisMonth)
+        
+        setPayrolls(pr.data || [])
+        setOtherIncomes(oi.data || [])
+        setShortageLoss(sl.data || [])
+        setRevenues(rv.data || [])
+        setAttendanceMonth(att.data || [])
+      } catch (e: any) {
+        setError('Lỗi load data: ' + e.message)
+      } finally {
+        setLoading(false)
+      }
+    })()
+  }, [month, year])
+
+  // Helpers
+  const getSalaryConfig = (uid: string) => salaryConfigs.find(s => s.user_id === uid)
+  const getPayroll = (uid: string) => payrolls.find(p => p.user_id === uid)
+  const getOtherIncome = (uid: string) => otherIncomes.filter(o => o.user_id === uid).reduce((s, o) => s + o.amount, 0)
+  const getShortageLoss = (uid: string) => shortageLoss.filter(s => s.user_id === uid).reduce((s, o) => s + o.amount, 0)
+  const getRevenue = (uid: string) => revenues.find(r => r.user_id === uid)
+  const getAttendance = (uid: string) => attendanceMonth.filter(a => a.user_id === uid)
+
+  // Users có salary_config (19 NV)
+  const usersWithSalary = useMemo(() => {
+    return salaryConfigs
+      .map(sc => {
+        const u = allUsers.find((au: any) => au.id === sc.user_id)
+        return u ? { ...u, _salary: sc } : null
+      })
+      .filter(Boolean)
+      .sort((a: any, b: any) => (a._salary.position_type || '').localeCompare(b._salary.position_type || ''))
+  }, [salaryConfigs, allUsers])
+
+  // Compute lương cho 1 NV (không save)
+  const computeForUser = (u: any): any => {
+    const sc = u._salary
+    const attRecords = getAttendance(u.id)
+    const otherIncome = getOtherIncome(u.id)
+    const shortage = getShortageLoss(u.id)
+    const rev = getRevenue(u.id)
+    const existing = getPayroll(u.id)
+
+    return computeMonthlyPayroll({
+      user: u,
+      salaryConfig: sc,
+      attendanceRecords: attRecords,
+      month, year,
+      paidLeaveDates,
+      bhxhAmount: Number(payrollConfig?.bhxh_deduction || 557550),
+      lunchPerDay: Number(payrollConfig?.lunch_allowance_per_day || 30000),
+      attendanceBonusAmount: Number(payrollConfig?.attendance_bonus_monthly || 500000),
+      inspectionBonusAmount: Number(payrollConfig?.inspection_bonus_monthly || 300000),
+      otherIncomeTotal: otherIncome,
+      shortageLossTotal: shortage,
+      commissionTotal: rev?.hh_total || 0,
+      manualAdjust: existing?.manual_adjust || 0,
+    })
+  }
+
+  // Tính & save 1 NV
+  const computeAndSave = async (u: any) => {
+    const computed = computeForUser(u)
+    const existing = getPayroll(u.id)
+    const payload: any = {
+      ...computed,
+      status: existing?.status || 'draft',
+      computed_by: user.id,
+      updated_at: new Date().toISOString(),
+    }
+    if (existing) {
+      payload.id = existing.id
+      await db.from('monthly_payroll').update(payload).eq('id', existing.id)
+    } else {
+      payload.created_at = new Date().toISOString()
+      const { data } = await db.from('monthly_payroll').insert(payload).select().single()
+      if (data) payload.id = data.id
+    }
+    setPayrolls(prev => existing ? prev.map(p => p.id === existing.id ? payload : p) : [...prev, payload])
+    // Audit log
+    await db.from('monthly_payroll_audit').insert({
+      payroll_id: payload.id, user_id: u.id, month, year,
+      action: existing ? 'recompute' : 'compute',
+      actor_id: user.id, actor_name: user.name,
+    })
+  }
+
+  // Tính hàng loạt
+  const computeAll = async () => {
+    if (!confirm(`Tính/cập nhật lương cho ${usersWithSalary.length} NV tháng ${month}/${year}? Các record đã DUYỆT sẽ bị bỏ qua.`)) return
+    setLoading(true)
+    try {
+      for (const u of usersWithSalary) {
+        const existing = getPayroll(u.id)
+        if (existing?.status === 'approved' || existing?.status === 'paid') continue
+        await computeAndSave(u)
+      }
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  // Duyệt 1 NV
+  const approveOne = async (u: any) => {
+    const existing = getPayroll(u.id)
+    if (!existing) { alert('Chưa tính lương NV này'); return }
+    if (existing.status === 'approved') { alert('Đã duyệt rồi'); return }
+    if (!confirm(`Duyệt lương ${u.name} tháng ${month}/${year}? Sau khi duyệt sẽ không tự động tính lại.`)) return
+    const upd: any = { status: 'approved', approved_by: user.id, approved_at: new Date().toISOString() }
+    await db.from('monthly_payroll').update(upd).eq('id', existing.id)
+    setPayrolls(prev => prev.map(p => p.id === existing.id ? { ...p, ...upd } : p))
+    await db.from('monthly_payroll_audit').insert({
+      payroll_id: existing.id, user_id: u.id, month, year,
+      action: 'approve', actor_id: user.id, actor_name: user.name,
+    })
+  }
+
+  // Unlock
+  const unlockOne = async (u: any) => {
+    const existing = getPayroll(u.id)
+    if (!existing) return
+    if (!confirm(`Mở khoá lương ${u.name} tháng ${month}/${year} về DRAFT?`)) return
+    const upd: any = { status: 'draft', approved_by: null, approved_at: null }
+    await db.from('monthly_payroll').update(upd).eq('id', existing.id)
+    setPayrolls(prev => prev.map(p => p.id === existing.id ? { ...p, ...upd } : p))
+    await db.from('monthly_payroll_audit').insert({
+      payroll_id: existing.id, user_id: u.id, month, year,
+      action: 'unlock', actor_id: user.id, actor_name: user.name,
+    })
+  }
+
+  // Export Excel (Sprint 3)
+  const exportExcel = async () => {
+    const xlsx: any = await import('https://cdn.jsdelivr.net/npm/xlsx@0.18.5/+esm' as any)
+    const rows = [['STT', 'Họ và Tên', 'Vị trí', 'Giờ BT', 'OT 150%', 'OT 200%', 'Chuyên cần', 'Tiền ăn', 'Thưởng/HH', 'Tiền khác', 'Tiền mất hàng', 'Trừ BHXH', 'Kiểm hàng', 'Điều chỉnh', 'THỰC NHẬN']]
+    usersWithSalary.forEach((u: any, idx: number) => {
+      const pr = getPayroll(u.id) || computeForUser(u)
+      rows.push([
+        String(idx + 1), u.name, pr.position_type || '',
+        pr.work_hours_regular || 0, pr.ot_150_hours || 0, pr.ot_200_hours || 0,
+        pr.attendance_bonus_amount || 0, pr.lunch_amount || 0,
+        (pr.inspection_bonus_amount || 0) + (pr.commission_total || 0),
+        pr.other_income_total || 0, pr.shortage_loss_total || 0, pr.bhxh_deduction || 0,
+        pr.inspection_bonus_amount || 0, pr.manual_adjust || 0,
+        pr.final_salary || 0,
+      ] as any)
+    })
+    const ws = xlsx.utils.aoa_to_sheet(rows)
+    const wb = xlsx.utils.book_new()
+    xlsx.utils.book_append_sheet(wb, ws, `Lương T${month}-${year}`)
+    xlsx.writeFile(wb, `Luong_T${month}_${year}.xlsx`)
+  }
+
+  // Render
+  return (
+    <div style={{ padding: p }}>
+      <Topbar mobile={mobile} title="💵 Tính lương tự động" subtitle={`Tháng ${month}/${year} • ${usersWithSalary.length} NV`}/>
+
+      {error && (
+        <div style={{ padding: 12, background: '#FEE', border: `1px solid ${T.red}`, borderRadius: RD.md, marginBottom: 14, color: T.red, fontSize: FS.sm }}>
+          ⚠️ {error}
+        </div>
+      )}
+
+      {/* Controls */}
+      <Card style={{ padding: 14, marginBottom: 14 }}>
+        <div style={{ display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap' }}>
+          <div>
+            <label style={{ fontSize: FS.sm, color: T.med, fontWeight: 600 }}>Tháng:</label>
+            <select value={month} onChange={e => setMonth(Number(e.target.value))}
+              style={{ marginLeft: 6, padding: 6, borderRadius: RD.sm, border: `1px solid ${T.border}` }}>
+              {Array.from({ length: 12 }, (_, i) => i + 1).map(m => (
+                <option key={m} value={m}>T{m}</option>
+              ))}
+            </select>
+          </div>
+          <div>
+            <label style={{ fontSize: FS.sm, color: T.med, fontWeight: 600 }}>Năm:</label>
+            <select value={year} onChange={e => setYear(Number(e.target.value))}
+              style={{ marginLeft: 6, padding: 6, borderRadius: RD.sm, border: `1px solid ${T.border}` }}>
+              {[2025, 2026, 2027].map(y => <option key={y} value={y}>{y}</option>)}
+            </select>
+          </div>
+          <button onClick={computeAll} disabled={loading}
+            style={{ padding: '8px 16px', background: T.gold, color: '#fff', border: 'none', borderRadius: RD.md, cursor: 'pointer', fontWeight: 600 }}>
+            ⚡ Tính hàng loạt
+          </button>
+          <button onClick={exportExcel}
+            style={{ padding: '8px 16px', background: T.green, color: '#fff', border: 'none', borderRadius: RD.md, cursor: 'pointer', fontWeight: 600 }}>
+            📊 Export Excel
+          </button>
+        </div>
+      </Card>
+
+      {/* Table */}
+      <Card style={{ padding: 0, overflow: 'auto' }}>
+        <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: FS.sm }}>
+          <thead>
+            <tr style={{ background: T.bg, borderBottom: `2px solid ${T.border}` }}>
+              <th style={{ padding: 10, textAlign: 'left' }}>NV</th>
+              <th style={{ padding: 10 }}>Vị trí</th>
+              <th style={{ padding: 10, textAlign: 'right' }}>Giờ BT</th>
+              <th style={{ padding: 10, textAlign: 'right' }}>OT</th>
+              <th style={{ padding: 10, textAlign: 'right' }}>Lương công</th>
+              <th style={{ padding: 10, textAlign: 'right' }}>+ Thưởng</th>
+              <th style={{ padding: 10, textAlign: 'right' }}>- Trừ</th>
+              <th style={{ padding: 10, textAlign: 'right', fontWeight: 700, color: T.dark }}>THỰC NHẬN</th>
+              <th style={{ padding: 10 }}>Trạng thái</th>
+              <th style={{ padding: 10 }}>Hành động</th>
+            </tr>
+          </thead>
+          <tbody>
+            {usersWithSalary.map((u: any, idx: number) => {
+              const existing = getPayroll(u.id)
+              const pr = existing || computeForUser(u)  // Show preview nếu chưa tính
+              const statusLabel = existing ? (existing.status === 'approved' ? '✅ Đã duyệt' : existing.status === 'paid' ? '💰 Đã trả' : '📝 Draft') : '— Chưa tính'
+              const statusColor = existing ? (existing.status === 'approved' ? T.green : existing.status === 'paid' ? T.blue : T.amber) : T.med
+              return (
+                <tr key={u.id} style={{ borderBottom: `1px solid ${T.border}`, background: idx % 2 === 0 ? '#FFF' : T.bg }}>
+                  <td style={{ padding: 10, fontWeight: 600 }}>{u.name}</td>
+                  <td style={{ padding: 10 }}>{pr.position_type}</td>
+                  <td style={{ padding: 10, textAlign: 'right' }}>{(pr.work_hours_regular || 0).toFixed(1)}h</td>
+                  <td style={{ padding: 10, textAlign: 'right' }}>{((pr.ot_150_hours || 0) + (pr.ot_200_hours || 0)).toFixed(1)}h</td>
+                  <td style={{ padding: 10, textAlign: 'right' }}>{fmtMoney((pr.salary_work_amount || 0) + (pr.salary_ot_150_amount || 0) + (pr.salary_ot_200_amount || 0))}</td>
+                  <td style={{ padding: 10, textAlign: 'right', color: T.green }}>
+                    {fmtMoney((pr.lunch_amount || 0) + (pr.attendance_bonus_amount || 0) + (pr.inspection_bonus_amount || 0) + (pr.commission_total || 0) + Math.max(0, pr.other_income_total || 0))}
+                  </td>
+                  <td style={{ padding: 10, textAlign: 'right', color: T.red }}>
+                    -{fmtMoney((pr.bhxh_deduction || 0) + (pr.shortage_loss_total || 0) + Math.max(0, -(pr.other_income_total || 0)))}
+                  </td>
+                  <td style={{ padding: 10, textAlign: 'right', fontWeight: 700, fontSize: FS.md, color: T.dark }}>
+                    {fmtMoney(pr.final_salary || 0)}
+                  </td>
+                  <td style={{ padding: 10, color: statusColor, fontWeight: 600 }}>{statusLabel}</td>
+                  <td style={{ padding: 10 }}>
+                    <div style={{ display: 'flex', gap: 4, flexWrap: 'wrap' }}>
+                      <button onClick={() => setDetailModalUser(u)}
+                        style={{ padding: '4px 10px', background: T.blue, color: '#fff', border: 'none', borderRadius: RD.sm, cursor: 'pointer', fontSize: FS.xs }}>
+                        👁 Xem
+                      </button>
+                      {existing?.status !== 'approved' && existing?.status !== 'paid' && (
+                        <button onClick={() => computeAndSave(u)}
+                          style={{ padding: '4px 10px', background: T.gold, color: '#fff', border: 'none', borderRadius: RD.sm, cursor: 'pointer', fontSize: FS.xs }}>
+                          ⚡ Tính
+                        </button>
+                      )}
+                      {existing && existing.status === 'draft' && (
+                        <button onClick={() => approveOne(u)}
+                          style={{ padding: '4px 10px', background: T.green, color: '#fff', border: 'none', borderRadius: RD.sm, cursor: 'pointer', fontSize: FS.xs }}>
+                          ✓ Duyệt
+                        </button>
+                      )}
+                      {existing && existing.status === 'approved' && (
+                        <button onClick={() => unlockOne(u)}
+                          style={{ padding: '4px 10px', background: T.border, color: T.dark, border: 'none', borderRadius: RD.sm, cursor: 'pointer', fontSize: FS.xs }}>
+                          🔓 Unlock
+                        </button>
+                      )}
+                    </div>
+                  </td>
+                </tr>
+              )
+            })}
+            {/* Tổng */}
+            <tr style={{ background: T.gold + '22', fontWeight: 700, borderTop: `3px solid ${T.gold}` }}>
+              <td colSpan={7} style={{ padding: 12, textAlign: 'right' }}>TỔNG QUỸ LƯƠNG:</td>
+              <td style={{ padding: 12, textAlign: 'right', fontSize: FS.md, color: T.dark }}>
+                {fmtMoney(usersWithSalary.reduce((s: number, u: any) => {
+                  const pr = getPayroll(u.id) || computeForUser(u)
+                  return s + (pr.final_salary || 0)
+                }, 0))}
+              </td>
+              <td colSpan={2}></td>
+            </tr>
+          </tbody>
+        </table>
+      </Card>
+
+      {/* Detail modal */}
+      {detailModalUser && (
+        <PayrollDetailModal
+          user={detailModalUser}
+          payroll={getPayroll(detailModalUser.id) || computeForUser(detailModalUser)}
+          salaryConfig={detailModalUser._salary}
+          otherIncomes={otherIncomes.filter(o => o.user_id === detailModalUser.id)}
+          shortageLoss={shortageLoss.filter(s => s.user_id === detailModalUser.id)}
+          revenue={getRevenue(detailModalUser.id)}
+          paidLeaveDates={paidLeaveDates}
+          month={month} year={year}
+          actor={user}
+          onClose={() => setDetailModalUser(null)}
+          onUpdate={async (updates: any) => {
+            // Manual override
+            const existing = getPayroll(detailModalUser.id)
+            if (!existing) { alert('Hãy tính lương trước khi điều chỉnh'); return }
+            await db.from('monthly_payroll').update(updates).eq('id', existing.id)
+            setPayrolls(prev => prev.map(p => p.id === existing.id ? { ...p, ...updates } : p))
+            await db.from('monthly_payroll_audit').insert({
+              payroll_id: existing.id, user_id: detailModalUser.id, month, year,
+              action: 'manual_override',
+              reason: updates.manual_adjust_reason || '',
+              actor_id: user.id, actor_name: user.name,
+            })
+          }}
+        />
+      )}
+    </div>
+  )
+}
+
+
+// Detail modal — breakdown công thức + manual override
+function PayrollDetailModal({ user: nv, payroll, salaryConfig, otherIncomes, shortageLoss, revenue, paidLeaveDates, month, year, actor, onClose, onUpdate }: any) {
+  const [manualAdjust, setManualAdjust] = useState(payroll?.manual_adjust || 0)
+  const [manualReason, setManualReason] = useState(payroll?.manual_adjust_reason || '')
+  const totalWorkingDays = countWorkingDaysInMonth(month, year, paidLeaveDates)
+  const stdHoursPerDay = (salaryConfig.position_type === 'Kho' || salaryConfig.position_type === 'Quản lý kho') ? 8 : 7.5
+
+  return (
+    <div style={{
+      position: 'fixed', top: 0, left: 0, right: 0, bottom: 0,
+      background: 'rgba(0,0,0,0.5)', zIndex: 1000,
+      display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 20,
+    }} onClick={onClose}>
+      <div onClick={(e: any) => e.stopPropagation()} style={{
+        background: '#FFF', borderRadius: RD.lg, maxWidth: 680, width: '100%',
+        maxHeight: '90vh', overflow: 'auto', padding: 24,
+      }}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16 }}>
+          <h3 style={{ margin: 0, color: T.dark }}>💵 Phiếu lương {nv.name} — T{month}/{year}</h3>
+          <button onClick={onClose} style={{ background: 'none', border: 'none', fontSize: 24, cursor: 'pointer' }}>✕</button>
+        </div>
+
+        <div style={{ fontSize: FS.sm, color: T.med, marginBottom: 12 }}>
+          Vị trí: <b>{salaryConfig.position_type}</b> | LCB: <b>{fmtMoney(salaryConfig.base_salary)}đ</b> | Ngày làm chuẩn tháng: <b>{totalWorkingDays}</b>
+        </div>
+
+        {/* Breakdown sections */}
+        <div style={{ background: T.bg, padding: 12, borderRadius: RD.md, marginBottom: 10 }}>
+          <div style={{ fontWeight: 700, marginBottom: 8, color: T.dark }}>📊 Giờ công</div>
+          <div style={{ display: 'grid', gridTemplateColumns: '2fr 1fr', gap: 6, fontSize: FS.sm }}>
+            <span>Giờ BT (làm thực):</span> <span style={{ textAlign: 'right' }}>{(payroll.work_hours_regular || 0).toFixed(2)}h / {totalWorkingDays * stdHoursPerDay}h chuẩn</span>
+            <span>OT 150%:</span> <span style={{ textAlign: 'right' }}>{(payroll.ot_150_hours || 0).toFixed(2)}h</span>
+            <span>OT 200%:</span> <span style={{ textAlign: 'right' }}>{(payroll.ot_200_hours || 0).toFixed(2)}h</span>
+            <span>Ngày đi làm:</span> <span style={{ textAlign: 'right' }}>{payroll.total_work_days || 0}</span>
+            <span>Ngày nghỉ (có phép):</span> <span style={{ textAlign: 'right' }}>{payroll.total_leave_days || 0}</span>
+            <span>Ngày NKP:</span> <span style={{ textAlign: 'right', color: (payroll.total_nkp_days || 0) > 0 ? T.red : T.med }}>{payroll.total_nkp_days || 0}</span>
+          </div>
+        </div>
+
+        <div style={{ background: '#F0FDF4', padding: 12, borderRadius: RD.md, marginBottom: 10 }}>
+          <div style={{ fontWeight: 700, marginBottom: 8, color: T.green }}>➕ Thu nhập</div>
+          <div style={{ display: 'grid', gridTemplateColumns: '2fr 1fr', gap: 6, fontSize: FS.sm }}>
+            <span>Lương công (LCB × tỷ lệ giờ):</span> <span style={{ textAlign: 'right' }}>{fmtMoney(payroll.salary_work_amount || 0)}đ</span>
+            <span>OT 150%:</span> <span style={{ textAlign: 'right' }}>{fmtMoney(payroll.salary_ot_150_amount || 0)}đ</span>
+            <span>OT 200%:</span> <span style={{ textAlign: 'right' }}>{fmtMoney(payroll.salary_ot_200_amount || 0)}đ</span>
+            <span>Tiền ăn trưa ({payroll.lunch_days || 0} buổi × 30k):</span> <span style={{ textAlign: 'right' }}>{fmtMoney(payroll.lunch_amount || 0)}đ</span>
+            {salaryConfig.has_attendance_bonus && (
+              <>
+                <span>Chuyên cần ({(payroll.total_nkp_days || 0) === 0 ? 'đủ' : `NKP ${payroll.total_nkp_days}`}):</span>
+                <span style={{ textAlign: 'right' }}>{fmtMoney(payroll.attendance_bonus_amount || 0)}đ</span>
+              </>
+            )}
+            {salaryConfig.has_inspection_bonus && (
+              <>
+                <span>Thưởng kiểm hàng:</span>
+                <span style={{ textAlign: 'right' }}>{fmtMoney(payroll.inspection_bonus_amount || 0)}đ</span>
+              </>
+            )}
+            {(payroll.commission_total || 0) > 0 && (
+              <>
+                <span>Hoa hồng Sale{revenue ? ` (DS ${fmtMoney(revenue.ds_khach_cu + revenue.ds_khach_moi)})` : ''}:</span>
+                <span style={{ textAlign: 'right' }}>{fmtMoney(payroll.commission_total || 0)}đ</span>
+              </>
+            )}
+          </div>
+        </div>
+
+        {(otherIncomes.length > 0 || shortageLoss.length > 0) && (
+          <div style={{ background: '#FEF3C7', padding: 12, borderRadius: RD.md, marginBottom: 10 }}>
+            <div style={{ fontWeight: 700, marginBottom: 8, color: T.amber }}>💼 Khoản khác</div>
+            {otherIncomes.map((oi: any, idx: number) => (
+              <div key={idx} style={{ fontSize: FS.sm, display: 'flex', justifyContent: 'space-between' }}>
+                <span>{oi.reason}:</span>
+                <span style={{ color: oi.amount >= 0 ? T.green : T.red, fontWeight: 600 }}>{oi.amount >= 0 ? '+' : ''}{fmtMoney(oi.amount)}đ</span>
+              </div>
+            ))}
+            {shortageLoss.map((sl: any, idx: number) => (
+              <div key={`sl${idx}`} style={{ fontSize: FS.sm, display: 'flex', justifyContent: 'space-between' }}>
+                <span>Tiền mất hàng{sl.note ? ` (${sl.note})` : ''}:</span>
+                <span style={{ color: T.red, fontWeight: 600 }}>-{fmtMoney(sl.amount)}đ</span>
+              </div>
+            ))}
+          </div>
+        )}
+
+        <div style={{ background: '#FEE2E2', padding: 12, borderRadius: RD.md, marginBottom: 10 }}>
+          <div style={{ fontWeight: 700, marginBottom: 8, color: T.red }}>➖ Khấu trừ</div>
+          {salaryConfig.has_bhxh && (
+            <div style={{ fontSize: FS.sm, display: 'flex', justifyContent: 'space-between' }}>
+              <span>BHXH cố định:</span>
+              <span>-{fmtMoney(payroll.bhxh_deduction || 0)}đ</span>
+            </div>
+          )}
+        </div>
+
+        {/* Manual adjustment */}
+        {payroll.id && payroll.status !== 'approved' && payroll.status !== 'paid' && (
+          <div style={{ background: '#EFF6FF', padding: 12, borderRadius: RD.md, marginBottom: 10 }}>
+            <div style={{ fontWeight: 700, marginBottom: 8, color: T.blue }}>⚙️ Điều chỉnh thủ công</div>
+            <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+              <input type="number" value={manualAdjust} onChange={e => setManualAdjust(Number(e.target.value))}
+                style={{ width: 140, padding: 6, borderRadius: RD.sm, border: `1px solid ${T.border}` }}/>
+              <input type="text" placeholder="Lý do..." value={manualReason} onChange={e => setManualReason(e.target.value)}
+                style={{ flex: 1, minWidth: 200, padding: 6, borderRadius: RD.sm, border: `1px solid ${T.border}` }}/>
+              <button onClick={() => onUpdate({
+                manual_adjust: manualAdjust,
+                manual_adjust_reason: manualReason,
+                final_salary: (payroll.final_salary || 0) - (payroll.manual_adjust || 0) + manualAdjust,
+              })} style={{ padding: '6px 14px', background: T.blue, color: '#fff', border: 'none', borderRadius: RD.sm, cursor: 'pointer' }}>
+                Cập nhật
+              </button>
+            </div>
+          </div>
+        )}
+
+        <div style={{ background: T.gold + '22', padding: 16, borderRadius: RD.md, textAlign: 'center' }}>
+          <div style={{ fontSize: FS.sm, color: T.med }}>THỰC NHẬN</div>
+          <div style={{ fontSize: 28, fontWeight: 700, color: T.dark }}>{fmtMoney(payroll.final_salary || 0)}đ</div>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+
+// ──────────────────────────────────────────────────────────────────────
+// UI MODULE — Phiếu lương cá nhân (NV xem)
+// ──────────────────────────────────────────────────────────────────────
+function MyPayslipModule({ user, allUsers, mobile }: any) {
+  const p = mobile ? '16px' : '24px'
+  const [month, setMonth]   = useState(new Date().getMonth() + 1)
+  const [year, setYear]     = useState(new Date().getFullYear())
+  const [payroll, setPayroll] = useState<any>(null)
+  const [otherIncomes, setOtherIncomes] = useState<any[]>([])
+  const [shortageLoss, setShortageLoss] = useState<any[]>([])
+  const [revenue, setRevenue] = useState<any>(null)
+  const [salaryConfig, setSalaryConfig] = useState<any>(null)
+  const [loading, setLoading] = useState(false)
+
+  useEffect(() => {
+    (async () => {
+      setLoading(true)
+      const [pr, sc, oi, sl, rv] = await Promise.all([
+        db.from('monthly_payroll').select('*').eq('user_id', user.id).eq('month', month).eq('year', year).maybeSingle(),
+        db.from('salary_config').select('*').eq('user_id', user.id).is('effective_to', null).maybeSingle(),
+        db.from('monthly_other_income').select('*').eq('user_id', user.id).eq('month', month).eq('year', year),
+        db.from('monthly_shortage_loss').select('*').eq('user_id', user.id).eq('month', month).eq('year', year),
+        db.from('monthly_revenue').select('*').eq('user_id', user.id).eq('month', month).eq('year', year).maybeSingle(),
+      ])
+      setPayroll(pr.data)
+      setSalaryConfig(sc.data)
+      setOtherIncomes(oi.data || [])
+      setShortageLoss(sl.data || [])
+      setRevenue(rv.data)
+      setLoading(false)
+    })()
+  }, [user.id, month, year])
+
+  return (
+    <div style={{ padding: p }}>
+      <Topbar mobile={mobile} title="💰 Phiếu lương của tôi" subtitle={`${user.name}`}/>
+
+      <Card style={{ padding: 14, marginBottom: 14 }}>
+        <div style={{ display: 'flex', gap: 10, alignItems: 'center' }}>
+          <label style={{ fontSize: FS.sm, color: T.med, fontWeight: 600 }}>Tháng:</label>
+          <select value={month} onChange={e => setMonth(Number(e.target.value))}
+            style={{ padding: 6, borderRadius: RD.sm, border: `1px solid ${T.border}` }}>
+            {Array.from({ length: 12 }, (_, i) => i + 1).map(m => <option key={m} value={m}>T{m}</option>)}
+          </select>
+          <select value={year} onChange={e => setYear(Number(e.target.value))}
+            style={{ padding: 6, borderRadius: RD.sm, border: `1px solid ${T.border}` }}>
+            {[2025, 2026, 2027].map(y => <option key={y} value={y}>{y}</option>)}
+          </select>
+        </div>
+      </Card>
+
+      {loading ? (
+        <Card style={{ padding: 40, textAlign: 'center', color: T.med }}>Đang tải...</Card>
+      ) : !payroll || payroll.status === 'draft' ? (
+        <Card style={{ padding: 40, textAlign: 'center', color: T.med }}>
+          <div style={{ fontSize: 48, marginBottom: 10 }}>⏳</div>
+          <div style={{ fontSize: FS.md, fontWeight: 600, color: T.dark }}>Lương tháng {month}/{year} chưa được duyệt</div>
+          <div style={{ fontSize: FS.sm, marginTop: 6 }}>Phiếu lương sẽ hiển thị sau khi admin đã tính và duyệt xong.</div>
+        </Card>
+      ) : (
+        <Card style={{ padding: 20 }}>
+          <div style={{ textAlign: 'center', marginBottom: 20 }}>
+            <div style={{ fontSize: FS.sm, color: T.med }}>THỰC NHẬN</div>
+            <div style={{ fontSize: 36, fontWeight: 700, color: T.dark }}>{fmtMoney(payroll.final_salary)}đ</div>
+            <div style={{ fontSize: FS.xs, color: payroll.status === 'paid' ? T.green : T.blue, marginTop: 4 }}>
+              {payroll.status === 'paid' ? '✅ Đã thanh toán' : '✔ Đã duyệt'} • Tháng {month}/{year}
+            </div>
+          </div>
+
+          <div style={{ background: T.bg, padding: 14, borderRadius: RD.md, marginBottom: 10 }}>
+            <div style={{ fontWeight: 700, marginBottom: 8, color: T.dark }}>📊 Giờ công</div>
+            <Line label="Giờ BT thực" value={`${(payroll.work_hours_regular || 0).toFixed(1)}h`}/>
+            <Line label="OT 150%" value={`${(payroll.ot_150_hours || 0).toFixed(1)}h`}/>
+            <Line label="OT 200%" value={`${(payroll.ot_200_hours || 0).toFixed(1)}h`}/>
+            <Line label="Ngày đi làm" value={String(payroll.total_work_days || 0)}/>
+          </div>
+
+          <div style={{ background: '#F0FDF4', padding: 14, borderRadius: RD.md, marginBottom: 10 }}>
+            <div style={{ fontWeight: 700, marginBottom: 8, color: T.green }}>➕ Thu nhập</div>
+            <Line label="Lương công" value={`${fmtMoney(payroll.salary_work_amount)}đ`}/>
+            {(payroll.salary_ot_150_amount || 0) > 0 && <Line label="OT 150%" value={`${fmtMoney(payroll.salary_ot_150_amount)}đ`}/>}
+            {(payroll.salary_ot_200_amount || 0) > 0 && <Line label="OT 200%" value={`${fmtMoney(payroll.salary_ot_200_amount)}đ`}/>}
+            <Line label={`Ăn trưa (${payroll.lunch_days} buổi)`} value={`${fmtMoney(payroll.lunch_amount)}đ`}/>
+            {(payroll.attendance_bonus_amount || 0) > 0 && <Line label="Chuyên cần" value={`${fmtMoney(payroll.attendance_bonus_amount)}đ`}/>}
+            {(payroll.inspection_bonus_amount || 0) > 0 && <Line label="Thưởng kiểm hàng" value={`${fmtMoney(payroll.inspection_bonus_amount)}đ`}/>}
+            {(payroll.commission_total || 0) > 0 && <Line label="Hoa hồng" value={`${fmtMoney(payroll.commission_total)}đ`}/>}
+          </div>
+
+          {(otherIncomes.length > 0 || shortageLoss.length > 0) && (
+            <div style={{ background: '#FEF3C7', padding: 14, borderRadius: RD.md, marginBottom: 10 }}>
+              <div style={{ fontWeight: 700, marginBottom: 8, color: T.amber }}>💼 Khoản khác</div>
+              {otherIncomes.map((oi: any, idx: number) => (
+                <Line key={idx} label={oi.reason} value={`${oi.amount >= 0 ? '+' : ''}${fmtMoney(oi.amount)}đ`} colored={oi.amount >= 0 ? T.green : T.red}/>
+              ))}
+              {shortageLoss.map((sl: any, idx: number) => (
+                <Line key={`sl${idx}`} label={`Tiền mất hàng${sl.note ? ` (${sl.note})` : ''}`} value={`-${fmtMoney(sl.amount)}đ`} colored={T.red}/>
+              ))}
+            </div>
+          )}
+
+          {(payroll.bhxh_deduction || 0) > 0 && (
+            <div style={{ background: '#FEE2E2', padding: 14, borderRadius: RD.md, marginBottom: 10 }}>
+              <div style={{ fontWeight: 700, marginBottom: 8, color: T.red }}>➖ Khấu trừ</div>
+              <Line label="BHXH" value={`-${fmtMoney(payroll.bhxh_deduction)}đ`} colored={T.red}/>
+            </div>
+          )}
+        </Card>
+      )}
+    </div>
+  )
+}
+
+// Helper component for line item
+function Line({ label, value, colored }: { label: string, value: string, colored?: string }) {
+  return (
+    <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: FS.sm, padding: '2px 0' }}>
+      <span style={{ color: T.med }}>{label}</span>
+      <span style={{ fontWeight: 600, color: colored || T.dark }}>{value}</span>
     </div>
   )
 }
