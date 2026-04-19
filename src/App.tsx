@@ -12,7 +12,7 @@ const db = createClient(SUPABASE_URL, SUPABASE_KEY)
 // APP_VERSION — dùng để invalidate cache localStorage mỗi khi deploy version mới
 // (ngăn bug quyền user bị "reset" do cache position cũ sau deploy)
 // ⚠️ MỖI LẦN DEPLOY FEATURE MỚI CÓ PERMISSION MỚI, BUMP SỐ NÀY:
-const APP_VERSION = '2026.04.17.v58'
+const APP_VERSION = '2026.04.19.v61'
 
 // ════════════════════════════════════════════════════════════════
 // AUDIT LOG — ghi nhận các hành động phá hoại data để trace lại
@@ -1023,10 +1023,11 @@ const NAV_GROUPS = (perm: any, deptId = '') => {
       id:'hr', icon:Ico.users, emoji:'👥', label:'Nhân sự',
       pages:[
         { id:'attendance', icon:Ico.clock, emoji:'🕐', label:'Chấm công' },
+        perm.viewAllDashboard && { id:'payroll_import', icon:Ico.inbox, emoji:'📥', label:'Import máy chấm công' },
         { id:'overtime',   icon:Ico.sun, emoji:'⏰', label:'Làm thêm' },
         { id:'leave',      icon:Ico.palm, emoji:'🏖️', label:'Nghỉ phép' },
         { id:'orgchart',   icon:Ico.network, emoji:'🏢', label:'Sơ đồ tổ chức' },
-      ]
+      ].filter(Boolean)
     },
     !hasAttendance && {
       id:'hr', icon:Ico.users, emoji:'👥', label:'Nhân sự',
@@ -8982,6 +8983,7 @@ export default function App() {
           {validPage==='tasks'      && <Tasks {...pp} tasks={tasks} setTasks={setTasks} addLog={addLog}/>}
           {validPage==='templates'  && <Templates {...pp} templates={templates} setTemplates={setTemplates}/>}
           {validPage==='attendance' && <Attendance {...pp} leaveRequests={leaveRequests} attendance={attendance} setAttendance={setAttendance}/>}
+          {validPage==='payroll_import' && <PayrollImportModule {...pp} attendance={attendance} setAttendance={setAttendance}/>}
           {validPage==='overtime'   && <Overtime {...pp}/>}
           {validPage==='announce'   && <Announcements {...pp}/>}
           {validPage==='leave'      && <Leave {...pp} leaveRequests={leaveRequests} setLeaveRequests={setLeaveReqs}/>}
@@ -17971,6 +17973,843 @@ function NoteCard({ note, color, isEditing, mobile, onStartEdit, onStopEdit, onS
         paddingTop:6, borderTop:`1px solid ${color.border}` }}>
         {fmtDate(note.updated_at)}
       </div>
+    </div>
+  )
+}
+
+
+
+// ══════════════════════════════════════════════════════════════════════
+// ══ PAYROLL IMPORT MODULE — Import chấm công từ máy ═════════════════
+// ══════════════════════════════════════════════════════════════════════
+
+// ═══════════════════════════════════════════════════════════════════
+// PAYROLL IMPORT MODULE — Phase 1
+// Import chấm công từ máy chấm công (Excel), cross-check app check-in,
+// compute giờ BT/OT/Ăn trưa theo chính sách công ty.
+// ═══════════════════════════════════════════════════════════════════
+
+// ── Helper: Normalize name for fuzzy matching ──
+// Remove diacritics + lowercase + trim spaces
+function normalizeName(s: string): string {
+  if (!s) return ''
+  return s
+    .toLowerCase()
+    .normalize('NFD').replace(/[\u0300-\u036f]/g, '')
+    .replace(/đ/g, 'd')
+    .replace(/\s+/g, ' ')
+    .trim()
+}
+
+// ── Parse Excel machine CC file ──
+// Returns: [{ ma_nv, ten_nv, records: [{ date, thu, check_in, check_out, ky_hieu }, ...] }]
+async function parseMachineAttendanceFile(file: File): Promise<any[]> {
+  const xlsx = await import('https://cdn.jsdelivr.net/npm/xlsx@0.18.5/+esm' as any)
+  const buf = await file.arrayBuffer()
+  const wb = xlsx.read(buf, { type: 'array', cellDates: true })
+  const ws = wb.Sheets[wb.SheetNames[0]]
+  const rows: any[] = xlsx.utils.sheet_to_json(ws, { header: 1, defval: '', raw: false })
+
+  const employees: any[] = []
+  let current: any = null
+
+  for (let i = 0; i < rows.length; i++) {
+    const row = rows[i]
+    const cell0 = String(row[0] || '').trim()
+
+    // Start of new employee block: "Mã nhân viên: 00002 ... Tên: Linh linh ..."
+    if (cell0.startsWith('Mã nhân viên')) {
+      // Extract ma_nv + name
+      const maMatch = cell0.match(/Mã nhân viên[:\s]+(\d+)/i)
+      const nameMatch = cell0.match(/[Tt]ên[^:]*[:\s]+([^\s][^P]*?)(?:\s+Phòng|\s*$)/)
+      const ma_nv = maMatch ? maMatch[1].trim() : ''
+      const ten_nv = nameMatch ? nameMatch[1].trim() : ''
+      current = {
+        ma_nv,
+        ten_nv,
+        records: []
+      }
+      employees.push(current)
+      continue
+    }
+
+    if (!current) continue
+
+    // Detect data row: col 0 is a date object or date string
+    const dateCell = row[0]
+    let dateStr = ''
+    if (dateCell instanceof Date) {
+      dateStr = dateCell.toISOString().slice(0, 10)
+    } else if (typeof dateCell === 'string' && /^\d{4}-\d{2}-\d{2}/.test(dateCell)) {
+      dateStr = dateCell.slice(0, 10)
+    } else if (typeof dateCell === 'string' && /\d{1,2}\/\d{1,2}\/\d{4}/.test(dateCell)) {
+      // Try parse DD/MM/YYYY
+      const m = dateCell.match(/(\d{1,2})\/(\d{1,2})\/(\d{4})/)
+      if (m) dateStr = `${m[3]}-${String(m[2]).padStart(2, '0')}-${String(m[1]).padStart(2, '0')}`
+    }
+
+    if (!dateStr) continue
+
+    const thu = String(row[1] || '').trim()
+
+    // Collect all time cells: Vào1/Ra1/Vào2/Ra2/Vào3/Ra3 → col 2-7
+    const times: string[] = []
+    for (let j = 2; j <= 7; j++) {
+      const v = String(row[j] || '').trim()
+      if (/^\d{1,2}:\d{2}(:\d{2})?$/.test(v)) {
+        times.push(v.length === 5 ? v + ':00' : v)
+      }
+    }
+
+    // Lấy min (check_in) + max (check_out)
+    let check_in = ''
+    let check_out = ''
+    if (times.length >= 1) {
+      const sorted = [...times].sort()
+      check_in = sorted[0]
+      if (times.length >= 2) check_out = sorted[sorted.length - 1]
+    }
+
+    // Ký hiệu col 15
+    const ky_hieu = String(row[15] || '').trim()
+
+    current.records.push({
+      date: dateStr,
+      thu,
+      check_in,
+      check_out,
+      ky_hieu,
+    })
+  }
+
+  return employees.filter(e => e.records.length > 0)
+}
+
+// ── Compute work hours ──
+// Returns: { work_hours_regular, ot_150, lunch_eligible }
+// Follows Excel policy: different schedule for Kho vs other positions
+function computeWorkHours(
+  check_in: string,    // HH:MM:SS
+  check_out: string,   // HH:MM:SS
+  position: string,    // 'Kho' | 'Sales' | ...
+  payrollConfig: any
+): { work_hours_regular: number, ot_150: number, lunch_eligible: boolean } {
+  if (!check_in || !check_out) {
+    return { work_hours_regular: 0, ot_150: 0, lunch_eligible: false }
+  }
+
+  const isKho = ['Kho', 'Quản lý kho', 'Thử việc'].includes(position)
+  const isPartTime = position === 'Part-time'
+
+  // Schedule
+  const morningStart = isKho ? (payrollConfig?.morning_start_kho || '08:30') : (payrollConfig?.morning_start_other || '08:00')
+  const afternoonStart = isKho ? (payrollConfig?.afternoon_start_kho || '13:30') : (payrollConfig?.afternoon_start_other || '14:00')
+  const breakHrs = isKho ? 1.0 : 1.5
+  const standardHrs = isKho ? 8.0 : 7.5
+
+  const parseTime = (t: string) => {
+    const [h, m] = t.split(':').map(Number)
+    return h + m / 60
+  }
+
+  const inH = parseTime(check_in)
+  const outH = parseTime(check_out)
+  const morningH = parseTime(morningStart)
+  const afternoonH = parseTime(afternoonStart)
+
+  // Clamp check_in to morning start if too early
+  const effIn = Math.max(inH, morningH)
+
+  // Raw worked hours
+  let rawHours = outH - effIn
+
+  // Minus break if work spans both morning and afternoon
+  if (effIn < afternoonH && outH > afternoonH) {
+    rawHours -= breakHrs
+  }
+
+  // Floor to 0.25 (same as Excel)
+  rawHours = Math.max(0, Math.floor(rawHours * 4) / 4)
+
+  // Part-time: no OT, all hours are regular
+  if (isPartTime) {
+    return { work_hours_regular: rawHours, ot_150: 0, lunch_eligible: false }
+  }
+
+  // Split regular + OT
+  const regular = Math.min(rawHours, standardHrs)
+  const ot = Math.max(0, rawHours - standardHrs)
+
+  // Lunch eligibility: vào < 11:00 + work >= 4.5h + ra > afternoon_start
+  const lunch_eligible = (inH < 11.0) && (rawHours >= 4.5) && (outH > afternoonH)
+
+  return { work_hours_regular: regular, ot_150: ot, lunch_eligible }
+}
+
+// ══════════════════════════════════════════════════════════════════
+// MAIN COMPONENT
+// ══════════════════════════════════════════════════════════════════
+function PayrollImportModule({ user, allUsers, mobile, attendance, setAttendance }: any) {
+  const perm = getPerm(user)
+  const p = mobile ? 16 : 24
+
+  // STATE
+  const [step, setStep] = useState<1 | 2 | 3>(1)                    // 3-step wizard
+  const [files, setFiles] = useState<File[]>([])
+  const [parsedData, setParsedData] = useState<any[]>([])           // Array of {ma_nv, ten_nv, records, sourceFile}
+  const [mappings, setMappings] = useState<Record<string, string>>({})  // "filename:ma_nv" → user_id
+  const [sourceLabel, setSourceLabel] = useState<string>('')
+  const [month, setMonth] = useState(new Date().getMonth() + 1)
+  const [year, setYear] = useState(new Date().getFullYear())
+  const [loading, setLoading] = useState(false)
+  const [error, setError] = useState('')
+  const [payrollConfig, setPayrollConfig] = useState<any>(null)
+  const [salaryConfigs, setSalaryConfigs] = useState<any[]>([])     // user's salary_config
+  const [existingImport, setExistingImport] = useState<any>(null)
+  const [mergeMode, setMergeMode] = useState<'overwrite' | 'merge' | null>(null)
+  const [previewComputed, setPreviewComputed] = useState<any[]>([])  // computed attendance records
+  const [importHistory, setImportHistory] = useState<any[]>([])
+
+  // ── PERM CHECK ──
+  if (!perm.viewAllDashboard) {
+    return (
+      <div style={{ padding: p }}>
+        <EmptyState icon={Ico.inbox} title="Không có quyền truy cập"
+          description="Chỉ admin/Giám đốc mới được import dữ liệu chấm công."/>
+      </div>
+    )
+  }
+
+  // ── Load config + history ──
+  const fetchInitData = async () => {
+    const [pc, sc, ih] = await Promise.all([
+      db.from('payroll_config').select('*').eq('id', 1).single(),
+      db.from('salary_config').select('*').is('effective_to', null),
+      db.from('attendance_imports').select('*')
+        .order('uploaded_at', { ascending: false }).limit(20)
+    ])
+    if (pc.data) setPayrollConfig(pc.data)
+    if (sc.data) setSalaryConfigs(sc.data)
+    if (ih.data) setImportHistory(ih.data)
+  }
+
+  useEffect(() => { fetchInitData() }, [])
+
+  // ── Helper: get position of user ──
+  const getPosition = (userId: string) => {
+    const sc = salaryConfigs.find(s => s.user_id === userId)
+    return sc?.position_type || ''
+  }
+
+  // ── STEP 1: Parse files ──
+  const onFilesSelected = (newFiles: File[]) => {
+    setFiles(prev => [...prev, ...newFiles])
+  }
+
+  const parseAllFiles = async () => {
+    setLoading(true)
+    setError('')
+    try {
+      const allParsed: any[] = []
+      for (const f of files) {
+        const employees = await parseMachineAttendanceFile(f)
+        for (const emp of employees) {
+          emp.sourceFile = f.name
+          emp.uniqueKey = `${f.name}::${emp.ma_nv}`
+          allParsed.push(emp)
+        }
+      }
+      setParsedData(allParsed)
+
+      // Auto-map based on existing users.fingerprint_codes + fuzzy name match
+      const autoMap: Record<string, string> = {}
+      for (const emp of allParsed) {
+        // Match 1: existing fingerprint_codes
+        const userByCode = allUsers.find((u: any) =>
+          u.fingerprint_codes && u.fingerprint_codes.includes(emp.ma_nv)
+        )
+        if (userByCode) {
+          autoMap[emp.uniqueKey] = userByCode.id
+          continue
+        }
+        // Match 2: fuzzy name
+        const normMachineName = normalizeName(emp.ten_nv)
+        const userByName = allUsers.find((u: any) => {
+          const appName = normalizeName(u.name)
+          return appName === normMachineName
+            || appName.includes(normMachineName)
+            || normMachineName.includes(appName)
+        })
+        if (userByName) autoMap[emp.uniqueKey] = userByName.id
+      }
+      setMappings(autoMap)
+
+      // Check if this month/year already imported
+      const existing = importHistory.find(h => h.month === month && h.year === year)
+      if (existing) setExistingImport(existing)
+
+      setStep(2)
+    } catch (e: any) {
+      setError('Lỗi parse file: ' + e.message)
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  // ── STEP 2 → STEP 3: Compute preview ──
+  const computePreview = () => {
+    if (!payrollConfig) {
+      setError('Chưa load được cấu hình lương')
+      return
+    }
+
+    // Nhóm records theo user_id (nhiều ma_nv có thể map về 1 user)
+    const userRecordsMap: Record<string, any[]> = {}
+    for (const emp of parsedData) {
+      const userId = mappings[emp.uniqueKey]
+      if (!userId) continue // Skip unmapped
+      if (!userRecordsMap[userId]) userRecordsMap[userId] = []
+      for (const rec of emp.records) {
+        // Filter by month/year
+        const recDate = new Date(rec.date)
+        if (recDate.getMonth() + 1 !== month || recDate.getFullYear() !== year) continue
+        userRecordsMap[userId].push(rec)
+      }
+    }
+
+    // Merge multiple records for same date (nếu 1 NV có nhiều fingerprint codes)
+    const preview: any[] = []
+    for (const userId in userRecordsMap) {
+      const records = userRecordsMap[userId]
+      const byDate: Record<string, any> = {}
+      for (const r of records) {
+        if (!byDate[r.date]) byDate[r.date] = { ...r, check_ins: [], check_outs: [] }
+        if (r.check_in) byDate[r.date].check_ins.push(r.check_in)
+        if (r.check_out) byDate[r.date].check_outs.push(r.check_out)
+      }
+      const position = getPosition(userId)
+
+      for (const date in byDate) {
+        const r = byDate[date]
+        // Lấy min(check_ins) + max(check_outs) khi merge nhiều codes
+        const check_in = r.check_ins.length > 0 ? r.check_ins.sort()[0] : ''
+        const check_out = r.check_outs.length > 0 ? r.check_outs.sort().reverse()[0] : ''
+        const hours = computeWorkHours(check_in, check_out, position, payrollConfig)
+
+        // Determine status
+        let status = 'absent'
+        let needs_qm_review = false
+        let import_source = 'missing'
+
+        if (check_in && check_out) {
+          status = 'Đi làm'
+          import_source = 'machine'
+          needs_qm_review = false
+        } else if (!check_in && !check_out) {
+          // Máy không có data → cần QM xác nhận
+          needs_qm_review = true
+          import_source = 'missing'
+          status = 'Chờ xác nhận'
+        } else {
+          // Chỉ có 1 chiều (vào hoặc ra), thiếu → cần QM
+          needs_qm_review = true
+          import_source = 'missing'
+          status = 'Chờ xác nhận'
+        }
+
+        preview.push({
+          user_id: userId,
+          date,
+          thu: r.thu,
+          check_in_machine: check_in || null,
+          check_out_machine: check_out || null,
+          check_in_final: check_in || null,
+          check_out_final: check_out || null,
+          work_hours_regular: hours.work_hours_regular,
+          ot_150_hours: hours.ot_150,
+          ot_200_hours: 0,   // Tính ở Phase 2
+          total_hours: hours.work_hours_regular + hours.ot_150,
+          lunch_eligible: hours.lunch_eligible,
+          sunday_type: null, // Tính ở Phase 2
+          needs_qm_review,
+          import_source,
+          status,
+        })
+      }
+    }
+
+    preview.sort((a, b) => a.date.localeCompare(b.date) || String(a.user_id).localeCompare(String(b.user_id)))
+    setPreviewComputed(preview)
+    setStep(3)
+  }
+
+  // ── STEP 3: Execute import ──
+  const executeImport = async () => {
+    if (mergeMode === null && existingImport) {
+      setError('Bạn cần chọn chế độ "Ghi đè" hoặc "Merge" trước khi import')
+      return
+    }
+
+    setLoading(true)
+    setError('')
+    try {
+      // 1. Insert attendance_imports log
+      const mappingJson: Record<string, string> = {}
+      for (const [key, uid] of Object.entries(mappings) as [string, string][]) {
+        const emp = parsedData.find(e => e.uniqueKey === key)
+        if (emp) mappingJson[emp.ma_nv] = uid
+      }
+
+      const { data: importLog, error: importErr } = await db.from('attendance_imports').insert({
+        uploaded_by: user.id,
+        month,
+        year,
+        file_name: files.map(f => f.name).join(', '),
+        source_label: sourceLabel || 'Multi-file',
+        rows_new: previewComputed.length,
+        rows_flagged: previewComputed.filter(p => p.needs_qm_review).length,
+        mapping: mappingJson,
+        merge_mode: mergeMode || 'overwrite',
+      }).select().single()
+
+      if (importErr) throw importErr
+
+      // 2. Update users.fingerprint_codes + fingerprint_names (remember mapping)
+      // Group by user_id → all their fingerprint codes
+      const userFps: Record<string, { codes: string[], names: string[] }> = {}
+      for (const [key, uid] of Object.entries(mappings) as [string, string][]) {
+        const emp = parsedData.find(e => e.uniqueKey === key)
+        if (!emp) continue
+        if (!userFps[uid]) userFps[uid] = { codes: [], names: [] }
+        if (emp.ma_nv && !userFps[uid].codes.includes(emp.ma_nv)) userFps[uid].codes.push(emp.ma_nv)
+        if (emp.ten_nv && !userFps[uid].names.includes(emp.ten_nv)) userFps[uid].names.push(emp.ten_nv)
+      }
+
+      for (const [uid, fps] of Object.entries(userFps)) {
+        const existing = allUsers.find((u: any) => u.id === uid)
+        const mergedCodes = Array.from(new Set([...(existing?.fingerprint_codes || []), ...fps.codes]))
+        const mergedNames = Array.from(new Set([...(existing?.fingerprint_names || []), ...fps.names]))
+        await db.from('users').update({
+          fingerprint_codes: mergedCodes,
+          fingerprint_names: mergedNames,
+        }).eq('id', uid)
+      }
+
+      // 3. If OVERWRITE: delete existing attendance records for this month first
+      if (mergeMode === 'overwrite' && existingImport) {
+        const userIds = Object.values(mappings).filter(Boolean)
+        const fromDate = `${year}-${String(month).padStart(2, '0')}-01`
+        const toDate = new Date(year, month, 0).toISOString().slice(0, 10)  // last day
+        await db.from('attendance')
+          .delete()
+          .gte('date', fromDate)
+          .lte('date', toDate)
+          .in('user_id', userIds)
+      }
+
+      // 4. Upsert attendance records (batch 200 each)
+      const batchSize = 200
+      for (let i = 0; i < previewComputed.length; i += batchSize) {
+        const batch = previewComputed.slice(i, i + batchSize).map(r => ({
+          user_id: r.user_id,
+          date: r.date,
+          status: r.status,
+          check_in_machine: r.check_in_machine,
+          check_out_machine: r.check_out_machine,
+          check_in_final: r.check_in_final,
+          check_out_final: r.check_out_final,
+          work_hours_regular: r.work_hours_regular,
+          ot_150_hours: r.ot_150_hours,
+          ot_200_hours: r.ot_200_hours,
+          total_hours: r.total_hours,
+          lunch_eligible: r.lunch_eligible,
+          sunday_type: r.sunday_type,
+          needs_qm_review: r.needs_qm_review,
+          import_source: r.import_source,
+        }))
+        const { error: upErr } = await db.from('attendance').upsert(batch, {
+          onConflict: 'user_id,date',
+        })
+        if (upErr) throw upErr
+      }
+
+      // 5. Done — refresh attendance table in parent
+      const { data: freshAtt } = await db.from('attendance').select('*').order('date', { ascending: false }).limit(5000)
+      if (freshAtt && setAttendance) setAttendance(freshAtt)
+
+      alert(`✅ Đã import thành công ${previewComputed.length} records cho ${Object.keys(userFps).length} NV trong tháng ${month}/${year}.\n⚠️ Có ${previewComputed.filter(r => r.needs_qm_review).length} ngày cần QM/Admin xác nhận.`)
+
+      // Reset wizard
+      setStep(1)
+      setFiles([])
+      setParsedData([])
+      setMappings({})
+      setPreviewComputed([])
+      setMergeMode(null)
+      setExistingImport(null)
+      await fetchInitData()
+    } catch (e: any) {
+      setError('Lỗi import: ' + e.message)
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  // ══ RENDER ══
+  return (
+    <div style={{ padding: p }}>
+      <Topbar mobile={mobile}
+        title="📥 Import chấm công từ máy"
+        subtitle={`Tháng đang import: ${month}/${year}  •  Nguồn dữ liệu máy CC = nguồn duy nhất để tính lương`}/>
+
+      {error && (
+        <div style={{ padding: 12, background: '#FEE', border: `1px solid ${T.red}`,
+          borderRadius: RD.md, marginBottom: 16, color: T.red, fontSize: FS.sm }}>
+          ⚠️ {error}
+        </div>
+      )}
+
+      {/* Wizard steps indicator */}
+      <div style={{ display: 'flex', gap: 8, marginBottom: 20, flexWrap: 'wrap' }}>
+        {[
+          { n: 1, label: 'Upload file' },
+          { n: 2, label: 'Map NV' },
+          { n: 3, label: 'Preview & Import' },
+        ].map(s => (
+          <div key={s.n} style={{
+            padding: '8px 14px', borderRadius: RD.md,
+            background: step === s.n ? T.gold : step > s.n ? T.green : T.bg,
+            color: step >= s.n ? '#fff' : T.light,
+            fontSize: FS.sm, fontWeight: 600,
+          }}>
+            {step > s.n ? '✓' : s.n}. {s.label}
+          </div>
+        ))}
+      </div>
+
+      {/* ── STEP 1: Upload ── */}
+      {step === 1 && (
+        <Card style={{ padding: p }}>
+          <h3 style={{ marginTop: 0, color: T.dark }}>Bước 1: Chọn tháng + upload file máy chấm công</h3>
+
+          <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap', marginBottom: 16 }}>
+            <div>
+              <label style={{ fontSize: FS.sm, color: T.med, fontWeight: 600 }}>Tháng:</label>
+              <select value={month} onChange={e => setMonth(Number(e.target.value))}
+                style={{ marginLeft: 6, padding: 8, borderRadius: RD.sm, border: `1px solid ${T.border}` }}>
+                {Array.from({ length: 12 }, (_, i) => i + 1).map(m => (
+                  <option key={m} value={m}>Tháng {m}</option>
+                ))}
+              </select>
+            </div>
+            <div>
+              <label style={{ fontSize: FS.sm, color: T.med, fontWeight: 600 }}>Năm:</label>
+              <select value={year} onChange={e => setYear(Number(e.target.value))}
+                style={{ marginLeft: 6, padding: 8, borderRadius: RD.sm, border: `1px solid ${T.border}` }}>
+                {[2025, 2026, 2027].map(y => (
+                  <option key={y} value={y}>{y}</option>
+                ))}
+              </select>
+            </div>
+            <div>
+              <label style={{ fontSize: FS.sm, color: T.med, fontWeight: 600 }}>Nguồn (tuỳ chọn):</label>
+              <input type="text" value={sourceLabel} onChange={e => setSourceLabel(e.target.value)}
+                placeholder="VD: Kho, VP, Sale..."
+                style={{ marginLeft: 6, padding: 8, borderRadius: RD.sm, border: `1px solid ${T.border}`, width: 140 }}/>
+            </div>
+          </div>
+
+          <div style={{
+            border: `2px dashed ${T.border}`, borderRadius: RD.md,
+            padding: 30, textAlign: 'center', marginBottom: 16,
+            background: T.bg,
+          }}>
+            <div style={{ fontSize: 36, marginBottom: 8 }}>📂</div>
+            <div style={{ color: T.med, marginBottom: 12 }}>
+              Chọn 1 hoặc nhiều file Excel (.xlsx) từ máy chấm công
+            </div>
+            <input type="file" accept=".xlsx,.xls" multiple
+              onChange={(e: any) => {
+                const fs = Array.from(e.target.files as FileList)
+                onFilesSelected(fs as File[])
+              }}/>
+          </div>
+
+          {files.length > 0 && (
+            <div style={{ marginBottom: 16 }}>
+              <div style={{ fontSize: FS.sm, fontWeight: 600, color: T.dark, marginBottom: 6 }}>
+                Đã chọn {files.length} file:
+              </div>
+              {files.map((f, i) => (
+                <div key={i} style={{ display: 'flex', alignItems: 'center', gap: 10,
+                  padding: '6px 10px', background: T.bg, borderRadius: RD.sm, marginBottom: 4 }}>
+                  <span style={{ fontSize: FS.sm }}>📄 {f.name}</span>
+                  <span style={{ fontSize: FS.xs, color: T.light }}>({(f.size / 1024).toFixed(1)} KB)</span>
+                  <button onClick={() => setFiles(prev => prev.filter((_, idx) => idx !== i))}
+                    style={{ marginLeft: 'auto', background: 'none', border: 'none', color: T.red, cursor: 'pointer' }}>
+                    ✕
+                  </button>
+                </div>
+              ))}
+            </div>
+          )}
+
+          <button disabled={files.length === 0 || loading} onClick={parseAllFiles}
+            style={{
+              padding: '10px 20px', background: files.length ? T.gold : T.border,
+              color: '#fff', border: 'none', borderRadius: RD.md,
+              cursor: files.length ? 'pointer' : 'not-allowed', fontWeight: 600,
+            }}>
+            {loading ? 'Đang parse...' : 'Parse & Tiếp tục →'}
+          </button>
+
+          {/* Import history */}
+          {importHistory.length > 0 && (
+            <div style={{ marginTop: 24 }}>
+              <h4 style={{ color: T.dark, fontSize: FS.md }}>Lịch sử import</h4>
+              <div style={{ maxHeight: 200, overflowY: 'auto' }}>
+                {importHistory.map(h => (
+                  <div key={h.id} style={{
+                    padding: '8px 10px', background: T.bg, borderRadius: RD.sm, marginBottom: 4,
+                    fontSize: FS.sm, display: 'flex', gap: 10, flexWrap: 'wrap',
+                  }}>
+                    <span>📅 {h.month}/{h.year}</span>
+                    <span style={{ color: T.med }}>{h.source_label}</span>
+                    <span style={{ color: T.light }}>{new Date(h.uploaded_at).toLocaleDateString('vi-VN')}</span>
+                    <span>• {h.rows_new} records</span>
+                    {h.rows_flagged > 0 && <span style={{ color: T.amber }}>⚠️ {h.rows_flagged} cần xác nhận</span>}
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+        </Card>
+      )}
+
+      {/* ── STEP 2: Mapping ── */}
+      {step === 2 && (
+        <Card style={{ padding: p }}>
+          <h3 style={{ marginTop: 0, color: T.dark }}>Bước 2: Map mã máy chấm công → NV trong app</h3>
+          <div style={{ fontSize: FS.sm, color: T.med, marginBottom: 12 }}>
+            Hệ thống đã tự động map dựa trên tên fuzzy + lịch sử mapping đã lưu.
+            1 NV có thể có nhiều mã máy (VD do dup). NV không map → bỏ qua.
+          </div>
+
+          <div style={{ maxHeight: 400, overflowY: 'auto', marginBottom: 16 }}>
+            <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: FS.sm }}>
+              <thead>
+                <tr style={{ background: T.bg, position: 'sticky', top: 0 }}>
+                  <th style={{ padding: 8, textAlign: 'left', borderBottom: `1px solid ${T.border}` }}>File</th>
+                  <th style={{ padding: 8, textAlign: 'left', borderBottom: `1px solid ${T.border}` }}>Mã máy</th>
+                  <th style={{ padding: 8, textAlign: 'left', borderBottom: `1px solid ${T.border}` }}>Tên máy</th>
+                  <th style={{ padding: 8, textAlign: 'left', borderBottom: `1px solid ${T.border}` }}>Ngày</th>
+                  <th style={{ padding: 8, textAlign: 'left', borderBottom: `1px solid ${T.border}` }}>Map vào NV app</th>
+                </tr>
+              </thead>
+              <tbody>
+                {parsedData.map((emp, i) => {
+                  const mappedUid = mappings[emp.uniqueKey]
+                  const mapped = allUsers.find((u: any) => u.id === mappedUid)
+                  // Count records in current month/year
+                  const recsInMonth = emp.records.filter((r: any) => {
+                    const d = new Date(r.date)
+                    return d.getMonth() + 1 === month && d.getFullYear() === year
+                  }).length
+                  return (
+                    <tr key={i} style={{ borderBottom: `1px solid ${T.border}` }}>
+                      <td style={{ padding: 8, fontSize: FS.xs, color: T.light }}>{emp.sourceFile}</td>
+                      <td style={{ padding: 8, fontWeight: 600 }}>{emp.ma_nv}</td>
+                      <td style={{ padding: 8 }}>{emp.ten_nv}</td>
+                      <td style={{ padding: 8, color: T.med }}>{recsInMonth} ngày</td>
+                      <td style={{ padding: 8 }}>
+                        <select value={mappedUid || ''}
+                          onChange={e => setMappings({ ...mappings, [emp.uniqueKey]: e.target.value })}
+                          style={{
+                            padding: 6, borderRadius: RD.sm, width: '100%',
+                            border: `1px solid ${mappedUid ? T.green : T.amber}`,
+                            background: mappedUid ? '#F0FDF4' : '#FFFBEB',
+                          }}>
+                          <option value="">— Chọn NV / Bỏ qua —</option>
+                          {allUsers.filter((u: any) => !u.is_test_account).map((u: any) => (
+                            <option key={u.id} value={u.id}>
+                              {u.name} ({getPosition(u.id) || '—'})
+                            </option>
+                          ))}
+                        </select>
+                      </td>
+                    </tr>
+                  )
+                })}
+              </tbody>
+            </table>
+          </div>
+
+          {/* Warn about duplicate mappings (2+ codes → 1 user) */}
+          {(() => {
+            const counts: Record<string, string[]> = {}
+            for (const [key, uid] of Object.entries(mappings) as [string, string][]) {
+              if (!uid) continue
+              if (!counts[uid]) counts[uid] = []
+              counts[uid].push(key)
+            }
+            const dups = Object.entries(counts).filter(([_, keys]) => keys.length > 1)
+            if (dups.length === 0) return null
+            return (
+              <div style={{
+                padding: 10, background: '#EFF6FF', border: `1px solid ${T.blue}`,
+                borderRadius: RD.md, fontSize: FS.sm, marginBottom: 12,
+              }}>
+                ℹ️ <b>{dups.length} NV có nhiều mã máy</b> (sẽ merge thành 1 khi import):
+                {dups.map(([uid, keys]) => {
+                  const u = allUsers.find((x: any) => x.id === uid)
+                  return ` ${u?.name} (${keys.length} mã);`
+                })}
+              </div>
+            )
+          })()}
+
+          <div style={{ display: 'flex', gap: 8 }}>
+            <button onClick={() => setStep(1)}
+              style={{ padding: '8px 16px', background: T.border, color: T.dark, border: 'none', borderRadius: RD.md, cursor: 'pointer' }}>
+              ← Quay lại
+            </button>
+            <button onClick={computePreview}
+              style={{ padding: '8px 16px', background: T.gold, color: '#fff', border: 'none', borderRadius: RD.md, cursor: 'pointer', fontWeight: 600 }}>
+              Compute & Preview →
+            </button>
+          </div>
+        </Card>
+      )}
+
+      {/* ── STEP 3: Preview + Confirm ── */}
+      {step === 3 && (
+        <>
+          <Card style={{ padding: p, marginBottom: 16 }}>
+            <h3 style={{ marginTop: 0, color: T.dark }}>Bước 3: Preview & Import</h3>
+
+            {/* Existing month warning */}
+            {existingImport && (
+              <div style={{
+                padding: 14, background: '#FFFBEB', border: `2px solid ${T.amber}`,
+                borderRadius: RD.md, marginBottom: 14,
+              }}>
+                <div style={{ fontWeight: 600, color: T.amber, marginBottom: 6 }}>
+                  ⚠️ Tháng {month}/{year} đã được import trước đây
+                </div>
+                <div style={{ fontSize: FS.sm, color: T.med, marginBottom: 10 }}>
+                  Upload lần gần nhất: {new Date(existingImport.uploaded_at).toLocaleString('vi-VN')}
+                  {' — '}{existingImport.rows_new} records, {existingImport.rows_flagged} cờ đỏ
+                </div>
+                <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+                  <button onClick={() => setMergeMode('overwrite')}
+                    style={{
+                      padding: '8px 14px',
+                      background: mergeMode === 'overwrite' ? T.red : T.bg,
+                      color: mergeMode === 'overwrite' ? '#fff' : T.dark,
+                      border: `1px solid ${T.red}`, borderRadius: RD.md, cursor: 'pointer',
+                    }}>
+                    🔴 Ghi đè toàn bộ tháng
+                  </button>
+                  <button onClick={() => setMergeMode('merge')}
+                    style={{
+                      padding: '8px 14px',
+                      background: mergeMode === 'merge' ? T.blue : T.bg,
+                      color: mergeMode === 'merge' ? '#fff' : T.dark,
+                      border: `1px solid ${T.blue}`, borderRadius: RD.md, cursor: 'pointer',
+                    }}>
+                    🔵 Merge (chỉ cập nhật cells mới có data)
+                  </button>
+                </div>
+              </div>
+            )}
+
+            {/* Stats */}
+            <div style={{ display: 'grid', gridTemplateColumns: mobile ? 'repeat(2,1fr)' : 'repeat(4,1fr)', gap: 10, marginBottom: 14 }}>
+              <div style={{ padding: 10, background: T.bg, borderRadius: RD.md, textAlign: 'center' }}>
+                <div style={{ fontSize: FS.xl, fontWeight: 700, color: T.dark }}>{previewComputed.length}</div>
+                <div style={{ fontSize: FS.xs, color: T.light }}>Tổng records</div>
+              </div>
+              <div style={{ padding: 10, background: '#F0FDF4', borderRadius: RD.md, textAlign: 'center' }}>
+                <div style={{ fontSize: FS.xl, fontWeight: 700, color: T.green }}>
+                  {previewComputed.filter(r => r.import_source === 'machine').length}
+                </div>
+                <div style={{ fontSize: FS.xs, color: T.green }}>Từ máy (OK)</div>
+              </div>
+              <div style={{ padding: 10, background: '#FFFBEB', borderRadius: RD.md, textAlign: 'center' }}>
+                <div style={{ fontSize: FS.xl, fontWeight: 700, color: T.amber }}>
+                  {previewComputed.filter(r => r.needs_qm_review).length}
+                </div>
+                <div style={{ fontSize: FS.xs, color: T.amber }}>⚠️ Cần xác nhận</div>
+              </div>
+              <div style={{ padding: 10, background: '#EFF6FF', borderRadius: RD.md, textAlign: 'center' }}>
+                <div style={{ fontSize: FS.xl, fontWeight: 700, color: T.blue }}>
+                  {(previewComputed.reduce((s, r) => s + (r.total_hours || 0), 0)).toFixed(1)}h
+                </div>
+                <div style={{ fontSize: FS.xs, color: T.blue }}>Tổng giờ công</div>
+              </div>
+            </div>
+          </Card>
+
+          {/* Preview table */}
+          <Card style={{ padding: 0, marginBottom: 16 }}>
+            <div style={{ padding: '10px 14px', borderBottom: `1px solid ${T.border}`, fontWeight: 600, color: T.dark }}>
+              Preview 20 records đầu (tổng {previewComputed.length})
+            </div>
+            <div style={{ maxHeight: 400, overflowY: 'auto' }}>
+              <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: FS.sm }}>
+                <thead>
+                  <tr style={{ background: T.bg, position: 'sticky', top: 0 }}>
+                    <th style={{ padding: 8, textAlign: 'left' }}>NV</th>
+                    <th style={{ padding: 8, textAlign: 'left' }}>Ngày</th>
+                    <th style={{ padding: 8, textAlign: 'left' }}>Vào</th>
+                    <th style={{ padding: 8, textAlign: 'left' }}>Ra</th>
+                    <th style={{ padding: 8, textAlign: 'right' }}>BT</th>
+                    <th style={{ padding: 8, textAlign: 'right' }}>OT</th>
+                    <th style={{ padding: 8, textAlign: 'center' }}>🍱</th>
+                    <th style={{ padding: 8, textAlign: 'center' }}>⚠️</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {previewComputed.slice(0, 20).map((r, i) => {
+                    const u = allUsers.find((x: any) => x.id === r.user_id)
+                    return (
+                      <tr key={i} style={{
+                        borderBottom: `1px solid ${T.border}`,
+                        background: r.needs_qm_review ? '#FFFBEB' : '#fff',
+                      }}>
+                        <td style={{ padding: 8, fontWeight: 500 }}>{u?.name || '?'}</td>
+                        <td style={{ padding: 8 }}>{r.date}</td>
+                        <td style={{ padding: 8, color: T.med }}>{r.check_in_machine || '—'}</td>
+                        <td style={{ padding: 8, color: T.med }}>{r.check_out_machine || '—'}</td>
+                        <td style={{ padding: 8, textAlign: 'right' }}>{r.work_hours_regular}</td>
+                        <td style={{ padding: 8, textAlign: 'right', color: T.gold }}>{r.ot_150_hours || ''}</td>
+                        <td style={{ padding: 8, textAlign: 'center' }}>{r.lunch_eligible ? '✓' : ''}</td>
+                        <td style={{ padding: 8, textAlign: 'center' }}>{r.needs_qm_review ? '⚠️' : ''}</td>
+                      </tr>
+                    )
+                  })}
+                </tbody>
+              </table>
+            </div>
+          </Card>
+
+          <div style={{ display: 'flex', gap: 8 }}>
+            <button onClick={() => setStep(2)}
+              style={{ padding: '8px 16px', background: T.border, color: T.dark, border: 'none', borderRadius: RD.md, cursor: 'pointer' }}>
+              ← Quay lại Map NV
+            </button>
+            <button disabled={loading || (existingImport && !mergeMode)} onClick={executeImport}
+              style={{
+                padding: '10px 20px',
+                background: (existingImport && !mergeMode) ? T.border : T.green,
+                color: '#fff', border: 'none', borderRadius: RD.md,
+                cursor: (existingImport && !mergeMode) ? 'not-allowed' : 'pointer', fontWeight: 600,
+              }}>
+              {loading ? 'Đang import...' : `✅ Import ${previewComputed.length} records`}
+            </button>
+          </div>
+        </>
+      )}
     </div>
   )
 }
