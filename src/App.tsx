@@ -12,7 +12,7 @@ const db = createClient(SUPABASE_URL, SUPABASE_KEY)
 // APP_VERSION — dùng để invalidate cache localStorage mỗi khi deploy version mới
 // (ngăn bug quyền user bị "reset" do cache position cũ sau deploy)
 // ⚠️ MỖI LẦN DEPLOY FEATURE MỚI CÓ PERMISSION MỚI, BUMP SỐ NÀY:
-const APP_VERSION = '2026.04.17.v55'
+const APP_VERSION = '2026.04.17.v56'
 
 // ════════════════════════════════════════════════════════════════
 // AUDIT LOG — ghi nhận các hành động phá hoại data để trace lại
@@ -17948,8 +17948,8 @@ function PriorityRequestModule({ user, allUsers, mobile }: any) {
 
 function OrderLookupTab({ user, allUsers, mobile }: any) {
   const [searchQ, setSearchQ] = useState('')
-  const [debouncedQ, setDebouncedQ] = useState('')  // Dùng cho filter/suggestions (expensive ops)
-  // Date range thay vì preset days
+  const [debouncedQ, setDebouncedQ] = useState('')
+  const [isComposing, setIsComposing] = useState(false)  // IME tiếng Việt đang compose
   const todayStr = () => new Date().toISOString().split('T')[0]
   const daysAgoStr = (d: number) => new Date(Date.now() - d*86400000).toISOString().split('T')[0]
   const [dateFrom, setDateFrom] = useState(daysAgoStr(15))
@@ -17961,58 +17961,48 @@ function OrderLookupTab({ user, allUsers, mobile }: any) {
   const [showSuggestions, setShowSuggestions] = useState(false)
   const [suggestionIdx, setSuggestionIdx] = useState(-1)
 
-  // Debounce searchQ → debouncedQ (250ms) để tránh lag khi gõ nhanh
+  // Debounce searchQ → debouncedQ (300ms) CHỈ khi IME không compose
   useEffect(() => {
-    const t = setTimeout(() => setDebouncedQ(searchQ), 250)
+    if (isComposing) return  // Đang gõ IME → hoãn debounce
+    const t = setTimeout(() => setDebouncedQ(searchQ), 300)
     return () => clearTimeout(t)
-  }, [searchQ])
+  }, [searchQ, isComposing])
 
-  // Refs để track state hiện tại khi refresh ngầm (tránh race condition)
-  const isUserActiveRef = useRef(false)  // user đang gõ/tương tác → không refresh
-  const lastActivityRef = useRef(Date.now())
-
-  const norm = (s: string) => (s||'').toLowerCase().normalize('NFD')
-    .replace(/[\u0300-\u036f]/g,'').replace(/đ/g,'d').trim()
-
-  // Fetch ngầm — không bật loading nếu đã có data
-  const fetchOrders = async (silent = false) => {
-    if (!silent) setLoading(true)
-    const fromISO = new Date(dateFrom + 'T00:00:00').toISOString()
-    const toISO   = new Date(dateTo   + 'T23:59:59').toISOString()
-    const { data } = await db.from('packing_workflow').select('*')
-      .gte('purchase_date', fromISO)
-      .lte('purchase_date', toISO)
-      .order('purchase_date', { ascending: false })
-      .limit(2000)
-    setAllOrders(data || [])
-    if (!silent) setLoading(false)
+  // Normalize an toàn — không crash với Unicode bất thường từ IME
+  const norm = (s: any): string => {
+    try {
+      if (typeof s !== 'string' || !s) return ''
+      return s.toLowerCase().normalize('NFD')
+        .replace(/[\u0300-\u036f]/g,'').replace(/đ/g,'d').trim()
+    } catch {
+      try {
+        return String(s || '').toLowerCase().trim()
+      } catch {
+        return ''
+      }
+    }
   }
 
-  useEffect(() => { fetchOrders(false) }, [dateFrom, dateTo])
-
-  // Silent background refresh — chạy 30s/lần, CHỈ khi user không active
-  useEffect(() => {
-    const interval = setInterval(() => {
-      const idleMs = Date.now() - lastActivityRef.current
-      // Chỉ refresh nếu user idle > 10s và không đang typing
-      if (!isUserActiveRef.current && idleMs > 10000) {
-        fetchOrders(true)  // silent = true
-      }
-    }, 30000)
-    return () => clearInterval(interval)
-  }, [dateFrom, dateTo])
-
-  // Mark user active khi typing/clicking
-  const markActive = () => {
-    isUserActiveRef.current = true
-    lastActivityRef.current = Date.now()
-    // Release "active" flag sau 5s không hoạt động
-    setTimeout(() => {
-      if (Date.now() - lastActivityRef.current >= 5000) {
-        isUserActiveRef.current = false
-      }
-    }, 5000)
+  // Fetch data — bỏ silent refresh phức tạp, dùng manual refresh button thay thế
+  const fetchOrders = async () => {
+    setLoading(true)
+    try {
+      const fromISO = new Date(dateFrom + 'T00:00:00').toISOString()
+      const toISO   = new Date(dateTo   + 'T23:59:59').toISOString()
+      const { data } = await db.from('packing_workflow').select('*')
+        .gte('purchase_date', fromISO)
+        .lte('purchase_date', toISO)
+        .order('purchase_date', { ascending: false })
+        .limit(2000)
+      setAllOrders(data || [])
+    } catch (e) {
+      console.error('[OrderLookup] fetch error:', e)
+    } finally {
+      setLoading(false)
+    }
   }
+
+  useEffect(() => { fetchOrders() }, [dateFrom, dateTo])
 
   // ═══ Gợi ý (dropdown) ═══
   // Build list unique KH + SP từ allOrders để gợi ý
@@ -18092,7 +18082,6 @@ function OrderLookupTab({ user, allUsers, mobile }: any) {
   }, [debouncedQ, allOrders, statusFilter])
 
   const handleKeyDown = (e: React.KeyboardEvent) => {
-    markActive()
     if (!showSuggestions || suggestions.length === 0) return
     if (e.key === 'ArrowDown') {
       e.preventDefault()
@@ -18127,11 +18116,12 @@ function OrderLookupTab({ user, allUsers, mobile }: any) {
         {/* Search box with suggestions */}
         <div style={{ position:'relative', marginBottom:10 }}>
           <input value={searchQ}
-            onChange={e => { setSearchQ(e.target.value); setShowSuggestions(true); setSuggestionIdx(-1); markActive() }}
-            onFocus={() => { setShowSuggestions(true); markActive() }}
+            onChange={e => { setSearchQ(e.target.value); setShowSuggestions(true); setSuggestionIdx(-1) }}
+            onCompositionStart={() => setIsComposing(true)}
+            onCompositionEnd={(e: any) => { setIsComposing(false); setSearchQ(e.target.value) }}
+            onFocus={() => setShowSuggestions(true)}
             onBlur={() => { setTimeout(() => setShowSuggestions(false), 200) }}
             onKeyDown={handleKeyDown}
-            autoFocus
             placeholder="🔍 Tên khách hàng, tên SP hoặc mã SP..."
             style={{ width:'100%', padding:'10px 13px', border:`1px solid ${T.border}`, borderRadius:8,
               fontSize:13, fontFamily:'inherit', color:T.dark, background:'#fff', outline:'none',
@@ -18181,7 +18171,7 @@ function OrderLookupTab({ user, allUsers, mobile }: any) {
               Từ ngày
             </label>
             <input type="date" value={dateFrom}
-              onChange={e => { setDateFrom(e.target.value); markActive() }}
+              onChange={e => { setDateFrom(e.target.value) }}
               max={dateTo}
               style={{ padding:'6px 10px', border:`1px solid ${T.border}`, borderRadius:6,
                 fontSize:11, fontFamily:"inherit", background:"#fff", color:T.dark, outline:"none" }}/>
@@ -18191,7 +18181,7 @@ function OrderLookupTab({ user, allUsers, mobile }: any) {
               Đến ngày
             </label>
             <input type="date" value={dateTo}
-              onChange={e => { setDateTo(e.target.value); markActive() }}
+              onChange={e => { setDateTo(e.target.value) }}
               min={dateFrom} max={todayStr()}
               style={{ padding:'6px 10px', border:`1px solid ${T.border}`, borderRadius:6,
                 fontSize:11, fontFamily:"inherit", background:"#fff", color:T.dark, outline:"none" }}/>
@@ -18202,7 +18192,7 @@ function OrderLookupTab({ user, allUsers, mobile }: any) {
             </label>
             <div style={{ display:'flex', gap:4 }}>
               {[3, 7, 15, 30].map(d => (
-                <button key={d} onClick={() => { setPreset(d); markActive() }}
+                <button key={d} onClick={() => { setPreset(d) }}
                   style={{ padding:'6px 9px', borderRadius:6,
                     border:`1px solid ${T.border}`, background:'#fff',
                     color:T.med, cursor:'pointer', fontFamily:'inherit',
@@ -18216,7 +18206,7 @@ function OrderLookupTab({ user, allUsers, mobile }: any) {
             <label style={{ fontSize:10, color:T.med, fontWeight:600, display:'block', marginBottom:3 }}>
               Trạng thái
             </label>
-            <select value={statusFilter} onChange={e => { setStatusFilter(e.target.value); markActive() }}
+            <select value={statusFilter} onChange={e => { setStatusFilter(e.target.value) }}
               style={{ padding:'6px 10px', border:`1px solid ${T.border}`, borderRadius:6,
                 fontSize:11, fontFamily:"inherit", background:"#fff", color:T.dark, outline:"none" }}>
               <option value="all">Tất cả</option>
@@ -18227,8 +18217,17 @@ function OrderLookupTab({ user, allUsers, mobile }: any) {
             </select>
           </div>
         </div>
-        <div style={{ marginTop:8, fontSize:10, color:T.light }}>
-          💡 Data auto refresh ngầm 30s/lần, chỉ khi bạn không gõ. Không làm gián đoạn tra cứu.
+        <div style={{ marginTop:8, display:'flex', justifyContent:'space-between', alignItems:'center', gap:8, flexWrap:'wrap' }}>
+          <div style={{ fontSize:10, color:T.light }}>
+            💡 Data không tự refresh — click nút bên phải để cập nhật khi cần
+          </div>
+          <button onClick={() => fetchOrders()} disabled={loading}
+            style={{ padding:'5px 12px', borderRadius:12, border:`1px solid ${T.gold}`,
+              background: loading ? T.bg : T.goldBg, color: T.goldText,
+              cursor: loading?'wait':'pointer', fontFamily:'inherit',
+              fontSize:10, fontWeight:600 }}>
+            {loading ? '⏳ Đang tải...' : '🔄 Làm mới'}
+          </button>
         </div>
       </Card>
 
@@ -18269,7 +18268,7 @@ function OrderLookupTab({ user, allUsers, mobile }: any) {
               } as any)[o.status] || T.light
               return (
                 <Card key={o.order_code} style={{ padding:12, cursor:'pointer' }}
-                  onClick={() => { markActive(); setExpanded(isExp ? null : o.order_code) }}>
+                  onClick={() => { setExpanded(isExp ? null : o.order_code) }}>
                   <div style={{ display:'flex', justifyContent:'space-between', alignItems:'flex-start', gap:10 }}>
                     <div style={{ flex:1, minWidth:0 }}>
                       <div style={{ fontSize:13, fontWeight:700, color:T.dark }}>
