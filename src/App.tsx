@@ -12,7 +12,7 @@ const db = createClient(SUPABASE_URL, SUPABASE_KEY)
 // APP_VERSION — dùng để invalidate cache localStorage mỗi khi deploy version mới
 // (ngăn bug quyền user bị "reset" do cache position cũ sau deploy)
 // ⚠️ MỖI LẦN DEPLOY FEATURE MỚI CÓ PERMISSION MỚI, BUMP SỐ NÀY:
-const APP_VERSION = '2026.04.19.v61'
+const APP_VERSION = '2026.04.19.v62'
 
 // ════════════════════════════════════════════════════════════════
 // AUDIT LOG — ghi nhận các hành động phá hoại data để trace lại
@@ -18006,83 +18006,136 @@ function normalizeName(s: string): string {
 async function parseMachineAttendanceFile(file: File): Promise<any[]> {
   const xlsx = await import('https://cdn.jsdelivr.net/npm/xlsx@0.18.5/+esm' as any)
   const buf = await file.arrayBuffer()
-  const wb = xlsx.read(buf, { type: 'array', cellDates: true })
-  const ws = wb.Sheets[wb.SheetNames[0]]
-  const rows: any[] = xlsx.utils.sheet_to_json(ws, { header: 1, defval: '', raw: false })
-
-  const employees: any[] = []
-  let current: any = null
-
-  for (let i = 0; i < rows.length; i++) {
-    const row = rows[i]
-    const cell0 = String(row[0] || '').trim()
-
-    // Start of new employee block: "Mã nhân viên: 00002 ... Tên: Linh linh ..."
-    if (cell0.startsWith('Mã nhân viên')) {
-      // Extract ma_nv + name
-      const maMatch = cell0.match(/Mã nhân viên[:\s]+(\d+)/i)
-      const nameMatch = cell0.match(/[Tt]ên[^:]*[:\s]+([^\s][^P]*?)(?:\s+Phòng|\s*$)/)
-      const ma_nv = maMatch ? maMatch[1].trim() : ''
-      const ten_nv = nameMatch ? nameMatch[1].trim() : ''
-      current = {
-        ma_nv,
-        ten_nv,
-        records: []
-      }
-      employees.push(current)
-      continue
-    }
-
-    if (!current) continue
-
-    // Detect data row: col 0 is a date object or date string
-    const dateCell = row[0]
-    let dateStr = ''
-    if (dateCell instanceof Date) {
-      dateStr = dateCell.toISOString().slice(0, 10)
-    } else if (typeof dateCell === 'string' && /^\d{4}-\d{2}-\d{2}/.test(dateCell)) {
-      dateStr = dateCell.slice(0, 10)
-    } else if (typeof dateCell === 'string' && /\d{1,2}\/\d{1,2}\/\d{4}/.test(dateCell)) {
-      // Try parse DD/MM/YYYY
-      const m = dateCell.match(/(\d{1,2})\/(\d{1,2})\/(\d{4})/)
-      if (m) dateStr = `${m[3]}-${String(m[2]).padStart(2, '0')}-${String(m[1]).padStart(2, '0')}`
-    }
-
-    if (!dateStr) continue
-
-    const thu = String(row[1] || '').trim()
-
-    // Collect all time cells: Vào1/Ra1/Vào2/Ra2/Vào3/Ra3 → col 2-7
-    const times: string[] = []
-    for (let j = 2; j <= 7; j++) {
-      const v = String(row[j] || '').trim()
-      if (/^\d{1,2}:\d{2}(:\d{2})?$/.test(v)) {
-        times.push(v.length === 5 ? v + ':00' : v)
-      }
-    }
-
-    // Lấy min (check_in) + max (check_out)
-    let check_in = ''
-    let check_out = ''
-    if (times.length >= 1) {
-      const sorted = [...times].sort()
-      check_in = sorted[0]
-      if (times.length >= 2) check_out = sorted[sorted.length - 1]
-    }
-
-    // Ký hiệu col 15
-    const ky_hieu = String(row[15] || '').trim()
-
-    current.records.push({
-      date: dateStr,
-      thu,
-      check_in,
-      check_out,
-      ky_hieu,
-    })
+  // cellDates: false — parse dates ourselves để tránh xlsx transform cell text thành Date
+  const wb = xlsx.read(buf, { type: 'array', cellDates: false })
+  
+  const debug: string[] = []
+  debug.push(`File: ${file.name}`)
+  debug.push(`Sheets: ${wb.SheetNames.join(', ') || '(không có sheet)'}`)
+  
+  if (!wb.SheetNames.length) {
+    throw new Error(`File "${file.name}" không có sheet nào`)
   }
-
-  return employees.filter(e => e.records.length > 0)
+  
+  const employees: any[] = []
+  let totalRowsScanned = 0
+  
+  // Thử tất cả các sheet (phòng trường hợp sheet 1 là summary, data ở sheet 2)
+  for (const sheetName of wb.SheetNames) {
+    const ws = wb.Sheets[sheetName]
+    if (!ws) continue
+    const rows: any[] = xlsx.utils.sheet_to_json(ws, { header: 1, defval: '', raw: false })
+    totalRowsScanned += rows.length
+    debug.push(`Sheet "${sheetName}": ${rows.length} rows`)
+    
+    let current: any = null
+    let blocksInSheet = 0
+    
+    for (let i = 0; i < rows.length; i++) {
+      const row = rows[i] || []
+      
+      // Tìm "Mã nhân viên" trong BẤT KỲ ô nào của row (không chỉ col 0)
+      let titleText = ''
+      for (let j = 0; j < row.length; j++) {
+        const v = String(row[j] || '').trim()
+        if (v.length > 10 && (v.includes('Mã nhân viên') || v.toLowerCase().includes('ma nhan vien'))) {
+          titleText = v
+          break
+        }
+      }
+      
+      if (titleText) {
+        const maMatch = titleText.match(/(?:Mã nhân viên|ma nhan vien)[:\s]*(\d+)/i)
+        const nameMatch = titleText.match(/[Tt]ên[^:]*[:\s]+([^\s][^P]*?)(?:\s+Phòng|\s+Phong|\s*$)/)
+        current = {
+          ma_nv: maMatch ? maMatch[1].trim() : '',
+          ten_nv: nameMatch ? nameMatch[1].trim() : '',
+          records: []
+        }
+        employees.push(current)
+        blocksInSheet++
+        continue
+      }
+      
+      if (!current) continue
+      
+      // Detect data row: col 0 là date (format nhiều kiểu)
+      const dateCell = row[0]
+      let dateStr = ''
+      
+      if (typeof dateCell === 'string') {
+        // ISO yyyy-mm-dd
+        const iso = dateCell.match(/^(\d{4})-(\d{1,2})-(\d{1,2})/)
+        if (iso) {
+          dateStr = `${iso[1]}-${String(iso[2]).padStart(2,'0')}-${String(iso[3]).padStart(2,'0')}`
+        } else {
+          // DD/MM/YYYY hoặc DD-MM-YYYY (kể cả YYYY 2 số: 26 → 2026)
+          const dmy = dateCell.match(/^(\d{1,2})[\/\-.](\d{1,2})[\/\-.](\d{2,4})/)
+          if (dmy) {
+            let yr = parseInt(dmy[3])
+            if (yr < 100) yr += 2000
+            dateStr = `${yr}-${String(dmy[2]).padStart(2,'0')}-${String(dmy[1]).padStart(2,'0')}`
+          }
+        }
+      } else if (typeof dateCell === 'number' && dateCell > 40000 && dateCell < 60000) {
+        // Excel date serial (days since 1900-01-01)
+        const d = new Date(Math.round((dateCell - 25569) * 86400 * 1000))
+        if (!isNaN(d.getTime())) {
+          dateStr = `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`
+        }
+      }
+      
+      if (!dateStr) continue
+      
+      const thu = String(row[1] || '').trim()
+      
+      // Thu thập tất cả time cells từ col 2-14 (6 cột Vào1/Ra1/Vào2/Ra2/Vào3/Ra3 + dư)
+      const times: string[] = []
+      for (let j = 2; j <= 14; j++) {
+        const v = String(row[j] || '').trim()
+        if (/^\d{1,2}:\d{2}(:\d{2})?$/.test(v)) {
+          times.push(v.length === 5 ? v + ':00' : v)
+        }
+      }
+      
+      let check_in = ''
+      let check_out = ''
+      if (times.length >= 1) {
+        const sorted = [...times].sort()
+        check_in = sorted[0]
+        if (times.length >= 2) check_out = sorted[sorted.length - 1]
+      }
+      
+      const ky_hieu = String(row[15] || row[14] || '').trim()
+      
+      current.records.push({
+        date: dateStr,
+        thu,
+        check_in,
+        check_out,
+        ky_hieu,
+      })
+    }
+    
+    debug.push(`  → ${blocksInSheet} block(s) tìm thấy`)
+  }
+  
+  const validEmployees = employees.filter(e => e.records.length > 0)
+  debug.push(`Tổng: ${employees.length} block(s), ${validEmployees.length} có records`)
+  
+  // Nếu parse failed → throw lỗi chi tiết
+  if (validEmployees.length === 0) {
+    // Show sample của 10 dòng đầu sheet 1
+    const firstSheet = wb.Sheets[wb.SheetNames[0]]
+    const sampleRows = xlsx.utils.sheet_to_json(firstSheet, { header: 1, defval: '', raw: false }).slice(0, 10)
+    const sample = sampleRows.map((r: any, idx: number) => {
+      const cells = (r || []).slice(0, 5).map((c: any) => String(c || '').slice(0, 30)).join(' | ')
+      return `  R${idx}: ${cells}`
+    }).join('\n')
+    throw new Error(`Không parse được NV nào.\n\nDebug:\n${debug.join('\n')}\n\n10 dòng đầu sheet 1:\n${sample}`)
+  }
+  
+  return validEmployees
 }
 
 // ── Compute work hours ──
@@ -18464,7 +18517,8 @@ function PayrollImportModule({ user, allUsers, mobile, attendance, setAttendance
 
       {error && (
         <div style={{ padding: 12, background: '#FEE', border: `1px solid ${T.red}`,
-          borderRadius: RD.md, marginBottom: 16, color: T.red, fontSize: FS.sm }}>
+          borderRadius: RD.md, marginBottom: 16, color: T.red, fontSize: FS.sm,
+          whiteSpace: 'pre-wrap', fontFamily: 'monospace', maxHeight: 300, overflow: 'auto' }}>
           ⚠️ {error}
         </div>
       )}
