@@ -12,7 +12,7 @@ const db = createClient(SUPABASE_URL, SUPABASE_KEY)
 // APP_VERSION — dùng để invalidate cache localStorage mỗi khi deploy version mới
 // (ngăn bug quyền user bị "reset" do cache position cũ sau deploy)
 // ⚠️ MỖI LẦN DEPLOY FEATURE MỚI CÓ PERMISSION MỚI, BUMP SỐ NÀY:
-const APP_VERSION = '2026.04.19.v66'
+const APP_VERSION = '2026.04.19.v67'
 
 // ════════════════════════════════════════════════════════════════
 // AUDIT LOG — ghi nhận các hành động phá hoại data để trace lại
@@ -19021,11 +19021,16 @@ function countWorkingDaysInMonth(month: number, year: number, paidLeaveDates: st
 
 
 // Quyết định NV có được chuyên cần không
-// Chuyên cần: 500k/tháng nếu NKP = 0. Sales/Part-time/KT thuế không áp dụng.
-function isAttendanceBonusEligible(positionType: string, nkpDays: number, hasAttendanceBonusFlag: boolean): boolean {
-  if (!hasAttendanceBonusFlag) return false  // Flag từ salary_config
-  if (positionType === 'Sales' || positionType === 'Part-time' || positionType === 'Kế toán thuế') return false
-  return nkpDays === 0
+// Rule Excel: 500k/tháng nếu (leave + NKP) <= cn_bu_days.
+// Sales/QL Sale/Part-time/PTC không áp dụng (hard-coded trong Excel).
+// has_attendance_bonus flag trong salary_config là override manual (VD Đào Huyền KT thuế = false).
+function isAttendanceBonusEligible(positionType: string, leaveDays: number, nkpDays: number, cnBuDays: number, hasAttendanceBonusFlag: boolean): boolean {
+  if (!hasAttendanceBonusFlag) return false
+  // Hard exclusion theo Excel
+  if (positionType === 'Sales' || positionType === 'Quản lý Sale' ||
+      positionType === 'Part-time' || positionType === 'Phụ trách chung') return false
+  // Điều kiện CN-Bù: nghỉ <= số ngày CN đi làm bù
+  return (leaveDays + nkpDays) <= cnBuDays
 }
 
 
@@ -19052,6 +19057,7 @@ function computeMonthlyPayroll(opts: {
   // 1. Tổng hợp attendance
   let workHoursRegular = 0, ot150Hours = 0, ot200Hours = 0
   let totalWorkDays = 0, totalLeaveDays = 0, totalNkpDays = 0, lunchDays = 0
+  let cnBuDays = 0  // Số ngày CN đi làm bù cho ngày nghỉ khác
 
   for (const a of attendanceRecords) {
     workHoursRegular += Number(a.work_hours_regular || 0)
@@ -19061,6 +19067,7 @@ function computeMonthlyPayroll(opts: {
     if (a.status === 'Đi làm') totalWorkDays++
     else if (a.status === 'Nghỉ') totalLeaveDays++
     else if (a.status === 'Nghỉ không phép' || a.status === 'NKP') totalNkpDays++
+    if (a.sunday_type === 'CN-Bù') cnBuDays++
   }
 
   // 2. Tính số ngày làm việc chuẩn tháng
@@ -19076,7 +19083,7 @@ function computeMonthlyPayroll(opts: {
 
   // 4. Các khoản cộng/trừ
   const lunchAmount = lunchDays * opts.lunchPerDay
-  const attBonusAmount = isAttendanceBonusEligible(sc.position_type, totalNkpDays, sc.has_attendance_bonus)
+  const attBonusAmount = isAttendanceBonusEligible(sc.position_type, totalLeaveDays, totalNkpDays, cnBuDays, sc.has_attendance_bonus)
     ? opts.attendanceBonusAmount : 0
   const inspectionBonusAmount = sc.has_inspection_bonus ? opts.inspectionBonusAmount : 0
   const bhxhDeduction = sc.has_bhxh ? opts.bhxhAmount : 0
@@ -19101,6 +19108,7 @@ function computeMonthlyPayroll(opts: {
     total_work_days: totalWorkDays,
     total_leave_days: totalLeaveDays,
     total_nkp_days: totalNkpDays,
+    cn_bu_days: cnBuDays,
     work_hours_regular: workHoursRegular,
     ot_150_hours: ot150Hours,
     ot_200_hours: ot200Hours,
@@ -19605,6 +19613,7 @@ function PayrollDetailModal({ user: nv, payroll, salaryConfig, otherIncomes, sho
             <span>Ngày đi làm:</span> <span style={{ textAlign: 'right' }}>{payroll.total_work_days || 0}</span>
             <span>Ngày nghỉ (có phép):</span> <span style={{ textAlign: 'right' }}>{payroll.total_leave_days || 0}</span>
             <span>Ngày NKP:</span> <span style={{ textAlign: 'right', color: (payroll.total_nkp_days || 0) > 0 ? T.red : T.med }}>{payroll.total_nkp_days || 0}</span>
+            <span>Ngày CN-Bù (đi làm CN):</span> <span style={{ textAlign: 'right', color: T.green }}>{payroll.cn_bu_days || 0}</span>
           </div>
         </div>
 
@@ -19617,7 +19626,7 @@ function PayrollDetailModal({ user: nv, payroll, salaryConfig, otherIncomes, sho
             <span>Tiền ăn trưa ({payroll.lunch_days || 0} buổi × 30k):</span> <span style={{ textAlign: 'right' }}>{fmtVND(payroll.lunch_amount || 0)}đ</span>
             {salaryConfig.has_attendance_bonus && (
               <>
-                <span>Chuyên cần ({(payroll.total_nkp_days || 0) === 0 ? 'đủ' : `NKP ${payroll.total_nkp_days}`}):</span>
+                <span>Chuyên cần ({(payroll.total_leave_days || 0) + (payroll.total_nkp_days || 0)} nghỉ ≤ {payroll.cn_bu_days || 0} CN-Bù? {(payroll.attendance_bonus_amount || 0) > 0 ? '✓' : '✗'}):</span>
                 <span style={{ textAlign: 'right' }}>{fmtVND(payroll.attendance_bonus_amount || 0)}đ</span>
               </>
             )}
