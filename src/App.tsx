@@ -1734,10 +1734,15 @@ function Dashboard({ user, checklist, tasks, allUsers, attendance, leaveRequests
         ? Math.min(100, Math.round((m.ops_per_hour / median) * 50)) : 0
       const volume = Math.round((m.total_ops / maxOps) * 100)
       const quality = Math.max(0, Math.round((1 - m.error_rate) * 100))
-      // Pack speed: nhanh hơn median → điểm cao. Không có data → neutral 50.
-      const packSpeed = m.avg_pack_min > 0 && medianPackMin > 0
+      // Pack Speed với confidence weighting:
+      //   - NV đóng < 3 đơn → không đủ sample, score kéo về 50 (neutral)
+      //   - NV đóng ≥ 3 đơn → full confidence, tính theo raw formula
+      const MIN_PACK_SAMPLES = 3
+      const confidence = Math.min(1, (m.packed || 0) / MIN_PACK_SAMPLES)
+      const rawPackSpeed = m.avg_pack_min > 0 && medianPackMin > 0
         ? Math.min(100, Math.round((medianPackMin / m.avg_pack_min) * 50))
         : 50
+      const packSpeed = Math.round(50 + (rawPackSpeed - 50) * confidence)
       // Composite: 40% Speed + 25% Volume + 20% Quality + 15% Pack Speed
       const total = Math.round(speed * 0.40 + volume * 0.25 + quality * 0.20 + packSpeed * 0.15)
       let grade = '🔴', gradeLabel = 'Dưới kỳ vọng'
@@ -2021,10 +2026,19 @@ function Dashboard({ user, checklist, tasks, allUsers, attendance, leaveRequests
                       overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap' }}>
                       {m.name} {m.user_id === user.id && <span style={{ fontSize:9, color:T.gold, marginLeft:4 }}>(bạn)</span>}
                     </div>
-                    <div style={{ fontSize:10, color:T.light, marginTop:2 }}>
-                      📦 {m.picked} nhặt · ✅ {m.packed} đóng · 🧴 {m.items} SP
-                      {m.avg_pack_min > 0 && <span> · ⏱ {m.avg_pack_min}p/đơn</span>}
-                      {m.errors > 0 && <span style={{ color:T.red }}> · 🚨 {m.errors} lỗi</span>}
+                    <div style={{ fontSize:10, color:T.light, marginTop:4,
+                      display:'flex', gap:'3px 10px', flexWrap:'wrap', lineHeight:1.5 }}>
+                      <span>📥 <b style={{color:T.med}}>{m.picked}</b> đơn nhặt</span>
+                      <span>📮 <b style={{color:T.med}}>{m.packed}</b> đơn đóng</span>
+                      <span>🧴 <b style={{color:T.med}}>{m.items}</b> SP</span>
+                      {m.hours > 0 && <span>⏱ <b style={{color:T.med}}>{m.hours}h</b> làm</span>}
+                      {m.avg_pack_min > 0 && (
+                        <span title={m.packed < 3 ? `Độ tin cậy thấp (cần ≥ 3 đơn để chính xác)` : 'Độ tin cậy cao'}>
+                          🕐 TB đóng <b style={{color:T.med}}>{m.avg_pack_min}p</b>/đơn
+                          {m.packed < 3 && m.packed > 0 && <span style={{ color:T.amber, marginLeft:2 }}>*</span>}
+                        </span>
+                      )}
+                      {m.errors > 0 && <span style={{ color:T.red }}>🚨 <b>{m.errors}</b> lỗi</span>}
                     </div>
                   </div>
                   <div style={{ textAlign:'right', flexShrink:0 }}>
@@ -2078,11 +2092,18 @@ function Dashboard({ user, checklist, tasks, allUsers, attendance, leaveRequests
                   ))}
                 </div>
                 <div style={{ fontSize:10, color:T.goldText, marginTop:10,
-                  paddingTop:8, borderTop:`1px dashed ${T.goldBorder}` }}>
-                  📦 Đã nhặt {myPerfEntry.picked} đơn · ✅ Đã đóng {myPerfEntry.packed} đơn · 🧴 {myPerfEntry.items} SP
-                  {myPerfEntry.avg_pack_min > 0 && <span> · ⏱ TB {myPerfEntry.avg_pack_min}p/đơn đóng</span>}
-                  {myPerfEntry.hours > 0 && <span> · 🕐 {myPerfEntry.hours}h</span>}
-                  {myPerfEntry.errors > 0 && <span style={{ color:T.red }}> · 🚨 {myPerfEntry.errors} lỗi</span>}
+                  paddingTop:8, borderTop:`1px dashed ${T.goldBorder}`,
+                  display:'flex', gap:'3px 10px', flexWrap:'wrap', lineHeight:1.6 }}>
+                  <span>📥 Đã nhặt <b>{myPerfEntry.picked}</b> đơn</span>
+                  <span>📮 Đã đóng <b>{myPerfEntry.packed}</b> đơn</span>
+                  <span>🧴 <b>{myPerfEntry.items}</b> SP</span>
+                  {myPerfEntry.hours > 0 && <span>⏱ <b>{myPerfEntry.hours}h</b> làm</span>}
+                  {myPerfEntry.avg_pack_min > 0 && (
+                    <span>🕐 TB đóng <b>{myPerfEntry.avg_pack_min}p</b>/đơn
+                      {myPerfEntry.packed < 3 && myPerfEntry.packed > 0 && <span style={{ color:T.amber }}> *</span>}
+                    </span>
+                  )}
+                  {myPerfEntry.errors > 0 && <span style={{ color:T.red }}>🚨 <b>{myPerfEntry.errors}</b> lỗi</span>}
                 </div>
               </div>
             ) : (
@@ -19591,10 +19612,15 @@ function WarehouseStatsModule({ user, allUsers, mobile }: any) {
       const volumeScore = Math.round((m.total_ops / maxOps) * 100)
       // Quality: tỷ lệ đúng
       const qualityScore = Math.max(0, Math.round((1 - m.error_rate) * 100))
-      // Pack Speed: nhanh hơn median → cao điểm. Không có data → 50 (neutral)
-      const packSpeedScore = m.avg_pack_minutes > 0 && teamMedianPackMin > 0
+      // Pack Speed với confidence weighting:
+      //   NV đóng < 3 đơn → không đủ sample, kéo về 50 (neutral)
+      //   ≥ 3 đơn → full confidence, raw formula (nhanh hơn median → điểm cao)
+      const MIN_PACK_SAMPLES = 3
+      const confidence = Math.min(1, (m.orders_packed || 0) / MIN_PACK_SAMPLES)
+      const rawPackSpeed = m.avg_pack_minutes > 0 && teamMedianPackMin > 0
         ? Math.min(100, Math.round((teamMedianPackMin / m.avg_pack_minutes) * 50))
         : 50
+      const packSpeedScore = Math.round(50 + (rawPackSpeed - 50) * confidence)
       // Composite: 40% Speed + 25% Volume + 20% Quality + 15% Pack Speed
       const totalScore = Math.round(
         speedScore * 0.40 + volumeScore * 0.25 + qualityScore * 0.20 + packSpeedScore * 0.15
@@ -19608,6 +19634,7 @@ function WarehouseStatsModule({ user, allUsers, mobile }: any) {
       return {
         ...m,
         speedScore, volumeScore, qualityScore, packSpeedScore, totalScore,
+        pack_confidence: confidence,
         grade, gradeLabel,
       }
     }).sort((a, b) => b.totalScore - a.totalScore)
@@ -19806,11 +19833,15 @@ function WarehouseStatsModule({ user, allUsers, mobile }: any) {
                 <div style={{ display:'flex', flexWrap:'wrap', gap:SP[3],
                   fontSize:FS.sm, color:T.med, marginTop:SP[3],
                   paddingTop:SP[3], borderTop:`1px solid ${T.goldBorder}` }}>
-                  <span>📦 {Math.round(myScoreEntry.total_ops)} nghiệp vụ</span>
-                  <span>⏱ {Math.round(myScoreEntry.working_hours)}h làm</span>
-                  <span>⚡ {myScoreEntry.ops_per_hour.toFixed(2)} / giờ</span>
-                  {myScoreEntry.avg_pack_minutes > 0 && <span>🕐 TB {myScoreEntry.avg_pack_minutes}p/đơn đóng</span>}
-                  <span>💰 {fmtMoney(Math.round(myScoreEntry.total_value))}đ</span>
+                  <span>📦 <b>{Math.round(myScoreEntry.total_ops)}</b> nghiệp vụ</span>
+                  <span>⏱ <b>{Math.round(myScoreEntry.working_hours)}h</b> làm</span>
+                  <span>⚡ <b>{myScoreEntry.ops_per_hour.toFixed(2)}</b> ng.vụ/giờ</span>
+                  {myScoreEntry.avg_pack_minutes > 0 && (
+                    <span>🕐 TB đóng <b>{myScoreEntry.avg_pack_minutes}p</b>/đơn
+                      {(myScoreEntry.pack_confidence || 0) < 1 && <span style={{ color:T.amber }}> *</span>}
+                    </span>
+                  )}
+                  <span>💰 <b>{fmtMoney(Math.round(myScoreEntry.total_value))}đ</b></span>
                   <span style={{ color: myScoreEntry.errors === 0 ? T.green : T.amber }}>
                     {myScoreEntry.errors === 0 ? '✅ 0 lỗi' : `⚠️ ${myScoreEntry.errors} lỗi`}
                   </span>
@@ -19831,6 +19862,16 @@ function WarehouseStatsModule({ user, allUsers, mobile }: any) {
                     Score = 40% Tốc độ + 25% Khối lượng + 20% Chất lượng + 15% Pack Speed
                   </div>
                 </div>
+              </div>
+
+              {/* Legend giải thích các chỉ số */}
+              <div style={{ padding:`${SP[2]}px ${SP[4]}px`, background:'#FAFAF8',
+                borderBottom:`1px solid ${T.border}`, fontSize:FS.xs, color:T.med,
+                display:'flex', gap:SP[4], flexWrap:'wrap', lineHeight:1.6 }}>
+                <span><b style={{color:T.blue}}>⚡ Tốc độ (40%)</b>: số nghiệp vụ hoàn thành/giờ làm, so với median team</span>
+                <span><b style={{color:T.goldText}}>📦 Khối lượng (25%)</b>: tổng nghiệp vụ (đóng + nhặt)</span>
+                <span><b style={{color:T.green}}>🎯 Chất lượng (20%)</b>: tỷ lệ không có lỗi</span>
+                <span><b style={{color:T.purple}}>🕐 Pack Speed (15%)</b>: TB phút đóng/đơn, so median. (*) = cần ≥ 3 đơn để full confidence</span>
               </div>
 
               <div style={{ display:'flex', flexDirection:'column' }}>
@@ -19867,13 +19908,19 @@ function WarehouseStatsModule({ user, allUsers, mobile }: any) {
                             )}
                           </div>
                           {showDetails && (
-                            <div style={{ fontSize:FS.xs, color:T.light, marginTop:3,
-                              display:'flex', gap:SP[2], flexWrap:'wrap' }}>
-                              <span>📦 {Math.round(p.total_ops)} NV ({Math.round(p.orders_packed)}📮+{Math.round(p.orders_picked)}📥)</span>
-                              <span>⏱ {Math.round(p.working_hours)}h</span>
-                              <span>⚡ {p.ops_per_hour.toFixed(2)}/h</span>
-                              {p.avg_pack_minutes > 0 && <span>🕐 {p.avg_pack_minutes}p/đơn</span>}
-                              {p.errors > 0 && <span style={{ color:T.red }}>⚠️ {p.errors} lỗi</span>}
+                            <div style={{ fontSize:FS.xs, color:T.light, marginTop:4,
+                              display:'flex', gap:'3px 10px', flexWrap:'wrap', lineHeight:1.5 }}>
+                              <span>📮 <b style={{color:T.med}}>{Math.round(p.orders_packed)}</b> đơn đóng</span>
+                              <span>📥 <b style={{color:T.med}}>{Math.round(p.orders_picked)}</b> đơn nhặt</span>
+                              <span>⏱ <b style={{color:T.med}}>{Math.round(p.working_hours)}h</b> làm</span>
+                              <span>⚡ <b style={{color:T.med}}>{p.ops_per_hour.toFixed(2)}</b> ng.vụ/giờ</span>
+                              {p.avg_pack_minutes > 0 && (
+                                <span title={p.pack_confidence < 1 ? `Độ tin cậy ${Math.round((p.pack_confidence||0)*100)}% (cần ≥ 3 đơn để full)` : 'Độ tin cậy 100%'}>
+                                  🕐 TB đóng <b style={{color:T.med}}>{p.avg_pack_minutes}p</b>/đơn
+                                  {p.pack_confidence < 1 && <span style={{ color:T.amber, marginLeft:2 }}>*</span>}
+                                </span>
+                              )}
+                              {p.errors > 0 && <span style={{ color:T.red }}>⚠️ <b>{p.errors}</b> lỗi</span>}
                             </div>
                           )}
                         </div>
