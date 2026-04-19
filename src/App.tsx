@@ -12,7 +12,7 @@ const db = createClient(SUPABASE_URL, SUPABASE_KEY)
 // APP_VERSION — dùng để invalidate cache localStorage mỗi khi deploy version mới
 // (ngăn bug quyền user bị "reset" do cache position cũ sau deploy)
 // ⚠️ MỖI LẦN DEPLOY FEATURE MỚI CÓ PERMISSION MỚI, BUMP SỐ NÀY:
-const APP_VERSION = '2026.04.17.v50'
+const APP_VERSION = '2026.04.17.v51'
 
 // ════════════════════════════════════════════════════════════════
 // AUDIT LOG — ghi nhận các hành động phá hoại data để trace lại
@@ -6969,7 +6969,12 @@ function useNotifications({ user, wrongOrders, returnSlips, shortageItems, batch
 
   // ─ 8. Đơn KV quá hạn ─
   {
-    const all = overdueOrders || []
+    // Safety filter client-side: chỉ lấy đơn có daysOld >= threshold
+    // (Phòng trường hợp edge function trả về đơn không thực sự quá hạn)
+    const all = (overdueOrders || []).filter((o: any) => {
+      const days = Number(o.daysOld)
+      return Number.isFinite(days) && days >= threshold
+    })
     let items: any[] = []
     if (isAdmin || isMgrSale) {
       items = all.map((o: any) => ({
@@ -7397,12 +7402,18 @@ function NotifBanner({ user, wrongOrders, returnSlips, shortageItems, batches, p
   const threshold = settings?.overdue_days_threshold ?? 7
   const norm2 = (s: string) => (s||'').toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g,'').replace(/đ/g,'d').trim()
 
+  // Safety filter: chỉ lấy đơn có daysOld >= threshold
+  const overdueSafe = (overdueOrders||[]).filter((o: any) => {
+    const days = Number(o.daysOld)
+    return Number.isFinite(days) && days >= threshold
+  })
+
   // Sale chỉ thấy đơn của mình (match tên); Manager/Admin thấy tất cả
   const myOverdue = (!isDismissed('overdue') && isSale && !isAdmin)
-    ? (overdueOrders||[]).filter((o: any) => norm2(o.soldByName||'') === norm2(user.name||''))
+    ? overdueSafe.filter((o: any) => norm2(o.soldByName||'') === norm2(user.name||''))
     : []
   const allOverdue = (!isDismissed('overdue') && (isAdmin || isMgrSale))
-    ? (overdueOrders||[])
+    ? overdueSafe
     : []
   const overdueList = isAdmin || isMgrSale ? allOverdue : myOverdue
 
