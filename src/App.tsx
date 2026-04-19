@@ -1682,28 +1682,88 @@ function Dashboard({ user, checklist, tasks, allUsers, attendance, leaveRequests
     }).sort((a, b) => b.total - a.total)
   }, [allUsers, todayOrders, todayWrong, todayReturns, attendance, todayISOStr])
 
-  // ═══ KV Sales ranking ═══
+  // ═══ KV Sales ranking (v2: merge multi-KV per app user, filter unmapped) ═══
+  // Chỉ hiện NV Sale có mapping trong users.kiotviet_user_names
+  // Các tài khoản admin/chủ không map sẽ bị loại
+
+  // Normalize helper (fuzzy match)
+  const normalizeKvName = (s: string) =>
+    (s||'').toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g,'').replace(/đ/g,'d').trim().replace(/\s+/g, ' ')
+
+  // Build reverse map: normalized KV name → app user
+  const kvNameToAppUser = useMemo(() => {
+    const m = new Map<string, any>()
+    allUsers.forEach((u: any) => {
+      if (u.dept_id !== 'sale') return
+      if (u.active === false) return
+      if (isTestAccount(u)) return
+      const names = Array.isArray(u.kiotviet_user_names) ? u.kiotviet_user_names : []
+      names.forEach((kvName: string) => {
+        if (kvName) m.set(normalizeKvName(kvName), u)
+      })
+    })
+    return m
+  }, [allUsers])
+
+  // Danh sách NV Sale đã có mapping (để biết tổng NV trong ranking)
+  const mappedSaleUsers = useMemo(() =>
+    allUsers.filter((u: any) =>
+      u.dept_id === 'sale' && u.active !== false && !isTestAccount(u)
+      && Array.isArray(u.kiotviet_user_names) && u.kiotviet_user_names.length > 0
+    ), [allUsers])
+
   const kvSalesRanking = useMemo(() => {
-    // Group theo sold_by_name (gộp tất cả ngày lại)
-    const map = new Map<string, any>()
+    // Group theo app user_id (merge tất cả KV accounts của user)
+    const byUser = new Map<string, any>()
     kvSalesRows.forEach((r: any) => {
-      const key = r.sold_by_name || '(Không xác định)'
-      if (!map.has(key)) {
-        map.set(key, {
-          name: key, sold_by_id: r.sold_by_id,
+      const kvName = r.sold_by_name || ''
+      const appUser = kvNameToAppUser.get(normalizeKvName(kvName))
+      if (!appUser) return  // ← LOẠI các KV account không map (admin/chủ)
+      const key = appUser.id
+      if (!byUser.has(key)) {
+        byUser.set(key, {
+          user_id: appUser.id,
+          name: appUser.name,   // Dùng tên APP, không phải tên KV
+          pos: appUser.position_name || '',
+          kv_names: [] as string[],
           invoice_count: 0, total_revenue: 0, total_discount: 0,
         })
       }
-      const s = map.get(key)
+      const s = byUser.get(key)
+      if (!s.kv_names.includes(kvName)) s.kv_names.push(kvName)
       s.invoice_count += Number(r.invoice_count || 0)
       s.total_revenue += Number(r.total_revenue || 0)
       s.total_discount += Number(r.total_discount || 0)
     })
-    return Array.from(map.values()).sort((a, b) => b.total_revenue - a.total_revenue)
-  }, [kvSalesRows])
+    // Thêm các NV Sale đã map nhưng chưa có doanh số (để hiện 0đ)
+    mappedSaleUsers.forEach((u: any) => {
+      if (!byUser.has(u.id)) {
+        byUser.set(u.id, {
+          user_id: u.id, name: u.name, pos: u.position_name || '',
+          kv_names: u.kiotviet_user_names || [],
+          invoice_count: 0, total_revenue: 0, total_discount: 0,
+        })
+      }
+    })
+    return Array.from(byUser.values()).sort((a, b) => b.total_revenue - a.total_revenue)
+  }, [kvSalesRows, kvNameToAppUser, mappedSaleUsers])
 
   const kvTotalRevenue = kvSalesRanking.reduce((s, x) => s + x.total_revenue, 0)
   const kvTotalInvoices = kvSalesRanking.reduce((s, x) => s + x.invoice_count, 0)
+
+  // Số KV accounts chưa được map (để cảnh báo admin)
+  const unmappedKvCount = useMemo(() => {
+    const mappedKvNames = new Set<string>()
+    allUsers.forEach((u: any) => {
+      (u.kiotviet_user_names || []).forEach((n: string) => mappedKvNames.add(normalizeKvName(n)))
+    })
+    const unmappedNames = new Set<string>()
+    kvSalesRows.forEach((r: any) => {
+      const n = normalizeKvName(r.sold_by_name || '')
+      if (n && !mappedKvNames.has(n)) unmappedNames.add(r.sold_by_name || '')
+    })
+    return unmappedNames.size
+  }, [allUsers, kvSalesRows])
 
   // Hàm format date DD/MM
   const fmtDM = (iso: string) => {
@@ -1727,12 +1787,8 @@ function Dashboard({ user, checklist, tasks, allUsers, attendance, leaveRequests
   const myPerfEntry = todayWhPerf.find((m: any) => m.user_id === user.id)
   const myPerfRank  = myPerfEntry ? todayWhPerf.findIndex((m: any) => m.user_id === user.id) + 1 : 0
 
-  // Self KV sale entry (match by user name or kiotviet_user_id)
-  const normalizeStr = (s: string) => (s||'').toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g,'').replace(/đ/g,'d').trim()
-  const myKvEntry = kvSalesRanking.find((r: any) => {
-    if (user.kiotviet_user_id && r.sold_by_id === user.kiotviet_user_id) return true
-    return normalizeStr(r.name) === normalizeStr(user.name || '')
-  })
+  // Self KV sale entry (match theo user_id — đã merge nhiều KV account của cùng user)
+  const myKvEntry = kvSalesRanking.find((r: any) => r.user_id === user.id)
   const myKvRank = myKvEntry ? kvSalesRanking.findIndex((r: any) => r === myKvEntry) + 1 : 0
 
   return (
@@ -1998,6 +2054,10 @@ function Dashboard({ user, checklist, tasks, allUsers, attendance, leaveRequests
                 📅 Dữ liệu từ <b style={{ color:T.dark }}>{fmtDM(kvSyncFromDate)}</b> đến <b style={{ color:T.dark }}>{fmtDM(kvSyncToDate)}</b>
                 {' '}(đến 0h00 ngày {fmtDMY(kvSyncToDate && new Date(new Date(kvSyncToDate).getTime() + 86400000).toISOString())})
                 {' '}· Cập nhật lúc <b style={{ color:T.dark }}>{fmtDT(kvLastSyncAt||'')}</b>
+                {' '}· <span style={{ color:T.green }}>{mappedSaleUsers.length} NV Sale đã map</span>
+                {unmappedKvCount > 0 && perm.viewAllDashboard && (
+                  <span style={{ color:T.amber }}> · ⚠️ {unmappedKvCount} KV account chưa map (admin/chủ)</span>
+                )}
                 {kvSyncError && <div style={{ color:T.red, marginTop:4 }}>❌ Lỗi lần sync cuối: {kvSyncError}</div>}
               </>
             )}
@@ -2053,7 +2113,7 @@ function Dashboard({ user, checklist, tasks, allUsers, attendance, leaveRequests
                   <div style={{ textAlign:'right' }}>Doanh thu</div>
                 </div>
                 {kvSalesRanking.map((r: any, i: number) => (
-                  <div key={r.name} style={{ display:'grid',
+                  <div key={r.user_id} style={{ display:'grid',
                     gridTemplateColumns:mobile?'30px 1fr 70px 90px':'40px 1fr 100px 130px 100px',
                     gap:4, padding:'8px 10px', fontSize:12,
                     background:i===0?T.goldBg:(i%2===1?T.rowAlt:T.card),
@@ -2062,9 +2122,17 @@ function Dashboard({ user, checklist, tasks, allUsers, attendance, leaveRequests
                     <div style={{ fontWeight:700, color:T.dark }}>
                       {i===0?'🥇':i===1?'🥈':i===2?'🥉':i+1}
                     </div>
-                    <div style={{ fontWeight:600, color:T.dark,
-                      overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap' }}>
-                      {r.name}
+                    <div style={{ minWidth:0 }}>
+                      <div style={{ fontWeight:600, color:T.dark,
+                        overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap' }}>
+                        {r.name}
+                      </div>
+                      {r.kv_names && r.kv_names.length > 1 && (
+                        <div style={{ fontSize:9, color:T.light, marginTop:1,
+                          overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap' }}>
+                          KV: {r.kv_names.join(' + ')}
+                        </div>
+                      )}
                     </div>
                     {!mobile && (
                       <div style={{ textAlign:'right', color:T.med }}>
@@ -2074,7 +2142,7 @@ function Dashboard({ user, checklist, tasks, allUsers, attendance, leaveRequests
                     <div style={{ textAlign:'right', color:T.med, fontWeight:500 }}>
                       {mobile ? r.invoice_count.toLocaleString('vi-VN') : (r.invoice_count>0?Math.round(r.total_revenue/r.invoice_count/1000).toLocaleString('vi-VN')+'k':'—')}
                     </div>
-                    <div style={{ textAlign:'right', fontWeight:700, color:T.green }}>
+                    <div style={{ textAlign:'right', fontWeight:700, color:r.total_revenue>0?T.green:T.light }}>
                       {fmtMoneyShort(r.total_revenue)}đ
                     </div>
                   </div>
