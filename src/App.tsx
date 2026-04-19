@@ -12,7 +12,7 @@ const db = createClient(SUPABASE_URL, SUPABASE_KEY)
 // APP_VERSION — dùng để invalidate cache localStorage mỗi khi deploy version mới
 // (ngăn bug quyền user bị "reset" do cache position cũ sau deploy)
 // ⚠️ MỖI LẦN DEPLOY FEATURE MỚI CÓ PERMISSION MỚI, BUMP SỐ NÀY:
-const APP_VERSION = '2026.04.17.v47'
+const APP_VERSION = '2026.04.17.v48'
 
 // ════════════════════════════════════════════════════════════════
 // AUDIT LOG — ghi nhận các hành động phá hoại data để trace lại
@@ -10624,6 +10624,18 @@ function SessionCreateWizard({ products, checks, allUsers, user, excludedCodes, 
     setSelected(new Set(total150.map((p: any) => p.code).slice(0,150)))
   }, [step])
 
+  // Auto-remove excluded codes từ selected khi excludedCodes thay đổi
+  useEffect(() => {
+    setSelected(prev => {
+      let changed = false
+      const next = new Set(prev)
+      prev.forEach(code => {
+        if (excludedCodes.has(code)) { next.delete(code); changed = true }
+      })
+      return changed ? next : prev
+    })
+  }, [excludedCodes])
+
   // Import Excel for product selection — validate Mã SP vs products
   const importExcelCodes = async (file: File) => {
     const xlsx = await import('https://cdn.jsdelivr.net/npm/xlsx@0.18.5/+esm' as any)
@@ -10645,6 +10657,11 @@ function SessionCreateWizard({ products, checks, allUsers, user, excludedCodes, 
       )
       if (!prod) {
         errors.push(`Dòng ${lineNum}: Mã "${codeRaw||'?'}" / Tên "${nameRaw||'?'}" không tồn tại. Vui lòng nhập đúng Mã SP hoặc Tên SP theo KiotViet.`)
+        return
+      }
+      // BỎ QUA SP nằm trong danh sách "Mã không KK"
+      if (excludedCodes.has(prod.code)) {
+        errors.push(`Dòng ${lineNum}: Mã "${prod.code}" nằm trong danh sách "Mã không kiểm kê" → đã bỏ qua.`)
         return
       }
       validCodes.add(prod.code)
@@ -10692,8 +10709,10 @@ function SessionCreateWizard({ products, checks, allUsers, user, excludedCodes, 
   const pagedProds = filteredProds.slice(page*PAGE_SIZE, (page+1)*PAGE_SIZE)
   const totalPages = Math.ceil(filteredProds.length / PAGE_SIZE)
 
-  // Build assignment for preview
-  const selectedArr = products.filter((p: any) => selected.has(p.code))
+  // Build assignment for preview — LUÔN filter excluded codes (safety net)
+  // Vì user có thể đã select trước khi mã bị thêm vào "không kk"
+  const selectedArr = products.filter((p: any) => selected.has(p.code) && !excludedCodes.has(p.code))
+  const excludedFromSelected = products.filter((p: any) => selected.has(p.code) && excludedCodes.has(p.code))
   const each = Math.floor(selectedArr.length / Math.max(selectedNVs.length,1))
   const perNVPreview = selectedNVs.map((id, idx) => {
     const nv = allUsers.find((u: any) => u.id===id)
@@ -10924,8 +10943,25 @@ function SessionCreateWizard({ products, checks, allUsers, user, excludedCodes, 
             <div style={{display:'flex',flexDirection:'column',gap:14}}>
               <div style={{padding:'10px 14px',background:T.goldBg,borderRadius:10,
                 fontSize:12,color:T.goldText,fontWeight:600}}>
-                📦 {selected.size} mã sẽ được kiểm kê trong phiên {date}
+                📦 {selectedArr.length} mã sẽ được kiểm kê trong phiên {date}
+                {excludedFromSelected.length > 0 && (
+                  <span style={{ color:T.med, fontWeight:500, marginLeft:6 }}>
+                    (đã bỏ {excludedFromSelected.length} mã do nằm trong "Mã không KK")
+                  </span>
+                )}
               </div>
+              {excludedFromSelected.length > 0 && (
+                <div style={{padding:'10px 14px',background:T.redBg,borderRadius:10,
+                  fontSize:12,color:T.red,fontWeight:500,
+                  border:`1px solid ${T.red}`}}>
+                  🚫 <b>Đã tự động loại</b> {excludedFromSelected.length} mã nằm trong danh sách "Mã không kiểm kê":
+                  <div style={{ marginTop:6, fontSize:11, fontWeight:400, maxHeight:80, overflowY:'auto' }}>
+                    {excludedFromSelected.map((p: any) => (
+                      <div key={p.code}>• {p.code} — {p.name}</div>
+                    ))}
+                  </div>
+                </div>
+              )}
               <div>
                 <div style={{fontSize:12,fontWeight:600,color:T.dark,marginBottom:8}}>Chọn nhân viên kiểm kê:</div>
                 <div style={{display:'flex',flexDirection:'column',gap:6}}>
