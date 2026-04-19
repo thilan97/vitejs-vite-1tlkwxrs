@@ -12,7 +12,7 @@ const db = createClient(SUPABASE_URL, SUPABASE_KEY)
 // APP_VERSION — dùng để invalidate cache localStorage mỗi khi deploy version mới
 // (ngăn bug quyền user bị "reset" do cache position cũ sau deploy)
 // ⚠️ MỖI LẦN DEPLOY FEATURE MỚI CÓ PERMISSION MỚI, BUMP SỐ NÀY:
-const APP_VERSION = '2026.04.17.v48'
+const APP_VERSION = '2026.04.17.v49'
 
 // ════════════════════════════════════════════════════════════════
 // AUDIT LOG — ghi nhận các hành động phá hoại data để trace lại
@@ -19784,9 +19784,25 @@ function SaleOrderTrackingModule({ user, allUsers, mobile }: any) {
   const getName = (id: string) => allUsers.find((u: any) => u.id === id)?.name || '?'
 
   // Filter theo status tab
+  // ── SPECIAL FILTERS (loại đơn test cũ) ──
+  // 1) Tab "Hoàn tất": loại đơn do admin đóng (test accounts)
+  // 2) Tab "Đang xử lý": loại đơn có purchase_date <= 18/4/2026 (test period, data không chính xác)
+  const isAdminPacked = (o: any): boolean => {
+    if (o.packed_by === 'admin') return true
+    if (Array.isArray(o.packed_by_ids) && o.packed_by_ids.includes('admin')) return true
+    return false
+  }
+  // Boundary: hết ngày 18/4/2026 (cho vùng giờ Việt Nam = UTC+7)
+  // 18/4/2026 23:59:59.999 VN = 16:59:59.999 UTC
+  const testPeriodEnd = new Date('2026-04-18T16:59:59.999Z').getTime()
+  const isBeforeTestPeriodEnd = (o: any): boolean => {
+    if (!o.purchase_date) return false
+    return new Date(o.purchase_date).getTime() <= testPeriodEnd
+  }
+
   const statusGroups: Record<string, (o: any) => boolean> = {
-    active:    (o) => ['picking', 'packing'].includes(o.status),
-    done:      (o) => o.status === 'done',
+    active:    (o) => ['picking', 'packing'].includes(o.status) && !isBeforeTestPeriodEnd(o),
+    done:      (o) => o.status === 'done' && !isAdminPacked(o),
     cancelled: (o) => o.status === 'cancelled',
     all:       ()  => true,
   }
@@ -19801,8 +19817,8 @@ function SaleOrderTrackingModule({ user, allUsers, mobile }: any) {
   })
 
   const counts = {
-    active:    orders.filter(o => ['picking','packing'].includes(o.status)).length,
-    done:      orders.filter(o => o.status === 'done').length,
+    active:    orders.filter(o => ['picking','packing'].includes(o.status) && !isBeforeTestPeriodEnd(o)).length,
+    done:      orders.filter(o => o.status === 'done' && !isAdminPacked(o)).length,
     cancelled: orders.filter(o => o.status === 'cancelled').length,
     all:       orders.length,
   }
