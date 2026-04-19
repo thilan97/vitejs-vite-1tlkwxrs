@@ -12,7 +12,7 @@ const db = createClient(SUPABASE_URL, SUPABASE_KEY)
 // APP_VERSION — dùng để invalidate cache localStorage mỗi khi deploy version mới
 // (ngăn bug quyền user bị "reset" do cache position cũ sau deploy)
 // ⚠️ MỖI LẦN DEPLOY FEATURE MỚI CÓ PERMISSION MỚI, BUMP SỐ NÀY:
-const APP_VERSION = '2026.04.19.v62'
+const APP_VERSION = '2026.04.19.v64'
 
 // ════════════════════════════════════════════════════════════════
 // AUDIT LOG — ghi nhận các hành động phá hoại data để trace lại
@@ -18006,7 +18006,7 @@ function normalizeName(s: string): string {
 async function parseMachineAttendanceFile(file: File): Promise<any[]> {
   const xlsx = await import('https://cdn.jsdelivr.net/npm/xlsx@0.18.5/+esm' as any)
   const buf = await file.arrayBuffer()
-  // cellDates: false — parse dates ourselves để tránh xlsx transform cell text thành Date
+  // cellDates: false + raw: true → nhận serial number gốc của Excel, tự format → tránh lộn US/VN date
   const wb = xlsx.read(buf, { type: 'array', cellDates: false })
   
   const debug: string[] = []
@@ -18017,15 +18017,31 @@ async function parseMachineAttendanceFile(file: File): Promise<any[]> {
     throw new Error(`File "${file.name}" không có sheet nào`)
   }
   
-  const employees: any[] = []
-  let totalRowsScanned = 0
+  // Helper: Excel serial number → 'YYYY-MM-DD'
+  const excelSerialToDate = (n: number): string => {
+    // Excel: 1 = 1900-01-01 (với bug leap year 1900). 25569 = 1970-01-01 (Unix epoch).
+    const d = new Date(Math.round((n - 25569) * 86400 * 1000))
+    if (isNaN(d.getTime())) return ''
+    return `${d.getUTCFullYear()}-${String(d.getUTCMonth()+1).padStart(2,'0')}-${String(d.getUTCDate()).padStart(2,'0')}`
+  }
   
-  // Thử tất cả các sheet (phòng trường hợp sheet 1 là summary, data ở sheet 2)
+  // Helper: Excel time fraction (0-1) → 'HH:MM:SS'
+  const excelFractionToTime = (n: number): string => {
+    const totalSec = Math.round(n * 86400)
+    const h = Math.floor(totalSec / 3600)
+    const m = Math.floor((totalSec % 3600) / 60)
+    const s = totalSec % 60
+    return `${String(h).padStart(2,'0')}:${String(m).padStart(2,'0')}:${String(s).padStart(2,'0')}`
+  }
+  
+  const employees: any[] = []
+  
+  // Thử tất cả các sheet
   for (const sheetName of wb.SheetNames) {
     const ws = wb.Sheets[sheetName]
     if (!ws) continue
-    const rows: any[] = xlsx.utils.sheet_to_json(ws, { header: 1, defval: '', raw: false })
-    totalRowsScanned += rows.length
+    // raw: true để giữ nguyên số serial cho date/time
+    const rows: any[] = xlsx.utils.sheet_to_json(ws, { header: 1, defval: '', raw: true })
     debug.push(`Sheet "${sheetName}": ${rows.length} rows`)
     
     let current: any = null
@@ -18034,7 +18050,7 @@ async function parseMachineAttendanceFile(file: File): Promise<any[]> {
     for (let i = 0; i < rows.length; i++) {
       const row = rows[i] || []
       
-      // Tìm "Mã nhân viên" trong BẤT KỲ ô nào của row (không chỉ col 0)
+      // Tìm "Mã nhân viên" trong BẤT KỲ ô nào của row
       let titleText = ''
       for (let j = 0; j < row.length; j++) {
         const v = String(row[j] || '').trim()
@@ -18059,17 +18075,19 @@ async function parseMachineAttendanceFile(file: File): Promise<any[]> {
       
       if (!current) continue
       
-      // Detect data row: col 0 là date (format nhiều kiểu)
+      // Detect data row: col 0 là date
       const dateCell = row[0]
       let dateStr = ''
       
-      if (typeof dateCell === 'string') {
-        // ISO yyyy-mm-dd
+      if (typeof dateCell === 'number' && dateCell > 40000 && dateCell < 60000) {
+        // Excel serial date (~2009 đến ~2064) — ưu tiên path này
+        dateStr = excelSerialToDate(dateCell)
+      } else if (typeof dateCell === 'string') {
+        // Fallback: text date. Ưu tiên ISO, sau đó DD/MM/YYYY (VN)
         const iso = dateCell.match(/^(\d{4})-(\d{1,2})-(\d{1,2})/)
         if (iso) {
           dateStr = `${iso[1]}-${String(iso[2]).padStart(2,'0')}-${String(iso[3]).padStart(2,'0')}`
         } else {
-          // DD/MM/YYYY hoặc DD-MM-YYYY (kể cả YYYY 2 số: 26 → 2026)
           const dmy = dateCell.match(/^(\d{1,2})[\/\-.](\d{1,2})[\/\-.](\d{2,4})/)
           if (dmy) {
             let yr = parseInt(dmy[3])
@@ -18077,31 +18095,35 @@ async function parseMachineAttendanceFile(file: File): Promise<any[]> {
             dateStr = `${yr}-${String(dmy[2]).padStart(2,'0')}-${String(dmy[1]).padStart(2,'0')}`
           }
         }
-      } else if (typeof dateCell === 'number' && dateCell > 40000 && dateCell < 60000) {
-        // Excel date serial (days since 1900-01-01)
-        const d = new Date(Math.round((dateCell - 25569) * 86400 * 1000))
-        if (!isNaN(d.getTime())) {
-          dateStr = `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`
-        }
       }
       
       if (!dateStr) continue
       
       const thu = String(row[1] || '').trim()
       
-      // Thu thập tất cả time cells từ col 2-14 (6 cột Vào1/Ra1/Vào2/Ra2/Vào3/Ra3 + dư)
+      // Thu thập time cells từ col 2-14 — giờ là number fraction (0-1) thay vì string
       const times: string[] = []
       for (let j = 2; j <= 14; j++) {
-        const v = String(row[j] || '').trim()
-        if (/^\d{1,2}:\d{2}(:\d{2})?$/.test(v)) {
-          times.push(v.length === 5 ? v + ':00' : v)
+        const v = row[j]
+        if (typeof v === 'number' && v > 0 && v < 1) {
+          // Excel time fraction (0.5 = 12:00)
+          times.push(excelFractionToTime(v))
+        } else if (typeof v === 'string') {
+          const m = v.trim().match(/^(\d{1,2}):(\d{2})(?::(\d{2}))?$/)
+          if (m) {
+            times.push(`${m[1].padStart(2,'0')}:${m[2]}:${m[3] || '00'}`)
+          }
         }
       }
       
       let check_in = ''
       let check_out = ''
       if (times.length >= 1) {
-        const sorted = [...times].sort()
+        const toSec = (t: string) => {
+          const [h, m, s] = t.split(':').map(Number)
+          return h * 3600 + m * 60 + (s || 0)
+        }
+        const sorted = [...times].sort((a, b) => toSec(a) - toSec(b))
         check_in = sorted[0]
         if (times.length >= 2) check_out = sorted[sorted.length - 1]
       }
@@ -18125,11 +18147,13 @@ async function parseMachineAttendanceFile(file: File): Promise<any[]> {
   
   // Nếu parse failed → throw lỗi chi tiết
   if (validEmployees.length === 0) {
-    // Show sample của 10 dòng đầu sheet 1
     const firstSheet = wb.Sheets[wb.SheetNames[0]]
-    const sampleRows = xlsx.utils.sheet_to_json(firstSheet, { header: 1, defval: '', raw: false }).slice(0, 10)
+    const sampleRows = xlsx.utils.sheet_to_json(firstSheet, { header: 1, defval: '', raw: true }).slice(0, 10)
     const sample = sampleRows.map((r: any, idx: number) => {
-      const cells = (r || []).slice(0, 5).map((c: any) => String(c || '').slice(0, 30)).join(' | ')
+      const cells = (r || []).slice(0, 5).map((c: any) => {
+        const type = typeof c
+        return type === 'number' ? `[num:${c}]` : String(c || '').slice(0, 30)
+      }).join(' | ')
       return `  R${idx}: ${cells}`
     }).join('\n')
     throw new Error(`Không parse được NV nào.\n\nDebug:\n${debug.join('\n')}\n\n10 dòng đầu sheet 1:\n${sample}`)
@@ -18463,23 +18487,28 @@ function PayrollImportModule({ user, allUsers, mobile, attendance, setAttendance
       // 4. Upsert attendance records (batch 200 each)
       const batchSize = 200
       for (let i = 0; i < previewComputed.length; i += batchSize) {
-        const batch = previewComputed.slice(i, i + batchSize).map(r => ({
-          user_id: r.user_id,
-          date: r.date,
-          status: r.status,
-          check_in_machine: r.check_in_machine,
-          check_out_machine: r.check_out_machine,
-          check_in_final: r.check_in_final,
-          check_out_final: r.check_out_final,
-          work_hours_regular: r.work_hours_regular,
-          ot_150_hours: r.ot_150_hours,
-          ot_200_hours: r.ot_200_hours,
-          total_hours: r.total_hours,
-          lunch_eligible: r.lunch_eligible,
-          sunday_type: r.sunday_type,
-          needs_qm_review: r.needs_qm_review,
-          import_source: r.import_source,
-        }))
+        const batch = previewComputed.slice(i, i + batchSize).map(r => {
+          const user = allUsers.find((u: any) => u.id === r.user_id)
+          return {
+            id: `att_${r.user_id}_${r.date.replace(/-/g, '')}`,
+            user_id: r.user_id,
+            dept_id: user?.dept_id || 'vp',
+            date: r.date,
+            status: r.status,
+            check_in_machine: r.check_in_machine,
+            check_out_machine: r.check_out_machine,
+            check_in_final: r.check_in_final,
+            check_out_final: r.check_out_final,
+            work_hours_regular: r.work_hours_regular,
+            ot_150_hours: r.ot_150_hours,
+            ot_200_hours: r.ot_200_hours,
+            total_hours: r.total_hours,
+            lunch_eligible: r.lunch_eligible,
+            sunday_type: r.sunday_type,
+            needs_qm_review: r.needs_qm_review,
+            import_source: r.import_source,
+          }
+        })
         const { error: upErr } = await db.from('attendance').upsert(batch, {
           onConflict: 'user_id,date',
         })
