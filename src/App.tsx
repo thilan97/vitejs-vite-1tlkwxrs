@@ -155,6 +155,38 @@ const SCHEDULE: any = {
   sale: { in:'08:00', breakStart:'12:30', breakEnd:'14:00', out:'17:00' },
   vp:   { in:'08:00', breakStart:'12:30', breakEnd:'14:00', out:'17:00' },
 }
+
+// ── HELPER: Tính giờ làm từ record chấm công ──
+// Attendance không lưu check_in/check_out mà chỉ lưu status + late_mins
+// → suy ra giờ làm dựa vào SCHEDULE của phòng ban + status
+// - present: full schedule hours (VD kho: 08:30-17:30 trừ 1h nghỉ trưa = 8h)
+// - late: full - late_mins/60
+// - early_out: full - late_mins/60 (reuse late_mins cho số phút về sớm)
+// - half: full/2 (nửa ngày)
+// - absent/sick/leave: 0
+// Nếu không có record (chưa chấm) nhưng NV có ops → coi như 'present' mặc định
+const computeAttHours = (att: any, deptId: string): number => {
+  const sched = SCHEDULE[deptId] || SCHEDULE.sale
+  const toMin = (hm: string) => {
+    const parts = (hm || '').split(':').map(Number)
+    return (parts[0] || 0) * 60 + (parts[1] || 0)
+  }
+  const workMins = (toMin(sched.out) - toMin(sched.in)) - (toMin(sched.breakEnd) - toMin(sched.breakStart))
+  const fullHours = workMins / 60   // kho=8, sale/vp=8
+  if (!att) return fullHours  // Mặc định coi như present
+  const lateMins = Number(att.late_mins || 0)
+  switch (att.status) {
+    case 'present':   return fullHours
+    case 'late':      return Math.max(0, fullHours - lateMins / 60)
+    case 'early_out': return Math.max(0, fullHours - lateMins / 60)
+    case 'half':      return fullHours / 2
+    case 'absent':
+    case 'sick':
+    case 'leave':
+    default:          return 0
+  }
+}
+
 const STATUS_CFG: any = {
   done:    { label:'✅ Hoàn thành', color:T.green, bg:T.greenBg },
   doing:   { label:'⏳ Đang làm',  color:T.amber, bg:T.amberBg },
@@ -1577,39 +1609,62 @@ function Dashboard({ user, checklist, tasks, allUsers, attendance, leaveRequests
     return { picked, packed, photos, aiReview, totalValue }
   }, [todayOrders, todayISOStr])
 
-  // ═══ Today NV Kho performance ═══
+  // ═══ Today NV Kho performance (v2: fix timezone + attendance + pack duration) ═══
   const todayWhPerf = useMemo(() => {
     // Chỉ NV Kho
     const khoUsers = allUsers.filter((u: any) => u.dept_id === 'kho' && u.active !== false && !isTestAccount(u))
     if (khoUsers.length === 0) return []
 
-    // Packer stats hôm nay (chia 1/N cho multi-packer)
+    // Range timestamp hôm nay theo LOCAL timezone (chính xác cho VN+7)
+    const todayStartDate = new Date(); todayStartDate.setHours(0, 0, 0, 0)
+    const todayEndDate   = new Date(); todayEndDate.setHours(23, 59, 59, 999)
+    const todayStartTs = todayStartDate.getTime()
+    const todayEndTs   = todayEndDate.getTime()
+    const inToday = (iso: string): boolean => {
+      if (!iso) return false
+      const t = new Date(iso).getTime()
+      return !isNaN(t) && t >= todayStartTs && t <= todayEndTs
+    }
+
+    // Packer stats hôm nay (chia 1/N cho multi-packer) + pack duration
     const packMap = new Map<string, any>()
     todayOrders.forEach((o: any) => {
       if (o.status !== 'done') return
-      if (!o.packed_at || o.packed_at.slice(0, 10) !== todayISOStr) return
-      const ids: string[] = (o.packed_by_ids && o.packed_by_ids.length > 0)
+      if (!inToday(o.packed_at)) return
+      const ids: string[] = (o.packed_by_ids && Array.isArray(o.packed_by_ids) && o.packed_by_ids.length > 0)
         ? o.packed_by_ids
         : (o.packed_by ? [o.packed_by] : [])
       if (ids.length === 0) return
       const N = ids.length
+      // Tính pack duration (từ picked_at → packed_at) cho đơn có cả 2 timestamp
+      let packDurMs = 0
+      if (o.picked_at && o.packed_at) {
+        const dur = new Date(o.packed_at).getTime() - new Date(o.picked_at).getTime()
+        if (dur > 0 && dur < 86400000) packDurMs = dur  // loại outlier > 24h
+      }
+      const itemsTotal = Array.isArray(o.items)
+        ? o.items.reduce((sum: number, it: any) => {
+            const qty = Number(it.qty||0) - Number(it.short_qty||0)
+            return sum + Math.max(0, qty)
+          }, 0) : 0
       ids.forEach((pid: string) => {
-        if (!packMap.has(pid)) packMap.set(pid, { packed: 0, items: 0 })
+        if (!packMap.has(pid)) {
+          packMap.set(pid, { packed: 0, items: 0, packDurSumMs: 0, packDurCount: 0 })
+        }
         const s = packMap.get(pid)
         s.packed += 1 / N
-        const itemsTotal = Array.isArray(o.items)
-          ? o.items.reduce((sum: number, it: any) => {
-              const qty = Number(it.qty||0) - Number(it.short_qty||0)
-              return sum + Math.max(0, qty)
-            }, 0) : 0
         s.items += itemsTotal / N
+        if (packDurMs > 0) {
+          s.packDurSumMs += packDurMs / N
+          s.packDurCount += 1 / N
+        }
       })
     })
 
-    // Picker stats hôm nay (field đúng là `assigned_to`, match với WarehouseStatsModule)
+    // Picker stats hôm nay (field đúng là `assigned_to`)
     const pickMap = new Map<string, number>()
     todayOrders.forEach((o: any) => {
-      if (!o.picked_at || o.picked_at.slice(0, 10) !== todayISOStr) return
+      if (!inToday(o.picked_at)) return
       if (!o.assigned_to) return
       pickMap.set(o.assigned_to, (pickMap.get(o.assigned_to) || 0) + 1)
     })
@@ -1625,26 +1680,27 @@ function Dashboard({ user, checklist, tasks, allUsers, attendance, leaveRequests
       errMap.set(r.violator_id, (errMap.get(r.violator_id) || 0) + 1)
     })
 
-    // Hours hôm nay
-    const hourMap = new Map<string, number>()
+    // Hours hôm nay (dùng SCHEDULE + status, vì attendance KHÔNG có check_in/check_out)
+    const todayAttMap = new Map<string, any>()
     attendance.forEach((a: any) => {
-      if (a.date !== todayISOStr || !a.user_id || !a.check_in || !a.check_out) return
-      const inT = new Date(`${a.date}T${a.check_in}`).getTime()
-      const outT = new Date(`${a.date}T${a.check_out}`).getTime()
-      if (outT <= inT) return
-      const h = (outT - inT) / 3600000
-      const netH = h > 6 ? h - 1 : h
-      hourMap.set(a.user_id, (hourMap.get(a.user_id) || 0) + netH)
+      if (a.date !== todayISOStr || !a.user_id) return
+      todayAttMap.set(a.user_id, a)
     })
 
     // Build metrics per NV Kho
     const metrics: any[] = []
     khoUsers.forEach((u: any) => {
-      const packed = packMap.get(u.id)?.packed || 0
-      const items = packMap.get(u.id)?.items || 0
+      const packer = packMap.get(u.id)
+      const packed = packer?.packed || 0
+      const items = packer?.items || 0
+      const avgPackMin = (packer?.packDurCount || 0) > 0
+        ? (packer.packDurSumMs / packer.packDurCount) / 60000
+        : 0
       const picked = pickMap.get(u.id) || 0
       const totalOps = packed + picked
-      const hours = hourMap.get(u.id) || 0
+      // Hours: nếu có record attendance dùng record, nếu không và có ops thì mặc định 'present'
+      const att = todayAttMap.get(u.id)
+      const hours = att ? computeAttHours(att, u.dept_id) : (totalOps > 0 ? computeAttHours(null, u.dept_id) : 0)
       const errors = errMap.get(u.id) || 0
       if (totalOps === 0 && hours === 0) return
       metrics.push({
@@ -1655,6 +1711,7 @@ function Dashboard({ user, checklist, tasks, allUsers, attendance, leaveRequests
         total_ops: totalOps,
         hours: Math.round(hours * 10) / 10,
         errors,
+        avg_pack_min: Math.round(avgPackMin * 10) / 10,
         ops_per_hour: hours > 0 ? totalOps / hours : 0,
         error_rate: totalOps > 0 ? errors / totalOps : 0,
       })
@@ -1667,18 +1724,27 @@ function Dashboard({ user, checklist, tasks, allUsers, attendance, leaveRequests
     const median = opsPerHourList.length > 0
       ? opsPerHourList[Math.floor(opsPerHourList.length / 2)] : 1
     const maxOps = Math.max(1, ...metrics.map(m => m.total_ops))
+    // Baseline pack duration (phút): median của team (loại người không có data)
+    const packMinList = metrics.filter(m => m.avg_pack_min > 0).map(m => m.avg_pack_min).sort((a, b) => a - b)
+    const medianPackMin = packMinList.length > 0
+      ? packMinList[Math.floor(packMinList.length / 2)] : 0
 
     return metrics.map(m => {
       const speed = m.hours > 0 && median > 0
         ? Math.min(100, Math.round((m.ops_per_hour / median) * 50)) : 0
       const volume = Math.round((m.total_ops / maxOps) * 100)
       const quality = Math.max(0, Math.round((1 - m.error_rate) * 100))
-      const total = Math.round(speed * 0.5 + volume * 0.3 + quality * 0.2)
+      // Pack speed: nhanh hơn median → điểm cao. Không có data → neutral 50.
+      const packSpeed = m.avg_pack_min > 0 && medianPackMin > 0
+        ? Math.min(100, Math.round((medianPackMin / m.avg_pack_min) * 50))
+        : 50
+      // Composite: 40% Speed + 25% Volume + 20% Quality + 15% Pack Speed
+      const total = Math.round(speed * 0.40 + volume * 0.25 + quality * 0.20 + packSpeed * 0.15)
       let grade = '🔴', gradeLabel = 'Dưới kỳ vọng'
       if (total >= 90)      { grade = '🌟'; gradeLabel = 'Xuất sắc' }
       else if (total >= 75) { grade = '✅'; gradeLabel = 'Đạt yêu cầu' }
       else if (total >= 60) { grade = '⚠️'; gradeLabel = 'Cần cải thiện' }
-      return { ...m, speed, volume, quality, total, grade, gradeLabel }
+      return { ...m, speed, volume, quality, packSpeed, total, grade, gradeLabel }
     }).sort((a, b) => b.total - a.total)
   }, [allUsers, todayOrders, todayWrong, todayReturns, attendance, todayISOStr])
 
@@ -1931,7 +1997,7 @@ function Dashboard({ user, checklist, tasks, allUsers, attendance, leaveRequests
               🏭 Xếp hạng hiệu suất NV Kho hôm nay
             </div>
             <div style={{ fontSize:10, color:T.light, fontStyle:'italic' }}>
-              Speed 50% · Volume 30% · Quality 20%
+              Speed 40% · Volume 25% · Quality 20% · Pack Speed 15%
             </div>
           </div>
 
@@ -1957,6 +2023,7 @@ function Dashboard({ user, checklist, tasks, allUsers, attendance, leaveRequests
                     </div>
                     <div style={{ fontSize:10, color:T.light, marginTop:2 }}>
                       📦 {m.picked} nhặt · ✅ {m.packed} đóng · 🧴 {m.items} SP
+                      {m.avg_pack_min > 0 && <span> · ⏱ {m.avg_pack_min}p/đơn</span>}
                       {m.errors > 0 && <span style={{ color:T.red }}> · 🚨 {m.errors} lỗi</span>}
                     </div>
                   </div>
@@ -1995,11 +2062,12 @@ function Dashboard({ user, checklist, tasks, allUsers, attendance, leaveRequests
                     {myPerfEntry.total}
                   </div>
                 </div>
-                <div style={{ display:'grid', gridTemplateColumns:'repeat(3,1fr)', gap:8 }}>
+                <div style={{ display:'grid', gridTemplateColumns:mobile?'repeat(2,1fr)':'repeat(4,1fr)', gap:8 }}>
                   {[
-                    { label:'⚡ Speed',  val:myPerfEntry.speed,   weight:'50%' },
-                    { label:'📊 Volume', val:myPerfEntry.volume,  weight:'30%' },
-                    { label:'✓ Quality', val:myPerfEntry.quality, weight:'20%' },
+                    { label:'⚡ Speed',    val:myPerfEntry.speed,     weight:'40%' },
+                    { label:'📊 Volume',   val:myPerfEntry.volume,    weight:'25%' },
+                    { label:'✓ Quality',   val:myPerfEntry.quality,   weight:'20%' },
+                    { label:'🕐 PackSpeed',val:myPerfEntry.packSpeed, weight:'15%' },
                   ].map(f => (
                     <div key={f.label} style={{ background:'#fff', padding:'6px 8px',
                       borderRadius:RD.sm, textAlign:'center' }}>
@@ -2012,6 +2080,8 @@ function Dashboard({ user, checklist, tasks, allUsers, attendance, leaveRequests
                 <div style={{ fontSize:10, color:T.goldText, marginTop:10,
                   paddingTop:8, borderTop:`1px dashed ${T.goldBorder}` }}>
                   📦 Đã nhặt {myPerfEntry.picked} đơn · ✅ Đã đóng {myPerfEntry.packed} đơn · 🧴 {myPerfEntry.items} SP
+                  {myPerfEntry.avg_pack_min > 0 && <span> · ⏱ TB {myPerfEntry.avg_pack_min}p/đơn đóng</span>}
+                  {myPerfEntry.hours > 0 && <span> · 🕐 {myPerfEntry.hours}h</span>}
                   {myPerfEntry.errors > 0 && <span style={{ color:T.red }}> · 🚨 {myPerfEntry.errors} lỗi</span>}
                 </div>
               </div>
@@ -19422,23 +19492,31 @@ function WarehouseStatsModule({ user, allUsers, mobile }: any) {
     total_picked: pickerStats.reduce((s, ps: any) => s + ps.order_count, 0),
   }), [orders, packerStats, pickerStats])
 
-  // ═══ COMPOSITE PERFORMANCE SCORE (50% Speed / 30% Volume / 20% Quality) ═══
+  // ═══ COMPOSITE PERFORMANCE SCORE (40% Speed / 25% Volume / 20% Quality / 15% Pack Speed) ═══
   // Chỉ tính cho NV Kho
   const performanceScores = useMemo(() => {
     // Lấy NV Kho
     const khoUsers = allUsers.filter((u: any) => u.dept_id === 'kho' && u.active !== false)
 
-    // Compute giờ làm per user (tổng tháng)
+    // Compute giờ làm per user (dựa SCHEDULE + status, vì attendance không có check_in/out)
     const hoursByUser = new Map<string, number>()
     attendance.forEach((a: any) => {
-      if (!a.user_id || !a.check_in || !a.check_out) return
-      const inT = new Date(`${a.date}T${a.check_in}`).getTime()
-      const outT = new Date(`${a.date}T${a.check_out}`).getTime()
-      if (outT <= inT) return
-      const hours = (outT - inT) / 3600000
-      // Trừ 1h nghỉ trưa nếu làm > 6h
-      const netHours = hours > 6 ? hours - 1 : hours
-      hoursByUser.set(a.user_id, (hoursByUser.get(a.user_id) || 0) + netHours)
+      if (!a.user_id) return
+      const u = khoUsers.find((u: any) => u.id === a.user_id)
+      if (!u) return
+      const h = computeAttHours(a, u.dept_id)
+      if (h > 0) hoursByUser.set(a.user_id, (hoursByUser.get(a.user_id) || 0) + h)
+    })
+    // Fallback: NV có ops nhưng chưa chấm công → giả định 'present' cho các ngày đã có ops
+    // (đơn giản: ước tính từ số ngày có ops)
+    khoUsers.forEach((u: any) => {
+      if (hoursByUser.has(u.id)) return
+      const packer = packerStats.find((s: any) => s.user_id === u.id)
+      const picker = pickerStats.find((s: any) => s.user_id === u.id)
+      if (!packer && !picker) return
+      // Ước lượng số ngày làm = tuần thứ hiện có đơn / fallback 1 ngày
+      const defaultH = computeAttHours(null, u.dept_id)
+      hoursByUser.set(u.id, defaultH)  // tối thiểu 1 ngày làm
     })
 
     // Compute số lỗi per user (wrong + return)
@@ -19494,6 +19572,14 @@ function WarehouseStatsModule({ user, allUsers, mobile }: any) {
       ? opsPerHourSorted[Math.floor(opsPerHourSorted.length / 2)]
       : 1
     const maxOps = Math.max(1, ...metricsArr.map(m => m.total_ops))
+    // Baseline pack duration (phút): median của team (loại người không có data)
+    const packMinSorted = metricsArr
+      .filter(m => m.avg_pack_minutes > 0)
+      .map(m => m.avg_pack_minutes)
+      .sort((a, b) => a - b)
+    const teamMedianPackMin = packMinSorted.length > 0
+      ? packMinSorted[Math.floor(packMinSorted.length / 2)]
+      : 0
 
     // Compute scores
     return metricsArr.map(m => {
@@ -19505,9 +19591,13 @@ function WarehouseStatsModule({ user, allUsers, mobile }: any) {
       const volumeScore = Math.round((m.total_ops / maxOps) * 100)
       // Quality: tỷ lệ đúng
       const qualityScore = Math.max(0, Math.round((1 - m.error_rate) * 100))
-      // Composite
+      // Pack Speed: nhanh hơn median → cao điểm. Không có data → 50 (neutral)
+      const packSpeedScore = m.avg_pack_minutes > 0 && teamMedianPackMin > 0
+        ? Math.min(100, Math.round((teamMedianPackMin / m.avg_pack_minutes) * 50))
+        : 50
+      // Composite: 40% Speed + 25% Volume + 20% Quality + 15% Pack Speed
       const totalScore = Math.round(
-        speedScore * 0.5 + volumeScore * 0.3 + qualityScore * 0.2
+        speedScore * 0.40 + volumeScore * 0.25 + qualityScore * 0.20 + packSpeedScore * 0.15
       )
       // Grade
       let grade = '🔴', gradeLabel = 'Cần cải thiện'
@@ -19517,7 +19607,7 @@ function WarehouseStatsModule({ user, allUsers, mobile }: any) {
       else                       { grade = '🔴'; gradeLabel = 'Dưới kỳ vọng' }
       return {
         ...m,
-        speedScore, volumeScore, qualityScore, totalScore,
+        speedScore, volumeScore, qualityScore, packSpeedScore, totalScore,
         grade, gradeLabel,
       }
     }).sort((a, b) => b.totalScore - a.totalScore)
@@ -19532,6 +19622,7 @@ function WarehouseStatsModule({ user, allUsers, mobile }: any) {
       avgSpeed:    Math.round(performanceScores.reduce((s, p) => s + p.speedScore, 0) / n),
       avgVolume:   Math.round(performanceScores.reduce((s, p) => s + p.volumeScore, 0) / n),
       avgQuality:  Math.round(performanceScores.reduce((s, p) => s + p.qualityScore, 0) / n),
+      avgPackSpeed:Math.round(performanceScores.reduce((s, p) => s + (p.packSpeedScore || 50), 0) / n),
       avgOpsHour:  performanceScores.reduce((s, p) => s + p.ops_per_hour, 0) / n,
       totalOps:    performanceScores.reduce((s, p) => s + p.total_ops, 0),
       totalValue:  performanceScores.reduce((s, p) => s + p.total_value, 0),
@@ -19687,12 +19778,13 @@ function WarehouseStatsModule({ user, allUsers, mobile }: any) {
                 </div>
 
                 {/* Breakdown */}
-                <div style={{ display:'grid', gridTemplateColumns:'repeat(3, 1fr)', gap:SP[3],
+                <div style={{ display:'grid', gridTemplateColumns:mobile?'repeat(2, 1fr)':'repeat(4, 1fr)', gap:SP[3],
                   paddingTop:SP[3], borderTop:`1px solid ${T.goldBorder}` }}>
                   {[
-                    { label:'⚡ Tốc độ', val: myScoreEntry.speedScore, teamAvg: teamAverages?.avgSpeed, color:T.blue, weight:'50%' },
-                    { label:'📦 Khối lượng', val: myScoreEntry.volumeScore, teamAvg: teamAverages?.avgVolume, color:T.goldText, weight:'30%' },
-                    { label:'🎯 Chất lượng', val: myScoreEntry.qualityScore, teamAvg: teamAverages?.avgQuality, color:T.green, weight:'20%' },
+                    { label:'⚡ Tốc độ',     val: myScoreEntry.speedScore,              teamAvg: teamAverages?.avgSpeed,     color:T.blue,     weight:'40%' },
+                    { label:'📦 Khối lượng', val: myScoreEntry.volumeScore,             teamAvg: teamAverages?.avgVolume,    color:T.goldText, weight:'25%' },
+                    { label:'🎯 Chất lượng', val: myScoreEntry.qualityScore,            teamAvg: teamAverages?.avgQuality,   color:T.green,    weight:'20%' },
+                    { label:'🕐 Pack Speed', val: myScoreEntry.packSpeedScore ?? 50,    teamAvg: teamAverages?.avgPackSpeed, color:T.purple,   weight:'15%' },
                   ].map((m, i) => (
                     <div key={i}>
                       <div style={{ fontSize:FS.xs, color:T.light, fontWeight:600, marginBottom:3 }}>
@@ -19717,6 +19809,7 @@ function WarehouseStatsModule({ user, allUsers, mobile }: any) {
                   <span>📦 {Math.round(myScoreEntry.total_ops)} nghiệp vụ</span>
                   <span>⏱ {Math.round(myScoreEntry.working_hours)}h làm</span>
                   <span>⚡ {myScoreEntry.ops_per_hour.toFixed(2)} / giờ</span>
+                  {myScoreEntry.avg_pack_minutes > 0 && <span>🕐 TB {myScoreEntry.avg_pack_minutes}p/đơn đóng</span>}
                   <span>💰 {fmtMoney(Math.round(myScoreEntry.total_value))}đ</span>
                   <span style={{ color: myScoreEntry.errors === 0 ? T.green : T.amber }}>
                     {myScoreEntry.errors === 0 ? '✅ 0 lỗi' : `⚠️ ${myScoreEntry.errors} lỗi`}
@@ -19735,7 +19828,7 @@ function WarehouseStatsModule({ user, allUsers, mobile }: any) {
                     🏆 Bảng xếp hạng hiệu suất
                   </div>
                   <div style={{ fontSize:FS.xs, color:T.light, marginTop:2 }}>
-                    Score = 50% Tốc độ + 30% Khối lượng + 20% Chất lượng
+                    Score = 40% Tốc độ + 25% Khối lượng + 20% Chất lượng + 15% Pack Speed
                   </div>
                 </div>
               </div>
@@ -19779,6 +19872,7 @@ function WarehouseStatsModule({ user, allUsers, mobile }: any) {
                               <span>📦 {Math.round(p.total_ops)} NV ({Math.round(p.orders_packed)}📮+{Math.round(p.orders_picked)}📥)</span>
                               <span>⏱ {Math.round(p.working_hours)}h</span>
                               <span>⚡ {p.ops_per_hour.toFixed(2)}/h</span>
+                              {p.avg_pack_minutes > 0 && <span>🕐 {p.avg_pack_minutes}p/đơn</span>}
                               {p.errors > 0 && <span style={{ color:T.red }}>⚠️ {p.errors} lỗi</span>}
                             </div>
                           )}
@@ -19797,11 +19891,13 @@ function WarehouseStatsModule({ user, allUsers, mobile }: any) {
                           height:10, borderRadius:RD.sm, overflow:'hidden',
                           border:`1px solid ${T.border}` }}>
                           <div title={`Tốc độ: ${p.speedScore}`}
-                            style={{ width:`${p.speedScore * 0.5}%`, background:T.blue }}/>
+                            style={{ width:`${p.speedScore * 0.40}%`, background:T.blue }}/>
                           <div title={`Khối lượng: ${p.volumeScore}`}
-                            style={{ width:`${p.volumeScore * 0.3}%`, background:T.gold }}/>
+                            style={{ width:`${p.volumeScore * 0.25}%`, background:T.gold }}/>
                           <div title={`Chất lượng: ${p.qualityScore}`}
-                            style={{ width:`${p.qualityScore * 0.2}%`, background:T.green }}/>
+                            style={{ width:`${p.qualityScore * 0.20}%`, background:T.green }}/>
+                          <div title={`Pack Speed: ${p.packSpeedScore}`}
+                            style={{ width:`${(p.packSpeedScore||50) * 0.15}%`, background:T.purple }}/>
                           <div style={{ flex:1, background:T.bg }}/>
                         </div>
                       )}
