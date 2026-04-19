@@ -12,7 +12,7 @@ const db = createClient(SUPABASE_URL, SUPABASE_KEY)
 // APP_VERSION — dùng để invalidate cache localStorage mỗi khi deploy version mới
 // (ngăn bug quyền user bị "reset" do cache position cũ sau deploy)
 // ⚠️ MỖI LẦN DEPLOY FEATURE MỚI CÓ PERMISSION MỚI, BUMP SỐ NÀY:
-const APP_VERSION = '2026.04.17.v53'
+const APP_VERSION = '2026.04.17.v54'
 
 // ════════════════════════════════════════════════════════════════
 // AUDIT LOG — ghi nhận các hành động phá hoại data để trace lại
@@ -17947,35 +17947,118 @@ function PriorityRequestModule({ user, allUsers, mobile }: any) {
 
 function OrderLookupTab({ user, allUsers, mobile }: any) {
   const [searchQ, setSearchQ] = useState('')
-  const [dayRange, setDayRange] = useState(15)
+  // Date range thay vì preset days
+  const todayStr = () => new Date().toISOString().split('T')[0]
+  const daysAgoStr = (d: number) => new Date(Date.now() - d*86400000).toISOString().split('T')[0]
+  const [dateFrom, setDateFrom] = useState(daysAgoStr(15))
+  const [dateTo, setDateTo]     = useState(todayStr())
   const [statusFilter, setStatusFilter] = useState<string>('all')
   const [allOrders, setAllOrders] = useState<any[]>([])
   const [loading, setLoading] = useState(false)
   const [expanded, setExpanded] = useState<string|null>(null)
+  const [showSuggestions, setShowSuggestions] = useState(false)
+  const [suggestionIdx, setSuggestionIdx] = useState(-1)
+
+  // Refs để track state hiện tại khi refresh ngầm (tránh race condition)
+  const isUserActiveRef = useRef(false)  // user đang gõ/tương tác → không refresh
+  const lastActivityRef = useRef(Date.now())
 
   const norm = (s: string) => (s||'').toLowerCase().normalize('NFD')
     .replace(/[\u0300-\u036f]/g,'').replace(/đ/g,'d').trim()
 
-  const fetchOrders = async () => {
-    setLoading(true)
-    const fromDate = new Date(Date.now() - dayRange * 86400000).toISOString()
+  // Fetch ngầm — không bật loading nếu đã có data
+  const fetchOrders = async (silent = false) => {
+    if (!silent) setLoading(true)
+    const fromISO = new Date(dateFrom + 'T00:00:00').toISOString()
+    const toISO   = new Date(dateTo   + 'T23:59:59').toISOString()
     const { data } = await db.from('packing_workflow').select('*')
-      .gte('purchase_date', fromDate)
+      .gte('purchase_date', fromISO)
+      .lte('purchase_date', toISO)
       .order('purchase_date', { ascending: false })
-      .limit(1500)
+      .limit(2000)
     setAllOrders(data || [])
-    setLoading(false)
+    if (!silent) setLoading(false)
   }
 
-  useEffect(() => { fetchOrders() }, [dayRange])
+  useEffect(() => { fetchOrders(false) }, [dateFrom, dateTo])
 
-  // Filter orders: phải có SP match query, + status filter
+  // Silent background refresh — chạy 30s/lần, CHỈ khi user không active
+  useEffect(() => {
+    const interval = setInterval(() => {
+      const idleMs = Date.now() - lastActivityRef.current
+      // Chỉ refresh nếu user idle > 10s và không đang typing
+      if (!isUserActiveRef.current && idleMs > 10000) {
+        fetchOrders(true)  // silent = true
+      }
+    }, 30000)
+    return () => clearInterval(interval)
+  }, [dateFrom, dateTo])
+
+  // Mark user active khi typing/clicking
+  const markActive = () => {
+    isUserActiveRef.current = true
+    lastActivityRef.current = Date.now()
+    // Release "active" flag sau 5s không hoạt động
+    setTimeout(() => {
+      if (Date.now() - lastActivityRef.current >= 5000) {
+        isUserActiveRef.current = false
+      }
+    }, 5000)
+  }
+
+  // ═══ Gợi ý (dropdown) ═══
+  // Build list unique KH + SP từ allOrders để gợi ý
+  const suggestions = useMemo(() => {
+    const q = norm(searchQ)
+    if (!q.trim() || q.length < 2) return []
+    const tokens = q.split(/\s+/).filter(Boolean)
+
+    const customerSet = new Map<string, { type:'customer', label:string, count:number }>()
+    const productSet  = new Map<string, { type:'product',  label:string, count:number }>()
+
+    for (const o of allOrders) {
+      // Customer
+      const cname = (o.customer_name||'').trim()
+      if (cname) {
+        const hay = norm(cname)
+        if (tokens.every(t => hay.includes(t))) {
+          const key = `c:${cname}`
+          const existing = customerSet.get(key)
+          if (existing) existing.count++
+          else customerSet.set(key, { type:'customer', label: cname, count:1 })
+        }
+      }
+      // Products
+      for (const it of (o.items||[])) {
+        const pname = `${it.code||''} ${it.name||''}`.trim()
+        if (!pname) continue
+        const hay = norm(pname)
+        if (tokens.every(t => hay.includes(t))) {
+          const key = `p:${it.code||it.name}`
+          const existing = productSet.get(key)
+          if (existing) existing.count++
+          else productSet.set(key, { type:'product', label: (it.name||it.code), count:1 })
+        }
+      }
+    }
+
+    // Kết hợp: customer trước (nếu có), sau đó product. Sort theo count desc
+    const custArr = [...customerSet.values()].sort((a,b) => b.count - a.count).slice(0, 5)
+    const prodArr = [...productSet.values()].sort((a,b) => b.count - a.count).slice(0, 7)
+    return [...custArr, ...prodArr]
+  }, [searchQ, allOrders])
+
+  // ═══ Filter orders ═══
   const filtered = useMemo(() => {
     const q = norm(searchQ)
     if (!q.trim()) return []
     const tokens = q.split(/\s+/).filter(Boolean)
     return allOrders.filter((o: any) => {
       if (statusFilter !== 'all' && o.status !== statusFilter) return false
+      // Match: customer name OR item code/name
+      const custHay = norm(o.customer_name||'')
+      const custMatch = tokens.every(t => custHay.includes(t))
+      if (custMatch) return true
       const items = o.items || []
       return items.some((it: any) => {
         const hay = norm(`${it.code} ${it.name}`)
@@ -17984,38 +18067,132 @@ function OrderLookupTab({ user, allUsers, mobile }: any) {
     })
   }, [searchQ, allOrders, statusFilter])
 
+  const handleKeyDown = (e: React.KeyboardEvent) => {
+    markActive()
+    if (!showSuggestions || suggestions.length === 0) return
+    if (e.key === 'ArrowDown') {
+      e.preventDefault()
+      setSuggestionIdx(prev => Math.min(prev + 1, suggestions.length - 1))
+    } else if (e.key === 'ArrowUp') {
+      e.preventDefault()
+      setSuggestionIdx(prev => Math.max(prev - 1, -1))
+    } else if (e.key === 'Enter' && suggestionIdx >= 0) {
+      e.preventDefault()
+      setSearchQ(suggestions[suggestionIdx].label)
+      setShowSuggestions(false)
+      setSuggestionIdx(-1)
+    } else if (e.key === 'Escape') {
+      setShowSuggestions(false)
+    }
+  }
+
   const getName = (id: string) => allUsers.find((u: any) => u.id === id)?.name || '—'
   const getUrl = (p: any): string => typeof p === 'string' ? p : (p?.url || '')
   const getAt  = (p: any): string => typeof p === 'string' ? '' : (p?.at || '')
+
+  // Preset buttons cho date range
+  const setPreset = (days: number) => {
+    setDateFrom(daysAgoStr(days))
+    setDateTo(todayStr())
+  }
 
   return (
     <div>
       {/* Filters */}
       <Card style={{ padding:12, marginBottom:12 }}>
-        <input value={searchQ} onChange={e => setSearchQ(e.target.value)} autoFocus
-          placeholder="🔍 Tên SP hoặc mã SP (VD: kyunglab, KCN, tay trang...)"
-          style={{ width:'100%', padding:'10px 13px', border:`1px solid ${T.border}`, borderRadius:8,
-            fontSize:13, fontFamily:'inherit', color:T.dark, background:'#fff', outline:'none',
-            boxSizing:'border-box' as any, marginBottom:10 }}/>
-        <div style={{ display:'flex', gap:8, flexWrap:'wrap' }}>
+        {/* Search box with suggestions */}
+        <div style={{ position:'relative', marginBottom:10 }}>
+          <input value={searchQ}
+            onChange={e => { setSearchQ(e.target.value); setShowSuggestions(true); setSuggestionIdx(-1); markActive() }}
+            onFocus={() => { setShowSuggestions(true); markActive() }}
+            onBlur={() => { setTimeout(() => setShowSuggestions(false), 200) }}
+            onKeyDown={handleKeyDown}
+            autoFocus
+            placeholder="🔍 Tên khách hàng, tên SP hoặc mã SP..."
+            style={{ width:'100%', padding:'10px 13px', border:`1px solid ${T.border}`, borderRadius:8,
+              fontSize:13, fontFamily:'inherit', color:T.dark, background:'#fff', outline:'none',
+              boxSizing:'border-box' as any }}/>
+
+          {/* Dropdown suggestions */}
+          {showSuggestions && suggestions.length > 0 && (
+            <div style={{ position:'absolute', top:'calc(100% + 4px)', left:0, right:0,
+              background:'#fff', border:`1px solid ${T.border}`, borderRadius:8,
+              maxHeight:280, overflowY:'auto' as any, zIndex:50,
+              boxShadow:'0 4px 12px rgba(0,0,0,0.1)' }}>
+              {suggestions.map((s: any, i: number) => (
+                <div key={i}
+                  onMouseDown={(e) => {
+                    e.preventDefault()
+                    setSearchQ(s.label)
+                    setShowSuggestions(false)
+                    setSuggestionIdx(-1)
+                  }}
+                  onMouseEnter={() => setSuggestionIdx(i)}
+                  style={{ padding:'8px 12px', cursor:'pointer',
+                    background: suggestionIdx === i ? T.goldBg : '#fff',
+                    borderBottom: i < suggestions.length-1 ? `1px solid ${T.border}` : 'none',
+                    display:'flex', justifyContent:'space-between', alignItems:'center', gap:8 }}>
+                  <div style={{ display:'flex', alignItems:'center', gap:8, minWidth:0, flex:1 }}>
+                    <span style={{ fontSize:14 }}>
+                      {s.type === 'customer' ? '👤' : '📦'}
+                    </span>
+                    <span style={{ fontSize:12, color:T.dark, fontWeight:600,
+                      overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap' }}>
+                      {s.label}
+                    </span>
+                  </div>
+                  <span style={{ fontSize:10, color:T.light, flexShrink:0 }}>
+                    {s.count} đơn
+                  </span>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+
+        {/* Date range + status */}
+        <div style={{ display:'flex', gap:8, flexWrap:'wrap', alignItems:'flex-end' }}>
           <div>
             <label style={{ fontSize:10, color:T.med, fontWeight:600, display:'block', marginBottom:3 }}>
-              Khoảng thời gian
+              Từ ngày
             </label>
-            <select value={dayRange} onChange={e => setDayRange(Number(e.target.value))}
+            <input type="date" value={dateFrom}
+              onChange={e => { setDateFrom(e.target.value); markActive() }}
+              max={dateTo}
               style={{ padding:'6px 10px', border:`1px solid ${T.border}`, borderRadius:6,
-                fontSize:11, fontFamily:"inherit", background:"#fff", color:T.dark, outline:"none" }}>
-              <option value={3}>3 ngày</option>
-              <option value={7}>7 ngày</option>
-              <option value={15}>15 ngày</option>
-              <option value={30}>30 ngày</option>
-            </select>
+                fontSize:11, fontFamily:"inherit", background:"#fff", color:T.dark, outline:"none" }}/>
+          </div>
+          <div>
+            <label style={{ fontSize:10, color:T.med, fontWeight:600, display:'block', marginBottom:3 }}>
+              Đến ngày
+            </label>
+            <input type="date" value={dateTo}
+              onChange={e => { setDateTo(e.target.value); markActive() }}
+              min={dateFrom} max={todayStr()}
+              style={{ padding:'6px 10px', border:`1px solid ${T.border}`, borderRadius:6,
+                fontSize:11, fontFamily:"inherit", background:"#fff", color:T.dark, outline:"none" }}/>
+          </div>
+          <div>
+            <label style={{ fontSize:10, color:T.med, fontWeight:600, display:'block', marginBottom:3 }}>
+              Nhanh
+            </label>
+            <div style={{ display:'flex', gap:4 }}>
+              {[3, 7, 15, 30].map(d => (
+                <button key={d} onClick={() => { setPreset(d); markActive() }}
+                  style={{ padding:'6px 9px', borderRadius:6,
+                    border:`1px solid ${T.border}`, background:'#fff',
+                    color:T.med, cursor:'pointer', fontFamily:'inherit',
+                    fontSize:10, fontWeight:600 }}>
+                  {d}N
+                </button>
+              ))}
+            </div>
           </div>
           <div>
             <label style={{ fontSize:10, color:T.med, fontWeight:600, display:'block', marginBottom:3 }}>
               Trạng thái
             </label>
-            <select value={statusFilter} onChange={e => setStatusFilter(e.target.value)}
+            <select value={statusFilter} onChange={e => { setStatusFilter(e.target.value); markActive() }}
               style={{ padding:'6px 10px', border:`1px solid ${T.border}`, borderRadius:6,
                 fontSize:11, fontFamily:"inherit", background:"#fff", color:T.dark, outline:"none" }}>
               <option value="all">Tất cả</option>
@@ -18026,11 +18203,14 @@ function OrderLookupTab({ user, allUsers, mobile }: any) {
             </select>
           </div>
         </div>
+        <div style={{ marginTop:8, fontSize:10, color:T.light }}>
+          💡 Data auto refresh ngầm 30s/lần, chỉ khi bạn không gõ. Không làm gián đoạn tra cứu.
+        </div>
       </Card>
 
       {!searchQ.trim() && (
         <div style={{ padding:'40px 20px', textAlign:'center', color:T.light, fontSize:13 }}>
-          🔍 Nhập tên hoặc mã SP để tra cứu đơn có chứa SP đó
+          🔍 Nhập tên KH, tên SP hoặc mã SP để tra cứu đơn
         </div>
       )}
 
@@ -18044,15 +18224,16 @@ function OrderLookupTab({ user, allUsers, mobile }: any) {
         <>
           <div style={{ padding:'8px 12px', marginBottom:10, background:T.goldBg,
             borderRadius:6, fontSize:12, color:T.goldText, fontWeight:600 }}>
-            Tìm thấy <b>{filtered.length}</b> đơn có chứa "{searchQ}" trong {dayRange} ngày
+            Tìm thấy <b>{filtered.length}</b> đơn có chứa "{searchQ}" từ {new Date(dateFrom).toLocaleDateString('vi-VN')} đến {new Date(dateTo).toLocaleDateString('vi-VN')}
           </div>
 
           <div style={{ display:'flex', flexDirection:'column', gap:8 }}>
             {filtered.map((o: any) => {
               const isExp = expanded === o.order_code
+              const tokens = norm(searchQ).split(/\s+/).filter(Boolean)
+              const custMatched = tokens.every(t => norm(o.customer_name||'').includes(t))
               const matchingItems = (o.items||[]).filter((it: any) => {
                 const hay = norm(`${it.code} ${it.name}`)
-                const tokens = norm(searchQ).split(/\s+/).filter(Boolean)
                 return tokens.every(t => hay.includes(t))
               })
               const statusLabel = ({
@@ -18064,19 +18245,27 @@ function OrderLookupTab({ user, allUsers, mobile }: any) {
               } as any)[o.status] || T.light
               return (
                 <Card key={o.order_code} style={{ padding:12, cursor:'pointer' }}
-                  onClick={() => setExpanded(isExp ? null : o.order_code)}>
+                  onClick={() => { markActive(); setExpanded(isExp ? null : o.order_code) }}>
                   <div style={{ display:'flex', justifyContent:'space-between', alignItems:'flex-start', gap:10 }}>
                     <div style={{ flex:1, minWidth:0 }}>
                       <div style={{ fontSize:13, fontWeight:700, color:T.dark }}>
                         {o.order_code} • {o.customer_name}
+                        {custMatched && matchingItems.length === 0 && (
+                          <span style={{ marginLeft:6, padding:'2px 6px', borderRadius:4,
+                            background:T.goldBg, color:T.goldText, fontSize:9, fontWeight:700 }}>
+                            👤 match KH
+                          </span>
+                        )}
                       </div>
                       <div style={{ fontSize:10, color:T.light, marginTop:3 }}>
                         Sale: {o.sold_by_name||'—'} • {new Date(o.purchase_date).toLocaleDateString('vi-VN')}
                         {o.packed_by && <> • Đóng: {getName(o.packed_by)}</>}
                       </div>
-                      <div style={{ marginTop:5, fontSize:11, color:T.dark }}>
-                        Match: {matchingItems.map((it: any) => `${it.qty}× ${it.name}`).join(', ')}
-                      </div>
+                      {matchingItems.length > 0 && (
+                        <div style={{ marginTop:5, fontSize:11, color:T.dark }}>
+                          📦 Match SP: {matchingItems.map((it: any) => `${it.qty}× ${it.name}`).join(', ')}
+                        </div>
+                      )}
                     </div>
                     <div style={{ padding:'3px 10px', borderRadius:12,
                       background: statusColor + '22', color: statusColor,
