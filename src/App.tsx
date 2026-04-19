@@ -12,7 +12,7 @@ const db = createClient(SUPABASE_URL, SUPABASE_KEY)
 // APP_VERSION — dùng để invalidate cache localStorage mỗi khi deploy version mới
 // (ngăn bug quyền user bị "reset" do cache position cũ sau deploy)
 // ⚠️ MỖI LẦN DEPLOY FEATURE MỚI CÓ PERMISSION MỚI, BUMP SỐ NÀY:
-const APP_VERSION = '2026.04.19.v67'
+const APP_VERSION = '2026.04.19.v68'
 
 // ════════════════════════════════════════════════════════════════
 // AUDIT LOG — ghi nhận các hành động phá hoại data để trace lại
@@ -18974,10 +18974,10 @@ function computeSalaryAmounts(opts: {
   let ot200Amount = 0
 
   if (isPartTime) {
-    // 30k/giờ × số giờ làm
-    workAmount = Math.round(workHoursRegular * 30000)
-    ot150Amount = 0  // PT thường không có OT
-    ot200Amount = 0
+    // Part-time: đơn giá/h × tổng giờ (sẽ được xử lý ở finalSalary riêng)
+    workAmount = Math.round(workHoursRegular * baseSalary)
+    ot150Amount = Math.round(ot150Hours * baseSalary)  // cùng đơn giá
+    ot200Amount = Math.round(ot200Hours * baseSalary)
   } else if (isPTC) {
     // LCB flat
     workAmount = baseSalary
@@ -19088,12 +19088,27 @@ function computeMonthlyPayroll(opts: {
   const inspectionBonusAmount = sc.has_inspection_bonus ? opts.inspectionBonusAmount : 0
   const bhxhDeduction = sc.has_bhxh ? opts.bhxhAmount : 0
 
-  // 5. Tổng kết
-  const finalSalary = workAmount + ot150Amount + ot200Amount
-    + lunchAmount + attBonusAmount + inspectionBonusAmount
-    + opts.commissionTotal + opts.otherIncomeTotal
-    - bhxhDeduction - opts.shortageLossTotal
-    + opts.manualAdjust
+  // 5. Tổng kết — theo công thức Excel:
+  //    IF PTC: THỰC NHẬN = LCB (cố định, không trừ/cộng gì)
+  //    IF Part-time: (BT + OT150 + OT200) × LCB + tiền ăn + tiền khác
+  //    ELSE: lương công + OT + chuyên cần + tiền ăn + thưởng/HH + tiền khác - tiền mất hàng - BHXH
+  let finalSalary: number
+  if (sc.position_type === 'Phụ trách chung') {
+    // PTC: LCB flat
+    finalSalary = sc.base_salary + opts.manualAdjust
+  } else if (sc.position_type === 'Part-time') {
+    // Part-time: (BT + OT150 + OT200) × đơn_giá + tiền ăn + tiền khác (+/-)
+    // workAmount đã = BT × LCB, cần cộng OT cũng × LCB
+    const totalHoursAmount = Math.round((workHoursRegular + ot150Hours + ot200Hours) * sc.base_salary)
+    finalSalary = totalHoursAmount + lunchAmount + opts.otherIncomeTotal + opts.manualAdjust
+  } else {
+    // Regular (Kho, Sales, KT, etc.)
+    finalSalary = workAmount + ot150Amount + ot200Amount
+      + lunchAmount + attBonusAmount + inspectionBonusAmount
+      + opts.commissionTotal + opts.otherIncomeTotal
+      - bhxhDeduction - opts.shortageLossTotal
+      + opts.manualAdjust
+  }
 
   return {
     user_id: user.id,
