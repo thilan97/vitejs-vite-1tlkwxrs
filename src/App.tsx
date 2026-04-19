@@ -12,7 +12,7 @@ const db = createClient(SUPABASE_URL, SUPABASE_KEY)
 // APP_VERSION — dùng để invalidate cache localStorage mỗi khi deploy version mới
 // (ngăn bug quyền user bị "reset" do cache position cũ sau deploy)
 // ⚠️ MỖI LẦN DEPLOY FEATURE MỚI CÓ PERMISSION MỚI, BUMP SỐ NÀY:
-const APP_VERSION = '2026.04.17.v46'
+const APP_VERSION = '2026.04.17.v47'
 
 // ════════════════════════════════════════════════════════════════
 // AUDIT LOG — ghi nhận các hành động phá hoại data để trace lại
@@ -224,6 +224,45 @@ const getPerm = (user: any) => {
     viewWarehouseStats: isAdmin || (pos.perm_view_warehouse_stats ?? false) || (pos.perm_manage_inventory ?? false),
     manageSchedule:     isAdmin || (pos.perm_manage_warehouse_schedule ?? false) || (pos.perm_manage_inventory ?? false),
     trackOrders:        isAdmin || (pos.perm_track_orders ?? false) || (user?.dept_id === 'sale'),
+  }
+}
+
+// ── TEST ACCOUNT HELPERS ────────────────────────────
+// Tài khoản test là tài khoản ẩn để test các vị trí khác nhau.
+// KHÔNG xuất hiện trong: danh sách nhân viên thường, sơ đồ tổ chức, dashboard stats,
+// leaderboards, KPI, team aggregation (checklist stats, performance scores, etc.)
+// CÓ xuất hiện khi: admin quản lý users, chính test_user login
+const isTestAccount = (u: any): boolean => !!u?.is_test_account
+
+// Filter out test accounts from a list — dùng MỌI NƠI có aggregation team/dept
+const filterVisibleUsers = (users: any[], viewer?: any): any[] => {
+  if (!users) return []
+  // Admin đang quản lý users → thấy tất cả bao gồm test
+  // (nhưng vẫn muốn filter trong stats) → caller quyết định khi nào dùng filter
+  return users.filter((u: any) => !isTestAccount(u))
+}
+
+// Override dept/position/permissions cho test user — stored in localStorage
+const getTestOverride = (): any => {
+  try {
+    const raw = localStorage.getItem('test_role_override')
+    if (!raw) return null
+    return JSON.parse(raw)
+  } catch { return null }
+}
+
+// Apply test override to user object (only if is_test_account)
+const applyTestOverride = (user: any): any => {
+  if (!isTestAccount(user)) return user
+  const override = getTestOverride()
+  if (!override) return user
+  return {
+    ...user,
+    dept_id: override.dept_id ?? user.dept_id,
+    dept_name: override.dept_name ?? user.dept_name,
+    position_id: override.position_id ?? user.position_id,
+    position_name: override.position_name ?? user.position_name,
+    position: override.position ?? user.position,
   }
 }
 
@@ -6012,7 +6051,8 @@ function History({ user, history, allUsers, mobile }: any) {
 }
 
 // ── USER MANAGEMENT ───────────────────────────────
-function UserManagement({ user, allUsers, setAllUsers, departments, positions, mobile }: any) {
+function UserManagement({ user, allUsers, allUsersRaw, setAllUsers, setAllUsersRaw, departments, positions, mobile }: any) {
+  const [showTestAccounts, setShowTestAccounts] = useState(false)
   const isAdmin = getPerm(user).viewAllDashboard  // admin: được sửa ini
   const [show, setShow]   = useState(false)
   const [edit, setEdit]   = useState<any>(null)
@@ -6050,11 +6090,13 @@ function UserManagement({ user, allUsers, setAllUsers, departments, positions, m
     if (edit) {
       const updated = {...edit, ...form, dept_id:finalDeptId, dept_name:deptName, position_name:posName, role}
       setAllUsers((prev: any) => prev.map((u: any) => u.id===edit.id ? updated : u))
+      if (setAllUsersRaw) setAllUsersRaw((prev: any) => prev.map((u: any) => u.id===edit.id ? {...updated, is_test_account:edit.is_test_account} : u))
       await db.from('users').update({ name:form.name, dept_id:finalDeptId, position_id:form.position_id, ini:form.ini, active:form.active, role, birthday:form.birthday||'' }).eq('id', edit.id)
     } else {
       const newId = form.name.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g,'').replace(/\s/g,'_')+'_'+Date.now().toString().slice(-4)
       const newUser = { id:newId, ...form, dept_id:finalDeptId, dept_name:deptName, position_name:posName, role, must_change_password:true }
       setAllUsers((prev: any) => [...prev, newUser])
+      if (setAllUsersRaw) setAllUsersRaw((prev: any) => [...prev, newUser])
       await db.from('users').insert({ id:newId, ...form, dept_id:finalDeptId, role, birthday:form.birthday||'', must_change_password:true })
     }
     setShow(false)
@@ -6067,16 +6109,34 @@ function UserManagement({ user, allUsers, setAllUsers, departments, positions, m
     setShowPwModal(null); setNewPw('')
   }
 
-  const filtered = deptF==='all' ? allUsers : allUsers.filter((u: any) => u.dept_id===deptF)
+  // Khi admin toggle, dùng allUsersRaw (bao gồm test) thay vì allUsers (đã filter)
+  const sourceUsers = showTestAccounts ? (allUsersRaw || allUsers) : allUsers
+  const filtered = deptF==='all' ? sourceUsers : sourceUsers.filter((u: any) => u.dept_id===deptF)
   const deptGroups = ['kho','sale','vp'].map(d => ({
     id:d, name:DEPT_NAME[d], users:filtered.filter((u: any) => u.dept_id===d)
   }))
+  const testAccounts = (allUsersRaw || []).filter((u: any) => isTestAccount(u))
 
   return (
     <div style={{ padding:`0 ${p} ${mobile?'80px':p}` }}>
       <Topbar mobile={mobile} title="Quản lý nhân viên"
-        subtitle={`${allUsers.filter((u: any) => u.active).length} nhân viên đang hoạt động`}
-        action={<GoldBtn small onClick={openCreate}>+ Thêm nhân viên</GoldBtn>}/>
+        subtitle={`${allUsers.filter((u: any) => u.active).length} nhân viên đang hoạt động${testAccounts.length > 0 ? ` · ${testAccounts.length} tài khoản test` : ''}`}
+        action={
+          <div style={{ display:'flex', gap:SP[2], alignItems:'center' }}>
+            {testAccounts.length > 0 && (
+              <button onClick={() => setShowTestAccounts(v => !v)}
+                style={{ padding:'6px 12px', borderRadius:RD.md,
+                  border:`1.5px solid ${showTestAccounts ? T.red : T.border}`,
+                  background: showTestAccounts ? T.redBg : '#fff',
+                  color: showTestAccounts ? T.red : T.med,
+                  cursor:'pointer', fontFamily:'inherit', fontSize:FS.sm,
+                  fontWeight:600, display:'inline-flex', alignItems:'center', gap:6 }}>
+                🧪 {showTestAccounts ? 'Ẩn' : 'Hiện'} test ({testAccounts.length})
+              </button>
+            )}
+            <GoldBtn small onClick={openCreate}>+ Thêm nhân viên</GoldBtn>
+          </div>
+        }/>
 
       <div style={{ display:'flex', gap:6, marginBottom:14, flexWrap:'wrap' }}>
         {[{value:'all',label:'Tất cả'},...departments.filter((d: any) => d.id!=='all').map((d: any) => ({value:d.id,label:d.name}))].map((f: any) => (
@@ -6102,7 +6162,15 @@ function UserManagement({ user, allUsers, setAllUsers, departments, positions, m
                   flexShrink:0, display:'flex', alignItems:'center', justifyContent:'center',
                   color:'#fff', fontSize:13, fontWeight:700 }}>{u.ini}</div>
                 <div style={{ flex:1 }}>
-                  <div style={{ fontSize:13, fontWeight:600, color:T.dark }}>{u.name}</div>
+                  <div style={{ fontSize:13, fontWeight:600, color:T.dark, display:'flex', alignItems:'center', gap:6 }}>
+                    {u.name}
+                    {isTestAccount(u) && (
+                      <span style={{ padding:'1px 7px', borderRadius:RD.full,
+                        background:T.red, color:'#fff', fontSize:FS.xs, fontWeight:700, letterSpacing:.3 }}>
+                        TEST
+                      </span>
+                    )}
+                  </div>
                   <div style={{ fontSize:11, color:T.gold, fontWeight:500 }}>{u.position_name||'Chưa có vị trí'}</div>
                   <div style={{ display:'flex', gap:6, marginTop:3, flexWrap:'wrap' }}>
                     {!u.active && <span style={{ fontSize:10, color:T.red }}>Đã khóa</span>}
@@ -6575,7 +6643,111 @@ function ExportDataCard() {
   )
 }
 
-function Settings({ user, setUser, settings, setSettings, onManualReset, mobile }: any) {
+// ══ TEST ROLE SWITCHER — chỉ dùng cho tài khoản test ══
+function TestRoleSwitcher({ user, setUser, positions, departments }: any) {
+  const override = getTestOverride() || {}
+  const [deptId, setDeptId]   = useState(override.dept_id || user.dept_id || 'kho')
+  const [posId, setPosId]     = useState(override.position_id || user.position_id || '')
+  const [msg, setMsg]         = useState('')
+
+  const depts = departments || []
+  // Vị trí lọc theo dept
+  const availablePositions = positions?.filter((p: any) => p.dept_id === deptId) || []
+
+  const apply = () => {
+    const selectedDept = depts.find((d: any) => d.id === deptId)
+    const selectedPos  = positions?.find((p: any) => p.id === posId) || null
+    const override = {
+      dept_id: deptId,
+      dept_name: selectedDept?.name || deptId,
+      position_id: posId || null,
+      position_name: selectedPos?.name || '',
+      position: selectedPos,
+    }
+    try {
+      localStorage.setItem('test_role_override', JSON.stringify(override))
+    } catch {}
+    // Apply to current user in-memory
+    setUser((prev: any) => ({
+      ...prev,
+      dept_id: override.dept_id,
+      dept_name: override.dept_name,
+      position_id: override.position_id,
+      position_name: override.position_name,
+      position: override.position,
+    }))
+    setMsg('✅ Đã áp dụng! Reload trang để sidebar/permissions cập nhật.')
+    setTimeout(() => setMsg(''), 4000)
+  }
+
+  const reset = () => {
+    try { localStorage.removeItem('test_role_override') } catch {}
+    setUser((prev: any) => ({
+      ...prev,
+      dept_id: 'kho', dept_name: 'Kho',
+      position_id: null, position_name: '', position: null,
+    }))
+    setDeptId('kho')
+    setPosId('')
+    setMsg('✅ Đã reset về mặc định (Kho, không vị trí)')
+    setTimeout(() => setMsg(''), 4000)
+  }
+
+  return (
+    <Card style={{ border:`2px solid ${T.red}`, background:'#FFF5F5' }}>
+      <div style={{ display:'flex', alignItems:'center', gap:8, marginBottom:14 }}>
+        <span style={{ fontSize:18 }}>🧪</span>
+        <div style={{ fontSize:FS.md, fontWeight:800, color:T.red }}>
+          CHẾ ĐỘ TEST — Đổi vai trò
+        </div>
+      </div>
+      <div style={{ fontSize:FS.sm, color:T.med, marginBottom:SP[3], lineHeight:1.5 }}>
+        Chọn phòng ban + vị trí để test các tính năng theo role khác nhau.
+        Dữ liệu sẽ <b>KHÔNG</b> ảnh hưởng tới chỉ số công ty.
+      </div>
+
+      <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:SP[3], marginBottom:SP[3] }}>
+        <Sel label="Phòng ban"
+          value={deptId}
+          onChange={(v: string) => { setDeptId(v); setPosId('') }}
+          options={depts.map((d: any) => ({ value:d.id, label:d.name }))}/>
+        <Sel label={`Vị trí (${availablePositions.length} tùy chọn)`}
+          value={posId}
+          onChange={setPosId}
+          options={[
+            { value:'', label:'— Không có vị trí —' },
+            ...availablePositions.map((p: any) => ({ value:p.id, label:p.name })),
+          ]}/>
+      </div>
+
+      {msg && (
+        <div style={{ fontSize:FS.sm, color:T.green, fontWeight:600,
+          padding:`${SP[2]}px ${SP[3]}px`, background:T.greenBg,
+          borderRadius:RD.sm, marginBottom:SP[3] }}>
+          {msg}
+        </div>
+      )}
+
+      <div style={{ display:'flex', gap:SP[2], flexWrap:'wrap' }}>
+        <Btn onClick={apply} variant="dangerSolid">Áp dụng vai trò mới</Btn>
+        <Btn onClick={reset} variant="secondary">Reset về mặc định</Btn>
+        <Btn onClick={() => window.location.reload()} variant="ghost">🔄 Reload trang</Btn>
+      </div>
+
+      <div style={{ marginTop:SP[3], paddingTop:SP[3], borderTop:`1px solid ${T.border}`,
+        fontSize:FS.xs, color:T.light, lineHeight:1.6 }}>
+        💡 <b>Gợi ý test:</b>
+        <br/>• <b>Kho + Quản lý Kho</b>: xem tất cả menu Kho vận, approve leave/OT
+        <br/>• <b>Kho + NV Kho</b>: thấy UI của picker/packer
+        <br/>• <b>Sale + Quản lý Sale + VP</b>: test menu Bán hàng đầy đủ
+        <br/>• <b>VP + Kế toán thuế</b>: test UI VP
+        <br/>• Sau khi apply, reload trang để sidebar + menu cập nhật đúng
+      </div>
+    </Card>
+  )
+}
+
+function Settings({ user, setUser, settings, setSettings, onManualReset, mobile, positions, departments }: any) {
   const [oldPw, setOldPw]     = useState('')
   const [newPw, setNewPw]     = useState('')
   const [confPw, setConfPw]   = useState('')
@@ -6614,7 +6786,13 @@ function Settings({ user, setUser, settings, setSettings, onManualReset, mobile 
             <div style={{ width:50, height:50, borderRadius:'50%', background:DEPT_COLOR[user.dept_id]||T.gold,
               display:'flex', alignItems:'center', justifyContent:'center', color:'#fff', fontSize:16, fontWeight:700 }}>{user.ini}</div>
             <div>
-              <div style={{ fontSize:16, fontWeight:700, color:T.dark }}>{user.name}</div>
+              <div style={{ fontSize:16, fontWeight:700, color:T.dark }}>
+                {user.name}
+                {isTestAccount(user) && (
+                  <span style={{ marginLeft:8, padding:'2px 8px', borderRadius:RD.full,
+                    background:T.red, color:'#fff', fontSize:FS.xs, fontWeight:700 }}>TEST</span>
+                )}
+              </div>
               <div style={{ fontSize:12, color:T.gold, marginTop:2, fontWeight:600 }}>{user.position_name||'Chưa có vị trí'}</div>
               <div style={{ fontSize:11, color:T.light, marginTop:2 }}>{user.dept_name}</div>
             </div>
@@ -6628,6 +6806,12 @@ function Settings({ user, setUser, settings, setSettings, onManualReset, mobile 
           {pwMsg && <div style={{ fontSize:12, color:pwMsg.includes('✅')?T.green:T.red, marginBottom:10 }}>{pwMsg}</div>}
           <GoldBtn small onClick={changePassword}>Đổi mật khẩu</GoldBtn>
         </Card>
+
+        {/* ── TEST ROLE SWITCHER — chỉ hiện cho test account ── */}
+        {isTestAccount(user) && (
+          <TestRoleSwitcher user={user} setUser={setUser}
+            positions={positions} departments={departments}/>
+        )}
 
         {getPerm(user).resetChecklist && (
           <Card>
@@ -7568,6 +7752,7 @@ export default function App() {
 })
   const [page, setPage]             = useState('checklist')
   const [allUsers, setAllUsers]     = useState<any[]>([])
+  const [allUsersRaw, setAllUsersRaw] = useState<any[]>([])  // Bao gồm test accounts, chỉ dùng cho Admin Users UI
   const [departments, setDepts]     = useState<any[]>([])
   const [checklist, setChecklist]   = useState<any[]>([])
   const [tasks, setTasks]           = useState<any[]>([])
@@ -7771,7 +7956,7 @@ export default function App() {
     ]).then(async ([depts, users, tmpl, cl, tk, hist, st, att, lr, pos]) => {
       const deptsData = depts.data || []
       const posData   = pos.data   || []
-      const usersData = (users.data || []).map((u: any) => {
+      const rawUsers = (users.data || []).map((u: any) => {
   const pos = posData.find((p: any) => p.id === u.position_id)
   return {
     ...u,
@@ -7782,11 +7967,14 @@ export default function App() {
     reports_to: pos?.reports_to || '',
   }
 })
+      // Test account: ẩn khỏi danh sách chung (aggregation, stats, orgchart, etc.)
+      // Admin sẽ dùng allUsersRaw riêng để quản lý
+      const usersData = rawUsers.filter((u: any) => !isTestAccount(u) || u.id === user?.id)
       const tmplData = tmpl.data || []
       const clData   = cl.data   || []
       const stData   = st.data
 
-      setDepts(deptsData); setAllUsers(usersData); setTemplates(tmplData)
+      setDepts(deptsData); setAllUsers(usersData); setAllUsersRaw(rawUsers); setTemplates(tmplData)
       setTasks(tk.data||[]); setHistory(hist.data||[])
       setSettings(stData); setAttendance(att.data||[])
       setPositions(posData)
@@ -7893,8 +8081,9 @@ export default function App() {
 
   // Login
   if (!user) return <LoginScreen onLogin={(u: any) => {
-    setUser(u)
-    setPage(getPerm(u).viewAllDashboard || getPerm(u).viewDeptChecklist ? 'dashboard' : 'checklist')
+    const applied = applyTestOverride(u)
+    setUser(applied)
+    setPage(getPerm(applied).viewAllDashboard || getPerm(applied).viewDeptChecklist ? 'dashboard' : 'checklist')
   }}/>
 
   if (loading) return (
@@ -7925,7 +8114,26 @@ export default function App() {
 
   return (
     <div style={{ display:'flex', minHeight:'100vh', flexDirection: mobile?'column':'row',
-      fontFamily:"'Segoe UI',system-ui,sans-serif", background:T.bg }}>
+      fontFamily:"'Segoe UI',system-ui,sans-serif", background:T.bg,
+      paddingTop: isTestAccount(user) ? 28 : 0 }}>
+        {/* TEST ACCOUNT BANNER — luôn hiện khi login bằng tài khoản test */}
+        {isTestAccount(user) && (
+          <div style={{ position:'fixed', top:0, left:0, right:0, zIndex:9999,
+            background:'linear-gradient(90deg, #B91C1C, #DC2626, #B91C1C)',
+            color:'#fff', padding:'6px 14px',
+            display:'flex', alignItems:'center', justifyContent:'center', gap:10,
+            fontSize:12, fontWeight:700, letterSpacing:.5,
+            boxShadow:'0 2px 8px rgba(0,0,0,0.15)', flexWrap:'wrap' }}>
+            <span>🧪 TÀI KHOẢN TEST</span>
+            <span style={{ opacity:.85, fontWeight:500 }}>·</span>
+            <span style={{ fontWeight:500 }}>
+              Role: <b>{user.dept_name||user.dept_id}</b>
+              {user.position_name && <> / <b>{user.position_name}</b></>}
+            </span>
+            <span style={{ opacity:.85, fontWeight:500 }}>·</span>
+            <span style={{ fontWeight:500, opacity:.9 }}>Dữ liệu KHÔNG ảnh hưởng chỉ số</span>
+          </div>
+        )}
         {!mobile && (
           <Sidebar user={user} page={validPage} setPage={setPage}
             pendingLeave={pendingLeave} pendingOT={pendingOT} notifUnread={notifUnread}
@@ -7995,7 +8203,7 @@ export default function App() {
           {validPage==='leave'      && <Leave {...pp} leaveRequests={leaveRequests} setLeaveRequests={setLeaveReqs}/>}
           {validPage==='orgchart'   && <OrgChart {...pp} positions={positions}/>}
           {validPage==='history'    && <History {...pp} history={history}/>}
-          {validPage==='users'      && <UserManagement {...pp} setAllUsers={setAllUsers} departments={departments} positions={positions}/>}
+          {validPage==='users'      && <UserManagement {...pp} allUsersRaw={allUsersRaw} setAllUsersRaw={setAllUsersRaw} setAllUsers={setAllUsers} departments={departments} positions={positions}/>}
           {validPage==='positions'  && <PositionsManagement user={user} positions={positions} setPositions={setPositions} mobile={mobile}/>}
           {validPage==='shortage'   && <ShortageItems {...pp} products={products} setProducts={setProducts}/>}
           {validPage==='inventory'  && <InventoryModule {...pp} products={products} invSessions={invSessions} setInvSessions={setInvSessions}/>}
@@ -8012,7 +8220,7 @@ export default function App() {
           {validPage==='whstats'    && <WarehouseStatsModule {...pp}/>}
           {validPage==='priority'   && <PriorityRequestModule {...pp}/>}
           {validPage==='audit'      && <AuditLogModule {...pp}/>}
-          {validPage==='settings'   && <Settings {...pp} setUser={setUser} settings={settings} setSettings={setSettings} onManualReset={manualReset}/>}
+          {validPage==='settings'   && <Settings {...pp} setUser={setUser} settings={settings} setSettings={setSettings} onManualReset={manualReset} positions={positions} departments={departments}/>}
           {validPage==='notes'      && <PersonalNotesModule user={user} mobile={mobile}/>}
         </main>
         {mobile && <BottomNav user={user} page={validPage} setPage={setPage} pendingLeave={pendingLeave} pendingOT={pendingOT} notifUnread={notifUnread} onLogout={() => {
