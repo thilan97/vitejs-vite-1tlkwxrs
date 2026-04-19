@@ -12,7 +12,7 @@ const db = createClient(SUPABASE_URL, SUPABASE_KEY)
 // APP_VERSION — dùng để invalidate cache localStorage mỗi khi deploy version mới
 // (ngăn bug quyền user bị "reset" do cache position cũ sau deploy)
 // ⚠️ MỖI LẦN DEPLOY FEATURE MỚI CÓ PERMISSION MỚI, BUMP SỐ NÀY:
-const APP_VERSION = '2026.04.17.v49'
+const APP_VERSION = '2026.04.17.v50'
 
 // ════════════════════════════════════════════════════════════════
 // AUDIT LOG — ghi nhận các hành động phá hoại data để trace lại
@@ -16384,7 +16384,7 @@ function PackingDetailPanel({ ord, mobile, user, allUsers, products, onClose, on
             title="📦 Ảnh hàng đã nhặt"
             subtitle="Chụp ảnh các SP đã nhặt xếp ra bàn/khay trước khi đóng vào thùng."
             photos={ord.photos_picked || []}
-            min={min} max={max}
+            min={min} max={999}
             readOnly={readOnly}
             orderCode={ord.order_code}
             photoType="picked"
