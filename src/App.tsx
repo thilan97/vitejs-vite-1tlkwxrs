@@ -12,7 +12,7 @@ const db = createClient(SUPABASE_URL, SUPABASE_KEY)
 // APP_VERSION — dùng để invalidate cache localStorage mỗi khi deploy version mới
 // (ngăn bug quyền user bị "reset" do cache position cũ sau deploy)
 // ⚠️ MỖI LẦN DEPLOY FEATURE MỚI CÓ PERMISSION MỚI, BUMP SỐ NÀY:
-const APP_VERSION = '2026.04.17.v57'
+const APP_VERSION = '2026.04.17.v58'
 
 // ════════════════════════════════════════════════════════════════
 // AUDIT LOG — ghi nhận các hành động phá hoại data để trace lại
@@ -15654,12 +15654,13 @@ function PackingModule({ user, allUsers, mobile, products }: any) {
     fetchData()
   }, [])
 
-  // Auto-refresh mỗi 30 giây — PAUSE khi user đang mở đơn (tránh disrupt công việc đóng đơn)
+  // Auto-refresh mỗi 30 giây — PAUSE khi user đang mở đơn HOẶC đang ở tab tra cứu
   useEffect(() => {
     if (selectedCode) return  // user đang làm việc
+    if (tab === 'lookup') return  // user đang tra cứu → tab Lookup tự quản lý refresh riêng
     const interval = setInterval(fetchData, 30000)
     return () => clearInterval(interval)
-  }, [selectedCode])
+  }, [selectedCode, tab])
 
   const norm = (s: string) => (s||'').toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g,'').replace(/đ/g,'d').trim()
   const filterByQ = (list: any[]) => {
