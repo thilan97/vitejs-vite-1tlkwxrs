@@ -12,7 +12,7 @@ const db = createClient(SUPABASE_URL, SUPABASE_KEY)
 // APP_VERSION — dùng để invalidate cache localStorage mỗi khi deploy version mới
 // (ngăn bug quyền user bị "reset" do cache position cũ sau deploy)
 // ⚠️ MỖI LẦN DEPLOY FEATURE MỚI CÓ PERMISSION MỚI, BUMP SỐ NÀY:
-const APP_VERSION = '2026.04.17.v52'
+const APP_VERSION = '2026.04.17.v53'
 
 // ════════════════════════════════════════════════════════════════
 // AUDIT LOG — ghi nhận các hành động phá hoại data để trace lại
@@ -15767,6 +15767,44 @@ function PackingModule({ user, allUsers, mobile, products }: any) {
   }
 
   // QM review AI flag: 'qm_ok' = AI đúng, 'qm_wrong' = AI sai
+  // Chạy (hoặc chạy lại) AI check cho 1 đơn
+  const runAiCheck = async (orderCode: string) => {
+    const ord = orders.find((o: any) => o.order_code === orderCode)
+    if (!ord) return
+    if ((ord.photos_packed || []).length === 0) {
+      alert('❌ Đơn chưa có ảnh đã đóng — không thể chạy AI check')
+      return
+    }
+    // Optimistic: set pending để user thấy ngay
+    setOrders(prev => prev.map((o: any) => o.order_code === orderCode
+      ? {...o, ai_check_status: 'pending'} : o))
+    try {
+      const res = await fetch(`${SUPABASE_URL}/functions/v1/ai-check-order`, {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${SUPABASE_ANON}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ order_code: orderCode, triggered_by: user.id, force: true }),
+      })
+      if (!res.ok) throw new Error(`HTTP ${res.status}`)
+      // Edge function tự update DB. Sau 3s fetch lại data để UI cập nhật
+      setTimeout(async () => {
+        const { data } = await db.from('packing_workflow')
+          .select('ai_check_status,ai_check_result,ai_check_matches,ai_check_verified_at')
+          .eq('order_code', orderCode).maybeSingle()
+        if (data) {
+          setOrders(prev => prev.map((o: any) => o.order_code === orderCode
+            ? {...o, ...data} : o))
+        }
+      }, 3000)
+    } catch (e: any) {
+      setOrders(prev => prev.map((o: any) => o.order_code === orderCode
+        ? {...o, ai_check_status: 'error'} : o))
+      alert(`❌ Không gọi được AI check: ${e?.message || e}`)
+    }
+  }
+
   const reviewAiFlag = async (orderCode: string, verdict: 'qm_ok'|'qm_wrong') => {
     const upd: any = {
       ai_check_status: verdict,
@@ -15977,27 +16015,43 @@ function PackingModule({ user, allUsers, mobile, products }: any) {
                         )}
                       </div>
                     )}
-                    {/* AI check badge */}
-                    {tab === 'done_today' && o.ai_check_status && (
-                      <div style={{ marginTop:5, padding:'3px 8px', borderRadius:6, fontSize:9, fontWeight:700,
-                        ...(o.ai_check_status === 'pending' ? { background:T.bg, color:T.light } :
-                            o.ai_check_status === 'matched' ? { background:T.greenBg, color:T.green } :
-                            o.ai_check_status === 'qm_ok'   ? { background:T.greenBg, color:T.green } :
-                            o.ai_check_status === 'qm_wrong'? { background:T.bg, color:T.light } :
-                            o.ai_check_status === 'mismatch'? { background:T.redBg, color:T.red } :
-                            o.ai_check_status === 'unclear' ? { background:T.amberBg, color:T.amber } :
-                            { background:T.bg, color:T.light }) }}>
-                        {o.ai_check_status === 'pending'  && '🤖 AI đang check...'}
-                        {o.ai_check_status === 'matched'  && '🤖✓ AI khớp'}
-                        {o.ai_check_status === 'qm_ok'    && '✓ QM đã duyệt (AI đúng)'}
-                        {o.ai_check_status === 'qm_wrong' && '✓ QM đã duyệt (AI sai)'}
-                        {o.ai_check_status === 'mismatch' && (
-                          <>🤖⚠️ AI LỆCH: đơn {o.ai_check_result?.order_total_qty ?? '?'} vs AI {o.ai_check_result?.ai_total_qty ?? '?'}</>
-                        )}
-                        {o.ai_check_status === 'unclear'  && '🤖❓ AI không rõ ảnh'}
-                        {o.ai_check_status === 'error'    && '🤖 AI lỗi'}
-                      </div>
-                    )}
+                    {/* AI check badge — show cả khi chưa có status để user biết */}
+                    {tab === 'done_today' && (() => {
+                      const status = o.ai_check_status
+                      const hasPackedPhotos = (o.photos_packed||[]).length > 0
+                      // Nếu không có status và không có ảnh → không hiển thị
+                      if (!status && !hasPackedPhotos) return null
+                      // Nếu không có status nhưng có ảnh → show "chưa chạy"
+                      const displayStatus = status || 'not_run'
+                      const styleMap: any = {
+                        pending:  { background:T.bg,      color:T.light, text:'🤖 AI đang check...' },
+                        matched:  { background:T.greenBg, color:T.green, text:'🤖✓ AI khớp' },
+                        qm_ok:    { background:T.greenBg, color:T.green, text:'✓ QM đã duyệt (AI đúng)' },
+                        qm_wrong: { background:T.bg,      color:T.light, text:'✓ QM đã duyệt (AI sai)' },
+                        mismatch: { background:T.redBg,   color:T.red,
+                                    text:`🤖⚠️ AI LỆCH: đơn ${o.ai_check_result?.order_total_qty ?? '?'} vs AI ${o.ai_check_result?.ai_total_qty ?? '?'}` },
+                        unclear:  { background:T.amberBg, color:T.amber, text:'🤖❓ AI không rõ ảnh' },
+                        error:    { background:T.amberBg, color:T.amber, text:'🤖 AI lỗi — bấm để chạy lại' },
+                        not_run:  { background:T.bg,      color:T.light, text:'🤖 AI chưa chạy — bấm để chạy' },
+                      }
+                      const s = styleMap[displayStatus] || styleMap.not_run
+                      const canRetry = displayStatus === 'not_run' || displayStatus === 'error' || displayStatus === 'unclear'
+                      return (
+                        <div onClick={(e) => {
+                          if (!canRetry) return
+                          e.stopPropagation()
+                          runAiCheck(o.order_code)
+                        }}
+                          style={{ marginTop:5, padding:'3px 8px', borderRadius:6,
+                            fontSize:9, fontWeight:700,
+                            cursor: canRetry ? 'pointer' : 'default',
+                            background: s.background, color: s.color,
+                            border: canRetry ? `1px dashed ${s.color}` : 'none' }}
+                          title={canRetry ? 'Click để chạy lại AI check' : ''}>
+                          {s.text}
+                        </div>
+                      )
+                    })()}
                     {wasReverted && (
                       <div style={{ marginTop:5, padding:'3px 8px', borderRadius:6,
                         background:T.red, color:'#fff', fontSize:9, fontWeight:800, letterSpacing:.3 }}>
@@ -16049,6 +16103,7 @@ function PackingModule({ user, allUsers, mobile, products }: any) {
             onJoinGroup={() => joinPackingGroup(selected.order_code)}
             onLeaveGroup={() => leavePackingGroup(selected.order_code)}
             onAiReview={(verdict: 'qm_ok'|'qm_wrong') => reviewAiFlag(selected.order_code, verdict)}
+            onAiRetry={(code: string) => runAiCheck(code)}
             readOnly={selected.status === 'done' || !canPack}
           />
         )}
@@ -16113,11 +16168,13 @@ function JoinPackConfirmModal({ names, onCancel, onConfirm }: any) {
 }
 
 // ── AiCheckBanner — hiển thị kết quả AI check + QM review ──
-function AiCheckBanner({ ord, onReview, canReview }: any) {
+function AiCheckBanner({ ord, onReview, canReview, onRetry }: any) {
   const status = ord.ai_check_status
   const result = ord.ai_check_result || {}
 
   const config: any = {
+    pending:  { bg:T.bg, border:T.border, color:T.light, icon:'🤖',
+                title:`AI đang check... vui lòng đợi` },
     matched:  { bg:T.greenBg, border:T.green, color:T.green, icon:'🤖✓',
                 title:`AI đã check: ${result.order_total_qty ?? '?'} items khớp` },
     qm_ok:    { bg:T.greenBg, border:T.green, color:T.green, icon:'✓',
@@ -16128,10 +16185,11 @@ function AiCheckBanner({ ord, onReview, canReview }: any) {
                 title:`AI CHECK: Lệch ${Math.abs((result.ai_total_qty||0) - (result.order_total_qty||0))} items` },
     unclear:  { bg:T.amberBg, border:T.amber, color:T.amber, icon:'🤖❓',
                 title:`AI không thể đếm chính xác` },
-    error:    { bg:T.bg, border:T.border, color:T.light, icon:'🤖',
-                title:`AI check lỗi` },
+    error:    { bg:T.amberBg, border:T.amber, color:T.amber, icon:'🤖',
+                title:`AI check lỗi — có thể chạy lại` },
   }
   const c = config[status] || config.error
+  const canRetry = !!onRetry && (status === 'error' || status === 'unclear' || status === 'mismatch')
 
   return (
     <div style={{ padding:'10px 12px', marginBottom:12, background:c.bg,
@@ -16179,6 +16237,19 @@ function AiCheckBanner({ ord, onReview, canReview }: any) {
               background:'#fff', color:T.green, cursor:'pointer', fontFamily:'inherit',
               fontSize:11, fontWeight:700 }}>
             ✓ AI sai (đơn OK)
+          </button>
+        </div>
+      )}
+
+      {/* Retry button — hiển thị cho error/unclear/mismatch */}
+      {canRetry && (
+        <div style={{ marginTop: canReview ? 8 : 0 }}>
+          <button onClick={onRetry}
+            style={{ width:'100%', padding:'7px', borderRadius:6,
+              border:`1px dashed ${T.blue}`,
+              background:'#fff', color:T.blue, cursor:'pointer', fontFamily:'inherit',
+              fontSize:11, fontWeight:700 }}>
+            🔄 Chạy lại AI check
           </button>
         </div>
       )}
@@ -16278,7 +16349,7 @@ function ChangeLogBanner({ ord }: any) {
   )
 }
 
-function PackingDetailPanel({ ord, mobile, user, allUsers, products, onClose, onFinish, onUpdatePhotos, onUpdateNoBox, onJoinGroup, onLeaveGroup, onAiReview, readOnly }: any) {
+function PackingDetailPanel({ ord, mobile, user, allUsers, products, onClose, onFinish, onUpdatePhotos, onUpdateNoBox, onJoinGroup, onLeaveGroup, onAiReview, onAiRetry, readOnly }: any) {
   const getName = (id: string) => allUsers.find((u: any) => u.id === id)?.name || '?'
   const totalItems = (ord.items || []).length
   const { min, max } = photoCountRangeV2(totalItems)
@@ -16393,9 +16464,10 @@ function PackingDetailPanel({ ord, mobile, user, allUsers, products, onClose, on
       )}
 
       {/* ══ AI CHECK BANNER ══ */}
-      {ord.ai_check_status && ord.ai_check_status !== 'pending' && (
+      {ord.ai_check_status && (
         <AiCheckBanner ord={ord} onReview={onAiReview}
-          canReview={!readOnly && (ord.ai_check_status === 'mismatch' || ord.ai_check_status === 'unclear')}/>
+          canReview={!readOnly && (ord.ai_check_status === 'mismatch' || ord.ai_check_status === 'unclear')}
+          onRetry={onAiRetry ? () => onAiRetry(ord.order_code) : undefined}/>
       )}
 
       {/* ══ Multi-packer: banner ai đang cùng đóng ══ */}
