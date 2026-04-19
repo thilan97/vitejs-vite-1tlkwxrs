@@ -2091,9 +2091,9 @@ function Dashboard({ user, checklist, tasks, allUsers, attendance, leaveRequests
                 <div style={{ background:T.goldBg, padding:'8px 12px', borderRadius:RD.md,
                   border:`1px solid ${T.goldBorder}` }}>
                   <div style={{ fontSize:10, color:T.goldText, fontWeight:700,
-                    textTransform:'uppercase', letterSpacing:.5 }}>Avg/đơn</div>
+                    textTransform:'uppercase', letterSpacing:.5 }}>Trung bình/đơn</div>
                   <div style={{ fontSize:18, fontWeight:800, color:T.goldText, marginTop:2 }}>
-                    {kvTotalInvoices>0?fmtMoneyShort(Math.round(kvTotalRevenue/kvTotalInvoices)):0}đ
+                    {kvTotalInvoices>0?fmtMoneyShort(Math.round(kvTotalRevenue/kvTotalInvoices)):0}
                   </div>
                 </div>
               </div>
@@ -2109,7 +2109,7 @@ function Dashboard({ user, checklist, tasks, allUsers, attendance, leaveRequests
                   <div>#</div>
                   <div>NV Sale</div>
                   {!mobile && <div style={{ textAlign:'right' }}>Số đơn</div>}
-                  <div style={{ textAlign:'right' }}>Đơn</div>
+                  <div style={{ textAlign:'right' }}>{mobile ? 'Số đơn' : 'Trung bình/đơn'}</div>
                   <div style={{ textAlign:'right' }}>Doanh thu</div>
                 </div>
                 {kvSalesRanking.map((r: any, i: number) => (
@@ -2140,7 +2140,7 @@ function Dashboard({ user, checklist, tasks, allUsers, attendance, leaveRequests
                       </div>
                     )}
                     <div style={{ textAlign:'right', color:T.med, fontWeight:500 }}>
-                      {mobile ? r.invoice_count.toLocaleString('vi-VN') : (r.invoice_count>0?Math.round(r.total_revenue/r.invoice_count/1000).toLocaleString('vi-VN')+'k':'—')}
+                      {mobile ? r.invoice_count.toLocaleString('vi-VN') : (r.invoice_count>0?Math.round(r.total_revenue/r.invoice_count).toLocaleString('vi-VN'):'—')}
                     </div>
                     <div style={{ textAlign:'right', fontWeight:700, color:r.total_revenue>0?T.green:T.light }}>
                       {fmtMoneyShort(r.total_revenue)}đ
@@ -2166,7 +2166,7 @@ function Dashboard({ user, checklist, tasks, allUsers, attendance, leaveRequests
                       {fmtMoneyShort(myKvEntry.total_revenue)}đ
                     </div>
                     <div style={{ fontSize:10, color:T.light }}>
-                      Avg {myKvEntry.invoice_count>0?fmtMoneyShort(Math.round(myKvEntry.total_revenue/myKvEntry.invoice_count)):0}đ/đơn
+                      TB/đơn: {myKvEntry.invoice_count>0?fmtMoneyShort(Math.round(myKvEntry.total_revenue/myKvEntry.invoice_count)):0}
                     </div>
                   </div>
                 </div>
