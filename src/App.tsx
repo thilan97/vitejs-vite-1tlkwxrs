@@ -12,7 +12,7 @@ const db = createClient(SUPABASE_URL, SUPABASE_KEY)
 // APP_VERSION — dùng để invalidate cache localStorage mỗi khi deploy version mới
 // (ngăn bug quyền user bị "reset" do cache position cũ sau deploy)
 // ⚠️ MỖI LẦN DEPLOY FEATURE MỚI CÓ PERMISSION MỚI, BUMP SỐ NÀY:
-const APP_VERSION = '2026.04.17.v44'
+const APP_VERSION = '2026.04.17.v45'
 
 // ════════════════════════════════════════════════════════════════
 // AUDIT LOG — ghi nhận các hành động phá hoại data để trace lại
@@ -17988,8 +17988,11 @@ function WarehouseStatsModule({ user, allUsers, mobile }: any) {
   const [preset, setPreset] = useState<'month'|'week'|'7d'|'30d'|'custom'>('month')
 
   const [orders, setOrders] = useState<any[]>([])
+  const [attendance, setAttendance] = useState<any[]>([])
+  const [wrongOrders, setWrongOrders] = useState<any[]>([])
+  const [returnSlips, setReturnSlips] = useState<any[]>([])
   const [loading, setLoading] = useState(true)
-  const [viewTab, setViewTab] = useState<'pack'|'pick'|'sale'>('pack')
+  const [viewTab, setViewTab] = useState<'score'|'pack'|'pick'|'sale'>('score')
 
   if (!perm.viewWarehouseStats) {
     return (
@@ -18017,21 +18020,29 @@ function WarehouseStatsModule({ user, allUsers, mobile }: any) {
     setPreset(p as any)
   }
 
-  // Fetch đơn có picked_at HOẶC packed_at trong range (cho cả 3 tab)
+  // Fetch đơn + attendance + quality data
   const fetchOrders = async () => {
     setLoading(true)
     const fromISO = new Date(fromDate + 'T00:00:00').toISOString()
     const toISO   = new Date(toDate   + 'T23:59:59').toISOString()
-    // Query 2 lần: đơn packed trong range, đơn picked trong range, rồi merge
-    const [packRes, pickRes] = await Promise.all([
+    const [packRes, pickRes, attRes, wrongRes, returnRes] = await Promise.all([
       db.from('packing_workflow').select('*')
         .gte('packed_at', fromISO).lte('packed_at', toISO).limit(5000),
       db.from('packing_workflow').select('*')
         .gte('picked_at', fromISO).lte('picked_at', toISO).limit(5000),
+      db.from('attendance').select('*')
+        .gte('date', fromDate).lte('date', toDate).limit(5000),
+      db.from('wrong_orders').select('*')
+        .gte('created_at', fromISO).lte('created_at', toISO).limit(5000),
+      db.from('return_slips').select('*')
+        .gte('date', fromDate).lte('date', toDate).limit(5000),
     ])
     const merged = new Map<string, any>()
     ;[...(packRes.data||[]), ...(pickRes.data||[])].forEach(o => merged.set(o.order_code, o))
     setOrders(Array.from(merged.values()))
+    setAttendance(attRes.data || [])
+    setWrongOrders(wrongRes.data || [])
+    setReturnSlips(returnRes.data || [])
     setLoading(false)
   }
 
@@ -18174,6 +18185,131 @@ function WarehouseStatsModule({ user, allUsers, mobile }: any) {
     total_picked: pickerStats.reduce((s, ps: any) => s + ps.order_count, 0),
   }), [orders, packerStats, pickerStats])
 
+  // ═══ COMPOSITE PERFORMANCE SCORE (50% Speed / 30% Volume / 20% Quality) ═══
+  // Chỉ tính cho NV Kho
+  const performanceScores = useMemo(() => {
+    // Lấy NV Kho
+    const khoUsers = allUsers.filter((u: any) => u.dept_id === 'kho' && u.active !== false)
+
+    // Compute giờ làm per user (tổng tháng)
+    const hoursByUser = new Map<string, number>()
+    attendance.forEach((a: any) => {
+      if (!a.user_id || !a.check_in || !a.check_out) return
+      const inT = new Date(`${a.date}T${a.check_in}`).getTime()
+      const outT = new Date(`${a.date}T${a.check_out}`).getTime()
+      if (outT <= inT) return
+      const hours = (outT - inT) / 3600000
+      // Trừ 1h nghỉ trưa nếu làm > 6h
+      const netHours = hours > 6 ? hours - 1 : hours
+      hoursByUser.set(a.user_id, (hoursByUser.get(a.user_id) || 0) + netHours)
+    })
+
+    // Compute số lỗi per user (wrong + return)
+    const errorsByUser = new Map<string, number>()
+    wrongOrders.forEach((w: any) => {
+      if (!w.violator_id) return
+      errorsByUser.set(w.violator_id, (errorsByUser.get(w.violator_id) || 0) + 1)
+    })
+    returnSlips.forEach((r: any) => {
+      if (!r.violator_id) return
+      errorsByUser.set(r.violator_id, (errorsByUser.get(r.violator_id) || 0) + 1)
+    })
+
+    // Build per-user metrics: merge packer + picker + attendance + errors
+    const metricsByUser = new Map<string, any>()
+    khoUsers.forEach((u: any) => {
+      const packer = packerStats.find((s: any) => s.user_id === u.id)
+      const picker = pickerStats.find((s: any) => s.user_id === u.id)
+      const packed = packer?.order_count || 0
+      const picked = picker?.order_count || 0
+      const totalOps = packed + picked  // Tổng nghiệp vụ
+      const hours = hoursByUser.get(u.id) || 0
+      const errors = errorsByUser.get(u.id) || 0
+      const value = (packer?.total_value || 0)
+      const items = packer?.total_sp_qty || 0
+      const avgPackMin = packer?.avg_pack_minutes || 0
+      if (totalOps === 0 && hours === 0) return
+      metricsByUser.set(u.id, {
+        user_id: u.id,
+        user: u,
+        orders_packed: packed,
+        orders_picked: picked,
+        total_ops: totalOps,
+        working_hours: hours,
+        total_value: value,
+        total_items: items,
+        avg_pack_minutes: avgPackMin,
+        errors,
+        ops_per_hour: hours > 0 ? totalOps / hours : 0,
+        error_rate: totalOps > 0 ? errors / totalOps : 0,
+      })
+    })
+
+    const metricsArr = Array.from(metricsByUser.values())
+    if (metricsArr.length === 0) return []
+
+    // Team baseline: median ops_per_hour + max ops để normalize
+    const opsPerHourSorted = metricsArr
+      .filter(m => m.working_hours > 0)
+      .map(m => m.ops_per_hour)
+      .sort((a, b) => a - b)
+    const teamMedian = opsPerHourSorted.length > 0
+      ? opsPerHourSorted[Math.floor(opsPerHourSorted.length / 2)]
+      : 1
+    const maxOps = Math.max(1, ...metricsArr.map(m => m.total_ops))
+
+    // Compute scores
+    return metricsArr.map(m => {
+      // Speed: so với median team. Đạt median = 50, gấp đôi = 100
+      const speedScore = m.working_hours > 0 && teamMedian > 0
+        ? Math.min(100, Math.round((m.ops_per_hour / teamMedian) * 50))
+        : 0
+      // Volume: so với top team
+      const volumeScore = Math.round((m.total_ops / maxOps) * 100)
+      // Quality: tỷ lệ đúng
+      const qualityScore = Math.max(0, Math.round((1 - m.error_rate) * 100))
+      // Composite
+      const totalScore = Math.round(
+        speedScore * 0.5 + volumeScore * 0.3 + qualityScore * 0.2
+      )
+      // Grade
+      let grade = '🔴', gradeLabel = 'Cần cải thiện'
+      if (totalScore >= 90)      { grade = '🌟'; gradeLabel = 'Xuất sắc' }
+      else if (totalScore >= 75) { grade = '✅'; gradeLabel = 'Đạt yêu cầu' }
+      else if (totalScore >= 60) { grade = '⚠️'; gradeLabel = 'Cần cải thiện' }
+      else                       { grade = '🔴'; gradeLabel = 'Dưới kỳ vọng' }
+      return {
+        ...m,
+        speedScore, volumeScore, qualityScore, totalScore,
+        grade, gradeLabel,
+      }
+    }).sort((a, b) => b.totalScore - a.totalScore)
+  }, [packerStats, pickerStats, attendance, wrongOrders, returnSlips, allUsers])
+
+  // Team averages (để NV Kho thấy so sánh)
+  const teamAverages = useMemo(() => {
+    if (performanceScores.length === 0) return null
+    const n = performanceScores.length
+    return {
+      avgScore:    Math.round(performanceScores.reduce((s, p) => s + p.totalScore, 0) / n),
+      avgSpeed:    Math.round(performanceScores.reduce((s, p) => s + p.speedScore, 0) / n),
+      avgVolume:   Math.round(performanceScores.reduce((s, p) => s + p.volumeScore, 0) / n),
+      avgQuality:  Math.round(performanceScores.reduce((s, p) => s + p.qualityScore, 0) / n),
+      avgOpsHour:  performanceScores.reduce((s, p) => s + p.ops_per_hour, 0) / n,
+      totalOps:    performanceScores.reduce((s, p) => s + p.total_ops, 0),
+      totalValue:  performanceScores.reduce((s, p) => s + p.total_value, 0),
+      totalErrors: performanceScores.reduce((s, p) => s + p.errors, 0),
+      teamOverallQuality: (() => {
+        const totalOps = performanceScores.reduce((s, p) => s + p.total_ops, 0)
+        const totalErrors = performanceScores.reduce((s, p) => s + p.errors, 0)
+        return totalOps > 0 ? Math.round((1 - totalErrors/totalOps) * 100) : 100
+      })(),
+    }
+  }, [performanceScores])
+
+  const isAdmin = perm.viewAllDashboard
+  const myScoreEntry = performanceScores.find(p => p.user_id === user.id)
+
   const getName = (id: string) => allUsers.find((u: any) => u.id === id)?.name || id.slice(0,8)
   const fmtMoney = (n: number) => Number(n||0).toLocaleString('vi-VN')
 
@@ -18197,6 +18333,7 @@ function WarehouseStatsModule({ user, allUsers, mobile }: any) {
       {/* Tab switcher */}
       <div style={{ display:'flex', gap:6, marginBottom:12, flexWrap:'wrap' }}>
         {[
+          { id:'score', label:`🏆 Xếp hạng (${performanceScores.length})` },
           { id:'pack', label:`📮 NV Đóng (${packerStats.length})` },
           { id:'pick', label:`📥 NV Nhặt (${pickerStats.length})` },
           { id:'sale', label:`👤 Theo Sale (${saleStats.length})` },
@@ -18242,6 +18379,223 @@ function WarehouseStatsModule({ user, allUsers, mobile }: any) {
               fontSize:11, fontFamily:'inherit' }}/>
         </div>
       </Card>
+
+      {/* ═══ TAB SCORE: composite performance ranking ═══ */}
+      {viewTab === 'score' && (
+        performanceScores.length === 0 ? (
+          <EmptyState icon={Ico.target}
+            title="Chưa có dữ liệu hiệu suất"
+            description="Chưa có NV Kho nào có hoạt động trong khoảng thời gian đã chọn."/>
+        ) : (
+          <>
+            {/* ── Team overview cards ── */}
+            {teamAverages && (
+              <div style={{ display:'grid',
+                gridTemplateColumns: mobile ? '1fr 1fr' : 'repeat(4, 1fr)',
+                gap: SP[3], marginBottom: SP[4] }}>
+                {[
+                  { label:'Tổng nghiệp vụ', val: Math.round(teamAverages.totalOps).toLocaleString('vi-VN'), sub:'đơn (nhặt + đóng)', color:T.blue, icon:'📦' },
+                  { label:'Doanh thu', val: fmtMoney(Math.round(teamAverages.totalValue)) + 'đ', sub: 'giá trị đã đóng', color:T.goldText, icon:'💰' },
+                  { label:'Năng suất TB', val: teamAverages.avgOpsHour.toFixed(2), sub:'nghiệp vụ / giờ / NV', color:T.green, icon:'⚡' },
+                  { label:'Chất lượng', val: teamAverages.teamOverallQuality + '%', sub:`${teamAverages.totalErrors} lỗi`, color: teamAverages.teamOverallQuality >= 95 ? T.green : T.amber, icon:'🎯' },
+                ].map((c, i) => (
+                  <Card key={i} style={{ padding:`${SP[3]}px ${SP[4]}px` }}>
+                    <div style={{ display:'flex', justifyContent:'space-between',
+                      alignItems:'center', marginBottom:SP[2] }}>
+                      <span style={{ fontSize:FS.xs, fontWeight:700, color:T.light,
+                        textTransform:'uppercase', letterSpacing:.8 }}>{c.label}</span>
+                      <span style={{ fontSize:FS.lg }}>{c.icon}</span>
+                    </div>
+                    <div style={{ fontSize:FS.xl, fontWeight:800, color:c.color,
+                      lineHeight:1.1, letterSpacing:-.3 }}>{c.val}</div>
+                    <div style={{ fontSize:FS.xs, color:T.light, marginTop:3 }}>{c.sub}</div>
+                  </Card>
+                ))}
+              </div>
+            )}
+
+            {/* ── Cá nhân card (cho NV Kho không phải admin) ── */}
+            {!isAdmin && myScoreEntry && (
+              <Card style={{ marginBottom:SP[4], padding:SP[5],
+                background:`linear-gradient(135deg, ${T.goldBg} 0%, #fff 100%)`,
+                border:`2px solid ${T.gold}` }}>
+                <div style={{ display:'flex', alignItems:'center', gap:SP[3], marginBottom:SP[3] }}>
+                  <div style={{ fontSize:40 }}>{myScoreEntry.grade}</div>
+                  <div style={{ flex:1 }}>
+                    <div style={{ fontSize:FS.sm, color:T.light, letterSpacing:.5, fontWeight:600 }}>
+                      ĐIỂM CỦA BẠN
+                    </div>
+                    <div style={{ display:'flex', alignItems:'baseline', gap:SP[2] }}>
+                      <span style={{ fontSize:48, fontWeight:900, color:T.goldText,
+                        lineHeight:1, letterSpacing:-2 }}>
+                        {myScoreEntry.totalScore}
+                      </span>
+                      <span style={{ fontSize:FS.md, color:T.med }}>/ 100</span>
+                    </div>
+                    <div style={{ fontSize:FS.md, color:T.goldText, fontWeight:700, marginTop:2 }}>
+                      {myScoreEntry.gradeLabel}
+                    </div>
+                  </div>
+                  {teamAverages && (
+                    <div style={{ textAlign:'right' }}>
+                      <div style={{ fontSize:FS.xs, color:T.light }}>Trung bình team</div>
+                      <div style={{ fontSize:FS.xl, fontWeight:700, color:T.med }}>
+                        {teamAverages.avgScore}
+                      </div>
+                      <div style={{ fontSize:FS.xs, color: myScoreEntry.totalScore >= teamAverages.avgScore ? T.green : T.red, fontWeight:600 }}>
+                        {myScoreEntry.totalScore >= teamAverages.avgScore ? '↑' : '↓'} {Math.abs(myScoreEntry.totalScore - teamAverages.avgScore)} so với avg
+                      </div>
+                    </div>
+                  )}
+                </div>
+
+                {/* Breakdown */}
+                <div style={{ display:'grid', gridTemplateColumns:'repeat(3, 1fr)', gap:SP[3],
+                  paddingTop:SP[3], borderTop:`1px solid ${T.goldBorder}` }}>
+                  {[
+                    { label:'⚡ Tốc độ', val: myScoreEntry.speedScore, teamAvg: teamAverages?.avgSpeed, color:T.blue, weight:'50%' },
+                    { label:'📦 Khối lượng', val: myScoreEntry.volumeScore, teamAvg: teamAverages?.avgVolume, color:T.goldText, weight:'30%' },
+                    { label:'🎯 Chất lượng', val: myScoreEntry.qualityScore, teamAvg: teamAverages?.avgQuality, color:T.green, weight:'20%' },
+                  ].map((m, i) => (
+                    <div key={i}>
+                      <div style={{ fontSize:FS.xs, color:T.light, fontWeight:600, marginBottom:3 }}>
+                        {m.label} <span style={{ color:T.gold }}>({m.weight})</span>
+                      </div>
+                      <div style={{ fontSize:FS.xl, fontWeight:800, color:m.color, lineHeight:1 }}>
+                        {m.val}
+                      </div>
+                      {m.teamAvg !== undefined && (
+                        <div style={{ fontSize:FS.xs, color:T.light, marginTop:2 }}>
+                          Team avg: {m.teamAvg}
+                        </div>
+                      )}
+                    </div>
+                  ))}
+                </div>
+
+                {/* Personal metrics row */}
+                <div style={{ display:'flex', flexWrap:'wrap', gap:SP[3],
+                  fontSize:FS.sm, color:T.med, marginTop:SP[3],
+                  paddingTop:SP[3], borderTop:`1px solid ${T.goldBorder}` }}>
+                  <span>📦 {Math.round(myScoreEntry.total_ops)} nghiệp vụ</span>
+                  <span>⏱ {Math.round(myScoreEntry.working_hours)}h làm</span>
+                  <span>⚡ {myScoreEntry.ops_per_hour.toFixed(2)} / giờ</span>
+                  <span>💰 {fmtMoney(Math.round(myScoreEntry.total_value))}đ</span>
+                  <span style={{ color: myScoreEntry.errors === 0 ? T.green : T.amber }}>
+                    {myScoreEntry.errors === 0 ? '✅ 0 lỗi' : `⚠️ ${myScoreEntry.errors} lỗi`}
+                  </span>
+                </div>
+              </Card>
+            )}
+
+            {/* ── Leaderboard (admin thấy full, NV Kho thấy ranking ẩn danh) ── */}
+            <Card style={{ padding:0, overflow:'hidden' }}>
+              <div style={{ padding:`${SP[3]}px ${SP[4]}px`,
+                background:T.bg, borderBottom:`1px solid ${T.border}`,
+                display:'flex', justifyContent:'space-between', alignItems:'center' }}>
+                <div>
+                  <div style={{ fontSize:FS.md, fontWeight:700, color:T.dark }}>
+                    🏆 Bảng xếp hạng hiệu suất
+                  </div>
+                  <div style={{ fontSize:FS.xs, color:T.light, marginTop:2 }}>
+                    Score = 50% Tốc độ + 30% Khối lượng + 20% Chất lượng
+                  </div>
+                </div>
+              </div>
+
+              <div style={{ display:'flex', flexDirection:'column' }}>
+                {performanceScores.map((p, idx) => {
+                  const isMe = p.user_id === user.id
+                  // Admin thấy đầy đủ; NV Kho chỉ thấy mình
+                  const showDetails = isAdmin || isMe
+                  const rankMedal = idx === 0 ? '🥇' : idx === 1 ? '🥈' : idx === 2 ? '🥉' : `#${idx+1}`
+                  const rowBg = isMe ? T.goldBg : (idx%2===0 ? '#fff' : T.bg)
+
+                  return (
+                    <div key={p.user_id} style={{
+                      padding:`${SP[3]}px ${SP[4]}px`,
+                      borderBottom: idx < performanceScores.length - 1 ? `1px solid ${T.border}` : 'none',
+                      background: rowBg,
+                    }}>
+                      <div style={{ display:'flex', alignItems:'center', gap:SP[3] }}>
+                        {/* Rank */}
+                        <div style={{ minWidth:44, textAlign:'center', fontSize:FS.lg, fontWeight:800 }}>
+                          {rankMedal}
+                        </div>
+                        {/* Name + grade */}
+                        <div style={{ flex:1, minWidth:0 }}>
+                          <div style={{ display:'flex', alignItems:'center', gap:SP[2], flexWrap:'wrap' }}>
+                            <span style={{ fontSize:FS.md, fontWeight:700, color:T.dark }}>
+                              {showDetails ? p.user.name : `NV ${idx+1}`}
+                              {isMe && <span style={{ color:T.gold, marginLeft:6 }}>(Bạn)</span>}
+                            </span>
+                            <span style={{ fontSize:FS.sm }}>{p.grade}</span>
+                            {showDetails && (
+                              <span style={{ fontSize:FS.xs, color:T.med }}>
+                                {p.gradeLabel}
+                              </span>
+                            )}
+                          </div>
+                          {showDetails && (
+                            <div style={{ fontSize:FS.xs, color:T.light, marginTop:3,
+                              display:'flex', gap:SP[2], flexWrap:'wrap' }}>
+                              <span>📦 {Math.round(p.total_ops)} NV ({Math.round(p.orders_packed)}📮+{Math.round(p.orders_picked)}📥)</span>
+                              <span>⏱ {Math.round(p.working_hours)}h</span>
+                              <span>⚡ {p.ops_per_hour.toFixed(2)}/h</span>
+                              {p.errors > 0 && <span style={{ color:T.red }}>⚠️ {p.errors} lỗi</span>}
+                            </div>
+                          )}
+                        </div>
+                        {/* Score number */}
+                        <div style={{ textAlign:'right', minWidth:60 }}>
+                          <div style={{ fontSize:FS.x2l, fontWeight:800, color:T.goldText, lineHeight:1 }}>
+                            {p.totalScore}
+                          </div>
+                          <div style={{ fontSize:FS.xs, color:T.light }}>/100</div>
+                        </div>
+                      </div>
+                      {/* Breakdown bar (only for admin or self) */}
+                      {showDetails && (
+                        <div style={{ marginTop:SP[2], display:'flex',
+                          height:10, borderRadius:RD.sm, overflow:'hidden',
+                          border:`1px solid ${T.border}` }}>
+                          <div title={`Tốc độ: ${p.speedScore}`}
+                            style={{ width:`${p.speedScore * 0.5}%`, background:T.blue }}/>
+                          <div title={`Khối lượng: ${p.volumeScore}`}
+                            style={{ width:`${p.volumeScore * 0.3}%`, background:T.gold }}/>
+                          <div title={`Chất lượng: ${p.qualityScore}`}
+                            style={{ width:`${p.qualityScore * 0.2}%`, background:T.green }}/>
+                          <div style={{ flex:1, background:T.bg }}/>
+                        </div>
+                      )}
+                    </div>
+                  )
+                })}
+              </div>
+
+              {/* Footer: formula breakdown */}
+              {isAdmin && (
+                <div style={{ padding:`${SP[2]}px ${SP[4]}px`,
+                  background:T.bg, borderTop:`1px solid ${T.border}`,
+                  fontSize:FS.xs, color:T.light, display:'flex', gap:SP[3], flexWrap:'wrap' }}>
+                  <span style={{ display:'flex', alignItems:'center', gap:4 }}>
+                    <span style={{ width:10, height:10, background:T.blue, borderRadius:2 }}/>
+                    Tốc độ (50%) = đơn/giờ so với median team
+                  </span>
+                  <span style={{ display:'flex', alignItems:'center', gap:4 }}>
+                    <span style={{ width:10, height:10, background:T.gold, borderRadius:2 }}/>
+                    Khối lượng (30%) = tổng NV so với top team
+                  </span>
+                  <span style={{ display:'flex', alignItems:'center', gap:4 }}>
+                    <span style={{ width:10, height:10, background:T.green, borderRadius:2 }}/>
+                    Chất lượng (20%) = 100% - tỷ lệ lỗi (wrong + return)
+                  </span>
+                </div>
+              )}
+            </Card>
+          </>
+        )
+      )}
 
       {/* ═══ TAB SALE: bảng theo sold_by_name ═══ */}
       {viewTab === 'sale' && (
@@ -18305,7 +18659,7 @@ function WarehouseStatsModule({ user, allUsers, mobile }: any) {
       )}
 
       {/* ═══ TAB PACK / PICK: bar chart + bảng NV ═══ */}
-      {viewTab !== 'sale' && (
+      {(viewTab === 'pack' || viewTab === 'pick') && (
         stats.length === 0 ? (
           <EmptyState icon={Ico.barChart}
             title={`Không có đơn nào ${viewTab==='pack'?'đã đóng':'đã nhặt'}`}
