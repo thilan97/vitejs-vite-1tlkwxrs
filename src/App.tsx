@@ -1606,12 +1606,12 @@ function Dashboard({ user, checklist, tasks, allUsers, attendance, leaveRequests
       })
     })
 
-    // Picker stats hôm nay
+    // Picker stats hôm nay (field đúng là `assigned_to`, match với WarehouseStatsModule)
     const pickMap = new Map<string, number>()
     todayOrders.forEach((o: any) => {
       if (!o.picked_at || o.picked_at.slice(0, 10) !== todayISOStr) return
-      if (!o.picked_by) return
-      pickMap.set(o.picked_by, (pickMap.get(o.picked_by) || 0) + 1)
+      if (!o.assigned_to) return
+      pickMap.set(o.assigned_to, (pickMap.get(o.assigned_to) || 0) + 1)
     })
 
     // Errors hôm nay
