@@ -12,7 +12,7 @@ const db = createClient(SUPABASE_URL, SUPABASE_KEY)
 // APP_VERSION — dùng để invalidate cache localStorage mỗi khi deploy version mới
 // (ngăn bug quyền user bị "reset" do cache position cũ sau deploy)
 // ⚠️ MỖI LẦN DEPLOY FEATURE MỚI CÓ PERMISSION MỚI, BUMP SỐ NÀY:
-const APP_VERSION = '2026.04.17.v45'
+const APP_VERSION = '2026.04.17.v46'
 
 // ════════════════════════════════════════════════════════════════
 // AUDIT LOG — ghi nhận các hành động phá hoại data để trace lại
@@ -14700,6 +14700,11 @@ function PickingModule({ user, allUsers, mobile, products }: any) {
                         <div style={{ fontSize:12, fontWeight:700, color:T.dark,
                           whiteSpace:'nowrap', overflow:'hidden', textOverflow:'ellipsis' }}>
                           {o.order_code} • {o.customer_name || 'KH lẻ'}
+                          {Number(o.total_amount)>0 && (
+                            <span style={{ color:T.goldText, fontWeight:700, marginLeft:6 }}>
+                              • {Number(o.total_amount).toLocaleString('vi-VN')}đ
+                            </span>
+                          )}
                         </div>
                         <div style={{ fontSize:10, color:T.light, marginTop:2 }}>
                           Sale: {o.sold_by_name||'—'} • {daysOld>0?`${daysOld}N trước`:'hôm nay'}
@@ -14986,9 +14991,14 @@ function PickingDetailPanel({ ord, mobile, productMap, totalOrderedByCode, onClo
         <div>
           <div style={{ fontSize:14, fontWeight:700, color:T.dark }}>
             {ord.order_code} • {ord.customer_name}
+            {Number(ord.total_amount)>0 && (
+              <span style={{ color:T.goldText, fontWeight:700, marginLeft:6 }}>
+                • {Number(ord.total_amount).toLocaleString('vi-VN')}đ
+              </span>
+            )}
           </div>
           <div style={{ fontSize:11, color:T.light, marginTop:2 }}>
-            Sale: {ord.sold_by_name||'—'} • {Number(ord.total_amount||0).toLocaleString('vi-VN')}đ
+            Sale: {ord.sold_by_name||'—'}
             {ord.printed_by_name && <> • 🖨 Người in: <b style={{ color:T.dark }}>{ord.printed_by_name}</b></>}
           </div>
         </div>
@@ -15616,9 +15626,14 @@ function PackingModule({ user, allUsers, mobile, products }: any) {
                     <div style={{ fontSize:12, fontWeight:700, color:T.dark,
                       whiteSpace:'nowrap', overflow:'hidden', textOverflow:'ellipsis' }}>
                       {o.order_code} • {o.customer_name}
+                      {Number(o.total_amount)>0 && (
+                        <span style={{ color:T.goldText, fontWeight:700, marginLeft:6 }}>
+                          • {Number(o.total_amount).toLocaleString('vi-VN')}đ
+                        </span>
+                      )}
                     </div>
                     <div style={{ fontSize:10, color:T.light, marginTop:2 }}>
-                      {totalItems} SP • {Number(o.total_amount||0).toLocaleString('vi-VN')}đ
+                      {totalItems} SP
                       {o.no_box && <> • 📮 Bookship</>}
                     </div>
                     {/* Tab 'Chờ đóng': tên NV nhặt + thời điểm chuyển sang đóng + active packers nếu có */}
