@@ -12,7 +12,7 @@ const db = createClient(SUPABASE_URL, SUPABASE_KEY)
 // APP_VERSION — dùng để invalidate cache localStorage mỗi khi deploy version mới
 // (ngăn bug quyền user bị "reset" do cache position cũ sau deploy)
 // ⚠️ MỖI LẦN DEPLOY FEATURE MỚI CÓ PERMISSION MỚI, BUMP SỐ NÀY:
-const APP_VERSION = '2026.04.17.v54'
+const APP_VERSION = '2026.04.17.v55'
 
 // ════════════════════════════════════════════════════════════════
 // AUDIT LOG — ghi nhận các hành động phá hoại data để trace lại
@@ -16104,6 +16104,7 @@ function PackingModule({ user, allUsers, mobile, products }: any) {
             onLeaveGroup={() => leavePackingGroup(selected.order_code)}
             onAiReview={(verdict: 'qm_ok'|'qm_wrong') => reviewAiFlag(selected.order_code, verdict)}
             onAiRetry={(code: string) => runAiCheck(code)}
+            canReviewAi={perm.viewAllDashboard || perm.approveLeave || perm.handlePriority}
             readOnly={selected.status === 'done' || !canPack}
           />
         )}
@@ -16349,7 +16350,7 @@ function ChangeLogBanner({ ord }: any) {
   )
 }
 
-function PackingDetailPanel({ ord, mobile, user, allUsers, products, onClose, onFinish, onUpdatePhotos, onUpdateNoBox, onJoinGroup, onLeaveGroup, onAiReview, onAiRetry, readOnly }: any) {
+function PackingDetailPanel({ ord, mobile, user, allUsers, products, onClose, onFinish, onUpdatePhotos, onUpdateNoBox, onJoinGroup, onLeaveGroup, onAiReview, onAiRetry, canReviewAi, readOnly }: any) {
   const getName = (id: string) => allUsers.find((u: any) => u.id === id)?.name || '?'
   const totalItems = (ord.items || []).length
   const { min, max } = photoCountRangeV2(totalItems)
@@ -16466,7 +16467,7 @@ function PackingDetailPanel({ ord, mobile, user, allUsers, products, onClose, on
       {/* ══ AI CHECK BANNER ══ */}
       {ord.ai_check_status && (
         <AiCheckBanner ord={ord} onReview={onAiReview}
-          canReview={!readOnly && (ord.ai_check_status === 'mismatch' || ord.ai_check_status === 'unclear')}
+          canReview={canReviewAi && (ord.ai_check_status === 'mismatch' || ord.ai_check_status === 'unclear')}
           onRetry={onAiRetry ? () => onAiRetry(ord.order_code) : undefined}/>
       )}
 
@@ -17947,6 +17948,7 @@ function PriorityRequestModule({ user, allUsers, mobile }: any) {
 
 function OrderLookupTab({ user, allUsers, mobile }: any) {
   const [searchQ, setSearchQ] = useState('')
+  const [debouncedQ, setDebouncedQ] = useState('')  // Dùng cho filter/suggestions (expensive ops)
   // Date range thay vì preset days
   const todayStr = () => new Date().toISOString().split('T')[0]
   const daysAgoStr = (d: number) => new Date(Date.now() - d*86400000).toISOString().split('T')[0]
@@ -17958,6 +17960,12 @@ function OrderLookupTab({ user, allUsers, mobile }: any) {
   const [expanded, setExpanded] = useState<string|null>(null)
   const [showSuggestions, setShowSuggestions] = useState(false)
   const [suggestionIdx, setSuggestionIdx] = useState(-1)
+
+  // Debounce searchQ → debouncedQ (250ms) để tránh lag khi gõ nhanh
+  useEffect(() => {
+    const t = setTimeout(() => setDebouncedQ(searchQ), 250)
+    return () => clearTimeout(t)
+  }, [searchQ])
 
   // Refs để track state hiện tại khi refresh ngầm (tránh race condition)
   const isUserActiveRef = useRef(false)  // user đang gõ/tương tác → không refresh
@@ -18009,63 +18017,79 @@ function OrderLookupTab({ user, allUsers, mobile }: any) {
   // ═══ Gợi ý (dropdown) ═══
   // Build list unique KH + SP từ allOrders để gợi ý
   const suggestions = useMemo(() => {
-    const q = norm(searchQ)
-    if (!q.trim() || q.length < 2) return []
-    const tokens = q.split(/\s+/).filter(Boolean)
+    try {
+      const q = norm(debouncedQ)
+      if (!q.trim() || q.length < 2) return []
+      const tokens = q.split(/\s+/).filter(Boolean)
+      if (tokens.length === 0) return []
 
-    const customerSet = new Map<string, { type:'customer', label:string, count:number }>()
-    const productSet  = new Map<string, { type:'product',  label:string, count:number }>()
+      const customerMap = new Map<string, any>()
+      const productMap  = new Map<string, any>()
 
-    for (const o of allOrders) {
-      // Customer
-      const cname = (o.customer_name||'').trim()
-      if (cname) {
-        const hay = norm(cname)
-        if (tokens.every(t => hay.includes(t))) {
-          const key = `c:${cname}`
-          const existing = customerSet.get(key)
-          if (existing) existing.count++
-          else customerSet.set(key, { type:'customer', label: cname, count:1 })
+      for (const o of (allOrders || [])) {
+        if (!o) continue
+        // Customer
+        const cname = (o.customer_name || '').trim()
+        if (cname) {
+          const hay = norm(cname)
+          if (tokens.every(t => hay.includes(t))) {
+            const key = cname
+            const ex = customerMap.get(key)
+            if (ex) ex.count = (ex.count || 0) + 1
+            else customerMap.set(key, { type: 'customer', label: cname, count: 1 })
+          }
+        }
+        // Products
+        const items = Array.isArray(o.items) ? o.items : []
+        for (const it of items) {
+          if (!it) continue
+          const pname = `${it.code || ''} ${it.name || ''}`.trim()
+          if (!pname) continue
+          const hay = norm(pname)
+          if (tokens.every(t => hay.includes(t))) {
+            const key = it.code || it.name || pname
+            const ex = productMap.get(key)
+            if (ex) ex.count = (ex.count || 0) + 1
+            else productMap.set(key, { type: 'product', label: (it.name || it.code || ''), count: 1 })
+          }
         }
       }
-      // Products
-      for (const it of (o.items||[])) {
-        const pname = `${it.code||''} ${it.name||''}`.trim()
-        if (!pname) continue
-        const hay = norm(pname)
-        if (tokens.every(t => hay.includes(t))) {
-          const key = `p:${it.code||it.name}`
-          const existing = productSet.get(key)
-          if (existing) existing.count++
-          else productSet.set(key, { type:'product', label: (it.name||it.code), count:1 })
-        }
-      }
+
+      const custArr = Array.from(customerMap.values()).sort((a, b) => (b.count || 0) - (a.count || 0)).slice(0, 5)
+      const prodArr = Array.from(productMap.values()).sort((a, b) => (b.count || 0) - (a.count || 0)).slice(0, 7)
+      return [...custArr, ...prodArr]
+    } catch (e) {
+      console.error('[OrderLookup] suggestions error:', e)
+      return []
     }
-
-    // Kết hợp: customer trước (nếu có), sau đó product. Sort theo count desc
-    const custArr = [...customerSet.values()].sort((a,b) => b.count - a.count).slice(0, 5)
-    const prodArr = [...productSet.values()].sort((a,b) => b.count - a.count).slice(0, 7)
-    return [...custArr, ...prodArr]
-  }, [searchQ, allOrders])
+  }, [debouncedQ, allOrders])
 
   // ═══ Filter orders ═══
   const filtered = useMemo(() => {
-    const q = norm(searchQ)
-    if (!q.trim()) return []
-    const tokens = q.split(/\s+/).filter(Boolean)
-    return allOrders.filter((o: any) => {
-      if (statusFilter !== 'all' && o.status !== statusFilter) return false
-      // Match: customer name OR item code/name
-      const custHay = norm(o.customer_name||'')
-      const custMatch = tokens.every(t => custHay.includes(t))
-      if (custMatch) return true
-      const items = o.items || []
-      return items.some((it: any) => {
-        const hay = norm(`${it.code} ${it.name}`)
-        return tokens.every(t => hay.includes(t))
+    try {
+      const q = norm(debouncedQ)
+      if (!q.trim()) return []
+      const tokens = q.split(/\s+/).filter(Boolean)
+      if (tokens.length === 0) return []
+      return (allOrders || []).filter((o: any) => {
+        if (!o) return false
+        if (statusFilter !== 'all' && o.status !== statusFilter) return false
+        // Match: customer name OR item code/name
+        const custHay = norm(o.customer_name || '')
+        const custMatch = tokens.every(t => custHay.includes(t))
+        if (custMatch) return true
+        const items = Array.isArray(o.items) ? o.items : []
+        return items.some((it: any) => {
+          if (!it) return false
+          const hay = norm(`${it.code || ''} ${it.name || ''}`)
+          return tokens.every(t => hay.includes(t))
+        })
       })
-    })
-  }, [searchQ, allOrders, statusFilter])
+    } catch (e) {
+      console.error('[OrderLookup] filter error:', e)
+      return []
+    }
+  }, [debouncedQ, allOrders, statusFilter])
 
   const handleKeyDown = (e: React.KeyboardEvent) => {
     markActive()
@@ -18117,8 +18141,8 @@ function OrderLookupTab({ user, allUsers, mobile }: any) {
           {showSuggestions && suggestions.length > 0 && (
             <div style={{ position:'absolute', top:'calc(100% + 4px)', left:0, right:0,
               background:'#fff', border:`1px solid ${T.border}`, borderRadius:8,
-              maxHeight:280, overflowY:'auto' as any, zIndex:50,
-              boxShadow:'0 4px 12px rgba(0,0,0,0.1)' }}>
+              maxHeight:280, overflowY:'auto' as any, zIndex:1000,
+              boxShadow:'0 4px 12px rgba(0,0,0,0.15)' }}>
               {suggestions.map((s: any, i: number) => (
                 <div key={i}
                   onMouseDown={(e) => {
@@ -18230,10 +18254,10 @@ function OrderLookupTab({ user, allUsers, mobile }: any) {
           <div style={{ display:'flex', flexDirection:'column', gap:8 }}>
             {filtered.map((o: any) => {
               const isExp = expanded === o.order_code
-              const tokens = norm(searchQ).split(/\s+/).filter(Boolean)
+              const tokens = norm(debouncedQ).split(/\s+/).filter(Boolean)
               const custMatched = tokens.every(t => norm(o.customer_name||'').includes(t))
               const matchingItems = (o.items||[]).filter((it: any) => {
-                const hay = norm(`${it.code} ${it.name}`)
+                const hay = norm(`${it.code||''} ${it.name||''}`)
                 return tokens.every(t => hay.includes(t))
               })
               const statusLabel = ({
