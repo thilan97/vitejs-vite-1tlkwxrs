@@ -12,7 +12,7 @@ const db = createClient(SUPABASE_URL, SUPABASE_KEY)
 // APP_VERSION — dùng để invalidate cache localStorage mỗi khi deploy version mới
 // (ngăn bug quyền user bị "reset" do cache position cũ sau deploy)
 // ⚠️ MỖI LẦN DEPLOY FEATURE MỚI CÓ PERMISSION MỚI, BUMP SỐ NÀY:
-const APP_VERSION = '2026.04.17.v56'
+const APP_VERSION = '2026.04.17.v57'
 
 // ════════════════════════════════════════════════════════════════
 // AUDIT LOG — ghi nhận các hành động phá hoại data để trace lại
@@ -18357,7 +18357,7 @@ function OrderLookupTab({ user, allUsers, mobile }: any) {
 
           {filtered.length === 0 && (
             <div style={{ padding:'40px 20px', textAlign:'center', color:T.light, fontSize:13 }}>
-              Không tìm thấy đơn nào chứa "{searchQ}" trong {dayRange} ngày
+              Không tìm thấy đơn nào chứa "{searchQ}" từ {new Date(dateFrom).toLocaleDateString('vi-VN')} đến {new Date(dateTo).toLocaleDateString('vi-VN')}
             </div>
           )}
         </>
