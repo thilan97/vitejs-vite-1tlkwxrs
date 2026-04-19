@@ -12,7 +12,7 @@ const db = createClient(SUPABASE_URL, SUPABASE_KEY)
 // APP_VERSION — dùng để invalidate cache localStorage mỗi khi deploy version mới
 // (ngăn bug quyền user bị "reset" do cache position cũ sau deploy)
 // ⚠️ MỖI LẦN DEPLOY FEATURE MỚI CÓ PERMISSION MỚI, BUMP SỐ NÀY:
-const APP_VERSION = '2026.04.19.v64'
+const APP_VERSION = '2026.04.19.v65'
 
 // ════════════════════════════════════════════════════════════════
 // AUDIT LOG — ghi nhận các hành động phá hoại data để trace lại
@@ -18298,6 +18298,34 @@ function PayrollImportModule({ user, allUsers, mobile, attendance, setAttendance
       }
       setParsedData(allParsed)
 
+      // Auto-detect tháng chính trong file (majority vote từ records)
+      const monthCounts: Record<string, number> = {}
+      for (const emp of allParsed) {
+        for (const rec of emp.records) {
+          const m = rec.date?.slice(0, 7)  // 'YYYY-MM'
+          if (m) monthCounts[m] = (monthCounts[m] || 0) + 1
+        }
+      }
+      const topMonth = Object.entries(monthCounts).sort((a, b) => b[1] - a[1])[0]
+      if (topMonth) {
+        const [ym, count] = topMonth
+        const [yStr, mStr] = ym.split('-')
+        const fileYear = parseInt(yStr)
+        const fileMonth = parseInt(mStr)
+        if (fileMonth !== month || fileYear !== year) {
+          const ok = confirm(
+            `⚠️ File chứa chủ yếu data tháng ${fileMonth}/${fileYear} (${count} records) ` +
+            `nhưng anh đang chọn import cho tháng ${month}/${year}.\n\n` +
+            `Click OK để tự động đổi sang tháng ${fileMonth}/${fileYear}.\n` +
+            `Click Cancel nếu anh muốn giữ nguyên tháng ${month}/${year} (records ngoài tháng sẽ bị bỏ qua).`
+          )
+          if (ok) {
+            setMonth(fileMonth)
+            setYear(fileYear)
+          }
+        }
+      }
+
       // Auto-map based on existing users.fingerprint_codes + fuzzy name match
       const autoMap: Record<string, string> = {}
       for (const emp of allParsed) {
@@ -18321,7 +18349,7 @@ function PayrollImportModule({ user, allUsers, mobile, attendance, setAttendance
       }
       setMappings(autoMap)
 
-      // Check if this month/year already imported
+      // Check if this month/year already imported (sau khi đổi tháng)
       const existing = importHistory.find(h => h.month === month && h.year === year)
       if (existing) setExistingImport(existing)
 
