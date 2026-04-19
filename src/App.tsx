@@ -19205,8 +19205,9 @@ function computeCommission(opts: {
 
 
 // Format tiền VND (3.456.789 đ)
-function fmtMoney(n: number): string {
-  if (n === 0) return '0'
+// Format tiền VND cho payroll (3.456.789 hoặc 0, khác với fmtMoney gốc trả '' cho 0)
+function fmtVND(n: number): string {
+  if (n === 0 || !n) return '0'
   const sign = n < 0 ? '-' : ''
   return sign + Math.abs(Math.round(n)).toLocaleString('vi-VN')
 }
@@ -19480,15 +19481,15 @@ function PayrollModule({ user, allUsers, mobile }: any) {
                   <td style={{ padding: 10 }}>{pr.position_type}</td>
                   <td style={{ padding: 10, textAlign: 'right' }}>{(pr.work_hours_regular || 0).toFixed(1)}h</td>
                   <td style={{ padding: 10, textAlign: 'right' }}>{((pr.ot_150_hours || 0) + (pr.ot_200_hours || 0)).toFixed(1)}h</td>
-                  <td style={{ padding: 10, textAlign: 'right' }}>{fmtMoney((pr.salary_work_amount || 0) + (pr.salary_ot_150_amount || 0) + (pr.salary_ot_200_amount || 0))}</td>
+                  <td style={{ padding: 10, textAlign: 'right' }}>{fmtVND((pr.salary_work_amount || 0) + (pr.salary_ot_150_amount || 0) + (pr.salary_ot_200_amount || 0))}</td>
                   <td style={{ padding: 10, textAlign: 'right', color: T.green }}>
-                    {fmtMoney((pr.lunch_amount || 0) + (pr.attendance_bonus_amount || 0) + (pr.inspection_bonus_amount || 0) + (pr.commission_total || 0) + Math.max(0, pr.other_income_total || 0))}
+                    {fmtVND((pr.lunch_amount || 0) + (pr.attendance_bonus_amount || 0) + (pr.inspection_bonus_amount || 0) + (pr.commission_total || 0) + Math.max(0, pr.other_income_total || 0))}
                   </td>
                   <td style={{ padding: 10, textAlign: 'right', color: T.red }}>
-                    -{fmtMoney((pr.bhxh_deduction || 0) + (pr.shortage_loss_total || 0) + Math.max(0, -(pr.other_income_total || 0)))}
+                    -{fmtVND((pr.bhxh_deduction || 0) + (pr.shortage_loss_total || 0) + Math.max(0, -(pr.other_income_total || 0)))}
                   </td>
                   <td style={{ padding: 10, textAlign: 'right', fontWeight: 700, fontSize: FS.md, color: T.dark }}>
-                    {fmtMoney(pr.final_salary || 0)}
+                    {fmtVND(pr.final_salary || 0)}
                   </td>
                   <td style={{ padding: 10, color: statusColor, fontWeight: 600 }}>{statusLabel}</td>
                   <td style={{ padding: 10 }}>
@@ -19524,7 +19525,7 @@ function PayrollModule({ user, allUsers, mobile }: any) {
             <tr style={{ background: T.gold + '22', fontWeight: 700, borderTop: `3px solid ${T.gold}` }}>
               <td colSpan={7} style={{ padding: 12, textAlign: 'right' }}>TỔNG QUỸ LƯƠNG:</td>
               <td style={{ padding: 12, textAlign: 'right', fontSize: FS.md, color: T.dark }}>
-                {fmtMoney(usersWithSalary.reduce((s: number, u: any) => {
+                {fmtVND(usersWithSalary.reduce((s: number, u: any) => {
                   const pr = getPayroll(u.id) || computeForUser(u)
                   return s + (pr.final_salary || 0)
                 }, 0))}
@@ -19591,7 +19592,7 @@ function PayrollDetailModal({ user: nv, payroll, salaryConfig, otherIncomes, sho
         </div>
 
         <div style={{ fontSize: FS.sm, color: T.med, marginBottom: 12 }}>
-          Vị trí: <b>{salaryConfig.position_type}</b> | LCB: <b>{fmtMoney(salaryConfig.base_salary)}đ</b> | Ngày làm chuẩn tháng: <b>{totalWorkingDays}</b>
+          Vị trí: <b>{salaryConfig.position_type}</b> | LCB: <b>{fmtVND(salaryConfig.base_salary)}đ</b> | Ngày làm chuẩn tháng: <b>{totalWorkingDays}</b>
         </div>
 
         {/* Breakdown sections */}
@@ -19610,26 +19611,26 @@ function PayrollDetailModal({ user: nv, payroll, salaryConfig, otherIncomes, sho
         <div style={{ background: '#F0FDF4', padding: 12, borderRadius: RD.md, marginBottom: 10 }}>
           <div style={{ fontWeight: 700, marginBottom: 8, color: T.green }}>➕ Thu nhập</div>
           <div style={{ display: 'grid', gridTemplateColumns: '2fr 1fr', gap: 6, fontSize: FS.sm }}>
-            <span>Lương công (LCB × tỷ lệ giờ):</span> <span style={{ textAlign: 'right' }}>{fmtMoney(payroll.salary_work_amount || 0)}đ</span>
-            <span>OT 150%:</span> <span style={{ textAlign: 'right' }}>{fmtMoney(payroll.salary_ot_150_amount || 0)}đ</span>
-            <span>OT 200%:</span> <span style={{ textAlign: 'right' }}>{fmtMoney(payroll.salary_ot_200_amount || 0)}đ</span>
-            <span>Tiền ăn trưa ({payroll.lunch_days || 0} buổi × 30k):</span> <span style={{ textAlign: 'right' }}>{fmtMoney(payroll.lunch_amount || 0)}đ</span>
+            <span>Lương công (LCB × tỷ lệ giờ):</span> <span style={{ textAlign: 'right' }}>{fmtVND(payroll.salary_work_amount || 0)}đ</span>
+            <span>OT 150%:</span> <span style={{ textAlign: 'right' }}>{fmtVND(payroll.salary_ot_150_amount || 0)}đ</span>
+            <span>OT 200%:</span> <span style={{ textAlign: 'right' }}>{fmtVND(payroll.salary_ot_200_amount || 0)}đ</span>
+            <span>Tiền ăn trưa ({payroll.lunch_days || 0} buổi × 30k):</span> <span style={{ textAlign: 'right' }}>{fmtVND(payroll.lunch_amount || 0)}đ</span>
             {salaryConfig.has_attendance_bonus && (
               <>
                 <span>Chuyên cần ({(payroll.total_nkp_days || 0) === 0 ? 'đủ' : `NKP ${payroll.total_nkp_days}`}):</span>
-                <span style={{ textAlign: 'right' }}>{fmtMoney(payroll.attendance_bonus_amount || 0)}đ</span>
+                <span style={{ textAlign: 'right' }}>{fmtVND(payroll.attendance_bonus_amount || 0)}đ</span>
               </>
             )}
             {salaryConfig.has_inspection_bonus && (
               <>
                 <span>Thưởng kiểm hàng:</span>
-                <span style={{ textAlign: 'right' }}>{fmtMoney(payroll.inspection_bonus_amount || 0)}đ</span>
+                <span style={{ textAlign: 'right' }}>{fmtVND(payroll.inspection_bonus_amount || 0)}đ</span>
               </>
             )}
             {(payroll.commission_total || 0) > 0 && (
               <>
-                <span>Hoa hồng Sale{revenue ? ` (DS ${fmtMoney(revenue.ds_khach_cu + revenue.ds_khach_moi)})` : ''}:</span>
-                <span style={{ textAlign: 'right' }}>{fmtMoney(payroll.commission_total || 0)}đ</span>
+                <span>Hoa hồng Sale{revenue ? ` (DS ${fmtVND(revenue.ds_khach_cu + revenue.ds_khach_moi)})` : ''}:</span>
+                <span style={{ textAlign: 'right' }}>{fmtVND(payroll.commission_total || 0)}đ</span>
               </>
             )}
           </div>
@@ -19641,13 +19642,13 @@ function PayrollDetailModal({ user: nv, payroll, salaryConfig, otherIncomes, sho
             {otherIncomes.map((oi: any, idx: number) => (
               <div key={idx} style={{ fontSize: FS.sm, display: 'flex', justifyContent: 'space-between' }}>
                 <span>{oi.reason}:</span>
-                <span style={{ color: oi.amount >= 0 ? T.green : T.red, fontWeight: 600 }}>{oi.amount >= 0 ? '+' : ''}{fmtMoney(oi.amount)}đ</span>
+                <span style={{ color: oi.amount >= 0 ? T.green : T.red, fontWeight: 600 }}>{oi.amount >= 0 ? '+' : ''}{fmtVND(oi.amount)}đ</span>
               </div>
             ))}
             {shortageLoss.map((sl: any, idx: number) => (
               <div key={`sl${idx}`} style={{ fontSize: FS.sm, display: 'flex', justifyContent: 'space-between' }}>
                 <span>Tiền mất hàng{sl.note ? ` (${sl.note})` : ''}:</span>
-                <span style={{ color: T.red, fontWeight: 600 }}>-{fmtMoney(sl.amount)}đ</span>
+                <span style={{ color: T.red, fontWeight: 600 }}>-{fmtVND(sl.amount)}đ</span>
               </div>
             ))}
           </div>
@@ -19658,7 +19659,7 @@ function PayrollDetailModal({ user: nv, payroll, salaryConfig, otherIncomes, sho
           {salaryConfig.has_bhxh && (
             <div style={{ fontSize: FS.sm, display: 'flex', justifyContent: 'space-between' }}>
               <span>BHXH cố định:</span>
-              <span>-{fmtMoney(payroll.bhxh_deduction || 0)}đ</span>
+              <span>-{fmtVND(payroll.bhxh_deduction || 0)}đ</span>
             </div>
           )}
         </div>
@@ -19685,7 +19686,7 @@ function PayrollDetailModal({ user: nv, payroll, salaryConfig, otherIncomes, sho
 
         <div style={{ background: T.gold + '22', padding: 16, borderRadius: RD.md, textAlign: 'center' }}>
           <div style={{ fontSize: FS.sm, color: T.med }}>THỰC NHẬN</div>
-          <div style={{ fontSize: 28, fontWeight: 700, color: T.dark }}>{fmtMoney(payroll.final_salary || 0)}đ</div>
+          <div style={{ fontSize: 28, fontWeight: 700, color: T.dark }}>{fmtVND(payroll.final_salary || 0)}đ</div>
         </div>
       </div>
     </div>
@@ -19756,7 +19757,7 @@ function MyPayslipModule({ user, allUsers, mobile }: any) {
         <Card style={{ padding: 20 }}>
           <div style={{ textAlign: 'center', marginBottom: 20 }}>
             <div style={{ fontSize: FS.sm, color: T.med }}>THỰC NHẬN</div>
-            <div style={{ fontSize: 36, fontWeight: 700, color: T.dark }}>{fmtMoney(payroll.final_salary)}đ</div>
+            <div style={{ fontSize: 36, fontWeight: 700, color: T.dark }}>{fmtVND(payroll.final_salary)}đ</div>
             <div style={{ fontSize: FS.xs, color: payroll.status === 'paid' ? T.green : T.blue, marginTop: 4 }}>
               {payroll.status === 'paid' ? '✅ Đã thanh toán' : '✔ Đã duyệt'} • Tháng {month}/{year}
             </div>
@@ -19772,23 +19773,23 @@ function MyPayslipModule({ user, allUsers, mobile }: any) {
 
           <div style={{ background: '#F0FDF4', padding: 14, borderRadius: RD.md, marginBottom: 10 }}>
             <div style={{ fontWeight: 700, marginBottom: 8, color: T.green }}>➕ Thu nhập</div>
-            <Line label="Lương công" value={`${fmtMoney(payroll.salary_work_amount)}đ`}/>
-            {(payroll.salary_ot_150_amount || 0) > 0 && <Line label="OT 150%" value={`${fmtMoney(payroll.salary_ot_150_amount)}đ`}/>}
-            {(payroll.salary_ot_200_amount || 0) > 0 && <Line label="OT 200%" value={`${fmtMoney(payroll.salary_ot_200_amount)}đ`}/>}
-            <Line label={`Ăn trưa (${payroll.lunch_days} buổi)`} value={`${fmtMoney(payroll.lunch_amount)}đ`}/>
-            {(payroll.attendance_bonus_amount || 0) > 0 && <Line label="Chuyên cần" value={`${fmtMoney(payroll.attendance_bonus_amount)}đ`}/>}
-            {(payroll.inspection_bonus_amount || 0) > 0 && <Line label="Thưởng kiểm hàng" value={`${fmtMoney(payroll.inspection_bonus_amount)}đ`}/>}
-            {(payroll.commission_total || 0) > 0 && <Line label="Hoa hồng" value={`${fmtMoney(payroll.commission_total)}đ`}/>}
+            <Line label="Lương công" value={`${fmtVND(payroll.salary_work_amount)}đ`}/>
+            {(payroll.salary_ot_150_amount || 0) > 0 && <Line label="OT 150%" value={`${fmtVND(payroll.salary_ot_150_amount)}đ`}/>}
+            {(payroll.salary_ot_200_amount || 0) > 0 && <Line label="OT 200%" value={`${fmtVND(payroll.salary_ot_200_amount)}đ`}/>}
+            <Line label={`Ăn trưa (${payroll.lunch_days} buổi)`} value={`${fmtVND(payroll.lunch_amount)}đ`}/>
+            {(payroll.attendance_bonus_amount || 0) > 0 && <Line label="Chuyên cần" value={`${fmtVND(payroll.attendance_bonus_amount)}đ`}/>}
+            {(payroll.inspection_bonus_amount || 0) > 0 && <Line label="Thưởng kiểm hàng" value={`${fmtVND(payroll.inspection_bonus_amount)}đ`}/>}
+            {(payroll.commission_total || 0) > 0 && <Line label="Hoa hồng" value={`${fmtVND(payroll.commission_total)}đ`}/>}
           </div>
 
           {(otherIncomes.length > 0 || shortageLoss.length > 0) && (
             <div style={{ background: '#FEF3C7', padding: 14, borderRadius: RD.md, marginBottom: 10 }}>
               <div style={{ fontWeight: 700, marginBottom: 8, color: T.amber }}>💼 Khoản khác</div>
               {otherIncomes.map((oi: any, idx: number) => (
-                <Line key={idx} label={oi.reason} value={`${oi.amount >= 0 ? '+' : ''}${fmtMoney(oi.amount)}đ`} colored={oi.amount >= 0 ? T.green : T.red}/>
+                <Line key={idx} label={oi.reason} value={`${oi.amount >= 0 ? '+' : ''}${fmtVND(oi.amount)}đ`} colored={oi.amount >= 0 ? T.green : T.red}/>
               ))}
               {shortageLoss.map((sl: any, idx: number) => (
-                <Line key={`sl${idx}`} label={`Tiền mất hàng${sl.note ? ` (${sl.note})` : ''}`} value={`-${fmtMoney(sl.amount)}đ`} colored={T.red}/>
+                <Line key={`sl${idx}`} label={`Tiền mất hàng${sl.note ? ` (${sl.note})` : ''}`} value={`-${fmtVND(sl.amount)}đ`} colored={T.red}/>
               ))}
             </div>
           )}
@@ -19796,7 +19797,7 @@ function MyPayslipModule({ user, allUsers, mobile }: any) {
           {(payroll.bhxh_deduction || 0) > 0 && (
             <div style={{ background: '#FEE2E2', padding: 14, borderRadius: RD.md, marginBottom: 10 }}>
               <div style={{ fontWeight: 700, marginBottom: 8, color: T.red }}>➖ Khấu trừ</div>
-              <Line label="BHXH" value={`-${fmtMoney(payroll.bhxh_deduction)}đ`} colored={T.red}/>
+              <Line label="BHXH" value={`-${fmtVND(payroll.bhxh_deduction)}đ`} colored={T.red}/>
             </div>
           )}
         </Card>
