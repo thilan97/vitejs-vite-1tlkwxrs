@@ -12,7 +12,7 @@ const db = createClient(SUPABASE_URL, SUPABASE_KEY)
 // APP_VERSION — dùng để invalidate cache localStorage mỗi khi deploy version mới
 // (ngăn bug quyền user bị "reset" do cache position cũ sau deploy)
 // ⚠️ MỖI LẦN DEPLOY FEATURE MỚI CÓ PERMISSION MỚI, BUMP SỐ NÀY:
-const APP_VERSION = '2026.04.20.v71'
+const APP_VERSION = '2026.04.20.v73'
 
 // ════════════════════════════════════════════════════════════════
 // AUDIT LOG — ghi nhận các hành động phá hoại data để trace lại
@@ -256,6 +256,7 @@ const getPerm = (user: any) => {
     viewWarehouseStats: isAdmin || (pos.perm_view_warehouse_stats ?? false) || (pos.perm_manage_inventory ?? false),
     manageSchedule:     isAdmin || (pos.perm_manage_warehouse_schedule ?? false) || (pos.perm_manage_inventory ?? false),
     trackOrders:        isAdmin || (pos.perm_track_orders ?? false) || (user?.dept_id === 'sale'),
+    viewSlowMoving:     isAdmin || (pos.perm_view_slow_moving ?? false) || (pos.perm_approve_leave ?? false),
   }
 }
 
@@ -345,6 +346,7 @@ const ALL_PERMS = [
   { key:'perm_view_warehouse_stats',     label:'Xem thống kê hiệu suất Kho',     group:'Kho'      },
   { key:'perm_manage_warehouse_schedule', label:'Quản lý lịch Kho (QM Kho)',     group:'Kho'      },
   { key:'perm_track_orders',             label:'Theo dõi đơn hàng (Sale)',       group:'Sale'     },
+  { key:'perm_view_slow_moving',         label:'Xem hàng bán chậm (Admin/QM Sale)', group:'Sale'  },
 ]
 // ── UTILITIES ────────────────────────────────────
 const fmtNow   = () => new Date().toLocaleString('vi-VN',{hour:'2-digit',minute:'2-digit',day:'2-digit',month:'2-digit',year:'numeric'})
@@ -1044,6 +1046,7 @@ const NAV_GROUPS = (perm: any, deptId = '') => {
         (perm.trackOrders) && { id:'trackorders', icon:Ico.truck, emoji:'🚚', label:'Theo dõi đơn' },
         (deptId==='sale' || perm.viewAllDashboard || perm.editPrice || perm.managePrograms) && { id:'pricelist', icon:Ico.tag, emoji:'💰', label:'Báo giá & CTKM' },
         { id:'shortage', icon:Ico.alertTri, emoji:'⚠️', label:'Hàng thiếu' },
+        perm.viewSlowMoving && { id:'slowmoving', icon:Ico.inbox, emoji:'📉', label:'Hàng bán chậm' },
         { id:'returns',  icon:Ico.rotate, emoji:'🔄', label:'Hàng hoàn' },
         { id:'wrongord', icon:Ico.alertTri, emoji:'❗', label:'Đơn sai' },
         (perm.managePayment||perm.viewAllDashboard) && { id:'payment', icon:Ico.cashDollar, emoji:'💸', label:'Lệnh CK' },
@@ -4614,14 +4617,13 @@ function MgrShortageRow({ item, idx, total, products, norm, setItems, mobile: is
                     ✅ Xác nhận đã về
                   </button>
                 )}
-                {/* Burned → Incoming: chuyển hàng cháy sang "sắp về" */}
+                {/* Burned → Incoming: mở form nhập SL + ngày về */}
                 {item.status==='burned' && (
-                  <button onClick={async () => {
-                    if (!confirm('Chuyển mã này từ "🔥 Hàng cháy" sang "📅 Sắp về"?')) return
-                    const upd = { status:'incoming', arrival_date:'', arrival_qty:0 }
-                    setItems((prev: any) => prev.map((i: any) => i.id===item.id ? {...i,...upd} : i))
-                    await db.from('shortage_items').update(upd).eq('id', item.id)
-                    setEditMode(true); setSelStatus('incoming')
+                  <button onClick={() => {
+                    // Không update DB ngay — chỉ mở form edit để nhập SL + ngày về
+                    // User bấm "Lưu" thì saveEdit() mới ghi DB với status='incoming'
+                    setSelStatus('incoming')
+                    setEditMode(true)
                   }}
                     style={{ padding:'4px 11px', borderRadius:7, border:`1.5px solid ${T.blue}`,
                       background:T.blueBg, cursor:'pointer', fontSize:11, fontFamily:'inherit', color:T.blue, fontWeight:600 }}>
@@ -7642,7 +7644,7 @@ function Settings({ user, setUser, settings, setSettings, onManualReset, mobile,
 // ══════════════════════════════════════════════════════════════════════
 // ══ NOTIFICATION CENTER — Hook + Page Component ══════════════════════
 // ══════════════════════════════════════════════════════════════════════
-function useNotifications({ user, wrongOrders, returnSlips, shortageItems, batches, paymentOrders, overdueOrders, reads, settings }: any) {
+function useNotifications({ user, wrongOrders, returnSlips, shortageItems, batches, paymentOrders, overdueOrders, slowMovingNew, reads, settings }: any) {
   const perm         = getPerm(user)
   const isSale       = user?.dept_id === 'sale'
   const isAdmin      = perm.viewAllDashboard
@@ -7807,6 +7809,23 @@ function useNotifications({ user, wrongOrders, returnSlips, shortageItems, batch
       }))
     }
     if (items.length>0) groups.push({ id:'overdue', title:`🕐 Đơn KiotViet quá ${threshold} ngày`, items, role:'sale' })
+  }
+
+  // ─ 9. Hàng bán chậm mới phát hiện (Admin / QM Sale) ─
+  if ((isAdmin || perm.viewSlowMoving) && Array.isArray(slowMovingNew) && slowMovingNew.length > 0) {
+    const items = slowMovingNew.map((sp: any) => ({
+      key: `slowmoving:${sp.product_code}`,
+      icon: sp.status === 'dead' ? '💀' : '📉',
+      title: `${sp.product_name}`,
+      meta: sp.status === 'dead'
+        ? `Chưa bán trong 60N • Tồn ${sp.on_hand} • ${(sp.stock_value||0).toLocaleString('vi-VN')}đ`
+        : `Bán chậm (${sp.sold_in_period||0} SP/60N) • Tồn ${sp.on_hand}`,
+      timestamp: sp.first_detected_at, 
+      urgency: sp.status === 'dead' ? 'high' : 'med',
+      targetPage: 'slowmoving',
+      role: 'sale',
+    }))
+    groups.push({ id:'slowmoving', title:'📉 Hàng mới thành bán chậm', items, role:'sale' })
   }
 
   groups.forEach((g: any) => {
@@ -8648,6 +8667,7 @@ export default function App() {
   const [overdueOrders, setOverdueOrders] = useState<any[]>([])
   const [overdueMeta, setOverdueMeta] = useState<any>(null)  // { scannedAt, fromCache, cacheAgeSec, total, scanned }
   const [overdueLoading, setOverdueLoading] = useState(false)
+  const [slowMovingNew, setSlowMovingNew] = useState<any[]>([])  // SP vừa thành bán chậm trong 3 ngày qua (cho notif)
 
   const fetchOverdueOrders = async (threshold = 7, forceRefresh = false) => {
     setOverdueLoading(true)
@@ -8884,6 +8904,21 @@ export default function App() {
         })
       // Fetch đơn hàng quá hạn từ KiotViet (qua Edge Function)
       fetchOverdueOrders(stData?.overdue_days_threshold ?? 7, false)
+      // Fetch SP mới thành bán chậm trong 3 ngày qua (cho notification)
+      const perm = getPerm(user)
+      if (perm.viewSlowMoving || perm.viewAllDashboard) {
+        const threeDaysAgo = new Date(Date.now() - 3*86400000).toISOString()
+        db.from('slow_moving_cache')
+          .select('product_code, product_name, on_hand, stock_value, status, severity, first_detected_at, sold_in_period')
+          .in('status', ['slow', 'dead'])
+          .eq('dismissed', false)
+          .gte('first_detected_at', threeDaysAgo)
+          .order('severity', { ascending: false })
+          .order('first_detected_at', { ascending: false })
+          .limit(50)
+          .then(({ data }: any) => { if (data) setSlowMovingNew(data) })
+          .catch(() => {})
+      }
       // Fetch return slips for notifications (last 30 days)
       const thirtyAgo = new Date(Date.now()-30*86400000).toISOString().split('T')[0]
       db.from('return_items').select('id,slip_id,sale_id,created_at,created_by,date')
@@ -8983,7 +9018,7 @@ export default function App() {
   // ── Notification Center: compute once, reuse for sidebar badge + page ──
   const { groups: notifGroups, totalUnread: notifUnread, totalItems: notifTotal } = useNotifications({
     user, wrongOrders, returnSlips, shortageItems: shortageNoti, batches,
-    paymentOrders, overdueOrders, reads: notificationReads, settings
+    paymentOrders, overdueOrders, slowMovingNew, reads: notificationReads, settings
   })
 
   return (
@@ -9093,6 +9128,7 @@ export default function App() {
           {validPage==='picking'    && <PickingModule {...pp} products={products}/>}
           {validPage==='packing'    && <PackingModule {...pp} products={products}/>}
           {validPage==='trackorders' && <SaleOrderTrackingModule {...pp}/>}
+          {validPage==='slowmoving' && <SlowMovingModule {...pp}/>}
           {validPage==='schedule'   && <WarehouseScheduleModule {...pp} leaveRequests={leaveRequests} attendance={attendance}/>}
           {validPage==='whstats'    && <WarehouseStatsModule {...pp}/>}
           {validPage==='priority'   && <PriorityRequestModule {...pp}/>}
@@ -23439,5 +23475,733 @@ function TrackingOrderPhotos({ photosPicked, photosPacked, orderCode }: any) {
         </div>
       )}
     </div>
+  )
+}
+
+// ══════════════════════════════════════════════════════════════════════
+// ══ SLOW MOVING MODULE — 📉 Hàng bán chậm ═════════════════════════════
+// ══════════════════════════════════════════════════════════════════════
+// Scope: Admin + QM Sale (Linh sâu)
+// Data: từ bảng slow_moving_cache (scan 1 lần/ngày 3h sáng VN qua Edge Function)
+// Logic: SP có status in ('slow', 'dead') và !dismissed
+
+function SlowMovingModule({ user, allUsers, mobile }: any) {
+  const perm = getPerm(user)
+  const canView = perm.viewSlowMoving || perm.viewAllDashboard
+  const isAdmin = perm.viewAllDashboard
+  const p = mobile ? '16px' : '24px'
+
+  const [items, setItems]         = useState<any[]>([])
+  const [settings, setSettings]   = useState<any>(null)
+  const [history, setHistory]     = useState<any[]>([])
+  const [loading, setLoading]     = useState(true)
+  const [scanning, setScanning]   = useState(false)
+  const [tab, setTab]             = useState<'list'|'settings'|'history'>('list')
+  const [statusFilter, setStatusFilter] = useState<'all'|'slow'|'dead'|'new'>('all')
+  const [searchQ, setSearchQ]     = useState('')
+  const [sortBy, setSortBy]       = useState<'value'|'days'|'detected'>('value')
+  const [minValueFilter, setMinValueFilter] = useState(0)
+  const [showDismissed, setShowDismissed] = useState(false)
+  const [selectedCategory, setSelectedCategory] = useState<string>('')
+
+  // ── Fetch data ──
+  const fetchAll = async () => {
+    setLoading(true)
+    try {
+      const [cacheRes, setRes, histRes] = await Promise.all([
+        db.from('slow_moving_cache')
+          .select('*')
+          .in('status', ['slow', 'dead'])
+          .order('severity', { ascending: false })
+          .order('stock_value', { ascending: false })
+          .limit(5000),
+        db.from('slow_moving_settings').select('*').eq('id', 'main').maybeSingle(),
+        db.from('slow_moving_history').select('*').order('scan_date', { ascending: false }).limit(30),
+      ])
+      setItems(cacheRes.data || [])
+      setSettings(setRes.data || null)
+      setHistory(histRes.data || [])
+    } catch (err: any) {
+      console.error('Fetch slow moving error:', err)
+    } finally {
+      setLoading(false)
+    }
+  }
+  useEffect(() => {
+    if (canView) fetchAll()
+  }, [canView])
+
+  // ── Manual scan ──
+  const scanNow = async () => {
+    if (scanning) return
+    if (!confirm('Scan ngay sẽ mất 2-5 phút, quét 5000+ SP và invoices 60 ngày. Tiếp tục?')) return
+    setScanning(true)
+    try {
+      const res = await fetch(`${SUPABASE_URL}/functions/v1/kiotviet-slow-moving`, {
+        method: 'POST',
+        headers: { 'Authorization': `Bearer ${SUPABASE_ANON}` }
+      })
+      const json = await res.json()
+      if (json.error) {
+        alert('❌ Scan lỗi: ' + json.error)
+      } else {
+        alert(`✅ Scan xong!\n• Đã scan: ${json.total_products_scanned} SP\n• Bán chậm: ${json.slow_count}\n• Chưa bán (dead): ${json.dead_count}\n• Mới: ${json.new_count}\n• Đã bán lại: ${json.resolved_count}\n• Tiền "chết": ${(json.total_dead_stock_value||0).toLocaleString('vi-VN')}đ\n• Thời gian: ${Math.round((json.duration_ms||0)/1000)}s`)
+        await fetchAll()
+      }
+    } catch (e: any) {
+      alert('❌ Scan lỗi: ' + e.message)
+    }
+    setScanning(false)
+  }
+
+  // ── Update item (notes/dismiss) ──
+  const updateItem = async (code: string, upd: any) => {
+    setItems(prev => prev.map(i => i.product_code === code ? { ...i, ...upd } : i))
+    await db.from('slow_moving_cache').update(upd).eq('product_code', code)
+  }
+
+  // ── Normalize for fuzzy search ──
+  const norm = (s: string) => (s||'').toLowerCase()
+    .normalize('NFD').replace(/[\u0300-\u036f]/g,'').replace(/đ/g,'d')
+    .trim().replace(/\s+/g, ' ')
+
+  // ── Filter + sort ──
+  const categories = useMemo(() => {
+    const set = new Map<string, string>()
+    items.forEach(i => { if (i.category_name) set.set(String(i.category_id), i.category_name) })
+    return Array.from(set.entries()).map(([id, name]) => ({ id, name }))
+      .sort((a, b) => a.name.localeCompare(b.name))
+  }, [items])
+
+  const filtered = useMemo(() => {
+    let list = items.filter(i => {
+      if (!showDismissed && i.dismissed) return false
+      if (showDismissed && !i.dismissed) return false
+      if (statusFilter === 'slow' && i.status !== 'slow') return false
+      if (statusFilter === 'dead' && i.status !== 'dead') return false
+      if (statusFilter === 'new') {
+        const threeDaysAgo = Date.now() - 3*86400000
+        if (!i.first_detected_at || new Date(i.first_detected_at).getTime() < threeDaysAgo) return false
+      }
+      if (minValueFilter > 0 && (i.stock_value || 0) < minValueFilter) return false
+      if (selectedCategory && String(i.category_id) !== selectedCategory) return false
+      if (searchQ.trim()) {
+        const tokens = norm(searchQ).split(/\s+/).filter(Boolean)
+        const hay = norm(`${i.product_code} ${i.product_name} ${i.category_name||''}`)
+        if (!tokens.every(t => hay.includes(t))) return false
+      }
+      return true
+    })
+    // Sort
+    list.sort((a, b) => {
+      if (sortBy === 'value') return (b.stock_value || 0) - (a.stock_value || 0)
+      if (sortBy === 'days') return (b.days_since_last_sold || 99999) - (a.days_since_last_sold || 99999)
+      if (sortBy === 'detected') {
+        const at = a.first_detected_at ? new Date(a.first_detected_at).getTime() : 0
+        const bt = b.first_detected_at ? new Date(b.first_detected_at).getTime() : 0
+        return bt - at
+      }
+      return 0
+    })
+    return list
+  }, [items, statusFilter, searchQ, sortBy, minValueFilter, selectedCategory, showDismissed])
+
+  // ── Summary stats ──
+  const stats = useMemo(() => {
+    const active = items.filter(i => !i.dismissed)
+    const slowCount = active.filter(i => i.status === 'slow').length
+    const deadCount = active.filter(i => i.status === 'dead').length
+    const totalValue = active.reduce((s, i) => s + (i.stock_value || 0), 0)
+    const threeDaysAgo = Date.now() - 3*86400000
+    const newCount = active.filter(i =>
+      i.first_detected_at && new Date(i.first_detected_at).getTime() >= threeDaysAgo
+    ).length
+    return { slowCount, deadCount, totalValue, newCount, totalActive: slowCount + deadCount }
+  }, [items])
+
+  // ── Export Excel CSV ──
+  const exportCSV = () => {
+    const rows = [
+      ['Mã SP', 'Tên SP', 'Danh mục', 'Trạng thái', 'Tồn', 'Bán 60N', 'Số HĐ', 'Lần cuối', 'Ngày chưa bán', 'Giá', 'Giá trị tồn', 'Phát hiện', 'Ghi chú']
+    ]
+    filtered.forEach(i => {
+      rows.push([
+        i.product_code || '',
+        (i.product_name || '').replace(/"/g, '""'),
+        i.category_name || '',
+        i.status === 'dead' ? 'Chưa bán' : 'Bán chậm',
+        String(i.on_hand || 0),
+        String(i.sold_in_period || 0),
+        String(i.invoice_count || 0),
+        i.last_sold_at ? new Date(i.last_sold_at).toLocaleDateString('vi-VN') : 'Chưa từng',
+        i.days_since_last_sold != null ? String(i.days_since_last_sold) : '—',
+        String(i.base_price || 0),
+        String(i.stock_value || 0),
+        i.first_detected_at ? new Date(i.first_detected_at).toLocaleDateString('vi-VN') : '—',
+        (i.notes || '').replace(/"/g, '""'),
+      ])
+    })
+    const csv = rows.map(r => r.map(c => `"${c}"`).join(',')).join('\n')
+    const blob = new Blob(['\uFEFF' + csv], { type: 'text/csv;charset=utf-8' })
+    const url = URL.createObjectURL(blob)
+    const a = document.createElement('a')
+    a.href = url
+    a.download = `hang-ban-cham-${new Date().toISOString().split('T')[0]}.csv`
+    document.body.appendChild(a); a.click(); document.body.removeChild(a)
+    URL.revokeObjectURL(url)
+  }
+
+  // ── Early return cho non-canView ──
+  if (!canView) {
+    return (
+      <div style={{ padding:p }}>
+        <Topbar mobile={mobile} title="📉 Hàng bán chậm"/>
+        <Card style={{ padding:20, textAlign:'center' }}>
+          <div style={{ fontSize:13, color:T.med }}>
+            Bạn không có quyền xem module này. Chỉ Admin và QM Sale mới truy cập được.
+          </div>
+        </Card>
+      </div>
+    )
+  }
+
+  const lastScanAt = settings?.last_scan_at ? new Date(settings.last_scan_at) : null
+  const lastScanStatus = settings?.last_scan_status || 'idle'
+  const scanHoursAgo = lastScanAt ? Math.floor((Date.now() - lastScanAt.getTime()) / 3600000) : 999
+
+  return (
+    <div style={{ padding:`0 ${p} ${mobile?'80px':p}` }}>
+      <Topbar mobile={mobile} title="📉 Hàng bán chậm"
+        subtitle={`${stats.totalActive} SP đang theo dõi • ${(stats.totalValue).toLocaleString('vi-VN')}đ tồn "chết"`}
+        action={
+          <div style={{ display:'flex', gap:8, alignItems:'center', flexWrap:'wrap' }}>
+            {lastScanAt && (
+              <span style={{
+                fontSize:10, fontWeight:600,
+                color: lastScanStatus === 'error' ? T.red : scanHoursAgo < 26 ? T.green : T.amber,
+                padding:'3px 8px', borderRadius:12,
+                background: lastScanStatus === 'error' ? T.redBg : scanHoursAgo < 26 ? T.greenBg : T.amberBg,
+                border: `1px solid ${lastScanStatus === 'error' ? T.red : scanHoursAgo < 26 ? T.green : T.amber}40`,
+              }}
+                title={`Scan lúc ${lastScanAt.toLocaleString('vi-VN')}${settings?.last_scan_error ? '\n⚠️ ' + settings.last_scan_error : ''}`}>
+                {lastScanStatus === 'running' ? '🔄 Đang scan...' :
+                 lastScanStatus === 'error' ? '❌ Lỗi scan' :
+                 scanHoursAgo < 1 ? '🟢 Vừa scan' :
+                 scanHoursAgo < 26 ? `🟢 Scan ${scanHoursAgo}h trước` :
+                 `🟡 Scan ${Math.floor(scanHoursAgo/24)}N trước`}
+              </span>
+            )}
+            <button onClick={scanNow} disabled={scanning}
+              style={{ padding:'6px 14px', borderRadius:20, border:`1px solid ${T.gold}`,
+                background: scanning ? T.border : T.goldBg, color:T.goldText,
+                cursor: scanning ? 'wait' : 'pointer', fontFamily:'inherit', fontSize:11, fontWeight:700 }}>
+              {scanning ? '⏳ Đang scan...' : '🔄 Scan ngay'}
+            </button>
+          </div>
+        }/>
+
+      {/* Tab nav */}
+      <div style={{ display:'flex', gap:6, marginBottom:14, flexWrap:'wrap' }}>
+        {[
+          { id:'list', label:'📋 Danh sách', count: stats.totalActive },
+          { id:'history', label:'📊 Lịch sử' },
+          isAdmin && { id:'settings', label:'⚙️ Thiết lập' },
+        ].filter(Boolean).map((t: any) => (
+          <button key={t.id} onClick={() => setTab(t.id)}
+            style={{ padding:'6px 14px', borderRadius:20, cursor:'pointer',
+              border: `1.5px solid ${tab===t.id ? T.gold : T.border}`,
+              background: tab===t.id ? T.goldBg : '#fff',
+              color: tab===t.id ? T.goldText : T.med, fontSize:12,
+              fontFamily:'inherit', fontWeight:tab===t.id?700:500 }}>
+            {t.label} {t.count != null && <span style={{ opacity:.7 }}>({t.count})</span>}
+          </button>
+        ))}
+      </div>
+
+      {/* ── TAB: List ── */}
+      {tab === 'list' && (
+        <>
+          {/* Summary cards */}
+          <div style={{ display:'grid',
+            gridTemplateColumns: mobile ? '1fr 1fr' : 'repeat(4, 1fr)',
+            gap:10, marginBottom:14 }}>
+            {[
+              ['💀 Chưa bán (60N)', stats.deadCount, T.red, 'dead'],
+              ['📉 Bán chậm', stats.slowCount, T.amber, 'slow'],
+              ['🆕 Mới (3N qua)', stats.newCount, T.blue, 'new'],
+              ['💰 Tổng tiền "chết"', stats.totalValue.toLocaleString('vi-VN')+'đ', T.gold, null],
+            ].map(([label, val, color, filterKey]: any) => (
+              <Card key={label} style={{ padding:'12px 10px', textAlign:'center',
+                cursor: filterKey ? 'pointer' : 'default',
+                border: filterKey && statusFilter === filterKey ? `2px solid ${color}` : `1px solid ${T.border}`,
+                background: filterKey && statusFilter === filterKey ? color+'15' : T.card }}
+                onClick={() => filterKey && setStatusFilter(statusFilter === filterKey ? 'all' : filterKey)}>
+                <div style={{ fontSize:10, color:T.med, marginBottom:4, fontWeight:600 }}>{label}</div>
+                <div style={{ fontSize:mobile?16:20, fontWeight:800, color }}>{val}</div>
+              </Card>
+            ))}
+          </div>
+
+          {/* Filter bar */}
+          <Card style={{ padding:10, marginBottom:10 }}>
+            <div style={{ display:'flex', gap:8, flexWrap:'wrap', alignItems:'center' }}>
+              {/* Search */}
+              <input value={searchQ} onChange={e => setSearchQ(e.target.value)}
+                placeholder="🔍 Tìm mã SP / tên / danh mục..."
+                style={{ flex:'1 1 200px', padding:'6px 10px', border:`1px solid ${T.border}`,
+                  borderRadius:8, fontSize:12, fontFamily:'inherit', color:T.dark, background:'#fff' }}/>
+
+              {/* Status filter */}
+              {['all','slow','dead','new'].map(s => (
+                <button key={s} onClick={() => setStatusFilter(s as any)}
+                  style={{ padding:'5px 10px', borderRadius:12,
+                    border:`1px solid ${statusFilter===s ? T.gold : T.border}`,
+                    background:statusFilter===s ? T.goldBg : 'transparent',
+                    color:statusFilter===s ? T.goldText : T.med,
+                    cursor:'pointer', fontSize:10, fontFamily:'inherit', fontWeight:statusFilter===s?700:500 }}>
+                  {s==='all'?'Tất cả': s==='slow'?'📉 Bán chậm': s==='dead'?'💀 Chưa bán':'🆕 Mới (3N)'}
+                </button>
+              ))}
+
+              {/* Category */}
+              {categories.length > 0 && (
+                <select value={selectedCategory} onChange={e => setSelectedCategory(e.target.value)}
+                  style={{ padding:'5px 8px', border:`1px solid ${T.border}`, borderRadius:8,
+                    fontSize:11, fontFamily:'inherit', background:'#fff', color:T.dark, cursor:'pointer' }}>
+                  <option value="">Tất cả danh mục</option>
+                  {categories.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}
+                </select>
+              )}
+
+              {/* Min value */}
+              <select value={minValueFilter} onChange={e => setMinValueFilter(Number(e.target.value))}
+                style={{ padding:'5px 8px', border:`1px solid ${T.border}`, borderRadius:8,
+                  fontSize:11, fontFamily:'inherit', background:'#fff', color:T.dark, cursor:'pointer' }}>
+                <option value={0}>Mọi giá trị</option>
+                <option value={100000}>{'≥ 100.000đ'}</option>
+                <option value={500000}>{'≥ 500.000đ'}</option>
+                <option value={1000000}>{'≥ 1.000.000đ'}</option>
+              </select>
+
+              {/* Sort */}
+              <select value={sortBy} onChange={e => setSortBy(e.target.value as any)}
+                style={{ padding:'5px 8px', border:`1px solid ${T.border}`, borderRadius:8,
+                  fontSize:11, fontFamily:'inherit', background:'#fff', color:T.dark, cursor:'pointer' }}>
+                <option value="value">Sort: Giá trị tồn</option>
+                <option value="days">Sort: Ngày chưa bán</option>
+                <option value="detected">Sort: Mới phát hiện</option>
+              </select>
+
+              {/* Dismissed toggle */}
+              <button onClick={() => setShowDismissed(v => !v)}
+                style={{ padding:'5px 10px', borderRadius:12,
+                  border:`1px solid ${showDismissed ? T.light : T.border}`,
+                  background:showDismissed ? T.bg : 'transparent', color:T.med,
+                  cursor:'pointer', fontSize:10, fontFamily:'inherit' }}>
+                {showDismissed ? '👁 Đã bỏ qua' : '🙈 Bỏ qua'}
+              </button>
+
+              {/* Export */}
+              <button onClick={exportCSV} disabled={filtered.length === 0}
+                style={{ padding:'5px 10px', borderRadius:12, border:`1px solid ${T.green}`,
+                  background:T.greenBg, color:T.green, cursor:'pointer',
+                  fontSize:10, fontFamily:'inherit', fontWeight:600 }}
+                title={`Xuất ${filtered.length} SP ra CSV`}>
+                📥 Xuất CSV ({filtered.length})
+              </button>
+            </div>
+          </Card>
+
+          {/* List */}
+          {loading ? (
+            <Card style={{ padding:20, textAlign:'center', color:T.light, fontSize:12 }}>
+              Đang tải danh sách...
+            </Card>
+          ) : filtered.length === 0 ? (
+            <Card style={{ padding:30, textAlign:'center' }}>
+              <div style={{ fontSize:30, marginBottom:6 }}>🎉</div>
+              <div style={{ fontSize:13, color:T.dark, fontWeight:600 }}>
+                {showDismissed ? 'Chưa có SP nào được bỏ qua' :
+                 items.length === 0 ? 'Chưa có data — chạy "Scan ngay" lần đầu' :
+                 'Không có SP nào khớp filter'}
+              </div>
+            </Card>
+          ) : (
+            <Card style={{ overflow:'hidden', padding:0 }}>
+              {/* Header */}
+              {!mobile && (
+                <div style={{ display:'grid',
+                  gridTemplateColumns:'2fr 70px 70px 90px 100px 120px 150px 80px',
+                  padding:'9px 14px', background:T.bg, borderBottom:`2px solid ${T.border}`,
+                  fontSize:10, fontWeight:700, color:T.light, textTransform:'uppercase', gap:6 }}>
+                  <span>Sản phẩm</span>
+                  <span style={{ textAlign:'center' }}>Tồn</span>
+                  <span style={{ textAlign:'center' }}>Bán 60N</span>
+                  <span style={{ textAlign:'center' }}>Lần cuối</span>
+                  <span style={{ textAlign:'right' }}>Giá trị tồn</span>
+                  <span>Trạng thái</span>
+                  <span>Ghi chú</span>
+                  <span style={{ textAlign:'center' }}>Action</span>
+                </div>
+              )}
+              {/* Rows */}
+              {filtered.slice(0, 500).map((item: any, idx: number) => (
+                <SlowMovingRow key={item.product_code} item={item} idx={idx}
+                  mobile={mobile} onUpdate={updateItem}/>
+              ))}
+              {filtered.length > 500 && (
+                <div style={{ padding:'10px', textAlign:'center', background:T.bg,
+                  fontSize:11, color:T.med, borderTop:`1px solid ${T.border}` }}>
+                  Hiển thị 500 SP đầu tiên (trong tổng {filtered.length}). Dùng filter để thu hẹp.
+                </div>
+              )}
+            </Card>
+          )}
+        </>
+      )}
+
+      {/* ── TAB: History ── */}
+      {tab === 'history' && (
+        <Card style={{ padding:0, overflow:'hidden' }}>
+          {history.length === 0 ? (
+            <div style={{ padding:20, textAlign:'center', color:T.light, fontSize:12 }}>
+              Chưa có lịch sử scan
+            </div>
+          ) : (
+            <>
+              {!mobile && (
+                <div style={{ display:'grid',
+                  gridTemplateColumns:'100px 90px 90px 90px 90px 90px 1fr',
+                  padding:'9px 14px', background:T.bg, borderBottom:`2px solid ${T.border}`,
+                  fontSize:10, fontWeight:700, color:T.light, textTransform:'uppercase', gap:6 }}>
+                  <span>Ngày scan</span>
+                  <span style={{ textAlign:'center' }}>SP scan</span>
+                  <span style={{ textAlign:'center' }}>Bán chậm</span>
+                  <span style={{ textAlign:'center' }}>Chưa bán</span>
+                  <span style={{ textAlign:'center' }}>Mới</span>
+                  <span style={{ textAlign:'center' }}>Giải quyết</span>
+                  <span style={{ textAlign:'right' }}>Tiền "chết"</span>
+                </div>
+              )}
+              {history.map((h: any, i: number) => (
+                <div key={h.id} style={{ display:mobile?'block':'grid',
+                  gridTemplateColumns:'100px 90px 90px 90px 90px 90px 1fr',
+                  padding:'9px 14px', gap:6, alignItems:'center',
+                  borderBottom:i<history.length-1?`1px solid ${T.border}`:'none',
+                  background:i%2===0?'#fff':T.rowAlt, fontSize:12 }}>
+                  <span style={{ fontWeight:600, color:T.dark }}>
+                    {new Date(h.scan_date).toLocaleDateString('vi-VN')}
+                  </span>
+                  <span style={{ textAlign:'center', color:T.med }}>{h.total_products||0}</span>
+                  <span style={{ textAlign:'center', color:T.amber, fontWeight:600 }}>{h.slow_count||0}</span>
+                  <span style={{ textAlign:'center', color:T.red, fontWeight:600 }}>{h.dead_count||0}</span>
+                  <span style={{ textAlign:'center', color:T.blue, fontWeight:600 }}>
+                    {h.new_count > 0 ? `+${h.new_count}` : '—'}
+                  </span>
+                  <span style={{ textAlign:'center', color:T.green, fontWeight:600 }}>
+                    {h.resolved_count > 0 ? `-${h.resolved_count}` : '—'}
+                  </span>
+                  <span style={{ textAlign:'right', color:T.goldText, fontWeight:700 }}>
+                    {(h.total_dead_stock_value||0).toLocaleString('vi-VN')}đ
+                  </span>
+                </div>
+              ))}
+            </>
+          )}
+        </Card>
+      )}
+
+      {/* ── TAB: Settings ── */}
+      {tab === 'settings' && isAdmin && settings && (
+        <SlowMovingSettings settings={settings} onUpdate={async (upd: any) => {
+          setSettings({ ...settings, ...upd })
+          await db.from('slow_moving_settings').update(upd).eq('id', 'main')
+        }}/>
+      )}
+    </div>
+  )
+}
+
+// ── Row component ──
+function SlowMovingRow({ item, idx, mobile, onUpdate }: any) {
+  const [expanded, setExpanded] = useState(false)
+  const [noteEdit, setNoteEdit] = useState(item.notes || '')
+  const [savingNote, setSavingNote] = useState(false)
+
+  const isDead = item.status === 'dead'
+  const color = isDead ? T.red : T.amber
+  const bg = isDead ? T.redBg : T.amberBg
+  const statusLabel = isDead ? '💀 Chưa bán' : '📉 Bán chậm'
+
+  const daysText = item.days_since_last_sold != null
+    ? `${item.days_since_last_sold} ngày`
+    : 'Chưa từng'
+
+  const lastSoldText = item.last_sold_at
+    ? new Date(item.last_sold_at).toLocaleDateString('vi-VN')
+    : 'Chưa từng'
+
+  const isNew = item.first_detected_at &&
+    (Date.now() - new Date(item.first_detected_at).getTime()) < 3*86400000
+
+  const saveNote = async () => {
+    if (savingNote) return
+    if ((noteEdit || '').trim() === (item.notes || '').trim()) return
+    setSavingNote(true)
+    await onUpdate(item.product_code, { notes: noteEdit.trim() })
+    setSavingNote(false)
+  }
+
+  const toggleDismiss = async () => {
+    const newVal = !item.dismissed
+    if (newVal && !confirm('Bỏ qua SP này? SP sẽ không hiện trong list nữa (vẫn track ẩn).')) return
+    await onUpdate(item.product_code, {
+      dismissed: newVal,
+      dismissed_at: newVal ? new Date().toISOString() : null,
+    })
+  }
+
+  if (mobile) {
+    // Mobile: compact card
+    return (
+      <div style={{ padding:'10px 12px', borderBottom:`1px solid ${T.border}`,
+        background: isNew ? T.blueBg+'40' : idx%2===0?'#fff':T.rowAlt,
+        borderLeft:`3px solid ${color}` }}>
+        <div onClick={() => setExpanded(v => !v)} style={{ cursor:'pointer' }}>
+          <div style={{ display:'flex', alignItems:'center', gap:6, marginBottom:3 }}>
+            {isNew && <span style={{ fontSize:9, padding:'1px 5px', borderRadius:8,
+              background:T.blue, color:'#fff', fontWeight:700 }}>🆕 MỚI</span>}
+            <span style={{ fontSize:10, padding:'1px 6px', borderRadius:10, color, background:bg, fontWeight:700 }}>
+              {statusLabel}
+            </span>
+          </div>
+          <div style={{ fontSize:12, fontWeight:600, color:T.dark, marginBottom:2 }}>
+            {item.product_name}
+          </div>
+          <div style={{ fontSize:10, color:T.light, marginBottom:4 }}>
+            #{item.product_code} {item.category_name ? ` • ${item.category_name}` : ''}
+          </div>
+          <div style={{ display:'flex', gap:8, fontSize:10, color:T.med, flexWrap:'wrap' }}>
+            <span>Tồn: <b style={{ color:T.dark }}>{item.on_hand}</b></span>
+            <span>Bán 60N: <b style={{ color:T.dark }}>{item.sold_in_period}</b></span>
+            <span>Chưa bán: <b style={{ color }}>{daysText}</b></span>
+            <span>Trị giá: <b style={{ color:T.goldText }}>{(item.stock_value||0).toLocaleString('vi-VN')}đ</b></span>
+          </div>
+        </div>
+        {expanded && (
+          <div style={{ marginTop:8, paddingTop:8, borderTop:`1px dashed ${T.border}` }}>
+            <div style={{ fontSize:10, color:T.light, marginBottom:4 }}>
+              Lần cuối: {lastSoldText} • Phát hiện: {item.first_detected_at ? new Date(item.first_detected_at).toLocaleDateString('vi-VN') : '—'}
+            </div>
+            <input value={noteEdit} onChange={e => setNoteEdit(e.target.value)} onBlur={saveNote}
+              onKeyDown={(e: any) => { if (e.key === 'Enter') e.currentTarget.blur() }}
+              placeholder="💬 Ghi chú..."
+              style={{ width:'100%', padding:'5px 8px', fontSize:11, fontFamily:'inherit',
+                border:`1px solid ${item.notes ? T.blue : T.border}`, borderRadius:6, marginBottom:6,
+                background: item.notes ? T.blueBg : T.bg, color:T.dark }}/>
+            <button onClick={toggleDismiss}
+              style={{ padding:'4px 10px', borderRadius:10, fontSize:10, fontFamily:'inherit',
+                border:`1px solid ${item.dismissed ? T.blue : T.light}`,
+                background: item.dismissed ? T.blueBg : 'transparent',
+                color: item.dismissed ? T.blue : T.med, cursor:'pointer' }}>
+              {item.dismissed ? '↩️ Khôi phục' : '🙈 Bỏ qua'}
+            </button>
+          </div>
+        )}
+      </div>
+    )
+  }
+
+  // Desktop: grid row
+  return (
+    <div style={{ display:'grid',
+      gridTemplateColumns:'2fr 70px 70px 90px 100px 120px 150px 80px',
+      padding:'9px 14px', gap:6, alignItems:'center',
+      borderBottom:`1px solid ${T.border}`,
+      background: isNew ? T.blueBg+'40' : idx%2===0?'#fff':T.rowAlt,
+      borderLeft:`3px solid ${color}` }}>
+      <div style={{ minWidth:0 }}>
+        <div style={{ display:'flex', gap:4, alignItems:'center', marginBottom:2 }}>
+          {isNew && <span style={{ fontSize:8, padding:'1px 4px', borderRadius:6,
+            background:T.blue, color:'#fff', fontWeight:700, flexShrink:0 }}>🆕</span>}
+          <div style={{ fontSize:12, fontWeight:500, color:T.dark,
+            overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap' }}>
+            {item.product_name}
+          </div>
+        </div>
+        <div style={{ fontSize:9, color:T.light }}>
+          #{item.product_code}{item.category_name ? ` • ${item.category_name}` : ''}
+        </div>
+      </div>
+      <span style={{ fontSize:12, textAlign:'center', color:T.dark, fontWeight:600 }}>{item.on_hand}</span>
+      <span style={{ fontSize:12, textAlign:'center', color:T.med }}>{item.sold_in_period}</span>
+      <span style={{ fontSize:10, textAlign:'center', color }}>
+        {item.days_since_last_sold != null ? `${item.days_since_last_sold}N` : '—'}
+        <div style={{ fontSize:9, color:T.light }}>{lastSoldText}</div>
+      </span>
+      <span style={{ fontSize:11, textAlign:'right', fontWeight:700, color:T.goldText }}>
+        {(item.stock_value||0).toLocaleString('vi-VN')}đ
+      </span>
+      <span style={{ fontSize:10, padding:'2px 7px', borderRadius:12,
+        color, background:bg, fontWeight:700, whiteSpace:'nowrap', width:'fit-content' }}>
+        {statusLabel}
+      </span>
+      <input value={noteEdit} onChange={e => setNoteEdit(e.target.value)} onBlur={saveNote}
+        onKeyDown={(e: any) => { if (e.key === 'Enter') e.currentTarget.blur() }}
+        placeholder="💬 Ghi chú..."
+        style={{ padding:'4px 7px', fontSize:10, fontFamily:'inherit',
+          border:`1px solid ${item.notes ? T.blue : T.border}`, borderRadius:6,
+          background: item.notes ? T.blueBg : T.bg, color:T.dark }}/>
+      <button onClick={toggleDismiss}
+        style={{ padding:'4px 8px', borderRadius:10, fontSize:9, fontFamily:'inherit',
+          border:`1px solid ${item.dismissed ? T.blue : T.light}`,
+          background: item.dismissed ? T.blueBg : 'transparent',
+          color: item.dismissed ? T.blue : T.med, cursor:'pointer', whiteSpace:'nowrap' }}>
+        {item.dismissed ? '↩️ Khôi phục' : '🙈 Bỏ qua'}
+      </button>
+    </div>
+  )
+}
+
+// ── Settings component ──
+function SlowMovingSettings({ settings, onUpdate }: any) {
+  const [thresholdDays, setThresholdDays] = useState(settings.threshold_days || 45)
+  const [thresholdQty, setThresholdQty]   = useState(settings.threshold_qty || 3)
+  const [periodDays, setPeriodDays]       = useState(settings.period_days || 60)
+  const [minPrice, setMinPrice]           = useState(settings.min_price || 0)
+  const [minStock, setMinStock]           = useState(settings.min_stock || 1)
+  const [enabled, setEnabled]             = useState(settings.enabled !== false)
+
+  const [saving, setSaving] = useState(false)
+
+  const save = async () => {
+    setSaving(true)
+    await onUpdate({
+      threshold_days: Number(thresholdDays),
+      threshold_qty: Number(thresholdQty),
+      period_days: Number(periodDays),
+      min_price: Number(minPrice),
+      min_stock: Number(minStock),
+      enabled,
+      updated_at: new Date().toISOString(),
+    })
+    setSaving(false)
+    alert('✅ Đã lưu thiết lập. Lần scan tiếp theo sẽ dùng cấu hình mới.')
+  }
+
+  return (
+    <Card style={{ padding:20, maxWidth:600 }}>
+      <div style={{ fontSize:14, fontWeight:700, color:T.dark, marginBottom:14 }}>
+        ⚙️ Thiết lập module Hàng bán chậm
+      </div>
+
+      {/* Enabled */}
+      <label style={{ display:'flex', alignItems:'center', gap:10, padding:10,
+        background:enabled ? T.greenBg : T.bg, borderRadius:8,
+        border:`1px solid ${enabled ? T.green : T.border}`, cursor:'pointer', marginBottom:14 }}>
+        <input type="checkbox" checked={enabled} onChange={e => setEnabled(e.target.checked)}
+          style={{ width:16, height:16, cursor:'pointer' }}/>
+        <div>
+          <div style={{ fontSize:12, fontWeight:600, color:T.dark }}>
+            {enabled ? '✅ Bật scan tự động' : '⏸ Tắt scan tự động'}
+          </div>
+          <div style={{ fontSize:10, color:T.light, marginTop:2 }}>
+            Cron sẽ chạy mỗi ngày 3h sáng. Có thể tắt tạm thời nếu không cần.
+          </div>
+        </div>
+      </label>
+
+      {/* Threshold days */}
+      <div style={{ marginBottom:14 }}>
+        <label style={{ fontSize:12, fontWeight:600, color:T.dark, display:'block', marginBottom:4 }}>
+          📅 Ngưỡng "chưa bán" (X ngày)
+        </label>
+        <input type="number" value={thresholdDays} onChange={e => setThresholdDays(Number(e.target.value)||0)}
+          min={1} max={180}
+          style={{ width:'100%', padding:'7px 10px', border:`1px solid ${T.border}`, borderRadius:8,
+            fontSize:12, fontFamily:'inherit', color:T.dark }}/>
+        <div style={{ fontSize:10, color:T.light, marginTop:3 }}>
+          Nếu SP chưa bán trong X ngày → gắn cờ "bán chậm". Mặc định: 45 ngày.
+        </div>
+      </div>
+
+      {/* Threshold qty */}
+      <div style={{ marginBottom:14 }}>
+        <label style={{ fontSize:12, fontWeight:600, color:T.dark, display:'block', marginBottom:4 }}>
+          📦 Ngưỡng SL bán (N SP) trong {periodDays} ngày
+        </label>
+        <input type="number" value={thresholdQty} onChange={e => setThresholdQty(Number(e.target.value)||0)}
+          min={1} max={100}
+          style={{ width:'100%', padding:'7px 10px', border:`1px solid ${T.border}`, borderRadius:8,
+            fontSize:12, fontFamily:'inherit', color:T.dark }}/>
+        <div style={{ fontSize:10, color:T.light, marginTop:3 }}>
+          Nếu SP bán &lt; N trong {periodDays} ngày → gắn cờ "bán chậm". Mặc định: 3 SP.
+        </div>
+      </div>
+
+      {/* Period days */}
+      <div style={{ marginBottom:14 }}>
+        <label style={{ fontSize:12, fontWeight:600, color:T.dark, display:'block', marginBottom:4 }}>
+          🕐 Khoảng thời gian xét (ngày)
+        </label>
+        <input type="number" value={periodDays} onChange={e => setPeriodDays(Number(e.target.value)||0)}
+          min={7} max={365}
+          style={{ width:'100%', padding:'7px 10px', border:`1px solid ${T.border}`, borderRadius:8,
+            fontSize:12, fontFamily:'inherit', color:T.dark }}/>
+        <div style={{ fontSize:10, color:T.light, marginTop:3 }}>
+          Tính sold_in_period trong X ngày gần nhất. Mặc định: 60 ngày.
+        </div>
+      </div>
+
+      {/* Min price */}
+      <div style={{ marginBottom:14 }}>
+        <label style={{ fontSize:12, fontWeight:600, color:T.dark, display:'block', marginBottom:4 }}>
+          💰 Chỉ scan SP có giá ≥ (đồng)
+        </label>
+        <input type="number" value={minPrice} onChange={e => setMinPrice(Number(e.target.value)||0)}
+          min={0} step={10000}
+          style={{ width:'100%', padding:'7px 10px', border:`1px solid ${T.border}`, borderRadius:8,
+            fontSize:12, fontFamily:'inherit', color:T.dark }}/>
+        <div style={{ fontSize:10, color:T.light, marginTop:3 }}>
+          Loại bỏ SP giá quá thấp (túi bóng, bao bì...). Dùng 0 để scan tất cả.
+        </div>
+      </div>
+
+      {/* Min stock */}
+      <div style={{ marginBottom:14 }}>
+        <label style={{ fontSize:12, fontWeight:600, color:T.dark, display:'block', marginBottom:4 }}>
+          📊 Chỉ scan SP có tồn ≥
+        </label>
+        <input type="number" value={minStock} onChange={e => setMinStock(Number(e.target.value)||0)}
+          min={1}
+          style={{ width:'100%', padding:'7px 10px', border:`1px solid ${T.border}`, borderRadius:8,
+            fontSize:12, fontFamily:'inherit', color:T.dark }}/>
+        <div style={{ fontSize:10, color:T.light, marginTop:3 }}>
+          Mặc định: 1 (chỉ scan SP còn tồn). Không cần báo SP hết tồn.
+        </div>
+      </div>
+
+      <button onClick={save} disabled={saving}
+        style={{ padding:'9px 16px', borderRadius:8, border:'none', background:T.gold,
+          color:'#fff', cursor: saving ? 'wait' : 'pointer', fontFamily:'inherit',
+          fontSize:13, fontWeight:700, width:'100%' }}>
+        {saving ? 'Đang lưu...' : '💾 Lưu thiết lập'}
+      </button>
+
+      {settings.last_scan_at && (
+        <div style={{ marginTop:14, padding:10, background:T.bg, borderRadius:6, fontSize:10, color:T.light, lineHeight:1.6 }}>
+          <div>🔄 Lần scan cuối: {new Date(settings.last_scan_at).toLocaleString('vi-VN')}</div>
+          <div>⏱ Thời gian: {Math.round((settings.last_scan_duration_ms||0)/1000)}s</div>
+          <div>📦 SP scan: {settings.last_scan_product_count||0}</div>
+          <div>📉 Bán chậm: {settings.last_scan_slow_count||0}</div>
+          <div>🆕 Mới: {settings.last_scan_new_count||0}</div>
+          {settings.last_scan_error && (
+            <div style={{ color:T.red, marginTop:4, fontWeight:600 }}>
+              ❌ Lỗi: {settings.last_scan_error}
+            </div>
+          )}
+        </div>
+      )}
+    </Card>
   )
 }
