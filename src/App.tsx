@@ -24010,6 +24010,13 @@ function ErrorReportModule({ user, allUsers, mobile }: any) {
   }
   useEffect(() => { loadReports() }, [])
 
+  // Auto mark viewed khi mở detail
+  useEffect(() => {
+    if (!selected) return
+    const viewed = selected.viewed_by || []
+    if (!viewed.includes(user.id)) markViewed(selected)
+  }, [selected?.id])
+
   // Ctrl+V paste ảnh
   useEffect(() => {
     if (!showForm) return
@@ -24138,9 +24145,6 @@ function ErrorReportModule({ user, allUsers, mobile }: any) {
     const isOpen = selected.status === 'open'
     const iViewedIt = (selected.viewed_by||[]).includes(user.id)
     const canResolve = isAdmin || selected.created_by === user.id
-
-    // Mark viewed on open
-    if (!iViewedIt) markViewed(selected)
 
     return (
       <div style={{ padding: p, maxWidth: 720, margin:'0 auto' }}>
