@@ -12,7 +12,7 @@ const db = createClient(SUPABASE_URL, SUPABASE_KEY)
 // APP_VERSION — dùng để invalidate cache localStorage mỗi khi deploy version mới
 // (ngăn bug quyền user bị "reset" do cache position cũ sau deploy)
 // ⚠️ MỖI LẦN DEPLOY FEATURE MỚI CÓ PERMISSION MỚI, BUMP SỐ NÀY:
-const APP_VERSION = '2026.04.20.v81'
+const APP_VERSION = '2026.04.20.v82'
 
 // ════════════════════════════════════════════════════════════════
 // AUDIT LOG — ghi nhận các hành động phá hoại data để trace lại
@@ -16630,19 +16630,29 @@ function PackingModule({ user, allUsers, mobile, products }: any) {
     }
     // Soft popup: nếu đơn >=3 SP mà ảnh hàng đã nhặt < suggest
     if (totalItems >= 3 && picked < suggest) {
+      const aiWarn = totalItems >= 10
+        ? `\n\n🤖 AI check sẽ khó đếm chính xác với chỉ ${picked} ảnh cho đơn ${totalItems} SP.\n` +
+          `Với đơn nhiều SP, AI cần nhiều góc chụp để nhìn được tất cả SP (SP bị xếp chồng sẽ không đếm được).`
+        : ''
       const ok = confirm(
         `⚠️ Đơn này có ${totalItems} SP nhưng bạn chỉ chụp ${picked} ảnh hàng đã nhặt.\n` +
-        `Gợi ý nên chụp ít nhất ${suggest} ảnh để có bằng chứng rõ ràng nếu KH khiếu nại.\n\n` +
-        `Tiếp tục hoàn tất đóng hàng với chỉ ${picked} ảnh?`
+        `Gợi ý nên chụp ít nhất ${suggest} ảnh để có bằng chứng rõ ràng nếu KH khiếu nại.` +
+        aiWarn +
+        `\n\nTiếp tục hoàn tất đóng hàng với chỉ ${picked} ảnh?`
       )
       if (!ok) return
     }
     // Soft popup cho thùng hàng
     if (!ord.no_box && totalItems >= 3 && packed < suggest) {
+      const aiWarn = totalItems >= 10
+        ? `\n\n🤖 AI check sẽ khó đếm chính xác với chỉ ${packed} ảnh thùng cho đơn ${totalItems} SP.\n` +
+          `Khuyến cáo: chụp 2-3 góc khác nhau, mỗi lớp SP một ảnh để AI đếm được đủ.`
+        : ''
       const ok = confirm(
         `⚠️ Đơn này có ${totalItems} SP nhưng bạn chỉ chụp ${packed} ảnh thùng hàng.\n` +
-        `Gợi ý nên chụp ít nhất ${suggest} ảnh để có bằng chứng rõ ràng.\n\n` +
-        `Tiếp tục hoàn tất?`
+        `Gợi ý nên chụp ít nhất ${suggest} ảnh để có bằng chứng rõ ràng.` +
+        aiWarn +
+        `\n\nTiếp tục hoàn tất?`
       )
       if (!ok) return
     }
@@ -17795,6 +17805,15 @@ function PackingDetailPanel({ ord, mobile, user, allUsers, products, allOrders, 
               Trước khi thấy chi tiết SP để đóng, bạn <b>BẮT BUỘC</b> phải chụp tối thiểu <b>{min} ảnh</b> hàng đã nhặt (xếp ra bàn, đầy đủ, rõ ràng).
               Điều này đảm bảo có bằng chứng đơn hàng đúng trước khi đóng thùng.
             </div>
+            {totalItems >= 10 && (
+              <div style={{ fontSize:11, color:T.blue, marginTop:8, padding:'6px 8px',
+                background:'#fff', borderRadius:6, border:`1px solid ${T.blue}40`, lineHeight:1.5 }}>
+                🤖 <b>Gợi ý AI check:</b> Đơn có <b>{totalItems} SP</b> nên chụp <b>≥ {(() => {
+                  const { suggest } = photoCountRangeV2(totalItems); return suggest
+                })()} ảnh</b> ở các góc khác nhau để AI đếm được đầy đủ.
+                Với 1 ảnh duy nhất, SP sẽ bị xếp chồng và AI không đếm được → báo "không rõ ảnh".
+              </div>
+            )}
           </div>
 
           <PhotoSection
@@ -17999,17 +18018,28 @@ function PackingDetailPanel({ ord, mobile, user, allUsers, products, allOrders, 
 
           {/* Section ảnh thùng hàng — ẨN khi no_box */}
           {!ord.no_box && (
-            <PhotoSection
-              title="📮 Ảnh thùng hàng (sau khi đóng xong)"
-              subtitle="Chụp ảnh thùng hàng đã đóng kín, dán nhãn/ghi địa chỉ."
-              photos={ord.photos_packed || []}
-              min={min} max={max}
-              readOnly={readOnly}
-              orderCode={ord.order_code}
-              photoType="packed"
-              userId={user?.id}
-              onUpdate={(photos: any[]) => onUpdatePhotos('packed', photos)}
-            />
+            <>
+              {totalItems >= 10 && (
+                <div style={{ padding:'8px 12px', marginBottom:8, background:T.blueBg,
+                  border:`1px solid ${T.blue}`, borderRadius:6, fontSize:11, color:T.dark, lineHeight:1.5 }}>
+                  🤖 <b>Gợi ý AI check thùng hàng:</b> Đơn {totalItems} SP nên chụp <b>≥ {(() => {
+                    const { suggest } = photoCountRangeV2(totalItems); return suggest
+                  })()} ảnh thùng</b> ở các góc/lớp khác nhau.
+                  Nếu chụp 1 ảnh thùng đã đóng kín, AI không nhìn được SP bên trong → báo "không rõ ảnh".
+                </div>
+              )}
+              <PhotoSection
+                title="📮 Ảnh thùng hàng (sau khi đóng xong)"
+                subtitle="Chụp ảnh thùng hàng đã đóng kín, dán nhãn/ghi địa chỉ."
+                photos={ord.photos_packed || []}
+                min={min} max={max}
+                readOnly={readOnly}
+                orderCode={ord.order_code}
+                photoType="packed"
+                userId={user?.id}
+                onUpdate={(photos: any[]) => onUpdatePhotos('packed', photos)}
+              />
+            </>
           )}
 
           {/* Thông báo nếu bookship */}
