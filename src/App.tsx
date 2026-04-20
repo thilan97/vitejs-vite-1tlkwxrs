@@ -12,7 +12,7 @@ const db = createClient(SUPABASE_URL, SUPABASE_KEY)
 // APP_VERSION — dùng để invalidate cache localStorage mỗi khi deploy version mới
 // (ngăn bug quyền user bị "reset" do cache position cũ sau deploy)
 // ⚠️ MỖI LẦN DEPLOY FEATURE MỚI CÓ PERMISSION MỚI, BUMP SỐ NÀY:
-const APP_VERSION = '2026.04.20.v83'
+const APP_VERSION = '2026.04.20.v84'
 
 // ════════════════════════════════════════════════════════════════
 // AUDIT LOG — ghi nhận các hành động phá hoại data để trace lại
@@ -23959,6 +23959,12 @@ function ErrorReportModule({ user, allUsers, mobile }: any) {
   const p = mobile ? '14px' : '24px'
   const db = supabase
 
+  if (!perm.errorReport) return (
+    <div style={{ padding:40, textAlign:'center', color:T.light }}>
+      🔒 Bạn không có quyền truy cập module này
+    </div>
+  )
+
   const [reports, setReports] = useState<any[]>([])
   const [loading, setLoading] = useState(true)
   const [tab, setTab] = useState<'all'|'mine'|'reported'>('all')
@@ -23983,12 +23989,24 @@ function ErrorReportModule({ user, allUsers, mobile }: any) {
   // Load reports
   const loadReports = async () => {
     setLoading(true)
-    const { data } = await db.from('error_reports')
-      .select('*')
-      .order('created_at', { ascending: false })
-      .limit(300)
-    if (data) setReports(data)
-    setLoading(false)
+    try {
+      const { data, error } = await db.from('error_reports')
+        .select('*')
+        .order('created_at', { ascending: false })
+        .limit(300)
+      if (error) {
+        console.error('Error loading reports:', error.message)
+        // Table chưa tồn tại hoặc lỗi khác — hiện list rỗng, không crash
+        setReports([])
+      } else {
+        setReports(data || [])
+      }
+    } catch(e: any) {
+      console.error('loadReports exception:', e)
+      setReports([])
+    } finally {
+      setLoading(false)
+    }
   }
   useEffect(() => { loadReports() }, [])
 
@@ -24397,19 +24415,19 @@ function ErrorReportModule({ user, allUsers, mobile }: any) {
             <div style={{ maxHeight:160, overflowY:'auto', border:`1px solid ${T.border}`,
               borderRadius:8, background:'#fff' }}>
               {filteredUsers.slice(0, 30).map((u: any) => {
-                const selected = fTargets.includes(u.id)
+                const isSelectedUser = fTargets.includes(u.id)
                 return (
                   <div key={u.id} onClick={() => setFTargets(prev =>
-                    selected ? prev.filter(id => id !== u.id) : [...prev, u.id]
+                    isSelectedUser ? prev.filter(id => id !== u.id) : [...prev, u.id]
                   )}
                     style={{ padding:'8px 12px', cursor:'pointer', display:'flex',
                       alignItems:'center', gap:8, borderBottom:`1px solid ${T.border}30`,
-                      background: selected ? T.blueBg : '#fff' }}>
+                      background: isSelectedUser ? T.blueBg : '#fff' }}>
                     <div style={{ width:18, height:18, borderRadius:4, flexShrink:0,
-                      border:`2px solid ${selected ? T.blue : T.border}`,
-                      background: selected ? T.blue : '#fff',
+                      border:`2px solid ${isSelectedUser ? T.blue : T.border}`,
+                      background: isSelectedUser ? T.blue : '#fff',
                       display:'flex', alignItems:'center', justifyContent:'center' }}>
-                      {selected && <span style={{ color:'#fff', fontSize:11, lineHeight:1 }}>✓</span>}
+                      {isSelectedUser && <span style={{ color:'#fff', fontSize:11, lineHeight:1 }}>✓</span>}
                     </div>
                     <div style={{ flex:1, minWidth:0 }}>
                       <div style={{ fontSize:12, fontWeight:600, color:T.dark }}>{u.full_name}</div>
