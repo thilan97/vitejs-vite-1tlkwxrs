@@ -12,7 +12,7 @@ const db = createClient(SUPABASE_URL, SUPABASE_KEY)
 // APP_VERSION — dùng để invalidate cache localStorage mỗi khi deploy version mới
 // (ngăn bug quyền user bị "reset" do cache position cũ sau deploy)
 // ⚠️ MỖI LẦN DEPLOY FEATURE MỚI CÓ PERMISSION MỚI, BUMP SỐ NÀY:
-const APP_VERSION = '2026.04.19.v68'
+const APP_VERSION = '2026.04.19.v69'
 
 // ════════════════════════════════════════════════════════════════
 // AUDIT LOG — ghi nhận các hành động phá hoại data để trace lại
@@ -660,6 +660,51 @@ const Topbar = ({ title, subtitle, action, mobile }: any) => (
     {action}
   </div>
 )
+
+// ── KV SYNC BADGE — hiển thị trạng thái sync KiotViet ─────────────────
+// Data từ `kv_sync_status.last_success_at` (server cron ghi mỗi 30s)
+// 🟢 < 1 phút — fresh | 🟡 1-3 phút — stale | 🔴 > 3 phút — sync failing
+function KVSyncBadge({ serverSyncAt, fetching, paused }: { serverSyncAt: Date|null, fetching?: boolean, paused?: boolean }) {
+  // Tick tự động để auto-update "X giây trước" mỗi 10s
+  const [, forceTick] = useState(0)
+  useEffect(() => {
+    const i = setInterval(() => forceTick(t => t + 1), 10000)
+    return () => clearInterval(i)
+  }, [])
+
+  if (paused) {
+    return <span style={{ fontSize: 10, color: T.amber, fontWeight: 600 }}>⏸ Pause (đang mở đơn)</span>
+  }
+  if (fetching) {
+    return <span style={{ fontSize: 10, color: T.blue, fontWeight: 600 }}>🔄 Đang cập nhật...</span>
+  }
+  if (!serverSyncAt) {
+    return <span style={{ fontSize: 10, color: T.med }}>⏳ Chưa có data sync</span>
+  }
+
+  const elapsedSec = Math.floor((Date.now() - serverSyncAt.getTime()) / 1000)
+  let color = T.green, icon = '🟢', label = ''
+  if (elapsedSec < 60) {
+    label = `Cập nhật ${elapsedSec}s trước`
+  } else if (elapsedSec < 180) {
+    color = T.amber; icon = '🟡'
+    label = `Cập nhật ${Math.floor(elapsedSec / 60)} phút trước`
+  } else {
+    color = T.red; icon = '🔴'
+    label = `⚠️ Data cũ ${Math.floor(elapsedSec / 60)} phút — cron sync lỗi?`
+  }
+
+  return (
+    <span style={{
+      fontSize: 10, color, fontWeight: 600,
+      padding: '3px 8px', borderRadius: 12,
+      background: color + '15', border: `1px solid ${color}40`,
+      whiteSpace: 'nowrap',
+    }} title={`Server sync lúc ${serverSyncAt.toLocaleTimeString('vi-VN')}`}>
+      {icon} {label}
+    </span>
+  )
+}
 
 // ── CONFIRM DELETE MODAL — Yêu cầu gõ "XÓA" để xác nhận destructive actions ──
 function ConfirmDeleteModal({
@@ -15400,6 +15445,7 @@ function PickingModule({ user, allUsers, mobile, products }: any) {
   const [loading, setLoading]   = useState(true)
   const [syncing, setSyncing]   = useState(false)
   const [lastSync, setLastSync] = useState<Date|null>(null)
+  const [serverSyncAt, setServerSyncAt] = useState<Date|null>(null)  // server cron sync lần cuối
   const [selectedCode, setSelectedCode] = useState<string|null>(null)
   const [searchQ, setSearchQ] = useState('')
   const [tab, setTab] = useState<'todo'|'done_today'>('todo')
@@ -15420,19 +15466,25 @@ function PickingModule({ user, allUsers, mobile, products }: any) {
     const { data: pickingData } = await db.from('packing_workflow').select('*')
       .eq('status', 'picking')
       .order('purchase_date', { ascending: false })
-    // Query 2: orders đã nhặt trong 3 ngày gần nhất (status packing hoặc done)
+    // Query 2: orders đã nhặt trong 3 ngày gần nhất
     const threeDaysAgo = new Date(Date.now() - 3*86400000).toISOString()
     const { data: donePickData } = await db.from('packing_workflow').select('*')
       .in('status', ['packing','done'])
       .gte('picked_at', threeDaysAgo)
       .order('picked_at', { ascending: false })
       .limit(500)
+    // Query 3: server cron sync status
+    const { data: syncStatus } = await db.from('kv_sync_status')
+      .select('last_success_at').eq('id', 'picking').maybeSingle()
+    
     setOrders([...(pickingData||[]), ...(donePickData||[])])
     setLastSync(new Date())
+    if (syncStatus?.last_success_at) setServerSyncAt(new Date(syncStatus.last_success_at))
     if (!quiet) setSyncing(false)
     setLoading(false)
   }
 
+  // Nút "Sync ngay" - gọi Edge Function trực tiếp để bypass cron (khi NV cần data ngay)
   const syncKV = async () => {
     setSyncing(true)
     try {
@@ -15442,6 +15494,8 @@ function PickingModule({ user, allUsers, mobile, products }: any) {
       })
       const json = await res.json()
       if (json.error) alert('❌ Sync lỗi: ' + json.error)
+      // Đợi 1s để Edge Function ghi DB xong rồi mới fetch
+      await new Promise(r => setTimeout(r, 1000))
       await fetchData(true)
     } catch(e: any) {
       alert('❌ Sync lỗi: ' + e.message)
@@ -15453,13 +15507,25 @@ function PickingModule({ user, allUsers, mobile, products }: any) {
     fetchData()
   }, [])
 
-  // Auto-sync KV mỗi 2 phút — PAUSE khi user đang mở đơn (tránh disrupt công việc)
+  // Auto-refresh DB mỗi 15s (nhanh hơn cron 30s → NV thấy data ngay khi cron xong)
+  // PAUSE khi user đang mở đơn (tránh disrupt công việc)
   useEffect(() => {
-    if (selectedCode) return  // user đang làm việc → không auto-sync
+    if (selectedCode) return
     const interval = setInterval(() => {
-      syncKV().then(() => fetchData(true))
-    }, 120000)
+      fetchData(true)  // Chỉ đọc DB, KHÔNG gọi KV — cron server đã lo phần sync
+    }, 15000)
     return () => clearInterval(interval)
+  }, [selectedCode])
+
+  // Khi user bật tab lại (sau khi rời app) → fetch DB ngay để thấy data mới nhất
+  useEffect(() => {
+    const handleVisibility = () => {
+      if (document.visibilityState === 'visible' && !selectedCode) {
+        fetchData(true)
+      }
+    }
+    document.addEventListener('visibilitychange', handleVisibility)
+    return () => document.removeEventListener('visibilitychange', handleVisibility)
   }, [selectedCode])
 
   const norm = (s: string) => (s||'').toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g,'').replace(/đ/g,'d').trim()
@@ -15604,18 +15670,12 @@ function PickingModule({ user, allUsers, mobile, products }: any) {
         subtitle={`${todoOrders.length} đơn chờ nhặt • ${doneTodayOrders.length} đã xong hôm nay`}
         action={
           <div style={{ display:'flex', gap:8, alignItems:'center' }}>
-            {lastSync && (
-              <span style={{ fontSize:10, color: selectedCode ? T.amber : T.light }}>
-                {syncing ? '🔄 Sync...' :
-                 selectedCode ? '⏸ Pause (đang mở đơn)' :
-                 '✓ ' + lastSync.toLocaleTimeString('vi-VN', {hour:'2-digit',minute:'2-digit'})}
-              </span>
-            )}
-            <button onClick={syncKV} disabled={syncing}
-              style={{ padding:'5px 12px', borderRadius:20, border:`1px solid ${T.gold}`,
-                background:T.goldBg, color:T.goldText, cursor:'pointer', fontFamily:'inherit',
-                fontSize:11, fontWeight:600 }}>
-              🔄 Sync KV
+            <KVSyncBadge serverSyncAt={serverSyncAt} fetching={syncing} paused={!!selectedCode}/>
+            <button onClick={syncKV} disabled={syncing} title="Gọi KiotViet ngay lập tức (bypass cron 30s)"
+              style={{ padding:'6px 14px', borderRadius:20, border:`1px solid ${T.gold}`,
+                background: syncing ? T.border : T.goldBg, color:T.goldText, cursor: syncing ? 'wait' : 'pointer',
+                fontFamily:'inherit', fontSize:11, fontWeight:700 }}>
+              {syncing ? '⏳ Đang sync...' : '🔄 Sync ngay'}
             </button>
           </div>
         }/>
@@ -16361,6 +16421,8 @@ function PackingModule({ user, allUsers, mobile, products }: any) {
 
   const [orders, setOrders]   = useState<any[]>([])
   const [loading, setLoading] = useState(true)
+  const [syncing, setSyncing] = useState(false)
+  const [serverSyncAt, setServerSyncAt] = useState<Date|null>(null)
   const [tab, setTab]         = useState<'pending'|'done_today'|'lookup'>('pending')
   const [selectedCode, setSelectedCode] = useState<string|null>(null)
   const [searchQ, setSearchQ] = useState('')
@@ -16368,31 +16430,61 @@ function PackingModule({ user, allUsers, mobile, products }: any) {
 
   const fetchData = async () => {
     setLoading(true)
-    // Query 1: ALL orders đang packing (không limit vì thường <100 đơn cùng lúc)
     const { data: pendingData } = await db.from('packing_workflow').select('*')
       .eq('status', 'packing')
       .order('picked_at', { ascending: true })
-    // Query 2: orders done trong 3 ngày gần nhất (đủ cho tab "Xong hôm nay" + buffer)
     const threeDaysAgo = new Date(Date.now() - 3*86400000).toISOString()
     const { data: doneData } = await db.from('packing_workflow').select('*')
       .eq('status', 'done')
       .gte('packed_at', threeDaysAgo)
       .order('packed_at', { ascending: false })
       .limit(500)
+    const { data: syncStatus } = await db.from('kv_sync_status')
+      .select('last_success_at').eq('id', 'picking').maybeSingle()
     setOrders([...(pendingData||[]), ...(doneData||[])])
+    if (syncStatus?.last_success_at) setServerSyncAt(new Date(syncStatus.last_success_at))
     setLoading(false)
+  }
+
+  // Manual "Sync ngay" → gọi Edge Function trực tiếp
+  const manualSync = async () => {
+    setSyncing(true)
+    try {
+      const res = await fetch(`${SUPABASE_URL}/functions/v1/kiotviet-picking`, {
+        method: 'POST',
+        headers: { 'Authorization': `Bearer ${SUPABASE_ANON}` }
+      })
+      const json = await res.json()
+      if (json.error) alert('❌ Sync lỗi: ' + json.error)
+      await new Promise(r => setTimeout(r, 1000))
+      await fetchData()
+    } catch (e: any) {
+      alert('❌ Sync lỗi: ' + e.message)
+    }
+    setSyncing(false)
   }
 
   useEffect(() => {
     fetchData()
   }, [])
 
-  // Auto-refresh mỗi 30 giây — PAUSE khi user đang mở đơn HOẶC đang ở tab tra cứu
+  // Auto-refresh DB mỗi 15s — PAUSE khi user đang mở đơn hoặc tab lookup
   useEffect(() => {
-    if (selectedCode) return  // user đang làm việc
-    if (tab === 'lookup') return  // user đang tra cứu → tab Lookup tự quản lý refresh riêng
-    const interval = setInterval(fetchData, 30000)
+    if (selectedCode) return
+    if (tab === 'lookup') return
+    const interval = setInterval(fetchData, 15000)
     return () => clearInterval(interval)
+  }, [selectedCode, tab])
+
+  // Refetch khi bật tab lại
+  useEffect(() => {
+    const handleVisibility = () => {
+      if (document.visibilityState === 'visible' && !selectedCode && tab !== 'lookup') {
+        fetchData()
+      }
+    }
+    document.addEventListener('visibilitychange', handleVisibility)
+    return () => document.removeEventListener('visibilitychange', handleVisibility)
   }, [selectedCode, tab])
 
   const norm = (s: string) => (s||'').toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g,'').replace(/đ/g,'d').trim()
@@ -16600,15 +16692,12 @@ function PackingModule({ user, allUsers, mobile, products }: any) {
         subtitle={`${pendingOrds.length} chờ đóng • ${doneTodayOrds.length} đã xong hôm nay`}
         action={
           <div style={{ display:'flex', gap:8, alignItems:'center' }}>
-            {selectedCode && (
-              <span style={{ fontSize:10, color:T.amber }}>
-                ⏸ Pause (đang mở đơn)
-              </span>
-            )}
-            <button onClick={fetchData}
-              style={{ padding:'5px 12px', borderRadius:20, border:`1px solid ${T.border}`,
-                background:'transparent', cursor:'pointer', fontFamily:'inherit', fontSize:11, color:T.med }}>
-              🔄 Refresh
+            <KVSyncBadge serverSyncAt={serverSyncAt} fetching={syncing} paused={!!selectedCode || tab === 'lookup'}/>
+            <button onClick={manualSync} disabled={syncing} title="Gọi KiotViet ngay lập tức (bypass cron 30s)"
+              style={{ padding:'6px 14px', borderRadius:20, border:`1px solid ${T.gold}`,
+                background: syncing ? T.border : T.goldBg, color:T.goldText,
+                cursor: syncing ? 'wait' : 'pointer', fontFamily:'inherit', fontSize:11, fontWeight:700 }}>
+              {syncing ? '⏳ Đang sync...' : '🔄 Sync ngay'}
             </button>
           </div>
         }/>
