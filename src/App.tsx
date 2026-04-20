@@ -12,7 +12,7 @@ const db = createClient(SUPABASE_URL, SUPABASE_KEY)
 // APP_VERSION — dùng để invalidate cache localStorage mỗi khi deploy version mới
 // (ngăn bug quyền user bị "reset" do cache position cũ sau deploy)
 // ⚠️ MỖI LẦN DEPLOY FEATURE MỚI CÓ PERMISSION MỚI, BUMP SỐ NÀY:
-const APP_VERSION = '2026.04.20.v80'
+const APP_VERSION = '2026.04.20.v81'
 
 // ════════════════════════════════════════════════════════════════
 // AUDIT LOG — ghi nhận các hành động phá hoại data để trace lại
@@ -16648,11 +16648,29 @@ function PackingModule({ user, allUsers, mobile, products }: any) {
     }
     // Multi-packer: packed_by_ids = union of (active_packers, current user)
     // packed_by vẫn set = current user (người cuối bấm hoàn tất) cho backward compat
+    //
+    // BUG FIX: Nếu đơn đã từng được đóng (had_mod_after_done hoặc packed_at có sẵn từ lần đóng trước)
+    // và user hiện tại KHÔNG có trong active_packers → KHÔNG tự thêm user vào packed_by_ids.
+    // Chỉ giữ lại packers gốc. Điều này tránh trường hợp QM/NV mở xem đơn đã sửa mà bị ghi nhận thành packer.
     const activePackers: string[] = ord.active_packers || []
-    const finalPackerIds = Array.from(new Set([...activePackers, user.id]))
+    const wasEverPackedBefore = !!ord.packed_at || ord.had_mod_after_done === true
+    const currentUserActivelyPacking = activePackers.includes(user.id)
+    let finalPackerIds: string[]
+    let finalPackedBy: string
+    if (wasEverPackedBefore && !currentUserActivelyPacking) {
+      // Đơn đã đóng trước + user hiện tại không thực sự đóng → giữ nguyên packers cũ
+      finalPackerIds = Array.isArray(ord.packed_by_ids) && ord.packed_by_ids.length > 0
+        ? ord.packed_by_ids
+        : (ord.packed_by ? [ord.packed_by] : [])
+      finalPackedBy = ord.packed_by || user.id
+    } else {
+      // Flow bình thường: merge active_packers + user hiện tại
+      finalPackerIds = Array.from(new Set([...activePackers, user.id]))
+      finalPackedBy = user.id
+    }
     const upd = {
       status: 'done',
-      packed_by: user.id,
+      packed_by: finalPackedBy,
       packed_by_ids: finalPackerIds,
       active_packers: [],
       packed_at: new Date().toISOString(),
@@ -17565,8 +17583,13 @@ function PackingDetailPanel({ ord, mobile, user, allUsers, products, allOrders, 
   const [hasPassedGate, setHasPassedGate] = useState(initialPhase === 'detail')
 
   // Auto join group khi vào phase DETAIL (chỉ nếu chưa trong group + đơn chưa done + !readOnly)
+  // QUAN TRỌNG: KHÔNG auto-join nếu đơn đã từng được đóng (có packed_at hoặc had_mod_after_done)
+  // → Tránh bug: sale sửa đơn đã done → status có thể bị sync về 'packing' → NV chỉ mở xem ảnh
+  //   cũng bị ghi nhận là người đóng. User phải chủ động bấm "Đóng lại" để bắt đầu đóng lại.
+  const wasEverPacked = !!ord.packed_at || ord.had_mod_after_done === true
   useEffect(() => {
-    if (phase === 'detail' && !iAmInGroup && !readOnly && ord.status !== 'done' && onJoinGroup) {
+    if (phase === 'detail' && !iAmInGroup && !readOnly && ord.status !== 'done'
+        && !wasEverPacked && onJoinGroup) {
       onJoinGroup()
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
