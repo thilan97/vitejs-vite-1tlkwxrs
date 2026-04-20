@@ -12,7 +12,7 @@ const db = createClient(SUPABASE_URL, SUPABASE_KEY)
 // APP_VERSION — dùng để invalidate cache localStorage mỗi khi deploy version mới
 // (ngăn bug quyền user bị "reset" do cache position cũ sau deploy)
 // ⚠️ MỖI LẦN DEPLOY FEATURE MỚI CÓ PERMISSION MỚI, BUMP SỐ NÀY:
-const APP_VERSION = '2026.04.20.v82'
+const APP_VERSION = '2026.04.20.v83'
 
 // ════════════════════════════════════════════════════════════════
 // AUDIT LOG — ghi nhận các hành động phá hoại data để trace lại
@@ -258,6 +258,7 @@ const getPerm = (user: any) => {
     trackOrders:        isAdmin || (pos.perm_track_orders ?? false) || (user?.dept_id === 'sale'),
     viewSlowMoving:     isAdmin || (pos.perm_view_slow_moving ?? false) || (pos.perm_approve_leave ?? false),
     viewGallery:        isAdmin || (pos.perm_view_gallery ?? false) || (pos.perm_manage_inventory ?? false) || (user?.dept_id === 'sale'),
+    errorReport:        isAdmin || (pos.perm_error_report ?? false),
   }
 }
 
@@ -349,6 +350,7 @@ const ALL_PERMS = [
   { key:'perm_track_orders',             label:'Theo dõi đơn hàng (Sale)',       group:'Sale'     },
   { key:'perm_view_slow_moving',         label:'Xem hàng bán chậm (Admin/QM Sale)', group:'Sale'  },
   { key:'perm_view_gallery',             label:'Xem Gallery ảnh hàng đi',         group:'Sale'     },
+  { key:'perm_error_report',             label:'Báo cáo lỗi sai (Error Report)',   group:'Quản trị' },
 ]
 // ── UTILITIES ────────────────────────────────────
 const fmtNow   = () => new Date().toLocaleString('vi-VN',{hour:'2-digit',minute:'2-digit',day:'2-digit',month:'2-digit',year:'numeric'})
@@ -1099,6 +1101,7 @@ const NAV_GROUPS = (perm: any, deptId = '') => {
         perm.manageUsers     && { id:'users',     icon:Ico.users, emoji:'👥', label:'Nhân viên' },
         perm.managePositions && { id:'positions', icon:Ico.target, emoji:'🎯', label:'Vị trí' },
         perm.viewAuditLog    && { id:'audit',     icon:Ico.scroll, emoji:'📜', label:'Nhật ký' },
+        perm.errorReport     && { id:'errreport', icon:Ico.alertTri, emoji:'🚨', label:'Báo cáo lỗi' },
         { id:'announce',  icon:Ico.megaphone, emoji:'📣', label:'Thông báo' },
         { id:'settings',  icon:Ico.settings, emoji:'⚙️', label:'Cài đặt' },
       ].filter(Boolean)
@@ -7831,6 +7834,31 @@ function useNotifications({ user, wrongOrders, returnSlips, shortageItems, batch
     groups.push({ id:'slowmoving', title:'📉 Hàng mới thành bán chậm', items, role:'sale' })
   }
 
+  // ─ 10. Báo cáo lỗi chưa xem (user bị report / Admin) ─
+  if (perm.errorReport && Array.isArray((user as any)?._errorReports)) {
+    const myReports = ((user as any)._errorReports as any[]).filter((r: any) => {
+      const viewedBy: string[] = r.viewed_by || []
+      const isTarget = (r.reported_user_ids || []).includes(user.id)
+      const isOwner = r.created_by === user.id
+      const notViewed = !viewedBy.includes(user.id)
+      // Admin thấy tất cả chưa xem; user thường chỉ thấy report liên quan mình
+      if (isAdmin) return r.status === 'open' && notViewed
+      return (isTarget || isOwner) && notViewed
+    })
+    if (myReports.length > 0) {
+      const items = myReports.map((r: any) => ({
+        key: `errreport:${r.id}`,
+        icon: r.severity === 'high' ? '🔴' : r.severity === 'low' ? '🟡' : '🟠',
+        title: r.title,
+        meta: `${r.error_type || 'Lỗi'} • ${r.created_at ? new Date(r.created_at).toLocaleDateString('vi-VN') : ''}`,
+        timestamp: r.created_at,
+        urgency: r.severity === 'high' ? 'high' : 'med',
+        targetPage: 'errreport',
+      }))
+      groups.push({ id:'errreport', title:'🚨 Báo cáo lỗi chưa xem', items, role:'all' })
+    }
+  }
+
   groups.forEach((g: any) => {
     g.total = g.items.length
     g.unread = g.items.filter((it: any) => !reads.has(it.key)).length
@@ -8671,6 +8699,7 @@ export default function App() {
   const [overdueMeta, setOverdueMeta] = useState<any>(null)  // { scannedAt, fromCache, cacheAgeSec, total, scanned }
   const [overdueLoading, setOverdueLoading] = useState(false)
   const [slowMovingNew, setSlowMovingNew] = useState<any[]>([])  // SP vừa thành bán chậm trong 3 ngày qua (cho notif)
+  const [errorReports, setErrorReports] = useState<any[]>([])   // Báo cáo lỗi sai
 
   const fetchOverdueOrders = async (threshold = 7, forceRefresh = false) => {
     setOverdueLoading(true)
@@ -8922,6 +8951,15 @@ export default function App() {
           .then(({ data }: any) => { if (data) setSlowMovingNew(data) })
           .catch(() => {})
       }
+      // Fetch error reports (báo cáo lỗi sai)
+      if (perm.errorReport || perm.viewAllDashboard) {
+        db.from('error_reports')
+          .select('*')
+          .order('created_at', { ascending: false })
+          .limit(200)
+          .then(({ data }: any) => { if (data) setErrorReports(data) })
+          .catch(() => {})
+      }
       // Fetch return slips for notifications (last 30 days)
       const thirtyAgo = new Date(Date.now()-30*86400000).toISOString().split('T')[0]
       db.from('return_items').select('id,slip_id,sale_id,created_at,created_by,date')
@@ -9019,8 +9057,10 @@ export default function App() {
   const pendingOT = 0 // will be updated from Overtime component
 
   // ── Notification Center: compute once, reuse for sidebar badge + page ──
+  // Attach _errorReports vào user object tạm thời để truyền vào useNotifications
+  const userWithReports = { ...user, _errorReports: errorReports }
   const { groups: notifGroups, totalUnread: notifUnread, totalItems: notifTotal } = useNotifications({
-    user, wrongOrders, returnSlips, shortageItems: shortageNoti, batches,
+    user: userWithReports, wrongOrders, returnSlips, shortageItems: shortageNoti, batches,
     paymentOrders, overdueOrders, slowMovingNew, reads: notificationReads, settings
   })
 
@@ -9133,6 +9173,7 @@ export default function App() {
           {validPage==='trackorders' && <SaleOrderTrackingModule {...pp}/>}
           {validPage==='slowmoving' && <SlowMovingModule {...pp}/>}
           {validPage==='gallery'    && <GalleryModule {...pp}/>}
+          {validPage==='errreport'  && <ErrorReportModule {...pp}/>}
           {validPage==='schedule'   && <WarehouseScheduleModule {...pp} leaveRequests={leaveRequests} attendance={attendance}/>}
           {validPage==='whstats'    && <WarehouseStatsModule {...pp}/>}
           {validPage==='priority'   && <PriorityRequestModule {...pp}/>}
@@ -23909,6 +23950,633 @@ function TrackingOrderPhotos({ photosPicked, photosPacked, orderCode }: any) {
 // ══ SLOW MOVING MODULE — 📉 Hàng bán chậm ═════════════════════════════
 // ══════════════════════════════════════════════════════════════════════
 // Scope: Admin + QM Sale (Linh sâu)
+// ══════════════════════════════════════════════════════════════
+// MODULE: Báo cáo lỗi sai (Error Reports)
+// ══════════════════════════════════════════════════════════════
+function ErrorReportModule({ user, allUsers, mobile }: any) {
+  const perm = getPerm(user)
+  const isAdmin = perm.viewAllDashboard
+  const p = mobile ? '14px' : '24px'
+  const db = supabase
+
+  const [reports, setReports] = useState<any[]>([])
+  const [loading, setLoading] = useState(true)
+  const [tab, setTab] = useState<'all'|'mine'|'reported'>('all')
+  const [selected, setSelected] = useState<any>(null)
+  const [showForm, setShowForm] = useState(false)
+
+  // Form state
+  const [fTitle, setFTitle] = useState('')
+  const [fDesc, setFDesc] = useState('')
+  const [fType, setFType] = useState('')
+  const [fSeverity, setFSeverity] = useState<'low'|'normal'|'high'>('normal')
+  const [fPhotos, setFPhotos] = useState<any[]>([])
+  const [fTargets, setFTargets] = useState<string[]>([])
+  const [fUploading, setFUploading] = useState(false)
+  const [fSubmitting, setFSubmitting] = useState(false)
+  const [searchUser, setSearchUser] = useState('')
+
+  // Resolve form
+  const [resolveText, setResolveText] = useState('')
+  const [resolving, setResolving] = useState(false)
+
+  // Load reports
+  const loadReports = async () => {
+    setLoading(true)
+    const { data } = await db.from('error_reports')
+      .select('*')
+      .order('created_at', { ascending: false })
+      .limit(300)
+    if (data) setReports(data)
+    setLoading(false)
+  }
+  useEffect(() => { loadReports() }, [])
+
+  // Ctrl+V paste ảnh
+  useEffect(() => {
+    if (!showForm) return
+    const handler = async (e: ClipboardEvent) => {
+      const items = e.clipboardData?.items
+      if (!items) return
+      for (const item of Array.from(items)) {
+        if (item.type.startsWith('image/')) {
+          const file = item.getAsFile()
+          if (file) await uploadPhoto(file)
+        }
+      }
+    }
+    window.addEventListener('paste', handler)
+    return () => window.removeEventListener('paste', handler)
+  }, [showForm, fPhotos])
+
+  const uploadPhoto = async (file: File) => {
+    setFUploading(true)
+    try {
+      const blob = await compressImageV2(file, 1920, 0.82)
+      const ts = Date.now()
+      const path = `error-reports/${user.id}_${ts}.jpg`
+      const { data, error } = await db.storage.from('packing-photos').upload(path, blob, {
+        contentType: 'image/jpeg', upsert: false,
+      })
+      if (error) { alert('❌ Upload lỗi: ' + error.message); return }
+      const { data: urlData } = db.storage.from('packing-photos').getPublicUrl(data.path)
+      setFPhotos(prev => [...prev, { url: urlData.publicUrl, at: new Date().toISOString() }])
+    } catch(e: any) { alert('❌ ' + e.message)
+    } finally { setFUploading(false) }
+  }
+
+  const handleFileInput = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const files = e.target.files
+    if (!files) return
+    Array.from(files).forEach(f => uploadPhoto(f))
+    e.target.value = ''
+  }
+
+  const resetForm = () => {
+    setFTitle(''); setFDesc(''); setFType(''); setFSeverity('normal')
+    setFPhotos([]); setFTargets([]); setSearchUser(''); setShowForm(false)
+  }
+
+  const submitReport = async () => {
+    if (!fTitle.trim()) { alert('Vui lòng nhập tiêu đề báo cáo'); return }
+    if (!fDesc.trim()) { alert('Vui lòng nhập mô tả chi tiết'); return }
+    setFSubmitting(true)
+    try {
+      const id = `ER_${new Date().toISOString().replace(/[-T:.Z]/g,'').slice(0,14)}_${Math.random().toString(36).slice(2,6)}`
+      const row = {
+        id, created_by: user.id,
+        title: fTitle.trim(), description: fDesc.trim(),
+        error_type: fType.trim(), severity: fSeverity,
+        photos: fPhotos, reported_user_ids: fTargets,
+        viewed_by: [user.id], status: 'open',
+      }
+      const { error } = await db.from('error_reports').insert(row)
+      if (error) throw error
+      await loadReports()
+      resetForm()
+      alert('✅ Đã gửi báo cáo lỗi!')
+    } catch(e: any) { alert('❌ ' + e.message)
+    } finally { setFSubmitting(false) }
+  }
+
+  const markViewed = async (report: any) => {
+    if ((report.viewed_by||[]).includes(user.id)) return
+    const newViewed = [...(report.viewed_by||[]), user.id]
+    await db.from('error_reports').update({ viewed_by: newViewed }).eq('id', report.id)
+    setReports(prev => prev.map(r => r.id === report.id ? {...r, viewed_by: newViewed} : r))
+    setSelected((prev: any) => prev?.id === report.id ? {...prev, viewed_by: newViewed} : prev)
+  }
+
+  const resolveReport = async () => {
+    if (!selected) return
+    setResolving(true)
+    const upd = {
+      status: 'resolved', resolved_by: user.id,
+      resolved_at: new Date().toISOString(), resolution: resolveText.trim(),
+      viewed_by: Array.from(new Set([...(selected.viewed_by||[]), user.id])),
+    }
+    const { error } = await db.from('error_reports').update(upd).eq('id', selected.id)
+    if (error) { alert('❌ ' + error.message); setResolving(false); return }
+    setReports(prev => prev.map(r => r.id === selected.id ? {...r, ...upd} : r))
+    setSelected((prev: any) => ({...prev, ...upd}))
+    setResolveText(''); setResolving(false)
+    alert('✅ Đã đánh dấu đã xử lý!')
+  }
+
+  // Filter theo tab
+  const visibleReports = reports.filter(r => {
+    if (tab === 'mine') return r.created_by === user.id
+    if (tab === 'reported') return (r.reported_user_ids||[]).includes(user.id)
+    return isAdmin ? true : (r.created_by === user.id || (r.reported_user_ids||[]).includes(user.id))
+  })
+
+  const getName = (id: string) => allUsers.find((u: any) => u.id === id)?.full_name || id
+
+  const norm2 = (s: string) => (s||'').toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g,'').replace(/đ/g,'d').trim()
+
+  // Filtered users for target selection
+  const filteredUsers = (allUsers||[]).filter((u: any) => {
+    if (u.id === user.id) return false
+    if (!searchUser.trim()) return true
+    const tokens = norm2(searchUser).split(/\s+/)
+    const hay = norm2(u.full_name||'') + ' ' + norm2(u.dept_id||'')
+    return tokens.every((t: string) => hay.includes(t))
+  })
+
+  const severityStyle = (sev: string) => {
+    if (sev === 'high') return { color:'#DC2626', bg:'#FEE2E2', label:'🔴 Nghiêm trọng' }
+    if (sev === 'low') return { color:'#D97706', bg:'#FEF3C7', label:'🟡 Thấp' }
+    return { color:'#EA580C', bg:'#FFF7ED', label:'🟠 Bình thường' }
+  }
+
+  const fmtTime = (iso: string) => {
+    try { return new Date(iso).toLocaleString('vi-VN', { day:'2-digit', month:'2-digit', hour:'2-digit', minute:'2-digit' }) }
+    catch { return iso }
+  }
+
+  // ── DETAIL VIEW ──
+  if (selected) {
+    const sev = severityStyle(selected.severity || 'normal')
+    const isOpen = selected.status === 'open'
+    const iViewedIt = (selected.viewed_by||[]).includes(user.id)
+    const canResolve = isAdmin || selected.created_by === user.id
+
+    // Mark viewed on open
+    if (!iViewedIt) markViewed(selected)
+
+    return (
+      <div style={{ padding: p, maxWidth: 720, margin:'0 auto' }}>
+        <button onClick={() => setSelected(null)}
+          style={{ marginBottom:16, padding:'6px 14px', borderRadius:8,
+            border:`1px solid ${T.border}`, background:'#fff', cursor:'pointer',
+            fontFamily:'inherit', fontSize:12, color:T.med }}>
+          ← Quay lại danh sách
+        </button>
+
+        <div style={{ background:'#fff', borderRadius:12, border:`1px solid ${T.border}`,
+          overflow:'hidden', boxShadow:'0 2px 8px rgba(0,0,0,0.06)' }}>
+
+          {/* Header */}
+          <div style={{ padding:'16px 20px', borderBottom:`1px solid ${T.border}`,
+            background: selected.status === 'resolved' ? T.greenBg : '#fff' }}>
+            <div style={{ display:'flex', justifyContent:'space-between', alignItems:'flex-start', gap:12, flexWrap:'wrap' }}>
+              <div style={{ flex:1, minWidth:0 }}>
+                <div style={{ fontSize:11, color:T.light, marginBottom:4 }}>
+                  {selected.id} • {fmtTime(selected.created_at)}
+                </div>
+                <div style={{ fontSize:16, fontWeight:800, color:T.dark, lineHeight:1.35 }}>
+                  {selected.title}
+                </div>
+              </div>
+              <div style={{ display:'flex', flexDirection:'column', gap:6, alignItems:'flex-end', flexShrink:0 }}>
+                <span style={{ fontSize:10, padding:'3px 10px', borderRadius:10,
+                  color: sev.color, background: sev.bg, fontWeight:700 }}>
+                  {sev.label}
+                </span>
+                <span style={{ fontSize:10, padding:'3px 10px', borderRadius:10, fontWeight:700,
+                  color: selected.status==='resolved' ? T.green : T.amber,
+                  background: selected.status==='resolved' ? T.greenBg : T.amberBg }}>
+                  {selected.status==='resolved' ? '✅ Đã xử lý' : '⏳ Chờ xử lý'}
+                </span>
+              </div>
+            </div>
+          </div>
+
+          <div style={{ padding:'16px 20px' }}>
+            {/* Meta */}
+            <div style={{ display:'flex', gap:16, flexWrap:'wrap', marginBottom:16,
+              fontSize:12, color:T.med }}>
+              <span>👤 Người báo cáo: <b style={{ color:T.dark }}>{getName(selected.created_by)}</b></span>
+              {selected.error_type && <span>🏷️ Loại lỗi: <b style={{ color:T.dark }}>{selected.error_type}</b></span>}
+            </div>
+
+            {/* Người bị report */}
+            {(selected.reported_user_ids||[]).length > 0 && (
+              <div style={{ marginBottom:14, padding:'10px 14px', background:T.amberBg,
+                border:`1px solid ${T.amber}40`, borderRadius:8 }}>
+                <div style={{ fontSize:11, fontWeight:700, color:T.amber, marginBottom:6 }}>
+                  ⚠️ Liên quan đến:
+                </div>
+                <div style={{ display:'flex', gap:6, flexWrap:'wrap' }}>
+                  {selected.reported_user_ids.map((uid: string) => (
+                    <span key={uid} style={{ fontSize:12, padding:'3px 10px', borderRadius:12,
+                      background:'#fff', border:`1px solid ${T.amber}`, color:T.dark, fontWeight:600 }}>
+                      {getName(uid)}
+                    </span>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {/* Nội dung */}
+            <div style={{ marginBottom:14 }}>
+              <div style={{ fontSize:11, fontWeight:700, color:T.med, marginBottom:6 }}>📝 Mô tả</div>
+              <div style={{ fontSize:13, color:T.dark, lineHeight:1.65, whiteSpace:'pre-wrap',
+                padding:'10px 14px', background:T.bg, borderRadius:8 }}>
+                {selected.description}
+              </div>
+            </div>
+
+            {/* Ảnh */}
+            {(selected.photos||[]).length > 0 && (
+              <div style={{ marginBottom:14 }}>
+                <div style={{ fontSize:11, fontWeight:700, color:T.med, marginBottom:8 }}>
+                  📸 {selected.photos.length} ảnh đính kèm
+                </div>
+                <div style={{ display:'grid', gridTemplateColumns:'repeat(auto-fill, minmax(120px, 1fr))', gap:8 }}>
+                  {selected.photos.map((ph: any, i: number) => (
+                    <a key={i} href={ph.url||ph} target="_blank" rel="noreferrer"
+                      style={{ borderRadius:8, overflow:'hidden', display:'block',
+                        border:`1px solid ${T.border}`, aspectRatio:'4/3' }}>
+                      <img src={ph.url||ph} alt={`ảnh ${i+1}`}
+                        style={{ width:'100%', height:'100%', objectFit:'cover' }}/>
+                    </a>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {/* Viewer list */}
+            <div style={{ fontSize:11, color:T.light, marginBottom:16 }}>
+              👁️ Đã xem: {(selected.viewed_by||[]).length > 0
+                ? selected.viewed_by.map((id: string) => getName(id)).join(', ')
+                : 'Chưa ai xem'}
+            </div>
+
+            {/* Resolution */}
+            {selected.status === 'resolved' && (
+              <div style={{ padding:'12px 14px', background:T.greenBg,
+                border:`1px solid ${T.green}`, borderRadius:8, marginBottom:14 }}>
+                <div style={{ fontSize:11, fontWeight:700, color:T.green, marginBottom:4 }}>
+                  ✅ Đã xử lý bởi {getName(selected.resolved_by)} — {fmtTime(selected.resolved_at)}
+                </div>
+                {selected.resolution && (
+                  <div style={{ fontSize:12, color:T.dark, lineHeight:1.5, whiteSpace:'pre-wrap' }}>
+                    {selected.resolution}
+                  </div>
+                )}
+              </div>
+            )}
+
+            {/* Resolve form (chỉ hiện nếu còn open + có quyền) */}
+            {isOpen && canResolve && (
+              <div style={{ padding:'12px 14px', background:T.bg, borderRadius:8,
+                border:`1px solid ${T.border}` }}>
+                <div style={{ fontSize:12, fontWeight:700, color:T.dark, marginBottom:8 }}>
+                  📋 Đánh dấu đã xử lý
+                </div>
+                <textarea value={resolveText} onChange={e => setResolveText(e.target.value)}
+                  placeholder="Mô tả cách xử lý (không bắt buộc)..."
+                  rows={3}
+                  style={{ width:'100%', padding:'8px 10px', borderRadius:8,
+                    border:`1px solid ${T.border}`, fontFamily:'inherit', fontSize:12,
+                    resize:'vertical', background:'#fff', color:T.dark,
+                    boxSizing:'border-box' }}/>
+                <button onClick={resolveReport} disabled={resolving}
+                  style={{ marginTop:8, padding:'8px 20px', borderRadius:8, border:'none',
+                    background: resolving ? T.light : T.green, color:'#fff', cursor: resolving ? 'not-allowed' : 'pointer',
+                    fontFamily:'inherit', fontSize:12, fontWeight:700 }}>
+                  {resolving ? '⏳ Đang lưu...' : '✅ Xác nhận đã xử lý'}
+                </button>
+              </div>
+            )}
+          </div>
+        </div>
+      </div>
+    )
+  }
+
+  // ── FORM TẠO MỚI ──
+  if (showForm) {
+    return (
+      <div style={{ padding: p, maxWidth: 640, margin:'0 auto' }}>
+        <div style={{ display:'flex', alignItems:'center', gap:10, marginBottom:16 }}>
+          <button onClick={resetForm}
+            style={{ padding:'6px 14px', borderRadius:8, border:`1px solid ${T.border}`,
+              background:'#fff', cursor:'pointer', fontFamily:'inherit', fontSize:12, color:T.med }}>
+            ← Hủy
+          </button>
+          <div style={{ fontSize:16, fontWeight:800, color:T.dark }}>🚨 Tạo báo cáo lỗi mới</div>
+        </div>
+
+        <div style={{ background:'#fff', borderRadius:12, border:`1px solid ${T.border}`,
+          padding:'20px', display:'flex', flexDirection:'column', gap:16 }}>
+
+          {/* Title */}
+          <div>
+            <label style={{ fontSize:12, fontWeight:700, color:T.med, display:'block', marginBottom:6 }}>
+              Tiêu đề <span style={{ color:'red' }}>*</span>
+            </label>
+            <input value={fTitle} onChange={e => setFTitle(e.target.value)}
+              placeholder="Tóm tắt ngắn gọn lỗi xảy ra..."
+              style={{ width:'100%', padding:'9px 12px', borderRadius:8,
+                border:`1px solid ${T.border}`, fontFamily:'inherit', fontSize:13,
+                background:'#fff', color:T.dark, boxSizing:'border-box' }}/>
+          </div>
+
+          {/* Type + Severity */}
+          <div style={{ display:'grid', gridTemplateColumns:'1fr auto', gap:12 }}>
+            <div>
+              <label style={{ fontSize:12, fontWeight:700, color:T.med, display:'block', marginBottom:6 }}>
+                Loại lỗi
+              </label>
+              <input value={fType} onChange={e => setFType(e.target.value)}
+                placeholder="VD: Nhập liệu sai, Quy trình sai, Giao nhầm hàng..."
+                style={{ width:'100%', padding:'9px 12px', borderRadius:8,
+                  border:`1px solid ${T.border}`, fontFamily:'inherit', fontSize:13,
+                  background:'#fff', color:T.dark, boxSizing:'border-box' }}/>
+            </div>
+            <div>
+              <label style={{ fontSize:12, fontWeight:700, color:T.med, display:'block', marginBottom:6 }}>
+                Mức độ
+              </label>
+              <select value={fSeverity} onChange={e => setFSeverity(e.target.value as any)}
+                style={{ padding:'9px 12px', borderRadius:8, border:`1px solid ${T.border}`,
+                  fontFamily:'inherit', fontSize:13, background:'#fff', color:T.dark, cursor:'pointer',
+                  colorScheme:'light' }}>
+                <option value="low">🟡 Thấp</option>
+                <option value="normal">🟠 Bình thường</option>
+                <option value="high">🔴 Nghiêm trọng</option>
+              </select>
+            </div>
+          </div>
+
+          {/* Description */}
+          <div>
+            <label style={{ fontSize:12, fontWeight:700, color:T.med, display:'block', marginBottom:6 }}>
+              Mô tả chi tiết <span style={{ color:'red' }}>*</span>
+            </label>
+            <textarea value={fDesc} onChange={e => setFDesc(e.target.value)}
+              placeholder="Mô tả đầy đủ: lỗi xảy ra như thế nào, thời gian, sản phẩm/đơn hàng liên quan, hậu quả..."
+              rows={5}
+              style={{ width:'100%', padding:'9px 12px', borderRadius:8,
+                border:`1px solid ${T.border}`, fontFamily:'inherit', fontSize:13,
+                resize:'vertical', background:'#fff', color:T.dark, boxSizing:'border-box' }}/>
+          </div>
+
+          {/* Photos */}
+          <div>
+            <label style={{ fontSize:12, fontWeight:700, color:T.med, display:'block', marginBottom:6 }}>
+              Ảnh đính kèm
+            </label>
+            <div style={{ padding:'12px', borderRadius:8, border:`2px dashed ${T.border}`,
+              background:T.bg, textAlign:'center', marginBottom:8 }}>
+              <div style={{ fontSize:11, color:T.light, marginBottom:8 }}>
+                📋 <b>Ctrl+V</b> để paste ảnh từ clipboard — hoặc
+              </div>
+              <label style={{ display:'inline-block', padding:'7px 16px', borderRadius:8,
+                background:T.blue, color:'#fff', cursor:'pointer', fontSize:12, fontWeight:600 }}>
+                {fUploading ? '⏳ Đang upload...' : '📁 Chọn ảnh'}
+                <input type="file" accept="image/*" multiple onChange={handleFileInput}
+                  style={{ display:'none' }} disabled={fUploading}/>
+              </label>
+            </div>
+            {fPhotos.length > 0 && (
+              <div style={{ display:'grid', gridTemplateColumns:'repeat(auto-fill, minmax(90px, 1fr))', gap:6 }}>
+                {fPhotos.map((ph: any, i: number) => (
+                  <div key={i} style={{ position:'relative', borderRadius:6, overflow:'hidden',
+                    border:`1px solid ${T.border}`, aspectRatio:'4/3' }}>
+                    <img src={ph.url} alt={`ảnh ${i+1}`}
+                      style={{ width:'100%', height:'100%', objectFit:'cover' }}/>
+                    <button onClick={() => setFPhotos(prev => prev.filter((_,j) => j!==i))}
+                      style={{ position:'absolute', top:2, right:2, width:20, height:20,
+                        borderRadius:'50%', border:'none', background:'rgba(220,38,38,0.9)',
+                        color:'#fff', fontSize:11, cursor:'pointer', lineHeight:'20px',
+                        display:'flex', alignItems:'center', justifyContent:'center',
+                        padding:0, fontFamily:'inherit' }}>✕</button>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+
+          {/* Target users */}
+          <div>
+            <label style={{ fontSize:12, fontWeight:700, color:T.med, display:'block', marginBottom:6 }}>
+              Liên quan đến (chọn nhân viên bị report)
+            </label>
+            {fTargets.length > 0 && (
+              <div style={{ display:'flex', gap:6, flexWrap:'wrap', marginBottom:8 }}>
+                {fTargets.map((uid: string) => (
+                  <span key={uid} style={{ fontSize:11, padding:'3px 8px 3px 10px', borderRadius:12,
+                    background:T.amberBg, border:`1px solid ${T.amber}`,
+                    color:T.dark, display:'flex', alignItems:'center', gap:4 }}>
+                    {getName(uid)}
+                    <button onClick={() => setFTargets(prev => prev.filter(id => id !== uid))}
+                      style={{ border:'none', background:'none', cursor:'pointer', color:T.red,
+                        padding:0, fontSize:12, lineHeight:1, fontFamily:'inherit' }}>✕</button>
+                  </span>
+                ))}
+              </div>
+            )}
+            <input value={searchUser} onChange={e => setSearchUser(e.target.value)}
+              placeholder="🔍 Tìm nhân viên..."
+              style={{ width:'100%', padding:'8px 12px', borderRadius:8,
+                border:`1px solid ${T.border}`, fontFamily:'inherit', fontSize:12,
+                background:'#fff', color:T.dark, boxSizing:'border-box', marginBottom:6 }}/>
+            <div style={{ maxHeight:160, overflowY:'auto', border:`1px solid ${T.border}`,
+              borderRadius:8, background:'#fff' }}>
+              {filteredUsers.slice(0, 30).map((u: any) => {
+                const selected = fTargets.includes(u.id)
+                return (
+                  <div key={u.id} onClick={() => setFTargets(prev =>
+                    selected ? prev.filter(id => id !== u.id) : [...prev, u.id]
+                  )}
+                    style={{ padding:'8px 12px', cursor:'pointer', display:'flex',
+                      alignItems:'center', gap:8, borderBottom:`1px solid ${T.border}30`,
+                      background: selected ? T.blueBg : '#fff' }}>
+                    <div style={{ width:18, height:18, borderRadius:4, flexShrink:0,
+                      border:`2px solid ${selected ? T.blue : T.border}`,
+                      background: selected ? T.blue : '#fff',
+                      display:'flex', alignItems:'center', justifyContent:'center' }}>
+                      {selected && <span style={{ color:'#fff', fontSize:11, lineHeight:1 }}>✓</span>}
+                    </div>
+                    <div style={{ flex:1, minWidth:0 }}>
+                      <div style={{ fontSize:12, fontWeight:600, color:T.dark }}>{u.full_name}</div>
+                      <div style={{ fontSize:10, color:T.light }}>{u.dept_id || ''}</div>
+                    </div>
+                  </div>
+                )
+              })}
+              {filteredUsers.length === 0 && (
+                <div style={{ padding:12, fontSize:12, color:T.light, textAlign:'center' }}>
+                  Không tìm thấy
+                </div>
+              )}
+            </div>
+          </div>
+
+          {/* Submit */}
+          <button onClick={submitReport} disabled={fSubmitting || fUploading}
+            style={{ padding:'11px', borderRadius:8, border:'none',
+              background: (fSubmitting || fUploading) ? T.light : '#DC2626',
+              color:'#fff', cursor: (fSubmitting || fUploading) ? 'not-allowed' : 'pointer',
+              fontFamily:'inherit', fontSize:14, fontWeight:800 }}>
+            {fSubmitting ? '⏳ Đang gửi...' : '🚨 Gửi báo cáo lỗi'}
+          </button>
+        </div>
+      </div>
+    )
+  }
+
+  // ── LIST VIEW ──
+  const openCount = reports.filter(r => r.status === 'open').length
+  const myUnread = reports.filter(r =>
+    (r.reported_user_ids||[]).includes(user.id) && !(r.viewed_by||[]).includes(user.id)
+  ).length
+
+  return (
+    <div style={{ padding: p }}>
+      {/* Header */}
+      <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center',
+        flexWrap:'wrap', gap:10, marginBottom:16 }}>
+        <div>
+          <div style={{ fontSize:18, fontWeight:800, color:T.dark }}>🚨 Báo cáo lỗi sai</div>
+          <div style={{ fontSize:11, color:T.light, marginTop:2 }}>
+            {openCount} lỗi chưa xử lý
+            {myUnread > 0 && <span style={{ marginLeft:8, color:'#DC2626', fontWeight:700 }}>
+              • {myUnread} báo cáo chưa đọc của bạn
+            </span>}
+          </div>
+        </div>
+        <button onClick={() => setShowForm(true)}
+          style={{ padding:'9px 18px', borderRadius:8, border:'none',
+            background:'#DC2626', color:'#fff', cursor:'pointer',
+            fontFamily:'inherit', fontSize:13, fontWeight:700 }}>
+          + Tạo báo cáo lỗi
+        </button>
+      </div>
+
+      {/* Tabs */}
+      <div style={{ display:'flex', gap:4, marginBottom:16, background:'#fff',
+        borderRadius:8, border:`1px solid ${T.border}`, padding:4, width:'fit-content' }}>
+        {[
+          { key:'all', label: isAdmin ? 'Tất cả' : 'Liên quan tôi' },
+          { key:'mine', label:'Tôi tạo' },
+          { key:'reported', label:'Tôi bị báo cáo' },
+        ].map(t => (
+          <button key={t.key} onClick={() => setTab(t.key as any)}
+            style={{ padding:'6px 14px', borderRadius:6, border:'none', cursor:'pointer',
+              fontFamily:'inherit', fontSize:12, fontWeight: tab===t.key ? 700 : 400,
+              background: tab===t.key ? T.blue : 'transparent',
+              color: tab===t.key ? '#fff' : T.med }}>
+            {t.label}
+          </button>
+        ))}
+      </div>
+
+      {/* Stats cards (Admin) */}
+      {isAdmin && (
+        <div style={{ display:'grid', gridTemplateColumns:'repeat(auto-fill, minmax(130px, 1fr))',
+          gap:10, marginBottom:16 }}>
+          {[
+            { label:'Tổng', value:reports.length, color:T.blue, bg:T.blueBg },
+            { label:'Chờ xử lý', value:openCount, color:'#DC2626', bg:'#FEE2E2' },
+            { label:'Đã xử lý', value:reports.filter(r=>r.status==='resolved').length, color:T.green, bg:T.greenBg },
+            { label:'Nghiêm trọng', value:reports.filter(r=>r.severity==='high'&&r.status==='open').length, color:'#9333EA', bg:'#F3E8FF' },
+          ].map((card, i) => (
+            <div key={i} style={{ padding:'12px 14px', borderRadius:10,
+              background:card.bg, border:`1px solid ${card.color}30` }}>
+              <div style={{ fontSize:22, fontWeight:800, color:card.color }}>{card.value}</div>
+              <div style={{ fontSize:10, color:card.color, fontWeight:600 }}>{card.label}</div>
+            </div>
+          ))}
+        </div>
+      )}
+
+      {/* List */}
+      {loading ? (
+        <div style={{ textAlign:'center', color:T.light, padding:40 }}>⏳ Đang tải...</div>
+      ) : visibleReports.length === 0 ? (
+        <div style={{ textAlign:'center', color:T.light, padding:40, fontSize:13 }}>
+          <div style={{ fontSize:32, marginBottom:8 }}>📋</div>
+          Không có báo cáo lỗi nào
+        </div>
+      ) : (
+        <div style={{ display:'flex', flexDirection:'column', gap:8 }}>
+          {visibleReports.map(r => {
+            const sev = severityStyle(r.severity || 'normal')
+            const isUnread = !(r.viewed_by||[]).includes(user.id)
+            const isTarget = (r.reported_user_ids||[]).includes(user.id)
+            return (
+              <div key={r.id} onClick={() => setSelected(r)}
+                style={{ background:'#fff', borderRadius:10, border:`1px solid ${T.border}`,
+                  borderLeft: `4px solid ${r.status==='resolved' ? T.green : sev.color}`,
+                  padding:'12px 16px', cursor:'pointer',
+                  boxShadow: isUnread && isTarget ? '0 0 0 2px #DC262620' : 'none' }}>
+                <div style={{ display:'flex', justifyContent:'space-between',
+                  alignItems:'flex-start', gap:8, marginBottom:6, flexWrap:'wrap' }}>
+                  <div style={{ flex:1, minWidth:0 }}>
+                    <div style={{ display:'flex', alignItems:'center', gap:6, flexWrap:'wrap' }}>
+                      {isUnread && (
+                        <span style={{ width:7, height:7, borderRadius:'50%',
+                          background:'#DC2626', flexShrink:0, display:'inline-block' }}/>
+                      )}
+                      <span style={{ fontSize:13, fontWeight: isUnread ? 800 : 600, color:T.dark }}>
+                        {r.title}
+                      </span>
+                    </div>
+                    <div style={{ fontSize:11, color:T.light, marginTop:3 }}>
+                      {r.error_type && <span style={{ marginRight:8 }}>🏷️ {r.error_type}</span>}
+                      <span>👤 {getName(r.created_by)}</span>
+                      <span style={{ marginLeft:8 }}>🕐 {fmtTime(r.created_at)}</span>
+                    </div>
+                  </div>
+                  <div style={{ display:'flex', flexDirection:'column', gap:4, alignItems:'flex-end' }}>
+                    <span style={{ fontSize:10, padding:'2px 8px', borderRadius:10,
+                      color:sev.color, background:sev.bg, fontWeight:700, whiteSpace:'nowrap' }}>
+                      {sev.label}
+                    </span>
+                    <span style={{ fontSize:10, padding:'2px 8px', borderRadius:10, fontWeight:700,
+                      color: r.status==='resolved' ? T.green : T.amber,
+                      background: r.status==='resolved' ? T.greenBg : T.amberBg, whiteSpace:'nowrap' }}>
+                      {r.status==='resolved' ? '✅ Đã xử lý' : '⏳ Chờ'}
+                    </span>
+                  </div>
+                </div>
+                {/* Preview */}
+                <div style={{ fontSize:12, color:T.med, lineHeight:1.5,
+                  overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap' }}>
+                  {r.description}
+                </div>
+                {/* Footer */}
+                <div style={{ display:'flex', gap:10, marginTop:6, fontSize:11, color:T.light, flexWrap:'wrap' }}>
+                  {(r.reported_user_ids||[]).length > 0 && (
+                    <span>⚠️ {r.reported_user_ids.map((id: string) => getName(id)).join(', ')}</span>
+                  )}
+                  {(r.photos||[]).length > 0 && <span>📸 {r.photos.length} ảnh</span>}
+                  <span>👁️ {(r.viewed_by||[]).length} xem</span>
+                </div>
+              </div>
+            )
+          })}
+        </div>
+      )}
+    </div>
+  )
+}
+
+// ══════════════════════════════════════════════════════════════
 // Data: từ bảng slow_moving_cache (scan 1 lần/ngày 3h sáng VN qua Edge Function)
 // Logic: SP có status in ('slow', 'dead') và !dismissed
 
