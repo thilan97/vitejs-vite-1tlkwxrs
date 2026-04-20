@@ -25550,12 +25550,21 @@ function GalleryModule({ user, allUsers, mobile }: any) {
   const [tab, setTab] = useState<'orders'|'daily'>('orders')
 
   // v99: Search query (fuzzy norm2) - filter theo KH/SP/mã đơn
-  const [searchQ, setSearchQ] = useState('')
-  const [searchDebounced, setSearchDebounced] = useState('')
+  // v99: Search theo 2 field riêng biệt (AND logic)
+  // - searchCustomer: match customer_name + customer_code + order_code + sold_by_name
+  // - searchProduct: match items[].name + items[].code
+  const [searchCustomer, setSearchCustomer] = useState('')
+  const [searchProduct, setSearchProduct] = useState('')
+  const [searchCustomerDeb, setSearchCustomerDeb] = useState('')
+  const [searchProductDeb, setSearchProductDeb] = useState('')
   useEffect(() => {
-    const t = setTimeout(() => setSearchDebounced(searchQ), 250)
+    const t = setTimeout(() => setSearchCustomerDeb(searchCustomer), 250)
     return () => clearTimeout(t)
-  }, [searchQ])
+  }, [searchCustomer])
+  useEffect(() => {
+    const t = setTimeout(() => setSearchProductDeb(searchProduct), 250)
+    return () => clearTimeout(t)
+  }, [searchProduct])
 
   // Modal viewer state
   const [viewerOpen, setViewerOpen] = useState(false)
@@ -25680,31 +25689,42 @@ function GalleryModule({ user, allUsers, mobile }: any) {
     .normalize('NFD').replace(/[\u0300-\u036f]/g,'').replace(/đ/g,'d').trim()
 
   // Orders sau filter search (dùng cho cả 2 tab)
+  // Logic AND: đơn phải match CẢ 2 filter (nếu có nhập)
   const filteredOrders = useMemo(() => {
-    if (!searchDebounced.trim()) return orders
-    const tokens = norm2(searchDebounced).split(/\s+/).filter(Boolean)
-    if (tokens.length === 0) return orders
+    const custQ = searchCustomerDeb.trim()
+    const prodQ = searchProductDeb.trim()
+    if (!custQ && !prodQ) return orders
+
+    const custTokens = custQ ? norm2(custQ).split(/\s+/).filter(Boolean) : []
+    const prodTokens = prodQ ? norm2(prodQ).split(/\s+/).filter(Boolean) : []
 
     return orders.filter((o: any) => {
-      // Tạo haystack: ghép tất cả field searchable
-      const parts: string[] = [
-        o.order_code || '',
-        o.customer_name || '',
-        o.customer_code || '',
-        o.sold_by_name || '',
-      ]
-      // Thêm tên + mã SP trong items
-      if (Array.isArray(o.items)) {
-        o.items.forEach((it: any) => {
-          if (it?.name) parts.push(it.name)
-          if (it?.code) parts.push(it.code)
-        })
+      // ═══ Filter 1: Khách hàng / mã đơn ═══
+      if (custTokens.length > 0) {
+        const custHay = norm2([
+          o.order_code || '',
+          o.customer_name || '',
+          o.customer_code || '',
+          o.sold_by_name || '',
+        ].join(' '))
+        // Tất cả token phải match (AND)
+        if (!custTokens.every(tok => custHay.includes(tok))) return false
       }
-      const haystack = norm2(parts.join(' '))
-      // Tất cả token phải match (AND)
-      return tokens.every(tok => haystack.includes(tok))
+
+      // ═══ Filter 2: Sản phẩm ═══
+      if (prodTokens.length > 0) {
+        if (!Array.isArray(o.items) || o.items.length === 0) return false
+        // Phải có ÍT NHẤT 1 SP trong đơn match với tất cả token
+        const hasMatch = o.items.some((it: any) => {
+          const itemHay = norm2(`${it?.name || ''} ${it?.code || ''}`)
+          return prodTokens.every(tok => itemHay.includes(tok))
+        })
+        if (!hasMatch) return false
+      }
+
+      return true
     })
-  }, [orders, searchDebounced])
+  }, [orders, searchCustomerDeb, searchProductDeb])
 
   // ── v99: Flatten photos cho tab "Theo ngày" ──
   // Mỗi photo giữ metadata đơn để click vào có thể show info
@@ -25802,20 +25822,48 @@ function GalleryModule({ user, allUsers, mobile }: any) {
         ))}
       </Card>
 
-      {/* v99: Search bar với fuzzy match */}
+      {/* v99: Search 2 filter riêng — KH + SP (logic AND) */}
       <Card style={{ padding:8, marginBottom:10 }}>
-        <input
-          type="text" value={searchQ} onChange={e => setSearchQ(e.target.value)}
-          placeholder="🔍 Tìm tên KH, tên SP, mã đơn, mã SP..."
-          style={{ width:'100%', padding:'8px 12px', border:`1px solid ${T.border}`,
-            borderRadius:8, fontSize:12, fontFamily:'inherit',
-            background:'#fff', color:T.dark, boxSizing:'border-box' }}/>
-        {searchDebounced && (
-          <div style={{ marginTop:4, fontSize:10, color:T.light }}>
-            Tìm kiếm: "<b style={{ color:T.gold }}>{searchDebounced}</b>"
-            {' '}<button onClick={() => setSearchQ('')}
-              style={{ border:'none', background:'transparent', color:T.blue,
-                cursor:'pointer', fontSize:10, textDecoration:'underline' }}>Xóa</button>
+        <div style={{ display:'flex', gap:6, flexDirection: mobile ? 'column' : 'row' }}>
+          <div style={{ flex:1 }}>
+            <input
+              type="text" value={searchCustomer} onChange={e => setSearchCustomer(e.target.value)}
+              placeholder="👤 Tên khách hàng hoặc mã đơn..."
+              style={{ width:'100%', padding:'8px 12px', border:`1px solid ${T.border}`,
+                borderRadius:8, fontSize:12, fontFamily:'inherit',
+                background:'#fff', color:T.dark, boxSizing:'border-box' }}/>
+          </div>
+          <div style={{ flex:1 }}>
+            <input
+              type="text" value={searchProduct} onChange={e => setSearchProduct(e.target.value)}
+              placeholder="📦 Tên sản phẩm hoặc mã SP..."
+              style={{ width:'100%', padding:'8px 12px', border:`1px solid ${T.border}`,
+                borderRadius:8, fontSize:12, fontFamily:'inherit',
+                background:'#fff', color:T.dark, boxSizing:'border-box' }}/>
+          </div>
+        </div>
+        {(searchCustomerDeb || searchProductDeb) && (
+          <div style={{ marginTop:6, fontSize:10, color:T.light,
+            display:'flex', gap:8, alignItems:'center', flexWrap:'wrap' }}>
+            <span>Lọc:</span>
+            {searchCustomerDeb && (
+              <span style={{ padding:'2px 6px', borderRadius:4,
+                background:T.blueBg, color:T.blue, fontWeight:600 }}>
+                👤 {searchCustomerDeb}
+              </span>
+            )}
+            {searchProductDeb && (
+              <span style={{ padding:'2px 6px', borderRadius:4,
+                background:T.goldBg, color:T.goldText, fontWeight:600 }}>
+                📦 {searchProductDeb}
+              </span>
+            )}
+            <button onClick={() => { setSearchCustomer(''); setSearchProduct('') }}
+              style={{ border:'none', background:'transparent', color:T.red,
+                cursor:'pointer', fontSize:10, textDecoration:'underline' }}>Xóa hết</button>
+            <span style={{ marginLeft:'auto', color:T.med }}>
+              → {filteredOrders.length} đơn
+            </span>
           </div>
         )}
       </Card>
@@ -25887,8 +25935,8 @@ function GalleryModule({ user, allUsers, mobile }: any) {
           <Card style={{ padding:30, textAlign:'center' }}>
             <div style={{ fontSize:30, marginBottom:6 }}>📷</div>
             <div style={{ fontSize:13, color:T.dark, fontWeight:600 }}>
-              {searchDebounced
-                ? `Không tìm thấy đơn nào khớp "${searchDebounced}"`
+              {(searchCustomerDeb || searchProductDeb)
+                ? 'Không tìm thấy đơn nào khớp bộ lọc'
                 : 'Không có đơn nào có ảnh trong khoảng thời gian này'}
             </div>
           </Card>
@@ -25915,8 +25963,8 @@ function GalleryModule({ user, allUsers, mobile }: any) {
           <Card style={{ padding:30, textAlign:'center' }}>
             <div style={{ fontSize:30, marginBottom:6 }}>📷</div>
             <div style={{ fontSize:13, color:T.dark, fontWeight:600 }}>
-              {searchDebounced
-                ? `Không tìm thấy ảnh nào khớp "${searchDebounced}"`
+              {(searchCustomerDeb || searchProductDeb)
+                ? 'Không tìm thấy ảnh nào khớp bộ lọc'
                 : 'Không có ảnh nào trong khoảng thời gian này'}
             </div>
           </Card>
