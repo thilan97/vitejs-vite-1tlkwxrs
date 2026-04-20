@@ -12,7 +12,7 @@ const db = createClient(SUPABASE_URL, SUPABASE_KEY)
 // APP_VERSION — dùng để invalidate cache localStorage mỗi khi deploy version mới
 // (ngăn bug quyền user bị "reset" do cache position cũ sau deploy)
 // ⚠️ MỖI LẦN DEPLOY FEATURE MỚI CÓ PERMISSION MỚI, BUMP SỐ NÀY:
-const APP_VERSION = '2026.04.20.v73'
+const APP_VERSION = '2026.04.20.v74'
 
 // ════════════════════════════════════════════════════════════════
 // AUDIT LOG — ghi nhận các hành động phá hoại data để trace lại
@@ -2642,7 +2642,7 @@ function Checklist({ user, checklist, setChecklist, addLog, allUsers, mobile }: 
           <Inp label="🏁 Giờ kết thúc" type="time" value={addForm.time_end}
             onChange={(v) => setAddForm(f => ({...f, time_end:v}))}/>
         </div>
-        <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:12 }}>
+        <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:12 , colorScheme:'light' }}>
           <Sel label="Tần suất" value={addForm.freq}
             onChange={(v) => setAddForm(f => ({...f, freq:v}))}
             options={['Hàng ngày','Hàng tuần','Hàng tháng'].map(v => ({value:v, label:v}))}/>
@@ -2915,7 +2915,7 @@ function Tasks({ user, tasks, setTasks, addLog, allUsers, mobile }: any) {
           <Inp label="Ngày deadline *" type="date" value={form.deadline} onChange={(v) => setForm(f => ({...f, deadline:v}))}/>
           <Inp label="Giờ kết thúc *" type="time" value={form.deadline_time} onChange={(v) => setForm(f => ({...f, deadline_time:v}))}/>
         </div>
-        <div style={{ padding:'8px 12px', background:T.goldBg, borderRadius:8, fontSize:12, color:T.goldText, marginBottom:13 }}>
+        <div style={{ padding:'8px 12px', background:T.goldBg, borderRadius:8, fontSize:12, color:T.goldText, marginBottom:13 , colorScheme:'light' }}>
           ⏰ Giờ bắt đầu sẽ tự động ghi nhận thời điểm tạo task
         </div>
         <Inp label="Ghi chú" value={form.notes} onChange={(v) => setForm(f => ({...f, notes:v}))} placeholder="Ghi chú thêm..."/>
@@ -3186,7 +3186,7 @@ function Templates({ templates, setTemplates, allUsers, mobile }: any) {
               <Inp label="📅 Ngày thực hiện *" type="date" value={form.specific_date}
                 onChange={(v) => setForm((f: any) => ({...f, specific_date:v}))}/>
               {form.specific_date && (
-                <div style={{ fontSize:11, color:'#7C3AED', marginTop:4, fontWeight:600 }}>
+                <div style={{ fontSize:11, color:'#7C3AED', marginTop:4, fontWeight:600 , colorScheme:'light' }}>
                   📅 Sẽ tạo 1 lần vào: {new Date(form.specific_date).toLocaleDateString('vi-VN',{weekday:'long',day:'2-digit',month:'2-digit',year:'numeric'})}
                 </div>
               )}
@@ -3197,7 +3197,7 @@ function Templates({ templates, setTemplates, allUsers, mobile }: any) {
           <Inp label="🕐 Giờ bắt đầu" type="time" value={form.time_start} onChange={(v) => setForm((f: any) => ({...f, time_start:v}))}/>
           <Inp label="🏁 Giờ kết thúc" type="time" value={form.time_end} onChange={(v) => setForm((f: any) => ({...f, time_end:v}))}/>
           {form.freq === 'Hàng tháng' && (
-            <div style={{ marginBottom:13 }}>
+            <div style={{ marginBottom:13 , colorScheme:'light' }}>
               <div style={{ fontSize:12, fontWeight:500, color:T.med, marginBottom:6 }}>📅 Ngày thực hiện hàng tháng</div>
               <div style={{ display:'flex', gap:6, flexWrap:'wrap' }}>
                 {[
@@ -3365,7 +3365,7 @@ function Attendance({ user, allUsers, leaveRequests, attendance, setAttendance, 
     <div>
       <div style={{ display:'flex', justifyContent:'flex-end', marginBottom:14 }}>
         <input type="date" value={date} onChange={e => setDate(e.target.value)}
-          style={{ padding:'7px 11px', border:`1px solid ${T.border}`, borderRadius:8, fontSize:13, fontFamily:'inherit', color:T.dark, background:T.bg, cursor:'pointer' }}/>
+          style={{ padding:'7px 11px', border:`1px solid ${T.border}`, borderRadius:8, fontSize:13, fontFamily:'inherit', color:T.dark, background:T.bg, cursor:'pointer' , colorScheme:'light' }}/>
       </div>
       {deptGroups.map(group => (
         <div key={group.dept} style={{ marginBottom:20 }}>
@@ -3855,14 +3855,14 @@ function Overtime({ user, allUsers, mobile }: any) {
       <Modal open={show} onClose={() => setShow(false)} title="Đăng ký làm thêm giờ">
         <Inp label="Ngày làm thêm *" type="date" value={form.date}
           onChange={(v) => setForm(f => ({...f, date:v}))}/>
-        <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:12 }}>
+        <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:12 , colorScheme:'light' }}>
           <Inp label="Giờ bắt đầu *" type="time" value={form.start_time}
             onChange={(v) => setForm(f => ({...f, start_time:v}))}/>
           <Inp label="Giờ kết thúc *" type="time" value={form.end_time}
             onChange={(v) => setForm(f => ({...f, end_time:v}))}/>
         </div>
         {form.start_time && form.end_time && calcHours(form.start_time, form.end_time) > 0 && (
-          <div style={{ padding:'8px 12px', background:T.goldBg, borderRadius:8, fontSize:12, color:T.goldText, marginBottom:13, fontWeight:600 }}>
+          <div style={{ padding:'8px 12px', background:T.goldBg, borderRadius:8, fontSize:12, color:T.goldText, marginBottom:13, fontWeight:600 , colorScheme:'light' }}>
             ⏱️ Tổng: {calcHours(form.start_time, form.end_time)} giờ OT
           </div>
         )}
@@ -4198,7 +4198,7 @@ function Leave({ user, allUsers, leaveRequests, setLeaveRequests, mobile }: any)
           <div>
             <Inp label="Ngày nghỉ *" type="date" value={form.start_date}
               onChange={(v) => setForm((f: any) => ({...f, start_date:v, end_date:v}))}/>
-            <div style={{ marginBottom:13 }}>
+            <div style={{ marginBottom:13 , colorScheme:'light' }}>
               <div style={{ fontSize:12, fontWeight:500, color:T.med, marginBottom:6 }}>Chọn buổi *</div>
               <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:10 }}>
                 {[['morning','🌅 Buổi sáng'],['afternoon','🌆 Buổi chiều']].map(([val, lbl]) => (
@@ -4657,7 +4657,7 @@ function MgrShortageRow({ item, idx, total, products, norm, setItems, mobile: is
                     <div style={{ fontSize:11, color:T.med, marginBottom:4 }}>📅 Ngày về dự kiến</div>
                     <input type="date" value={arrDate} onChange={e => setArrDate(e.target.value)}
                       style={{ width:'100%', padding:'7px 9px', border:`1px solid ${T.border}`, borderRadius:7,
-                        fontSize:12, fontFamily:'inherit', color:T.dark, background:'#fff' }}/>
+                        fontSize:12, fontFamily:'inherit', color:T.dark, background:'#fff' , colorScheme:'light' }}/>
                   </div>
                 )}
                 {selStatus==='incoming' && (
@@ -4896,7 +4896,7 @@ function ShortageItems({ user, allUsers, mobile, products, setProducts }: any) {
                 <div style={{ fontSize:11, color:T.med, marginBottom:4 }}>📅 Ngày về dự kiến</div>
                 <input type="date" value={arrDate} onChange={e => setArrDate(e.target.value)}
                   style={{ width:'100%', padding:'7px 9px', border:`1px solid ${T.border}`, borderRadius:7,
-                    fontSize:12, fontFamily:'inherit', color:T.dark, background:'#fff', boxSizing:'border-box' as any }}/>
+                    fontSize:12, fontFamily:'inherit', color:T.dark, background:'#fff', boxSizing:'border-box' as any , colorScheme:'light' }}/>
               </div>
               <div>
                 <div style={{ fontSize:11, color:T.med, marginBottom:4 }}>📦 Số lượng về</div>
@@ -5410,13 +5410,13 @@ function ShortageItems({ user, allUsers, mobile, products, setProducts }: any) {
         })()}
         <div style={{ display:'flex', gap:8, marginBottom:14 }}>
           <input value={prodForm.name} onChange={e => setProdForm(f => ({...f, name:e.target.value}))}
-            placeholder="Tên sản phẩm *" style={{ flex:3, padding:'8px 11px', border:`1px solid ${T.border}`, borderRadius:8, fontSize:13, fontFamily:'inherit', outline:'none' }}/>
+            placeholder="Tên sản phẩm *" style={{ flex:3, padding:'8px 11px', border:`1px solid ${T.border}`, borderRadius:8, fontSize:13, fontFamily:'inherit', outline:'none' , background:'#fff', color:T.dark }}/>
           <input value={prodForm.code} onChange={e => setProdForm(f => ({...f, code:e.target.value}))}
-            placeholder="Mã SP" style={{ flex:1, padding:'8px 11px', border:`1px solid ${T.border}`, borderRadius:8, fontSize:13, fontFamily:'inherit', outline:'none' }}/>
+            placeholder="Mã SP" style={{ flex:1, padding:'8px 11px', border:`1px solid ${T.border}`, borderRadius:8, fontSize:13, fontFamily:'inherit', outline:'none' , background:'#fff', color:T.dark }}/>
           <input value={prodForm.unit} onChange={e => setProdForm(f => ({...f, unit:e.target.value}))}
-            placeholder="ĐVT" style={{ flex:1, padding:'8px 11px', border:`1px solid ${T.border}`, borderRadius:8, fontSize:13, fontFamily:'inherit', outline:'none' }}/>
+            placeholder="ĐVT" style={{ flex:1, padding:'8px 11px', border:`1px solid ${T.border}`, borderRadius:8, fontSize:13, fontFamily:'inherit', outline:'none' , background:'#fff', color:T.dark }}/>
           <input type="number" value={prodForm.stock} onChange={e => setProdForm(f => ({...f, stock:e.target.value}))}
-            placeholder="Tồn kho" style={{ flex:1, padding:'8px 11px', border:`1px solid ${T.border}`, borderRadius:8, fontSize:13, fontFamily:'inherit', outline:'none' }}/>
+            placeholder="Tồn kho" style={{ flex:1, padding:'8px 11px', border:`1px solid ${T.border}`, borderRadius:8, fontSize:13, fontFamily:'inherit', outline:'none' , background:'#fff', color:T.dark }}/>
           <button onClick={async () => {
             if (!prodForm.name) return
             const np = { id:'pr'+Date.now(), ...prodForm, stock:prodForm.stock!==''?Number(prodForm.stock):null, active:true }
@@ -5666,7 +5666,7 @@ function ReturnKhoEditForm({ slip, products, onSave, onClose }: any) {
         <Inp label="Mã đơn hoàn" value={returnCode} onChange={setReturnCode} placeholder="VD: HV001234"/>
       </div>
 
-      <div style={{ fontSize:12, fontWeight:600, color:T.dark, marginBottom:8 }}>Sản phẩm</div>
+      <div style={{ fontSize:12, fontWeight:600, color:T.dark, marginBottom:8 , colorScheme:'light' }}>Sản phẩm</div>
       {lines.map((line, li) => (
         <div key={line.id} style={{ background:T.bg, borderRadius:10, padding:'10px 12px',
           marginBottom:8, border:`1px solid ${T.border}` }}>
@@ -9697,7 +9697,7 @@ function InvCheckRow({ check, products, allUsers, canEdit, onUpdate, idx, total 
       {editing ? (
         <input type="number" value={val} onChange={e => setVal(e.target.value)}
           autoFocus style={{ width:'100%', padding:'4px 6px', border:`1.5px solid ${T.gold}`,
-            borderRadius:6, fontSize:12, fontFamily:'inherit', textAlign:'center' }}
+            borderRadius:6, fontSize:12, fontFamily:'inherit', textAlign:'center' , background:'#fff', color:T.dark }}
           onKeyDown={e => e.key==='Enter' && save()}/>
       ) : (
         <span style={{ fontSize:12, textAlign:'center', fontWeight:check.actual_qty!=null?700:400,
@@ -11721,7 +11721,7 @@ function SessionCreateWizard({ products, checks, allUsers, user, excludedCodes, 
               <Inp label="Ngày kiểm kê *" type="date" value={date} onChange={(v) => setDate(v)}/>
               <Inp label="Ghi chú (tùy chọn)" value={note} onChange={(v) => setNote(v)}
                 placeholder="VD: Kiểm kê tuần 15 — nhóm A"/>
-              <div style={{padding:'12px',background:T.goldBg,borderRadius:10,fontSize:12,color:T.goldText,marginTop:8}}>
+              <div style={{padding:'12px',background:T.goldBg,borderRadius:10,fontSize:12,color:T.goldText,marginTop:8, colorScheme:'light' }}>
                 💡 Bước tiếp theo hệ thống sẽ gợi ý 150 SP ưu tiên. Bạn có thể thêm/bớt trước khi xác nhận.
               </div>
             </div>
@@ -13305,14 +13305,14 @@ function BrandProgramsTab({ user, mobile, products, allUsers,
           {/* Dates */}
           <Inp label="📅 Ngày bắt đầu" type="date" value={form.start_date} onChange={v => F('start_date',v)}/>
           <div>
-            <div style={{ fontSize:11, fontWeight:600, color:T.med, marginBottom:5 }}>📅 Ngày kết thúc</div>
+            <div style={{ fontSize:11, fontWeight:600, color:T.med, marginBottom:5 , colorScheme:'light' }}>📅 Ngày kết thúc</div>
             <div style={{ display:'flex', gap:6, alignItems:'center' }}>
               <input type="date" value={form.open_ended ? '' : (form.end_date||'')}
                 disabled={form.open_ended}
                 onChange={e => F('end_date', e.target.value)}
                 style={{ flex:1, padding:'7px 10px', border:`1px solid ${T.border}`,
                   borderRadius:7, fontSize:12, fontFamily:'inherit', color:T.dark, background:'#fff',
-                  outline:'none', opacity: form.open_ended ? .4 : 1 }}/>
+                  outline:'none', opacity: form.open_ended ? .4 : 1 , colorScheme:'light' }}/>
               <label style={{ display:'flex', alignItems:'center', gap:4, fontSize:11, color:T.med, whiteSpace:'nowrap', cursor:'pointer' }}>
                 <input type="checkbox" checked={form.open_ended} onChange={e => F('open_ended', e.target.checked)}/>
                 Chưa rõ
@@ -13378,7 +13378,7 @@ function BrandProgramsTab({ user, mobile, products, allUsers,
               <Inp label="Ngày quy đổi" type="date" value={form.exchange_date}
                 onChange={v => F('exchange_date',v)}/>
             </div>
-            <div style={{ marginTop:7 }}>
+            <div style={{ marginTop:7 , colorScheme:'light' }}>
               <Inp label="Chi tiết quy đổi" value={form.exchange_detail}
                 onChange={v => F('exchange_detail',v)}
                 placeholder="VD: Đã đổi b5 Candid 11/7, lấy re 0.5% đã trả 29/1/2026..."/>
@@ -14273,7 +14273,7 @@ function PaymentOrderForm({ suppliers, accounts, onSave, onClose, edit, mobile }
                     <input value={nccSearch} onChange={e => setNccSearch(e.target.value)}
                       placeholder="Gõ tên NCC..."
                       style={{ width:'100%', padding:'7px 10px', border:`1px solid ${T.border}`,
-                        borderRadius:8, fontSize:12, fontFamily:'inherit', outline:'none', boxSizing:'border-box' as any }}/>
+                        borderRadius:8, fontSize:12, fontFamily:'inherit', outline:'none', boxSizing:'border-box' as any , background:'#fff', color:T.dark }}/>
                     {nccSearch && !selSup && (
                       <div style={{ border:`1px solid ${T.border}`, borderRadius:8, marginTop:4, maxHeight:160, overflowY:'auto', background:'#fff' }}>
                         {nccFiltered.slice(0,8).map((s: any) => (
@@ -15280,7 +15280,7 @@ function PaymentModule({ user, mobile, allUsers }: any) {
           <div style={{ display:'flex', gap:8, marginBottom:12, flexWrap:'wrap', alignItems:'center' }}>
             <input type="month" value={histMonth} onChange={e => setHistMonth(e.target.value)}
               style={{ padding:'7px 11px', border:`1px solid ${T.border}`, borderRadius:8,
-                fontSize:12, fontFamily:'inherit', color:T.dark, background:'#fff', outline:'none' }}/>
+                fontSize:12, fontFamily:'inherit', color:T.dark, background:'#fff', outline:'none' , colorScheme:'light' }}/>
             <select value={histSort} onChange={e => setHistSort(e.target.value as any)}
               style={{ padding:'7px 11px', border:`1px solid ${T.border}`, borderRadius:8,
                 fontSize:12, fontFamily:'inherit', color:T.dark, background:'#fff', outline:'none', cursor:'pointer' }}>
@@ -16065,7 +16065,7 @@ function CutoffDateModal({ user, currentDate, orderCount, onSave, onCleanupOld, 
             max={new Date().toISOString().split('T')[0]}
             style={{ width:'100%', padding:'10px 13px', border:`1px solid ${T.border}`, borderRadius:6,
               fontSize:14, fontFamily:'inherit', color:T.dark, background:'#fff', outline:'none',
-              boxSizing:'border-box' as any, marginBottom:14 }}/>
+              boxSizing:'border-box' as any, marginBottom:14 , colorScheme:'light' }}/>
 
           <div style={{ display:'flex', gap:6, marginBottom:14, flexWrap:'wrap' }}>
             <button onClick={() => setDate(new Date().toISOString().split('T')[0])}
@@ -18823,7 +18823,7 @@ function PayrollImportModule({ user, allUsers, mobile, attendance, setAttendance
               <label style={{ fontSize: FS.sm, color: T.med, fontWeight: 600 }}>Nguồn (tuỳ chọn):</label>
               <input type="text" value={sourceLabel} onChange={e => setSourceLabel(e.target.value)}
                 placeholder="VD: Kho, VP, Sale..."
-                style={{ marginLeft: 6, padding: 8, borderRadius: RD.sm, border: `1px solid ${T.border}`, width: 140 }}/>
+                style={{ marginLeft: 6, padding: 8, borderRadius: RD.sm, border: `1px solid ${T.border}`, width: 140 , background:'#fff', color:T.dark }}/>
             </div>
           </div>
 
@@ -19886,9 +19886,9 @@ function PayrollDetailModal({ user: nv, payroll, salaryConfig, otherIncomes, sho
             <div style={{ fontWeight: 700, marginBottom: 8, color: T.blue }}>⚙️ Điều chỉnh thủ công</div>
             <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
               <input type="number" value={manualAdjust} onChange={e => setManualAdjust(Number(e.target.value))}
-                style={{ width: 140, padding: 6, borderRadius: RD.sm, border: `1px solid ${T.border}` }}/>
+                style={{ width: 140, padding: 6, borderRadius: RD.sm, border: `1px solid ${T.border}` , background:'#fff', color:T.dark }}/>
               <input type="text" placeholder="Lý do..." value={manualReason} onChange={e => setManualReason(e.target.value)}
-                style={{ flex: 1, minWidth: 200, padding: 6, borderRadius: RD.sm, border: `1px solid ${T.border}` }}/>
+                style={{ flex: 1, minWidth: 200, padding: 6, borderRadius: RD.sm, border: `1px solid ${T.border}` , background:'#fff', color:T.dark }}/>
               <button onClick={() => onUpdate({
                 manual_adjust: manualAdjust,
                 manual_adjust_reason: manualReason,
@@ -20955,7 +20955,7 @@ function OrderLookupTab({ user, allUsers, mobile }: any) {
               Từ ngày
             </label>
             <input type="date" value={dateFrom}
-              onChange={e => { setDateFrom(e.target.value) }}
+              onChange={e => { setDateFrom(e.target.value) , colorScheme:'light' }}
               max={dateTo}
               style={{ padding:'6px 10px', border:`1px solid ${T.border}`, borderRadius:6,
                 fontSize:11, fontFamily:"inherit", background:"#fff", color:T.dark, outline:"none" }}/>
@@ -20965,7 +20965,7 @@ function OrderLookupTab({ user, allUsers, mobile }: any) {
               Đến ngày
             </label>
             <input type="date" value={dateTo}
-              onChange={e => { setDateTo(e.target.value) }}
+              onChange={e => { setDateTo(e.target.value) , colorScheme:'light' }}
               min={dateFrom} max={todayStr()}
               style={{ padding:'6px 10px', border:`1px solid ${T.border}`, borderRadius:6,
                 fontSize:11, fontFamily:"inherit", background:"#fff", color:T.dark, outline:"none" }}/>
@@ -21782,13 +21782,13 @@ function WarehouseStatsModule({ user, allUsers, mobile }: any) {
         </div>
         <div style={{ display:'flex', gap:8, alignItems:'center', flexWrap:'wrap' }}>
           <label style={{ fontSize:11, color:T.med }}>Từ:</label>
-          <input type="date" value={fromDate} onChange={e => { setFromDate(e.target.value); setPreset('custom') }}
+          <input type="date" value={fromDate} onChange={e => { setFromDate(e.target.value); setPreset('custom') , colorScheme:'light' }}
             style={{ padding:'5px 10px', border:`1px solid ${T.border}`, borderRadius:6,
-              fontSize:11, fontFamily:'inherit' }}/>
+              fontSize:11, fontFamily:'inherit' , background:'#fff', color:T.dark }}/>
           <label style={{ fontSize:11, color:T.med }}>Đến:</label>
-          <input type="date" value={toDate} onChange={e => { setToDate(e.target.value); setPreset('custom') }}
+          <input type="date" value={toDate} onChange={e => { setToDate(e.target.value); setPreset('custom') , colorScheme:'light' }}
             style={{ padding:'5px 10px', border:`1px solid ${T.border}`, borderRadius:6,
-              fontSize:11, fontFamily:'inherit' }}/>
+              fontSize:11, fontFamily:'inherit' , background:'#fff', color:T.dark }}/>
         </div>
       </Card>
 
@@ -24119,7 +24119,7 @@ function SlowMovingSettings({ settings, onUpdate }: any) {
         <input type="number" value={thresholdDays} onChange={e => setThresholdDays(Number(e.target.value)||0)}
           min={1} max={180}
           style={{ width:'100%', padding:'7px 10px', border:`1px solid ${T.border}`, borderRadius:8,
-            fontSize:12, fontFamily:'inherit', color:T.dark }}/>
+            fontSize:12, fontFamily:'inherit', color:T.dark , background:'#fff' }}/>
         <div style={{ fontSize:10, color:T.light, marginTop:3 }}>
           Nếu SP chưa bán trong X ngày → gắn cờ "bán chậm". Mặc định: 45 ngày.
         </div>
@@ -24133,7 +24133,7 @@ function SlowMovingSettings({ settings, onUpdate }: any) {
         <input type="number" value={thresholdQty} onChange={e => setThresholdQty(Number(e.target.value)||0)}
           min={1} max={100}
           style={{ width:'100%', padding:'7px 10px', border:`1px solid ${T.border}`, borderRadius:8,
-            fontSize:12, fontFamily:'inherit', color:T.dark }}/>
+            fontSize:12, fontFamily:'inherit', color:T.dark , background:'#fff' }}/>
         <div style={{ fontSize:10, color:T.light, marginTop:3 }}>
           Nếu SP bán &lt; N trong {periodDays} ngày → gắn cờ "bán chậm". Mặc định: 3 SP.
         </div>
@@ -24147,7 +24147,7 @@ function SlowMovingSettings({ settings, onUpdate }: any) {
         <input type="number" value={periodDays} onChange={e => setPeriodDays(Number(e.target.value)||0)}
           min={7} max={365}
           style={{ width:'100%', padding:'7px 10px', border:`1px solid ${T.border}`, borderRadius:8,
-            fontSize:12, fontFamily:'inherit', color:T.dark }}/>
+            fontSize:12, fontFamily:'inherit', color:T.dark , background:'#fff' }}/>
         <div style={{ fontSize:10, color:T.light, marginTop:3 }}>
           Tính sold_in_period trong X ngày gần nhất. Mặc định: 60 ngày.
         </div>
@@ -24161,7 +24161,7 @@ function SlowMovingSettings({ settings, onUpdate }: any) {
         <input type="number" value={minPrice} onChange={e => setMinPrice(Number(e.target.value)||0)}
           min={0} step={10000}
           style={{ width:'100%', padding:'7px 10px', border:`1px solid ${T.border}`, borderRadius:8,
-            fontSize:12, fontFamily:'inherit', color:T.dark }}/>
+            fontSize:12, fontFamily:'inherit', color:T.dark , background:'#fff' }}/>
         <div style={{ fontSize:10, color:T.light, marginTop:3 }}>
           Loại bỏ SP giá quá thấp (túi bóng, bao bì...). Dùng 0 để scan tất cả.
         </div>
@@ -24175,7 +24175,7 @@ function SlowMovingSettings({ settings, onUpdate }: any) {
         <input type="number" value={minStock} onChange={e => setMinStock(Number(e.target.value)||0)}
           min={1}
           style={{ width:'100%', padding:'7px 10px', border:`1px solid ${T.border}`, borderRadius:8,
-            fontSize:12, fontFamily:'inherit', color:T.dark }}/>
+            fontSize:12, fontFamily:'inherit', color:T.dark , background:'#fff' }}/>
         <div style={{ fontSize:10, color:T.light, marginTop:3 }}>
           Mặc định: 1 (chỉ scan SP còn tồn). Không cần báo SP hết tồn.
         </div>
