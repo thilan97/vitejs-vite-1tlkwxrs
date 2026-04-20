@@ -12,7 +12,7 @@ const db = createClient(SUPABASE_URL, SUPABASE_KEY)
 // APP_VERSION — dùng để invalidate cache localStorage mỗi khi deploy version mới
 // (ngăn bug quyền user bị "reset" do cache position cũ sau deploy)
 // ⚠️ MỖI LẦN DEPLOY FEATURE MỚI CÓ PERMISSION MỚI, BUMP SỐ NÀY:
-const APP_VERSION = '2026.04.19.v69'
+const APP_VERSION = '2026.04.20.v70'
 
 // ════════════════════════════════════════════════════════════════
 // AUDIT LOG — ghi nhận các hành động phá hoại data để trace lại
@@ -4554,7 +4554,7 @@ function MgrShortageRow({ item, idx, total, products, norm, setItems, mobile: is
 
         {/* Thao tác */}
         <div style={{ display:'flex', gap:5, justifyContent:'flex-end', alignItems:'center' }}>
-          {item.status!=='arrived' && item.status!=='burned' && (
+          {item.status!=='arrived' && (
             <button onClick={() => setOpen(v => !v)}
               style={{ padding:'3px 10px', borderRadius:20,
                 border:`1.5px solid ${open?T.gold:T.border}`,
@@ -4612,6 +4612,20 @@ function MgrShortageRow({ item, idx, total, products, norm, setItems, mobile: is
                     style={{ padding:'4px 11px', borderRadius:7, border:`1.5px solid ${T.green}`,
                       background:T.greenBg, cursor:'pointer', fontSize:11, fontFamily:'inherit', color:T.green, fontWeight:600 }}>
                     ✅ Xác nhận đã về
+                  </button>
+                )}
+                {/* Burned → Incoming: chuyển hàng cháy sang "sắp về" */}
+                {item.status==='burned' && (
+                  <button onClick={async () => {
+                    if (!confirm('Chuyển mã này từ "🔥 Hàng cháy" sang "📅 Sắp về"?')) return
+                    const upd = { status:'incoming', arrival_date:'', arrival_qty:0 }
+                    setItems((prev: any) => prev.map((i: any) => i.id===item.id ? {...i,...upd} : i))
+                    await db.from('shortage_items').update(upd).eq('id', item.id)
+                    setEditMode(true); setSelStatus('incoming')
+                  }}
+                    style={{ padding:'4px 11px', borderRadius:7, border:`1.5px solid ${T.blue}`,
+                      background:T.blueBg, cursor:'pointer', fontSize:11, fontFamily:'inherit', color:T.blue, fontWeight:600 }}>
+                    📅 Chuyển sang "Sắp về"
                   </button>
                 )}
                 <button onClick={remove}
@@ -10727,6 +10741,32 @@ function InventoryModule({ user, allUsers, products, invSessions, setInvSessions
                           <div>
                             <div style={{fontSize:12,fontWeight:500,color:T.dark,lineHeight:1.3}}>{c.product_name}</div>
                             <div style={{fontSize:10,color:T.light}}>{c.product_code}</div>
+                            {/* Ghi chú cho mã lệch — hiển thị luôn cho cả canManage và không */}
+                            {canManage ? (
+                              <input
+                                type="text"
+                                placeholder="💬 Thêm ghi chú..."
+                                defaultValue={c.diff_note || ''}
+                                onBlur={async (e) => {
+                                  const newNote = e.target.value.trim()
+                                  if (newNote === (c.diff_note || '').trim()) return
+                                  await db.from('inventory_checks').update({ diff_note: newNote }).eq('id', c.id)
+                                  updateCheck(c.id, { diff_note: newNote })
+                                }}
+                                onKeyDown={(e: any) => { if (e.key === 'Enter') e.currentTarget.blur() }}
+                                style={{
+                                  marginTop:4, width:'100%', padding:'3px 7px',
+                                  border:`1px solid ${c.diff_note ? T.blue : T.border}`,
+                                  borderRadius:6, fontSize:10, fontFamily:'inherit',
+                                  color: c.diff_note ? T.dark : T.med,
+                                  background: c.diff_note ? T.blueBg : T.bg,
+                                }}/>
+                            ) : c.diff_note ? (
+                              <div style={{marginTop:3, fontSize:10, color:T.blue, fontStyle:'italic',
+                                padding:'2px 6px', background:T.blueBg, borderRadius:4, display:'inline-block'}}>
+                                💬 {c.diff_note}
+                              </div>
+                            ) : null}
                           </div>
                           <span style={{fontSize:11,textAlign:'center',color:T.med}}>{c.system_qty}</span>
                           <span style={{fontSize:11,textAlign:'center',color:T.dark,fontWeight:600}}>{c.actual_qty}</span>
@@ -22473,11 +22513,38 @@ function WarehouseScheduleModule({ user, allUsers, leaveRequests, attendance, mo
           existingSchedules={schedules}
           onApply={async (entries: any[]) => {
             // entries: [{date, role_id, user_ids}]
+            // Batch upsert thay vì loop — tránh race condition & ID trùng
+            const now = new Date().toISOString()
+            const recordsToInsert: any[] = []
+            const recordsToUpdate: any[] = []
             for (const e of entries) {
-              await saveCell(e.date, e.role_id, e.user_ids)
+              const existing = schedules.find((s: any) => s.date === e.date && s.role_id === e.role_id)
+              if (existing) {
+                recordsToUpdate.push({ id: existing.id, user_ids: e.user_ids })
+              } else {
+                // Tạo ID deterministic theo date+role để tránh trùng khi generate nhanh
+                recordsToInsert.push({
+                  id: `ws_${e.date}_${e.role_id}`,
+                  date: e.date, role_id: e.role_id, user_ids: e.user_ids,
+                  updated_by: user.id, updated_at: now, created_at: now,
+                })
+              }
+            }
+            // Insert tất cả cùng lúc (atomic)
+            if (recordsToInsert.length > 0) {
+              const { error: insErr } = await db.from('warehouse_schedule')
+                .upsert(recordsToInsert, { onConflict: 'id' })
+              if (insErr) { alert('❌ Lỗi tạo lịch: ' + insErr.message); return }
+            }
+            // Update tuần tự (ít records nên OK)
+            for (const r of recordsToUpdate) {
+              await db.from('warehouse_schedule').update({
+                user_ids: r.user_ids, updated_by: user.id, updated_at: now,
+              }).eq('id', r.id)
             }
             setShowRotation(false)
-            fetchAll()
+            await fetchAll()
+            alert(`✅ Đã tạo/cập nhật ${entries.length} ô lịch cho cả tháng.`)
           }}
           onClose={() => setShowRotation(false)}
         />
@@ -23189,6 +23256,7 @@ function SaleOrderTrackingModule({ user, allUsers, mobile }: any) {
 // ── Component hiển thị ảnh cho Sale trong trang Theo dõi đơn ──
 function TrackingOrderPhotos({ photosPicked, photosPacked, orderCode }: any) {
   const [showModal, setShowModal] = useState<string|null>(null)
+  const [downloading, setDownloading] = useState(false)
 
   const getUrl = (p: any): string => typeof p === 'string' ? p : (p?.url || '')
   const getAt  = (p: any): string => typeof p === 'string' ? '' : (p?.at || '')
@@ -23196,6 +23264,56 @@ function TrackingOrderPhotos({ photosPicked, photosPacked, orderCode }: any) {
   const hasPicked = photosPicked.length > 0
   const hasPacked = photosPacked.length > 0
   if (!hasPicked && !hasPacked) return null
+
+  const totalPhotos = photosPicked.length + photosPacked.length
+
+  // Download tất cả ảnh: dùng JSZip (load từ CDN) → zip file + save
+  const downloadAll = async () => {
+    if (downloading) return
+    setDownloading(true)
+    try {
+      // Dynamic import JSZip từ CDN (ESM)
+      const JSZip: any = (await import(/* @vite-ignore */ 'https://cdn.jsdelivr.net/npm/jszip@3.10.1/+esm' as any)).default
+      const zip = new JSZip()
+
+      const addPhotosToZip = async (photos: any[], folderName: string) => {
+        const folder = zip.folder(folderName)
+        for (let i = 0; i < photos.length; i++) {
+          const url = getUrl(photos[i])
+          if (!url) continue
+          try {
+            const res = await fetch(url)
+            if (!res.ok) continue
+            const blob = await res.blob()
+            // Đuôi file từ URL hoặc default .jpg
+            const extMatch = url.match(/\.(jpg|jpeg|png|webp|heic)(\?|$)/i)
+            const ext = extMatch ? extMatch[1].toLowerCase() : 'jpg'
+            const fname = `${folderName}_${String(i+1).padStart(2,'0')}.${ext}`
+            folder?.file(fname, blob)
+          } catch (err) {
+            console.warn('Lỗi tải ảnh:', url, err)
+          }
+        }
+      }
+
+      if (hasPicked)  await addPhotosToZip(photosPicked, 'hang-nhat')
+      if (hasPacked)  await addPhotosToZip(photosPacked, 'thung-dong')
+
+      const content = await zip.generateAsync({ type: 'blob' })
+      const downloadUrl = URL.createObjectURL(content)
+      const a = document.createElement('a')
+      a.href = downloadUrl
+      a.download = `anh-don-${orderCode || 'unknown'}.zip`
+      document.body.appendChild(a)
+      a.click()
+      document.body.removeChild(a)
+      URL.revokeObjectURL(downloadUrl)
+    } catch (err: any) {
+      alert('❌ Lỗi tải ảnh: ' + (err?.message || String(err)))
+    } finally {
+      setDownloading(false)
+    }
+  }
 
   const renderGrid = (photos: any[], accent: string) => (
     <div style={{ display:'grid', gridTemplateColumns:'repeat(auto-fill, minmax(80px, 1fr))', gap:6 }}>
@@ -23226,8 +23344,21 @@ function TrackingOrderPhotos({ photosPicked, photosPacked, orderCode }: any) {
   return (
     <div style={{ marginBottom:10, padding:'10px 12px', background:'#fff', borderRadius:6,
       border:`1px solid ${T.border}` }}>
-      <div style={{ fontSize:11, fontWeight:700, color:T.med, marginBottom:10 }}>
-        📸 ẢNH ĐƠN HÀNG
+      <div style={{ display:'flex', alignItems:'center', justifyContent:'space-between',
+        marginBottom:10, gap:8, flexWrap:'wrap' }}>
+        <div style={{ fontSize:11, fontWeight:700, color:T.med }}>
+          📸 ẢNH ĐƠN HÀNG ({totalPhotos})
+        </div>
+        {totalPhotos >= 2 && (
+          <button onClick={downloadAll} disabled={downloading}
+            style={{ padding:'4px 11px', borderRadius:16,
+              border:`1.5px solid ${T.blue}`, background: downloading ? T.border : T.blueBg,
+              color: downloading ? T.light : T.blue, cursor: downloading ? 'wait' : 'pointer',
+              fontFamily:'inherit', fontSize:11, fontWeight:700 }}
+            title={`Tải tất cả ${totalPhotos} ảnh thành file .zip`}>
+            {downloading ? '⏳ Đang tải...' : `⬇️ Tải tất cả (${totalPhotos})`}
+          </button>
+        )}
       </div>
 
       {hasPicked && (
