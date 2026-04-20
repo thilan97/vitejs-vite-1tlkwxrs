@@ -12,7 +12,7 @@ const db = createClient(SUPABASE_URL, SUPABASE_KEY)
 // APP_VERSION — dùng để invalidate cache localStorage mỗi khi deploy version mới
 // (ngăn bug quyền user bị "reset" do cache position cũ sau deploy)
 // ⚠️ MỖI LẦN DEPLOY FEATURE MỚI CÓ PERMISSION MỚI, BUMP SỐ NÀY:
-const APP_VERSION = '2026.04.20.v77'
+const APP_VERSION = '2026.04.20.v78'
 
 // ════════════════════════════════════════════════════════════════
 // AUDIT LOG — ghi nhận các hành động phá hoại data để trace lại
@@ -24276,7 +24276,7 @@ function GalleryModule({ user, allUsers, mobile }: any) {
     try {
       const range = computeDateRange()
       let q = db.from('packing_workflow')
-        .select('order_code, customer_name, total_amount, items, assigned_to, packed_by_ids, packed_by, photos_picked, photos_packed, status, picked_at, packed_at, created_at, updated_at, order_date, sale_by_name, ai_check_status')
+        .select('order_code, customer_name, total_amount, items, assigned_to, packed_by_ids, packed_by, photos_picked, photos_packed, status, picked_at, packed_at, updated_at, sale_id, ai_check_status')
         .order('packed_at', { ascending: false, nullsFirst: false })
         .limit(20)
 
@@ -24295,16 +24295,23 @@ function GalleryModule({ user, allUsers, mobile }: any) {
       if (error) throw error
       const list = data || []
 
-      // Filter by sale (client-side)
+      // Filter by sale (client-side) — resolve sale_id → name from allUsers
+      const saleNameMap = new Map<string, string>()
+      allUsers.forEach((u: any) => saleNameMap.set(u.id, u.name || ''))
       let filtered = list.filter((o: any) => {
         const hasPicked = Array.isArray(o.photos_picked) && o.photos_picked.length > 0
         const hasPacked = Array.isArray(o.photos_packed) && o.photos_packed.length > 0
         if (!hasPicked && !hasPacked) return false
         if (typeFilter === 'picked' && !hasPicked) return false
         if (typeFilter === 'packed' && !hasPacked) return false
-        if (saleFilter && o.sale_by_name !== saleFilter) return false
+        if (saleFilter) {
+          const saleName = saleNameMap.get(o.sale_id) || ''
+          if (saleName !== saleFilter) return false
+        }
         return true
       })
+      // Attach computed sale_name for display
+      filtered.forEach((o: any) => { o._saleName = saleNameMap.get(o.sale_id) || '' })
 
       if (reset) setOrders(filtered)
       else setOrders(prev => [...prev, ...filtered])
@@ -24348,7 +24355,7 @@ function GalleryModule({ user, allUsers, mobile }: any) {
   // ── Unique sale list for filter ──
   const saleList = useMemo(() => {
     const set = new Set<string>()
-    orders.forEach(o => { if (o.sale_by_name) set.add(o.sale_by_name) })
+    orders.forEach(o => { if (o._saleName) set.add(o._saleName) })
     return Array.from(set).sort()
   }, [orders])
 
@@ -24521,7 +24528,7 @@ function GalleryPost({ order: o, mobile, allUsers, onOpenViewer }: any) {
               overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap' }}>
               {(o.items||[]).length} SP
               {Number(o.total_amount) > 0 && <> • {Number(o.total_amount).toLocaleString('vi-VN')}đ</>}
-              {o.sale_by_name && <> • 👤 {o.sale_by_name}</>}
+              {o._saleName && <> • 👤 {o._saleName}</>}
             </div>
           </div>
           <span style={{ fontSize:10, padding:'2px 8px', borderRadius:12,
