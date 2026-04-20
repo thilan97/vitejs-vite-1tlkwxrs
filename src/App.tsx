@@ -12,7 +12,7 @@ const db = createClient(SUPABASE_URL, SUPABASE_KEY)
 // APP_VERSION — dùng để invalidate cache localStorage mỗi khi deploy version mới
 // (ngăn bug quyền user bị "reset" do cache position cũ sau deploy)
 // ⚠️ MỖI LẦN DEPLOY FEATURE MỚI CÓ PERMISSION MỚI, BUMP SỐ NÀY:
-const APP_VERSION = '2026.04.20.v78'
+const APP_VERSION = '2026.04.20.v79'
 
 // ════════════════════════════════════════════════════════════════
 // AUDIT LOG — ghi nhận các hành động phá hoại data để trace lại
@@ -24236,7 +24236,6 @@ function GalleryModule({ user, allUsers, mobile }: any) {
   const [datePreset, setDatePreset] = useState<'today'|'week'|'month'|'custom'>('week')
   const [fromDate, setFromDate]   = useState('')
   const [toDate, setToDate]       = useState('')
-  const [saleFilter, setSaleFilter] = useState<string>('')
   const [statusFilter, setStatusFilter] = useState<'all'|'done'|'pending'>('all')
   const [typeFilter, setTypeFilter] = useState<'all'|'picked'|'packed'>('all')
 
@@ -24276,7 +24275,7 @@ function GalleryModule({ user, allUsers, mobile }: any) {
     try {
       const range = computeDateRange()
       let q = db.from('packing_workflow')
-        .select('order_code, customer_name, total_amount, items, assigned_to, packed_by_ids, packed_by, photos_picked, photos_packed, status, picked_at, packed_at, updated_at, sale_id, ai_check_status')
+        .select('*')
         .order('packed_at', { ascending: false, nullsFirst: false })
         .limit(20)
 
@@ -24295,23 +24294,15 @@ function GalleryModule({ user, allUsers, mobile }: any) {
       if (error) throw error
       const list = data || []
 
-      // Filter by sale (client-side) — resolve sale_id → name from allUsers
-      const saleNameMap = new Map<string, string>()
-      allUsers.forEach((u: any) => saleNameMap.set(u.id, u.name || ''))
+      // Filter by type (client-side)
       let filtered = list.filter((o: any) => {
         const hasPicked = Array.isArray(o.photos_picked) && o.photos_picked.length > 0
         const hasPacked = Array.isArray(o.photos_packed) && o.photos_packed.length > 0
         if (!hasPicked && !hasPacked) return false
         if (typeFilter === 'picked' && !hasPicked) return false
         if (typeFilter === 'packed' && !hasPacked) return false
-        if (saleFilter) {
-          const saleName = saleNameMap.get(o.sale_id) || ''
-          if (saleName !== saleFilter) return false
-        }
         return true
       })
-      // Attach computed sale_name for display
-      filtered.forEach((o: any) => { o._saleName = saleNameMap.get(o.sale_id) || '' })
 
       if (reset) setOrders(filtered)
       else setOrders(prev => [...prev, ...filtered])
@@ -24337,7 +24328,7 @@ function GalleryModule({ user, allUsers, mobile }: any) {
     setCursor(null)
     setHasMore(true)
     fetchOrders(true)
-  }, [datePreset, fromDate, toDate, saleFilter, statusFilter, typeFilter])
+  }, [datePreset, fromDate, toDate, statusFilter, typeFilter])
 
   // Infinite scroll trigger
   const sentinelRef = useRef<HTMLDivElement>(null)
@@ -24351,13 +24342,6 @@ function GalleryModule({ user, allUsers, mobile }: any) {
     io.observe(sentinelRef.current)
     return () => io.disconnect()
   }, [loadingMore, hasMore, loading, cursor])
-
-  // ── Unique sale list for filter ──
-  const saleList = useMemo(() => {
-    const set = new Set<string>()
-    orders.forEach(o => { if (o._saleName) set.add(o._saleName) })
-    return Array.from(set).sort()
-  }, [orders])
 
   // ── Stats ──
   const stats = useMemo(() => {
@@ -24428,16 +24412,6 @@ function GalleryModule({ user, allUsers, mobile }: any) {
             <option value="picked">Chỉ ảnh nhặt</option>
             <option value="packed">Chỉ ảnh đóng</option>
           </select>
-
-          {/* Sale */}
-          {(isAdmin || perm.approveLeave) && saleList.length > 0 && (
-            <select value={saleFilter} onChange={e => setSaleFilter(e.target.value)}
-              style={{ padding:'5px 8px', border:`1px solid ${T.border}`, borderRadius:8,
-                fontSize:10, fontFamily:'inherit', background:'#fff', color:T.dark, cursor:'pointer' }}>
-              <option value="">Tất cả sale</option>
-              {saleList.map(s => <option key={s} value={s}>{s}</option>)}
-            </select>
-          )}
 
           <button onClick={() => fetchOrders(true)}
             style={{ padding:'5px 10px', borderRadius:12, border:`1px solid ${T.blue}`,
@@ -24528,7 +24502,6 @@ function GalleryPost({ order: o, mobile, allUsers, onOpenViewer }: any) {
               overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap' }}>
               {(o.items||[]).length} SP
               {Number(o.total_amount) > 0 && <> • {Number(o.total_amount).toLocaleString('vi-VN')}đ</>}
-              {o._saleName && <> • 👤 {o._saleName}</>}
             </div>
           </div>
           <span style={{ fontSize:10, padding:'2px 8px', borderRadius:12,
