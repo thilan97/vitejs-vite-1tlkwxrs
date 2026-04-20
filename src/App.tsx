@@ -12,7 +12,7 @@ const db = createClient(SUPABASE_URL, SUPABASE_KEY)
 // APP_VERSION — dùng để invalidate cache localStorage mỗi khi deploy version mới
 // (ngăn bug quyền user bị "reset" do cache position cũ sau deploy)
 // ⚠️ MỖI LẦN DEPLOY FEATURE MỚI CÓ PERMISSION MỚI, BUMP SỐ NÀY:
-const APP_VERSION = '2026.04.20.v79'
+const APP_VERSION = '2026.04.20.v80'
 
 // ════════════════════════════════════════════════════════════════
 // AUDIT LOG — ghi nhận các hành động phá hoại data để trace lại
@@ -16534,6 +16534,7 @@ function PackingModule({ user, allUsers, mobile, products }: any) {
   const [selectedCode, setSelectedCode] = useState<string|null>(null)
   const [searchQ, setSearchQ] = useState('')
   const [joinConfirm, setJoinConfirm] = useState<any>(null)
+  const [linkSuppOrder, setLinkSuppOrder] = useState<any>(null)  // đơn con đang chọn để link: open modal pick parent
 
   const fetchData = async () => {
     setLoading(true)
@@ -16603,8 +16604,10 @@ function PackingModule({ user, allUsers, mobile, products }: any) {
 
   const todayStart = new Date()
   todayStart.setHours(0,0,0,0)
-  const pendingOrds = filterByQ(orders.filter((o: any) => o.status === 'packing'))
-  const doneTodayOrds = filterByQ(orders.filter((o: any) =>
+  // Ẩn đơn con (đã link vào đơn gốc) khỏi list chính — chúng sẽ hiện dưới dạng section trong đơn gốc
+  const visibleOrders = orders.filter((o: any) => !o.is_supplementary)
+  const pendingOrds = filterByQ(visibleOrders.filter((o: any) => o.status === 'packing'))
+  const doneTodayOrds = filterByQ(visibleOrders.filter((o: any) =>
     o.status === 'done' && o.packed_at && new Date(o.packed_at) >= todayStart
   ))
 
@@ -16697,6 +16700,82 @@ function PackingModule({ user, allUsers, mobile, products }: any) {
     const upd: any = { active_packers: next, updated_at: new Date().toISOString() }
     await db.from('packing_workflow').update(upd).eq('order_code', orderCode)
     setOrders(prev => prev.map((o: any) => o.order_code === orderCode ? {...o, ...upd} : o))
+  }
+
+  // ── Supplementary orders: link DH0002 (con) vào DH0001 (gốc) ──
+  const linkSupplementary = async (childCode: string, parentCode: string) => {
+    if (childCode === parentCode) { alert('❌ Không thể link đơn với chính nó'); return }
+    const child = orders.find((o: any) => o.order_code === childCode)
+    const parent = orders.find((o: any) => o.order_code === parentCode)
+    if (!child || !parent) { alert('❌ Không tìm thấy đơn'); return }
+    if (child.linked_to_order_code) {
+      alert(`❌ Đơn ${childCode} đã link với ${child.linked_to_order_code}. Bỏ link trước khi đổi.`)
+      return
+    }
+    // Update DB: child.linked_to_order_code, child.is_supplementary + parent.supplementary_orders array
+    const nowIso = new Date().toISOString()
+    const linkEntry = {
+      order_code: childCode,
+      linked_at: nowIso,
+      linked_by: user.id,
+      linked_by_name: user.name || '?',
+    }
+    const parentSupps = Array.isArray(parent.supplementary_orders) ? parent.supplementary_orders : []
+    const newParentSupps = [...parentSupps.filter((s: any) => s.order_code !== childCode), linkEntry]
+
+    const { error: e1 } = await db.from('packing_workflow').update({
+      linked_to_order_code: parentCode,
+      is_supplementary: true,
+      updated_at: nowIso,
+    }).eq('order_code', childCode)
+    if (e1) { alert('❌ Lỗi link: ' + e1.message); return }
+    const { error: e2 } = await db.from('packing_workflow').update({
+      supplementary_orders: newParentSupps,
+      updated_at: nowIso,
+    }).eq('order_code', parentCode)
+    if (e2) { alert('❌ Lỗi link đơn gốc: ' + e2.message); return }
+
+    // Update state
+    setOrders(prev => prev.map((o: any) => {
+      if (o.order_code === childCode) return { ...o, linked_to_order_code: parentCode, is_supplementary: true }
+      if (o.order_code === parentCode) return { ...o, supplementary_orders: newParentSupps }
+      return o
+    }))
+    setLinkSuppOrder(null)
+    alert(`✅ Đã link ${childCode} → ${parentCode}. NV sẽ thấy 2 đơn gộp khi đóng.`)
+  }
+
+  const unlinkSupplementary = async (childCode: string) => {
+    if (!confirm(`Bỏ link đơn bổ sung ${childCode}?\nSau khi bỏ, đơn sẽ trở lại list chính.`)) return
+    const child = orders.find((o: any) => o.order_code === childCode)
+    if (!child || !child.linked_to_order_code) return
+    const parentCode = child.linked_to_order_code
+    const parent = orders.find((o: any) => o.order_code === parentCode)
+
+    const nowIso = new Date().toISOString()
+    const { error: e1 } = await db.from('packing_workflow').update({
+      linked_to_order_code: null,
+      is_supplementary: false,
+      updated_at: nowIso,
+    }).eq('order_code', childCode)
+    if (e1) { alert('❌ Lỗi bỏ link: ' + e1.message); return }
+
+    if (parent) {
+      const parentSupps = Array.isArray(parent.supplementary_orders) ? parent.supplementary_orders : []
+      const newParentSupps = parentSupps.filter((s: any) => s.order_code !== childCode)
+      await db.from('packing_workflow').update({
+        supplementary_orders: newParentSupps,
+        updated_at: nowIso,
+      }).eq('order_code', parentCode)
+      setOrders(prev => prev.map((o: any) => {
+        if (o.order_code === childCode) return { ...o, linked_to_order_code: null, is_supplementary: false }
+        if (o.order_code === parentCode) return { ...o, supplementary_orders: newParentSupps }
+        return o
+      }))
+    } else {
+      setOrders(prev => prev.map((o: any) => o.order_code === childCode
+        ? { ...o, linked_to_order_code: null, is_supplementary: false } : o))
+    }
   }
 
   // QM review AI flag: 'qm_ok' = AI đúng, 'qm_wrong' = AI sai
@@ -16910,12 +16989,14 @@ function PackingModule({ user, allUsers, mobile, products }: any) {
                     {tab === 'pending' && (
                       <>
                         {pickerName ? (
-                          <div style={{ fontSize:10, color:T.med, marginTop:3 }}>
+                          <div style={{ fontSize:10, color:T.med, marginTop:3,
+                            overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap', maxWidth:'100%' }}>
                             📥 Nhặt bởi: <b style={{ color:T.dark }}>{pickerName}</b>
                             {pickedAtTxt && <span style={{ color:T.light }}> • {pickedAtTxt}</span>}
                           </div>
                         ) : pickedAtTxt && (
-                          <div style={{ fontSize:10, color:T.med, marginTop:3 }}>
+                          <div style={{ fontSize:10, color:T.med, marginTop:3,
+                            overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap', maxWidth:'100%' }}>
                             📥 Nhặt xong lúc <b style={{ color:T.dark }}>{pickedAtTxt}</b>
                             <span style={{ color:T.light, fontStyle:'italic' }}> (không rõ NV)</span>
                           </div>
@@ -16987,14 +17068,18 @@ function PackingModule({ user, allUsers, mobile, products }: any) {
                     })()}
                     {wasReverted && (
                       <div style={{ marginTop:5, padding:'3px 8px', borderRadius:6,
-                        background:T.red, color:'#fff', fontSize:9, fontWeight:800, letterSpacing:.3 }}>
+                        background:T.red, color:'#fff', fontSize:9, fontWeight:800, letterSpacing:.3,
+                        overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap',
+                        maxWidth:'100%', boxSizing:'border-box' }}
+                        title="Đơn đã mở lại — Sale sửa sau khi đóng">
                         🚨 ĐƠN ĐÃ MỞ LẠI — SALE SỬA SAU KHI ĐÓNG
                       </div>
                     )}
                     {modCount > 0 && latestChange && (
                       <div style={{ marginTop:5, padding:'3px 8px', borderRadius:6,
                         background:T.amberBg, color:T.amber, fontSize:9, fontWeight:700,
-                        whiteSpace:'nowrap', overflow:'hidden', textOverflow:'ellipsis' }}
+                        whiteSpace:'nowrap', overflow:'hidden', textOverflow:'ellipsis',
+                        maxWidth:'100%', boxSizing:'border-box' }}
                         title={latestChange.summary}>
                         📝 ĐÃ SỬA {modCount}× • {latestChange.summary}
                       </div>
@@ -17010,6 +17095,13 @@ function PackingModule({ user, allUsers, mobile, products }: any) {
                           background: packed>=1?T.greenBg:T.amberBg,
                           color: packed>=1?T.green:T.amber, fontWeight:600 }}>
                           📮 Thùng: {packed}
+                        </span>
+                      )}
+                      {Array.isArray(o.supplementary_orders) && o.supplementary_orders.length > 0 && (
+                        <span style={{ padding:'1px 6px', borderRadius:10,
+                          background:T.blueBg, color:T.blue, fontWeight:700 }}
+                          title={`Đã link: ${o.supplementary_orders.map((s: any) => s.order_code).join(', ')}`}>
+                          🔗 +{o.supplementary_orders.length} bổ sung
                         </span>
                       )}
                     </div>
@@ -17028,6 +17120,7 @@ function PackingModule({ user, allUsers, mobile, products }: any) {
             user={user}
             allUsers={allUsers}
             products={products}
+            allOrders={orders}
             onClose={() => setSelectedCode(null)}
             onFinish={() => finishPacking(selected.order_code)}
             onUpdatePhotos={(type: 'picked'|'packed', photos: string[]) =>
@@ -17037,6 +17130,9 @@ function PackingModule({ user, allUsers, mobile, products }: any) {
             onLeaveGroup={() => leavePackingGroup(selected.order_code)}
             onAiReview={(verdict: 'qm_ok'|'qm_wrong') => reviewAiFlag(selected.order_code, verdict)}
             onAiRetry={(code: string) => runAiCheck(code)}
+            onOpenLinkSupp={() => setLinkSuppOrder(selected)}
+            onUnlinkSupp={(childCode: string) => unlinkSupplementary(childCode)}
+            canManageSupp={perm.viewAllDashboard || perm.approveLeave || perm.manageInventory || perm.assignPacking}
             canReviewAi={perm.viewAllDashboard || perm.approveLeave || perm.handlePriority}
             readOnly={selected.status === 'done' || !canPack}
           />
@@ -17056,6 +17152,164 @@ function PackingModule({ user, allUsers, mobile, products }: any) {
           }}
         />
       )}
+
+      {/* Modal link đơn bổ sung */}
+      {linkSuppOrder && (
+        <SupplementaryLinkModal
+          child={linkSuppOrder}
+          allOrders={orders}
+          mobile={mobile}
+          onCancel={() => setLinkSuppOrder(null)}
+          onConfirm={(parentCode: string) =>
+            linkSupplementary(linkSuppOrder.order_code, parentCode)}
+        />
+      )}
+    </div>
+  )
+}
+
+// ── Modal chọn đơn gốc để gán đơn bổ sung ──
+function SupplementaryLinkModal({ child, allOrders, mobile, onCancel, onConfirm }: any) {
+  const [searchQ, setSearchQ] = useState('')
+  const [selected, setSelected] = useState<string|null>(null)
+
+  // Normalize for fuzzy search
+  const norm = (s: string) => (s||'').toLowerCase()
+    .normalize('NFD').replace(/[\u0300-\u036f]/g,'').replace(/đ/g,'d')
+    .trim().replace(/\s+/g, ' ')
+
+  // Gợi ý đơn cùng KH trong 14 ngày qua, bỏ chính đơn đang link + các đơn đã là con (is_supplementary)
+  const candidates = useMemo(() => {
+    const childName = norm(child.customer_name || '')
+    const cutoff = Date.now() - 14*86400000
+    const childPicked = child.picked_at ? new Date(child.picked_at).getTime() : 0
+    const list = (allOrders || []).filter((o: any) => {
+      if (o.order_code === child.order_code) return false
+      if (o.is_supplementary) return false         // không link qua đơn con khác
+      if (o.linked_to_order_code) return false      // đã là con rồi
+      // Cùng KH
+      if (childName && norm(o.customer_name || '') !== childName) return false
+      // Trong 14 ngày (kể cả đơn đã done)
+      const ts = o.picked_at ? new Date(o.picked_at).getTime() 
+        : (o.packed_at ? new Date(o.packed_at).getTime() : 0)
+      if (ts && ts < cutoff) return false
+      return true
+    })
+    // Sort: đơn gần nhất trước
+    list.sort((a: any, b: any) => {
+      const ta = a.picked_at || a.packed_at || ''
+      const tb = b.picked_at || b.packed_at || ''
+      return tb.localeCompare(ta)
+    })
+    // Filter search
+    if (searchQ.trim()) {
+      const tokens = norm(searchQ).split(/\s+/).filter(Boolean)
+      return list.filter((o: any) => {
+        const hay = norm(`${o.order_code} ${o.customer_name||''}`)
+        return tokens.every(t => hay.includes(t))
+      })
+    }
+    return list
+  }, [allOrders, child, searchQ])
+
+  const statusLabel = (o: any) => {
+    if (o.status === 'done') return { label:'✅ Đã đóng', color:T.green, bg:T.greenBg }
+    if (o.status === 'packing') return { label:'🟡 Đang đóng/chờ đóng', color:T.amber, bg:T.amberBg }
+    if (o.status === 'picking') return { label:'🔵 Đang nhặt', color:T.blue, bg:T.blueBg }
+    return { label: o.status || '?', color:T.med, bg:T.bg }
+  }
+
+  const fmtTime = (iso: string|null) => {
+    if (!iso) return '—'
+    const d = new Date(iso)
+    return d.toLocaleString('vi-VN', { day:'2-digit', month:'2-digit', hour:'2-digit', minute:'2-digit' })
+  }
+
+  return (
+    <div style={{ position:'fixed', inset:0, background:'rgba(0,0,0,0.55)', zIndex:9999,
+      display:'flex', alignItems:'center', justifyContent:'center', padding:mobile?10:20 }}>
+      <div style={{ background:'#fff', borderRadius:12, maxWidth:560, width:'100%',
+        maxHeight:'92vh', display:'flex', flexDirection:'column' }}>
+        <div style={{ padding:'14px 18px', background:T.blueBg,
+          borderBottom:`1px solid ${T.blue}`, borderRadius:'12px 12px 0 0' }}>
+          <div style={{ fontSize:14, fontWeight:800, color:T.blue }}>
+            🔗 Gán đơn bổ sung
+          </div>
+          <div style={{ fontSize:11, color:T.dark, marginTop:4, lineHeight:1.5 }}>
+            Đơn <b>{child.order_code}</b> ({child.customer_name || 'KH lẻ'}) sẽ được link vào 1 đơn gốc.
+            NV Kho sẽ thấy 2 đơn gộp khi đóng hàng.
+          </div>
+        </div>
+
+        <div style={{ padding:14, borderBottom:`1px solid ${T.border}` }}>
+          <input value={searchQ} onChange={e => setSearchQ(e.target.value)}
+            placeholder="🔍 Tìm mã đơn / tên khách..."
+            style={{ width:'100%', padding:'7px 10px', border:`1px solid ${T.border}`,
+              borderRadius:8, fontSize:12, fontFamily:'inherit',
+              background:'#fff', color:T.dark, boxSizing:'border-box' }}/>
+        </div>
+
+        <div style={{ flex:1, overflow:'auto', padding:'4px 14px' }}>
+          {candidates.length === 0 ? (
+            <div style={{ padding:30, textAlign:'center', color:T.light, fontSize:12 }}>
+              <div style={{ fontSize:24, marginBottom:6 }}>🔍</div>
+              {searchQ ? 'Không tìm thấy đơn khớp' : 'Không có đơn nào cùng KH trong 14 ngày qua'}
+            </div>
+          ) : candidates.map((o: any) => {
+            const st = statusLabel(o)
+            const isSelected = selected === o.order_code
+            const itemCount = (o.items||[]).length
+            const pickedCount = (o.photos_picked||[]).length
+            const packedCount = (o.photos_packed||[]).length
+            return (
+              <div key={o.order_code} onClick={() => setSelected(o.order_code)}
+                style={{ padding:'10px 12px', margin:'6px 0', borderRadius:8, cursor:'pointer',
+                  border: isSelected ? `2px solid ${T.blue}` : `1px solid ${T.border}`,
+                  background: isSelected ? T.blueBg : '#fff' }}>
+                <div style={{ display:'flex', justifyContent:'space-between',
+                  alignItems:'flex-start', gap:8, marginBottom:4 }}>
+                  <div style={{ flex:1, minWidth:0 }}>
+                    <div style={{ fontSize:13, fontWeight:700, color:T.dark,
+                      overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap' }}>
+                      {o.order_code} • {o.customer_name || 'KH lẻ'}
+                    </div>
+                    <div style={{ fontSize:10, color:T.light, marginTop:2 }}>
+                      {itemCount} SP
+                      {Number(o.total_amount) > 0 && <> • {Number(o.total_amount).toLocaleString('vi-VN')}đ</>}
+                    </div>
+                  </div>
+                  <span style={{ fontSize:9, padding:'2px 7px', borderRadius:10,
+                    color:st.color, background:st.bg, fontWeight:700, flexShrink:0, whiteSpace:'nowrap' }}>
+                    {st.label}
+                  </span>
+                </div>
+                <div style={{ fontSize:9, color:T.med, display:'flex', gap:10, flexWrap:'wrap' }}>
+                  {o.picked_at && <span>📥 Nhặt: {fmtTime(o.picked_at)}</span>}
+                  {o.packed_at && <span>📦 Đóng: {fmtTime(o.packed_at)}</span>}
+                  <span>📸 {pickedCount} + {packedCount} ảnh</span>
+                </div>
+              </div>
+            )
+          })}
+        </div>
+
+        <div style={{ padding:14, borderTop:`1px solid ${T.border}`, display:'flex', gap:8 }}>
+          <button onClick={onCancel}
+            style={{ flex:1, padding:'9px 16px', borderRadius:8,
+              border:`1px solid ${T.border}`, background:'#fff', color:T.med,
+              cursor:'pointer', fontFamily:'inherit', fontSize:12, fontWeight:600 }}>
+            Hủy
+          </button>
+          <button onClick={() => selected && onConfirm(selected)}
+            disabled={!selected}
+            style={{ flex:2, padding:'9px 16px', borderRadius:8, border:'none',
+              background: selected ? T.blue : T.light, color:'#fff',
+              cursor: selected ? 'pointer' : 'not-allowed',
+              fontFamily:'inherit', fontSize:12, fontWeight:700 }}>
+            {selected ? `🔗 Link ${child.order_code} → ${selected}` : 'Chọn đơn gốc ở trên'}
+          </button>
+        </div>
+      </div>
     </div>
   )
 }
@@ -17283,12 +17537,16 @@ function ChangeLogBanner({ ord }: any) {
   )
 }
 
-function PackingDetailPanel({ ord, mobile, user, allUsers, products, onClose, onFinish, onUpdatePhotos, onUpdateNoBox, onJoinGroup, onLeaveGroup, onAiReview, onAiRetry, canReviewAi, readOnly }: any) {
+function PackingDetailPanel({ ord, mobile, user, allUsers, products, allOrders, onClose, onFinish, onUpdatePhotos, onUpdateNoBox, onJoinGroup, onLeaveGroup, onAiReview, onAiRetry, onOpenLinkSupp, onUnlinkSupp, canManageSupp, canReviewAi, readOnly }: any) {
   const getName = (id: string) => allUsers.find((u: any) => u.id === id)?.name || '?'
   const totalItems = (ord.items || []).length
   const { min, max } = photoCountRangeV2(totalItems)
   const [showImgModal, setShowImgModal] = useState<string|null>(null)
   const [previewPhotoUrl, setPreviewPhotoUrl] = useState<string|null>(null)
+
+  // Supplementary orders: đơn con đã link vào đơn này
+  const suppList: any[] = Array.isArray(ord.supplementary_orders) ? ord.supplementary_orders : []
+  const suppOrders = suppList.map(s => (allOrders||[]).find((o: any) => o.order_code === s.order_code)).filter(Boolean)
 
   // Multi-packer info
   const activePackerIds: string[] = ord.active_packers || []
@@ -17392,6 +17650,78 @@ function PackingDetailPanel({ ord, mobile, user, allUsers, products, onClose, on
         </div>
       )}
 
+      {/* ══ SUPPLEMENTARY ORDERS BANNER — hiện ở đơn gốc + đơn con ══ */}
+      {ord.linked_to_order_code && (
+        <div style={{ padding:'10px 12px', marginBottom:12, background:T.blueBg,
+          border:`1px solid ${T.blue}`, borderRadius:8, fontSize:12, color:T.dark }}>
+          <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', gap:8, flexWrap:'wrap' }}>
+            <div>
+              <b style={{ color:T.blue }}>↗ Đơn bổ sung</b> — Link tới đơn gốc <b>{ord.linked_to_order_code}</b>
+              <div style={{ fontSize:10, color:T.med, marginTop:2 }}>
+                Items và ảnh của đơn này sẽ được chụp chung với đơn gốc
+              </div>
+            </div>
+            {canManageSupp && (
+              <button onClick={() => onUnlinkSupp && onUnlinkSupp(ord.order_code)}
+                style={{ padding:'5px 10px', borderRadius:6, border:`1px solid ${T.red}`,
+                  background:'#fff', color:T.red, cursor:'pointer', fontFamily:'inherit',
+                  fontSize:10, fontWeight:600 }}>
+                Bỏ link
+              </button>
+            )}
+          </div>
+        </div>
+      )}
+
+      {suppOrders.length > 0 && (
+        <div style={{ padding:'10px 12px', marginBottom:12, background:T.blueBg,
+          border:`1px solid ${T.blue}`, borderRadius:8, fontSize:12, color:T.dark }}>
+          <div style={{ fontSize:12, fontWeight:700, color:T.blue, marginBottom:6 }}>
+            🔗 {suppOrders.length} đơn bổ sung đã link
+          </div>
+          {suppOrders.map((s: any) => (
+            <div key={s.order_code} style={{ display:'flex', justifyContent:'space-between',
+              alignItems:'center', padding:'6px 0', borderBottom:`1px dashed ${T.blue}40`, gap:8 }}>
+              <div style={{ flex:1, minWidth:0 }}>
+                <div style={{ fontSize:11, fontWeight:600, color:T.dark,
+                  overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap' }}>
+                  <b>{s.order_code}</b>
+                  {Number(s.total_amount) > 0 && <> • {Number(s.total_amount).toLocaleString('vi-VN')}đ</>}
+                  <> • {(s.items||[]).length} SP</>
+                </div>
+                <div style={{ fontSize:9, color:T.light, marginTop:1 }}>
+                  {s.status === 'done' ? '✅ Đã đóng' : '🟡 Đang xử lý'}
+                </div>
+              </div>
+              {canManageSupp && (
+                <button onClick={() => onUnlinkSupp && onUnlinkSupp(s.order_code)}
+                  style={{ padding:'3px 8px', borderRadius:6, border:`1px solid ${T.red}`,
+                    background:'#fff', color:T.red, cursor:'pointer', fontFamily:'inherit',
+                    fontSize:9, fontWeight:600, flexShrink:0 }}>
+                  Bỏ link
+                </button>
+              )}
+            </div>
+          ))}
+        </div>
+      )}
+
+      {/* Nút "🔗 Đánh dấu đơn bổ sung" — chỉ QM, chỉ cho đơn CHƯA link */}
+      {canManageSupp && !ord.linked_to_order_code && (
+        <div style={{ marginBottom:12 }}>
+          <button onClick={() => onOpenLinkSupp && onOpenLinkSupp()}
+            style={{ padding:'8px 14px', borderRadius:8,
+              border:`1.5px dashed ${T.blue}`, background:T.blueBg, color:T.blue,
+              cursor:'pointer', fontFamily:'inherit', fontSize:12, fontWeight:700,
+              width:'100%' }}>
+            🔗 Đánh dấu đơn này là đơn bổ sung cho đơn khác
+          </button>
+          <div style={{ fontSize:10, color:T.light, marginTop:4, textAlign:'center' }}>
+            Dùng khi KH đã có đơn đang/đã xử lý, cần gộp 2 đơn chụp ảnh chung
+          </div>
+        </div>
+      )}
+
       {/* ══ BANNER đơn đã bị sửa ══ */}
       {(ord.modification_count || 0) > 0 && (
         <ChangeLogBanner ord={ord}/>
@@ -17492,8 +17822,14 @@ function PackingDetailPanel({ ord, mobile, user, allUsers, products, onClose, on
 
           {/* Items — Số lượng đơn này TO, tồn + thiếu nhỏ để tham khảo */}
           <div style={{ marginBottom:14 }}>
-            <div style={{ fontSize:11, fontWeight:600, color:T.med, marginBottom:8 }}>
-              📋 {totalItems} sản phẩm trong đơn
+            <div style={{ fontSize:11, fontWeight:600, color:T.med, marginBottom:8,
+              display:'flex', justifyContent:'space-between', alignItems:'center', flexWrap:'wrap', gap:4 }}>
+              <span>📋 {totalItems} sản phẩm trong đơn {ord.order_code}</span>
+              {suppOrders.length > 0 && (
+                <span style={{ fontSize:9, color:T.blue, fontWeight:700 }}>
+                  + {suppOrders.reduce((s: number, o: any) => s + (o.items||[]).length, 0)} SP từ {suppOrders.length} đơn bổ sung
+                </span>
+              )}
             </div>
             <div style={{ maxHeight:380, overflowY:'auto', display:'flex', flexDirection:'column', gap:6 }}>
               {(ord.items||[]).map((it: any, i: number) => {
@@ -17542,6 +17878,37 @@ function PackingDetailPanel({ ord, mobile, user, allUsers, products, onClose, on
               })}
             </div>
           </div>
+
+          {/* Items từ các đơn bổ sung — hiển thị riêng để NV dễ phân biệt */}
+          {suppOrders.map((supp: any) => (
+            <div key={supp.order_code} style={{ marginBottom:14,
+              padding:10, border:`2px solid ${T.blue}`, borderRadius:10, background:T.blueBg }}>
+              <div style={{ fontSize:11, fontWeight:700, color:T.blue, marginBottom:8,
+                display:'flex', justifyContent:'space-between', alignItems:'center', flexWrap:'wrap', gap:4 }}>
+                <span>🔗 {(supp.items||[]).length} SP từ đơn bổ sung {supp.order_code}</span>
+                {Number(supp.total_amount) > 0 && (
+                  <span style={{ color:T.goldText, fontWeight:700 }}>
+                    {Number(supp.total_amount).toLocaleString('vi-VN')}đ
+                  </span>
+                )}
+              </div>
+              <div style={{ display:'flex', flexDirection:'column', gap:6 }}>
+                {(supp.items||[]).map((it: any, i: number) => (
+                  <div key={i} style={{ padding:8, borderRadius:6, background:'#fff',
+                    border:`1px solid ${T.border}` }}>
+                    <div style={{ fontSize:11, fontWeight:600, color:T.dark, lineHeight:1.35 }}>
+                      {it.name}
+                    </div>
+                    <div style={{ fontSize:9, color:T.light, marginTop:2, display:'flex', gap:6, flexWrap:'wrap' }}>
+                      <span>{it.code}</span>
+                      {it.unit && <span>• {it.unit}</span>}
+                      <span>• SL: <b style={{ color:T.dark }}>{it.qty}</b></span>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          ))}
 
           {/* Ảnh hàng đã nhặt (readonly info — đã chụp ở Phase 1) */}
           <div style={{ padding:'10px 12px', marginBottom:14, background:T.greenBg,
@@ -24348,11 +24715,11 @@ function GalleryModule({ user, allUsers, mobile }: any) {
     let totalOrders = orders.length
     let totalPhotos = 0
     orders.forEach(o => {
-      totalPhotos += (o.photos_picked || []).length
-      totalPhotos += (o.photos_packed || []).length
+      if (typeFilter === 'all' || typeFilter === 'picked') totalPhotos += (o.photos_picked || []).length
+      if (typeFilter === 'all' || typeFilter === 'packed') totalPhotos += (o.photos_packed || []).length
     })
     return { totalOrders, totalPhotos }
-  }, [orders])
+  }, [orders, typeFilter])
 
   // ── Open viewer ──
   const openViewer = (photos: any[], startIdx: number) => {
@@ -24438,7 +24805,7 @@ function GalleryModule({ user, allUsers, mobile }: any) {
         <>
           {orders.map((o: Order) => (
             <GalleryPost key={o.order_code} order={o} mobile={mobile} allUsers={allUsers}
-              onOpenViewer={openViewer}/>
+              typeFilter={typeFilter} onOpenViewer={openViewer}/>
           ))}
 
           {/* Sentinel for infinite scroll */}
@@ -24462,14 +24829,22 @@ function GalleryModule({ user, allUsers, mobile }: any) {
 }
 
 // ── Post component (1 đơn hàng) ──
-function GalleryPost({ order: o, mobile, allUsers, onOpenViewer }: any) {
+function GalleryPost({ order: o, mobile, allUsers, typeFilter, onOpenViewer }: any) {
   const getUrl = (p: any): string => typeof p === 'string' ? p : (p?.url || '')
   const getAt  = (p: any): string => typeof p === 'string' ? '' : (p?.at || '')
 
   const pickedPhotos = Array.isArray(o.photos_picked) ? o.photos_picked : []
   const packedPhotos = Array.isArray(o.photos_packed) ? o.photos_packed : []
-  const allPhotos = [...pickedPhotos.map((p: any) => ({ ...p, _type:'picked', _url: getUrl(p), _at: getAt(p) })),
-                    ...packedPhotos.map((p: any) => ({ ...p, _type:'packed', _url: getUrl(p), _at: getAt(p) }))]
+
+  // Respect typeFilter — chỉ hiện loại ảnh được filter
+  const showPicked = typeFilter === 'all' || typeFilter === 'picked'
+  const showPacked = typeFilter === 'all' || typeFilter === 'packed'
+
+  // allPhotos dùng cho PhotoZoomViewer — chỉ gồm ảnh đang hiển thị
+  const displayPicked = showPicked ? pickedPhotos : []
+  const displayPacked = showPacked ? packedPhotos : []
+  const allPhotos = [...displayPicked.map((p: any) => ({ ...p, _type:'picked', _url: getUrl(p), _at: getAt(p) })),
+                    ...displayPacked.map((p: any) => ({ ...p, _type:'packed', _url: getUrl(p), _at: getAt(p) }))]
 
   const pickerName = o.assigned_to
     ? (allUsers.find((u: any) => u.id === o.assigned_to)?.name || '?')
@@ -24516,26 +24891,26 @@ function GalleryPost({ order: o, mobile, allUsers, onOpenViewer }: any) {
       </div>
 
       {/* Picked photos grid */}
-      {pickedPhotos.length > 0 && (
+      {displayPicked.length > 0 && (
         <>
           <div style={{ padding:'6px 14px 4px', background:T.bg, fontSize:10, fontWeight:700, color:T.med,
             borderBottom:`1px solid ${T.border}` }}>
-            📥 Ảnh hàng nhặt ({pickedPhotos.length})
+            📥 Ảnh hàng nhặt ({displayPicked.length})
           </div>
-          <PhotoGrid photos={pickedPhotos} mobile={mobile} type="picked"
+          <PhotoGrid photos={displayPicked} mobile={mobile} type="picked"
             onClick={(idx) => onOpenViewer(allPhotos, idx)}/>
         </>
       )}
 
       {/* Packed photos grid */}
-      {packedPhotos.length > 0 && (
+      {displayPacked.length > 0 && (
         <>
           <div style={{ padding:'6px 14px 4px', background:T.bg, fontSize:10, fontWeight:700, color:T.med,
-            borderBottom:`1px solid ${T.border}`, borderTop: pickedPhotos.length > 0 ? `1px solid ${T.border}` : 'none' }}>
-            📦 Ảnh thùng đóng ({packedPhotos.length})
+            borderBottom:`1px solid ${T.border}`, borderTop: displayPicked.length > 0 ? `1px solid ${T.border}` : 'none' }}>
+            📦 Ảnh thùng đóng ({displayPacked.length})
           </div>
-          <PhotoGrid photos={packedPhotos} mobile={mobile} type="packed"
-            onClick={(idx) => onOpenViewer(allPhotos, pickedPhotos.length + idx)}/>
+          <PhotoGrid photos={displayPacked} mobile={mobile} type="packed"
+            onClick={(idx) => onOpenViewer(allPhotos, displayPicked.length + idx)}/>
         </>
       )}
     </Card>
