@@ -12,7 +12,7 @@ const db = createClient(SUPABASE_URL, SUPABASE_KEY)
 // APP_VERSION — dùng để invalidate cache localStorage mỗi khi deploy version mới
 // (ngăn bug quyền user bị "reset" do cache position cũ sau deploy)
 // ⚠️ MỖI LẦN DEPLOY FEATURE MỚI CÓ PERMISSION MỚI, BUMP SỐ NÀY:
-const APP_VERSION = '2026.04.20.v75'
+const APP_VERSION = '2026.04.20.v77'
 
 // ════════════════════════════════════════════════════════════════
 // AUDIT LOG — ghi nhận các hành động phá hoại data để trace lại
@@ -257,6 +257,7 @@ const getPerm = (user: any) => {
     manageSchedule:     isAdmin || (pos.perm_manage_warehouse_schedule ?? false) || (pos.perm_manage_inventory ?? false),
     trackOrders:        isAdmin || (pos.perm_track_orders ?? false) || (user?.dept_id === 'sale'),
     viewSlowMoving:     isAdmin || (pos.perm_view_slow_moving ?? false) || (pos.perm_approve_leave ?? false),
+    viewGallery:        isAdmin || (pos.perm_view_gallery ?? false) || (pos.perm_manage_inventory ?? false) || (user?.dept_id === 'sale'),
   }
 }
 
@@ -347,6 +348,7 @@ const ALL_PERMS = [
   { key:'perm_manage_warehouse_schedule', label:'Quản lý lịch Kho (QM Kho)',     group:'Kho'      },
   { key:'perm_track_orders',             label:'Theo dõi đơn hàng (Sale)',       group:'Sale'     },
   { key:'perm_view_slow_moving',         label:'Xem hàng bán chậm (Admin/QM Sale)', group:'Sale'  },
+  { key:'perm_view_gallery',             label:'Xem Gallery ảnh hàng đi',         group:'Sale'     },
 ]
 // ── UTILITIES ────────────────────────────────────
 const fmtNow   = () => new Date().toLocaleString('vi-VN',{hour:'2-digit',minute:'2-digit',day:'2-digit',month:'2-digit',year:'numeric'})
@@ -1044,6 +1046,7 @@ const NAV_GROUPS = (perm: any, deptId = '') => {
       id:'sales', icon:Ico.briefcase, emoji:'💼', label:'Bán hàng',
       pages:[
         (perm.trackOrders) && { id:'trackorders', icon:Ico.truck, emoji:'🚚', label:'Theo dõi đơn' },
+        perm.viewGallery && { id:'gallery', icon:Ico.camera, emoji:'🖼️', label:'Gallery ảnh' },
         (deptId==='sale' || perm.viewAllDashboard || perm.editPrice || perm.managePrograms) && { id:'pricelist', icon:Ico.tag, emoji:'💰', label:'Báo giá & CTKM' },
         { id:'shortage', icon:Ico.alertTri, emoji:'⚠️', label:'Hàng thiếu' },
         perm.viewSlowMoving && { id:'slowmoving', icon:Ico.inbox, emoji:'📉', label:'Hàng bán chậm' },
@@ -9129,6 +9132,7 @@ export default function App() {
           {validPage==='packing'    && <PackingModule {...pp} products={products}/>}
           {validPage==='trackorders' && <SaleOrderTrackingModule {...pp}/>}
           {validPage==='slowmoving' && <SlowMovingModule {...pp}/>}
+          {validPage==='gallery'    && <GalleryModule {...pp}/>}
           {validPage==='schedule'   && <WarehouseScheduleModule {...pp} leaveRequests={leaveRequests} attendance={attendance}/>}
           {validPage==='whstats'    && <WarehouseStatsModule {...pp}/>}
           {validPage==='priority'   && <PriorityRequestModule {...pp}/>}
@@ -16884,7 +16888,7 @@ function PackingModule({ user, allUsers, mobile, products }: any) {
                 return (
                   <Card key={o.order_code}
                     onClick={() => tryOpenOrder(o.order_code)}
-                    style={{ padding:10, cursor:'pointer',
+                    style={{ padding:10, cursor:'pointer', overflow:'hidden',
                       borderLeft: wasReverted
                         ? `4px solid ${T.red}`
                         : (isSelected ? `4px solid ${T.gold}` : `4px solid transparent`),
@@ -16918,7 +16922,10 @@ function PackingModule({ user, allUsers, mobile, products }: any) {
                         )}
                         {activePackerIds.length > 0 && (
                           <div style={{ marginTop:4, padding:'3px 8px', borderRadius:6,
-                            background:T.blue, color:'#fff', fontSize:9, fontWeight:700 }}>
+                            background:T.blue, color:'#fff', fontSize:9, fontWeight:700,
+                            overflow:'hidden', textOverflow:'ellipsis',
+                            whiteSpace:'nowrap', maxWidth:'100%', boxSizing:'border-box' }}
+                            title={`Đang đóng: ${activePackerNames}`}>
                             ⏳ ĐANG ĐÓNG: {activePackerNames}
                           </div>
                         )}
@@ -24203,5 +24210,543 @@ function SlowMovingSettings({ settings, onUpdate }: any) {
         </div>
       )}
     </Card>
+  )
+}
+
+// ══════════════════════════════════════════════════════════════════════
+// ══ GALLERY MODULE — 🖼️ Xem ảnh hàng đi liền mạch ═════════════════════
+// ══════════════════════════════════════════════════════════════════════
+// - Feed scroll dạng Instagram: mỗi "post" = 1 đơn hàng với header + grid ảnh
+// - Click ảnh → modal full-screen với scroll/pinch zoom + pan drag
+// - Filter theo thời gian, sale, trạng thái
+// - Infinite scroll (batch 20 đơn mỗi lần)
+
+function GalleryModule({ user, allUsers, mobile }: any) {
+  const perm = getPerm(user)
+  const p = mobile ? '14px' : '22px'
+  const isAdmin = perm.viewAllDashboard
+
+  type Order = any
+  const [orders, setOrders]       = useState<Order[]>([])
+  const [loading, setLoading]     = useState(true)
+  const [loadingMore, setLoadingMore] = useState(false)
+  const [cursor, setCursor]       = useState<string | null>(null)
+  const [hasMore, setHasMore]     = useState(true)
+
+  const [datePreset, setDatePreset] = useState<'today'|'week'|'month'|'custom'>('week')
+  const [fromDate, setFromDate]   = useState('')
+  const [toDate, setToDate]       = useState('')
+  const [saleFilter, setSaleFilter] = useState<string>('')
+  const [statusFilter, setStatusFilter] = useState<'all'|'done'|'pending'>('all')
+  const [typeFilter, setTypeFilter] = useState<'all'|'picked'|'packed'>('all')
+
+  // Modal viewer state
+  const [viewerOpen, setViewerOpen] = useState(false)
+  const [viewerPhotos, setViewerPhotos] = useState<any[]>([])
+  const [viewerIdx, setViewerIdx]   = useState(0)
+
+  // Normalize photo entry
+  const getUrl = (p: any): string => typeof p === 'string' ? p : (p?.url || '')
+  const getAt  = (p: any): string => typeof p === 'string' ? '' : (p?.at || '')
+  const getBy  = (p: any): string => typeof p === 'string' ? '' : (p?.by || '')
+
+  // ── Compute date range from preset ──
+  const computeDateRange = (): { from: string, to: string } => {
+    const now = new Date()
+    const todayStr = new Date(now.getTime() - now.getTimezoneOffset()*60000).toISOString().split('T')[0]
+    if (datePreset === 'today') return { from: todayStr, to: todayStr }
+    if (datePreset === 'week') {
+      const weekAgo = new Date(now.getTime() - 7*86400000)
+      return { from: weekAgo.toISOString().split('T')[0], to: todayStr }
+    }
+    if (datePreset === 'month') {
+      const monthAgo = new Date(now.getTime() - 30*86400000)
+      return { from: monthAgo.toISOString().split('T')[0], to: todayStr }
+    }
+    return { from: fromDate, to: toDate }
+  }
+
+  // ── Fetch orders with photos ──
+  const fetchOrders = async (reset = false) => {
+    if (!reset && loadingMore) return
+    if (!reset && !hasMore) return
+    if (reset) setLoading(true)
+    else setLoadingMore(true)
+
+    try {
+      const range = computeDateRange()
+      let q = db.from('packing_workflow')
+        .select('order_code, customer_name, total_amount, items, assigned_to, packed_by_ids, packed_by, photos_picked, photos_packed, status, picked_at, packed_at, created_at, updated_at, order_date, sale_by_name, ai_check_status')
+        .order('packed_at', { ascending: false, nullsFirst: false })
+        .limit(20)
+
+      // Date range filter (by packed_at, falling back to updated_at)
+      if (range.from) q = q.gte('packed_at', range.from + 'T00:00:00')
+      if (range.to)   q = q.lte('packed_at', range.to + 'T23:59:59')
+
+      // Cursor-based pagination
+      if (!reset && cursor) q = q.lt('packed_at', cursor)
+
+      // Status filter
+      if (statusFilter === 'done') q = q.eq('status', 'done')
+      else if (statusFilter === 'pending') q = q.neq('status', 'done')
+
+      const { data, error } = await q
+      if (error) throw error
+      const list = data || []
+
+      // Filter by sale (client-side)
+      let filtered = list.filter((o: any) => {
+        const hasPicked = Array.isArray(o.photos_picked) && o.photos_picked.length > 0
+        const hasPacked = Array.isArray(o.photos_packed) && o.photos_packed.length > 0
+        if (!hasPicked && !hasPacked) return false
+        if (typeFilter === 'picked' && !hasPicked) return false
+        if (typeFilter === 'packed' && !hasPacked) return false
+        if (saleFilter && o.sale_by_name !== saleFilter) return false
+        return true
+      })
+
+      if (reset) setOrders(filtered)
+      else setOrders(prev => [...prev, ...filtered])
+
+      // Update cursor
+      if (list.length < 20) setHasMore(false)
+      else {
+        const last = list[list.length - 1]
+        setCursor(last.packed_at || null)
+        setHasMore(true)
+      }
+    } catch (err: any) {
+      console.error('Gallery fetch error:', err)
+      alert('❌ Lỗi tải ảnh: ' + (err.message || err))
+    } finally {
+      setLoading(false)
+      setLoadingMore(false)
+    }
+  }
+
+  // Reset + fetch on filter change
+  useEffect(() => {
+    setCursor(null)
+    setHasMore(true)
+    fetchOrders(true)
+  }, [datePreset, fromDate, toDate, saleFilter, statusFilter, typeFilter])
+
+  // Infinite scroll trigger
+  const sentinelRef = useRef<HTMLDivElement>(null)
+  useEffect(() => {
+    if (!sentinelRef.current) return
+    const io = new IntersectionObserver((entries) => {
+      if (entries[0].isIntersecting && !loadingMore && hasMore && !loading) {
+        fetchOrders(false)
+      }
+    }, { threshold: 0.1 })
+    io.observe(sentinelRef.current)
+    return () => io.disconnect()
+  }, [loadingMore, hasMore, loading, cursor])
+
+  // ── Unique sale list for filter ──
+  const saleList = useMemo(() => {
+    const set = new Set<string>()
+    orders.forEach(o => { if (o.sale_by_name) set.add(o.sale_by_name) })
+    return Array.from(set).sort()
+  }, [orders])
+
+  // ── Stats ──
+  const stats = useMemo(() => {
+    let totalOrders = orders.length
+    let totalPhotos = 0
+    orders.forEach(o => {
+      totalPhotos += (o.photos_picked || []).length
+      totalPhotos += (o.photos_packed || []).length
+    })
+    return { totalOrders, totalPhotos }
+  }, [orders])
+
+  // ── Open viewer ──
+  const openViewer = (photos: any[], startIdx: number) => {
+    setViewerPhotos(photos)
+    setViewerIdx(startIdx)
+    setViewerOpen(true)
+  }
+
+  return (
+    <div style={{ padding:`0 ${p} ${mobile?'80px':p}` }}>
+      <Topbar mobile={mobile} title="🖼️ Gallery ảnh hàng đi"
+        subtitle={`${stats.totalOrders} đơn • ${stats.totalPhotos} ảnh`}/>
+
+      {/* Filter bar */}
+      <Card style={{ padding:10, marginBottom:12 }}>
+        <div style={{ display:'flex', gap:6, flexWrap:'wrap', alignItems:'center' }}>
+          {/* Date presets */}
+          {([
+            ['today','Hôm nay'],['week','7 ngày'],['month','30 ngày'],['custom','Tùy chỉnh'],
+          ] as const).map(([val, lab]) => (
+            <button key={val} onClick={() => setDatePreset(val)}
+              style={{ padding:'5px 10px', borderRadius:12,
+                border:`1px solid ${datePreset===val ? T.gold : T.border}`,
+                background:datePreset===val ? T.goldBg : 'transparent',
+                color:datePreset===val ? T.goldText : T.med,
+                cursor:'pointer', fontSize:10, fontFamily:'inherit', fontWeight:datePreset===val?700:500 }}>
+              {lab}
+            </button>
+          ))}
+
+          {datePreset === 'custom' && (
+            <>
+              <input type="date" value={fromDate} onChange={e => setFromDate(e.target.value)}
+                style={{ padding:'4px 8px', border:`1px solid ${T.border}`, borderRadius:6,
+                  fontSize:10, fontFamily:'inherit', background:'#fff', color:T.dark, colorScheme:'light' }}/>
+              <span style={{ fontSize:10, color:T.light }}>→</span>
+              <input type="date" value={toDate} onChange={e => setToDate(e.target.value)}
+                style={{ padding:'4px 8px', border:`1px solid ${T.border}`, borderRadius:6,
+                  fontSize:10, fontFamily:'inherit', background:'#fff', color:T.dark, colorScheme:'light' }}/>
+            </>
+          )}
+
+          {/* Status */}
+          <select value={statusFilter} onChange={e => setStatusFilter(e.target.value as any)}
+            style={{ padding:'5px 8px', border:`1px solid ${T.border}`, borderRadius:8,
+              fontSize:10, fontFamily:'inherit', background:'#fff', color:T.dark, cursor:'pointer' }}>
+            <option value="all">Mọi trạng thái</option>
+            <option value="done">Đã đóng xong</option>
+            <option value="pending">Đang xử lý</option>
+          </select>
+
+          {/* Type (picked vs packed photos) */}
+          <select value={typeFilter} onChange={e => setTypeFilter(e.target.value as any)}
+            style={{ padding:'5px 8px', border:`1px solid ${T.border}`, borderRadius:8,
+              fontSize:10, fontFamily:'inherit', background:'#fff', color:T.dark, cursor:'pointer' }}>
+            <option value="all">Cả 2 loại ảnh</option>
+            <option value="picked">Chỉ ảnh nhặt</option>
+            <option value="packed">Chỉ ảnh đóng</option>
+          </select>
+
+          {/* Sale */}
+          {(isAdmin || perm.approveLeave) && saleList.length > 0 && (
+            <select value={saleFilter} onChange={e => setSaleFilter(e.target.value)}
+              style={{ padding:'5px 8px', border:`1px solid ${T.border}`, borderRadius:8,
+                fontSize:10, fontFamily:'inherit', background:'#fff', color:T.dark, cursor:'pointer' }}>
+              <option value="">Tất cả sale</option>
+              {saleList.map(s => <option key={s} value={s}>{s}</option>)}
+            </select>
+          )}
+
+          <button onClick={() => fetchOrders(true)}
+            style={{ padding:'5px 10px', borderRadius:12, border:`1px solid ${T.blue}`,
+              background:T.blueBg, color:T.blue, cursor:'pointer',
+              fontSize:10, fontFamily:'inherit', fontWeight:600, marginLeft:'auto' }}>
+            🔄 Làm mới
+          </button>
+        </div>
+      </Card>
+
+      {/* Feed */}
+      {loading ? (
+        <Card style={{ padding:24, textAlign:'center', color:T.light, fontSize:12 }}>
+          Đang tải ảnh...
+        </Card>
+      ) : orders.length === 0 ? (
+        <Card style={{ padding:30, textAlign:'center' }}>
+          <div style={{ fontSize:30, marginBottom:6 }}>📷</div>
+          <div style={{ fontSize:13, color:T.dark, fontWeight:600 }}>
+            Không có đơn nào có ảnh trong khoảng thời gian này
+          </div>
+        </Card>
+      ) : (
+        <>
+          {orders.map((o: Order) => (
+            <GalleryPost key={o.order_code} order={o} mobile={mobile} allUsers={allUsers}
+              onOpenViewer={openViewer}/>
+          ))}
+
+          {/* Sentinel for infinite scroll */}
+          <div ref={sentinelRef} style={{ padding:'20px', textAlign:'center' }}>
+            {loadingMore ? (
+              <div style={{ color:T.light, fontSize:11 }}>Đang tải thêm...</div>
+            ) : !hasMore && orders.length > 0 ? (
+              <div style={{ color:T.light, fontSize:11 }}>— Hết ảnh —</div>
+            ) : null}
+          </div>
+        </>
+      )}
+
+      {/* Photo viewer modal */}
+      {viewerOpen && (
+        <PhotoZoomViewer photos={viewerPhotos} startIdx={viewerIdx} mobile={mobile}
+          onClose={() => setViewerOpen(false)}/>
+      )}
+    </div>
+  )
+}
+
+// ── Post component (1 đơn hàng) ──
+function GalleryPost({ order: o, mobile, allUsers, onOpenViewer }: any) {
+  const getUrl = (p: any): string => typeof p === 'string' ? p : (p?.url || '')
+  const getAt  = (p: any): string => typeof p === 'string' ? '' : (p?.at || '')
+
+  const pickedPhotos = Array.isArray(o.photos_picked) ? o.photos_picked : []
+  const packedPhotos = Array.isArray(o.photos_packed) ? o.photos_packed : []
+  const allPhotos = [...pickedPhotos.map((p: any) => ({ ...p, _type:'picked', _url: getUrl(p), _at: getAt(p) })),
+                    ...packedPhotos.map((p: any) => ({ ...p, _type:'packed', _url: getUrl(p), _at: getAt(p) }))]
+
+  const pickerName = o.assigned_to
+    ? (allUsers.find((u: any) => u.id === o.assigned_to)?.name || '?')
+    : null
+
+  const packerIds: string[] = o.packed_by_ids || (o.packed_by ? [o.packed_by] : [])
+  const packerNames = packerIds.map(id => allUsers.find((u: any) => u.id === id)?.name || '?').join(', ')
+
+  const statusColor = o.status === 'done' ? T.green : T.amber
+  const statusBg = o.status === 'done' ? T.greenBg : T.amberBg
+  const statusLabel = o.status === 'done' ? '✅ Đã đóng' : '🟡 Đang xử lý'
+
+  const formatDate = (iso: string|null) => {
+    if (!iso) return '—'
+    const d = new Date(iso)
+    return d.toLocaleString('vi-VN', { day:'2-digit', month:'2-digit', hour:'2-digit', minute:'2-digit' })
+  }
+
+  return (
+    <Card style={{ padding:0, marginBottom:14, overflow:'hidden' }}>
+      {/* Post header */}
+      <div style={{ padding:'10px 14px', borderBottom:`1px solid ${T.border}` }}>
+        <div style={{ display:'flex', alignItems:'center', justifyContent:'space-between', gap:8, flexWrap:'wrap' }}>
+          <div style={{ minWidth:0, flex:1 }}>
+            <div style={{ fontSize:13, fontWeight:700, color:T.dark,
+              overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap' }}>
+              {o.order_code} • {o.customer_name || 'KH lẻ'}
+            </div>
+            <div style={{ fontSize:10, color:T.light, marginTop:2,
+              overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap' }}>
+              {(o.items||[]).length} SP
+              {Number(o.total_amount) > 0 && <> • {Number(o.total_amount).toLocaleString('vi-VN')}đ</>}
+              {o.sale_by_name && <> • 👤 {o.sale_by_name}</>}
+            </div>
+          </div>
+          <span style={{ fontSize:10, padding:'2px 8px', borderRadius:12,
+            color:statusColor, background:statusBg, fontWeight:700, flexShrink:0 }}>
+            {statusLabel}
+          </span>
+        </div>
+        <div style={{ display:'flex', gap:10, fontSize:9, color:T.med, marginTop:5, flexWrap:'wrap' }}>
+          {pickerName && <span>📥 Nhặt: <b style={{ color:T.dark }}>{pickerName}</b> • {formatDate(o.picked_at)}</span>}
+          {packerIds.length > 0 && <span>📦 Đóng: <b style={{ color:T.dark }}>{packerNames}</b> • {formatDate(o.packed_at)}</span>}
+        </div>
+      </div>
+
+      {/* Picked photos grid */}
+      {pickedPhotos.length > 0 && (
+        <>
+          <div style={{ padding:'6px 14px 4px', background:T.bg, fontSize:10, fontWeight:700, color:T.med,
+            borderBottom:`1px solid ${T.border}` }}>
+            📥 Ảnh hàng nhặt ({pickedPhotos.length})
+          </div>
+          <PhotoGrid photos={pickedPhotos} mobile={mobile} type="picked"
+            onClick={(idx) => onOpenViewer(allPhotos, idx)}/>
+        </>
+      )}
+
+      {/* Packed photos grid */}
+      {packedPhotos.length > 0 && (
+        <>
+          <div style={{ padding:'6px 14px 4px', background:T.bg, fontSize:10, fontWeight:700, color:T.med,
+            borderBottom:`1px solid ${T.border}`, borderTop: pickedPhotos.length > 0 ? `1px solid ${T.border}` : 'none' }}>
+            📦 Ảnh thùng đóng ({packedPhotos.length})
+          </div>
+          <PhotoGrid photos={packedPhotos} mobile={mobile} type="packed"
+            onClick={(idx) => onOpenViewer(allPhotos, pickedPhotos.length + idx)}/>
+        </>
+      )}
+    </Card>
+  )
+}
+
+// ── Photo grid (3 cột desktop, 2 cột mobile) ──
+function PhotoGrid({ photos, mobile, type, onClick }: any) {
+  const getUrl = (p: any): string => typeof p === 'string' ? p : (p?.url || '')
+  const cols = mobile ? 2 : 3
+  return (
+    <div style={{ display:'grid', gridTemplateColumns:`repeat(${cols}, 1fr)`, gap:2, padding:2 }}>
+      {photos.map((ph: any, i: number) => (
+        <div key={i} onClick={() => onClick(i)}
+          style={{ position:'relative', cursor:'pointer', aspectRatio:'1',
+            overflow:'hidden', background:'#000' }}>
+          <img src={getUrl(ph)} alt=""
+            loading="lazy"
+            style={{ width:'100%', height:'100%', objectFit:'cover', display:'block' }}
+            onError={(e: any) => { e.target.style.display='none' }}/>
+        </div>
+      ))}
+    </div>
+  )
+}
+
+// ── Photo zoom viewer modal — scroll zoom + pinch + pan drag ──
+function PhotoZoomViewer({ photos, startIdx, mobile, onClose }: any) {
+  const [idx, setIdx] = useState(startIdx)
+  const [zoom, setZoom] = useState(1)
+  const [pan, setPan] = useState({ x:0, y:0 })
+  const [dragging, setDragging] = useState(false)
+  const dragStart = useRef({ x:0, y:0, panX:0, panY:0 })
+  const pinchStart = useRef<{ dist: number, zoom: number } | null>(null)
+
+  const getUrl = (p: any): string => typeof p === 'string' ? p : (p?.url || '')
+  const getAt  = (p: any): string => typeof p === 'string' ? '' : (p?.at || '')
+
+  const photo = photos[idx]
+  const url = photo ? getUrl(photo) : ''
+
+  // Reset zoom when changing photo
+  useEffect(() => {
+    setZoom(1)
+    setPan({ x:0, y:0 })
+  }, [idx])
+
+  // Keyboard nav
+  useEffect(() => {
+    const handler = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') onClose()
+      else if (e.key === 'ArrowLeft' && idx > 0) setIdx(idx - 1)
+      else if (e.key === 'ArrowRight' && idx < photos.length - 1) setIdx(idx + 1)
+      else if (e.key === '+' || e.key === '=') setZoom(z => Math.min(z * 1.3, 8))
+      else if (e.key === '-') setZoom(z => Math.max(z / 1.3, 0.5))
+      else if (e.key === '0') { setZoom(1); setPan({ x:0, y:0 }) }
+    }
+    window.addEventListener('keydown', handler)
+    return () => window.removeEventListener('keydown', handler)
+  }, [idx, photos.length, onClose])
+
+  // Scroll wheel zoom
+  const handleWheel = (e: any) => {
+    e.preventDefault()
+    const delta = e.deltaY < 0 ? 1.15 : 1 / 1.15
+    setZoom(z => Math.max(0.5, Math.min(8, z * delta)))
+  }
+
+  // Mouse drag pan
+  const handleMouseDown = (e: any) => {
+    if (zoom <= 1) return
+    setDragging(true)
+    dragStart.current = { x: e.clientX, y: e.clientY, panX: pan.x, panY: pan.y }
+  }
+  const handleMouseMove = (e: any) => {
+    if (!dragging) return
+    setPan({
+      x: dragStart.current.panX + (e.clientX - dragStart.current.x),
+      y: dragStart.current.panY + (e.clientY - dragStart.current.y),
+    })
+  }
+  const handleMouseUp = () => setDragging(false)
+
+  // Touch: pinch-zoom + pan
+  const touchDist = (touches: any) => {
+    const dx = touches[0].clientX - touches[1].clientX
+    const dy = touches[0].clientY - touches[1].clientY
+    return Math.sqrt(dx*dx + dy*dy)
+  }
+  const handleTouchStart = (e: any) => {
+    if (e.touches.length === 2) {
+      pinchStart.current = { dist: touchDist(e.touches), zoom: zoom }
+    } else if (e.touches.length === 1 && zoom > 1) {
+      setDragging(true)
+      dragStart.current = { x: e.touches[0].clientX, y: e.touches[0].clientY, panX: pan.x, panY: pan.y }
+    }
+  }
+  const handleTouchMove = (e: any) => {
+    if (e.touches.length === 2 && pinchStart.current) {
+      e.preventDefault()
+      const newDist = touchDist(e.touches)
+      const scale = newDist / pinchStart.current.dist
+      setZoom(Math.max(0.5, Math.min(8, pinchStart.current.zoom * scale)))
+    } else if (e.touches.length === 1 && dragging && zoom > 1) {
+      setPan({
+        x: dragStart.current.panX + (e.touches[0].clientX - dragStart.current.x),
+        y: dragStart.current.panY + (e.touches[0].clientY - dragStart.current.y),
+      })
+    }
+  }
+  const handleTouchEnd = (e: any) => {
+    if (e.touches.length < 2) pinchStart.current = null
+    if (e.touches.length === 0) setDragging(false)
+  }
+
+  // Double-click zoom toggle
+  const handleDoubleClick = () => {
+    if (zoom > 1) { setZoom(1); setPan({ x:0, y:0 }) }
+    else setZoom(2.5)
+  }
+
+  return (
+    <div style={{ position:'fixed', inset:0, background:'rgba(0,0,0,0.95)', zIndex:9999,
+      display:'flex', flexDirection:'column' }}
+      onMouseMove={handleMouseMove} onMouseUp={handleMouseUp} onMouseLeave={handleMouseUp}>
+
+      {/* Top bar */}
+      <div style={{ display:'flex', alignItems:'center', justifyContent:'space-between',
+        padding:'10px 14px', color:'#fff', fontSize:13 }}>
+        <div>{idx + 1} / {photos.length}</div>
+        <div style={{ display:'flex', gap:8 }}>
+          {/* Zoom controls */}
+          <button onClick={() => setZoom(z => Math.max(z / 1.3, 0.5))}
+            style={{ background:'rgba(255,255,255,0.15)', border:'none', color:'#fff',
+              width:36, height:36, borderRadius:18, cursor:'pointer', fontSize:18 }}>−</button>
+          <button onClick={() => { setZoom(1); setPan({ x:0, y:0 }) }}
+            style={{ background:'rgba(255,255,255,0.15)', border:'none', color:'#fff',
+              padding:'0 12px', height:36, borderRadius:18, cursor:'pointer', fontSize:11 }}>
+            {Math.round(zoom * 100)}%
+          </button>
+          <button onClick={() => setZoom(z => Math.min(z * 1.3, 8))}
+            style={{ background:'rgba(255,255,255,0.15)', border:'none', color:'#fff',
+              width:36, height:36, borderRadius:18, cursor:'pointer', fontSize:18 }}>+</button>
+          <button onClick={() => window.open(url, '_blank')}
+            title="Mở ảnh gốc"
+            style={{ background:'rgba(255,255,255,0.15)', border:'none', color:'#fff',
+              width:36, height:36, borderRadius:18, cursor:'pointer', fontSize:14 }}>↗</button>
+          <button onClick={onClose}
+            style={{ background:'rgba(255,255,255,0.25)', border:'none', color:'#fff',
+              width:36, height:36, borderRadius:18, cursor:'pointer', fontSize:18 }}>✕</button>
+        </div>
+      </div>
+
+      {/* Image area */}
+      <div style={{ flex:1, position:'relative', overflow:'hidden',
+        display:'flex', alignItems:'center', justifyContent:'center' }}
+        onWheel={handleWheel}
+        onTouchStart={handleTouchStart} onTouchMove={handleTouchMove} onTouchEnd={handleTouchEnd}>
+        <img src={url} alt=""
+          draggable={false}
+          onDoubleClick={handleDoubleClick}
+          onMouseDown={handleMouseDown}
+          style={{ maxWidth:'100%', maxHeight:'100%', objectFit:'contain',
+            transform:`translate(${pan.x}px, ${pan.y}px) scale(${zoom})`,
+            transition: dragging ? 'none' : 'transform 0.15s ease',
+            cursor: zoom > 1 ? (dragging ? 'grabbing' : 'grab') : 'zoom-in',
+            userSelect:'none', WebkitUserSelect:'none' as any }}/>
+
+        {/* Nav arrows */}
+        {idx > 0 && (
+          <button onClick={() => setIdx(idx - 1)}
+            style={{ position:'absolute', left:10, top:'50%', transform:'translateY(-50%)',
+              background:'rgba(0,0,0,0.5)', border:'none', color:'#fff',
+              width:44, height:44, borderRadius:22, cursor:'pointer', fontSize:22 }}>‹</button>
+        )}
+        {idx < photos.length - 1 && (
+          <button onClick={() => setIdx(idx + 1)}
+            style={{ position:'absolute', right:10, top:'50%', transform:'translateY(-50%)',
+              background:'rgba(0,0,0,0.5)', border:'none', color:'#fff',
+              width:44, height:44, borderRadius:22, cursor:'pointer', fontSize:22 }}>›</button>
+        )}
+      </div>
+
+      {/* Bottom caption */}
+      <div style={{ padding:'8px 14px 14px', color:'#ccc', fontSize:10, textAlign:'center' }}>
+        {photo?._type === 'picked' ? '📥 Ảnh nhặt' : photo?._type === 'packed' ? '📦 Ảnh đóng' : ''}
+        {getAt(photo) && <> • {new Date(getAt(photo)).toLocaleString('vi-VN')}</>}
+        {!mobile && <div style={{ marginTop:4, fontSize:9, opacity:.6 }}>
+          Scroll để zoom • Kéo để di chuyển • Double-click để zoom nhanh • ← → để chuyển ảnh • Esc để thoát
+        </div>}
+      </div>
+    </div>
   )
 }
