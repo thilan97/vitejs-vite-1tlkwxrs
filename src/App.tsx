@@ -12,7 +12,7 @@ const db = createClient(SUPABASE_URL, SUPABASE_KEY)
 // APP_VERSION — dùng để invalidate cache localStorage mỗi khi deploy version mới
 // (ngăn bug quyền user bị "reset" do cache position cũ sau deploy)
 // ⚠️ MỖI LẦN DEPLOY FEATURE MỚI CÓ PERMISSION MỚI, BUMP SỐ NÀY:
-const APP_VERSION = '2026.04.20.v70'
+const APP_VERSION = '2026.04.20.v71'
 
 // ════════════════════════════════════════════════════════════════
 // AUDIT LOG — ghi nhận các hành động phá hoại data để trace lại
@@ -7785,7 +7785,20 @@ function useNotifications({ user, wrongOrders, returnSlips, shortageItems, batch
         overdueOrder: o,  // payload để mở modal chi tiết
       }))
     } else if (isSale) {
-      items = all.filter((o: any) => norm2(o.soldByName||'') === norm2(user.name||'')).map((o: any) => ({
+      // Build set KV nicks của Sale (user.name + kiotviet_user_names array)
+      const myKvNicks = new Set<string>()
+      if (user?.name) myKvNicks.add(norm2(user.name))
+      const kvNames = Array.isArray(user?.kiotviet_user_names) ? user.kiotviet_user_names : []
+      kvNames.forEach((n: string) => { if (n) myKvNicks.add(norm2(n)) })
+      items = all.filter((o: any) => {
+        const sbn = norm2(o.soldByName || '')
+        if (!sbn) return false
+        for (const nick of myKvNicks) {
+          if (!nick) continue
+          if (sbn === nick || sbn.includes(nick) || nick.includes(sbn)) return true
+        }
+        return false
+      }).map((o: any) => ({
         key: `overdue:${o.code}`, icon:'🕐',
         title: `${o.code} — ${o.customerName||'KH lẻ'}`,
         meta: `${o.daysOld}N trước • Kiểm tra và xử lý`,
@@ -8244,9 +8257,23 @@ function NotifBanner({ user, wrongOrders, returnSlips, shortageItems, batches, p
     return Number.isFinite(days) && days >= threshold
   })
 
-  // Sale chỉ thấy đơn của mình (match tên); Manager/Admin thấy tất cả
+  // Sale chỉ thấy đơn của mình (match tên + kiotviet_user_names); Manager/Admin thấy tất cả
   const myOverdue = (!isDismissed('overdue') && isSale && !isAdmin)
-    ? overdueSafe.filter((o: any) => norm2(o.soldByName||'') === norm2(user.name||''))
+    ? (() => {
+        const myKvNicks = new Set<string>()
+        if (user?.name) myKvNicks.add(norm2(user.name))
+        const kvNames = Array.isArray(user?.kiotviet_user_names) ? user.kiotviet_user_names : []
+        kvNames.forEach((n: string) => { if (n) myKvNicks.add(norm2(n)) })
+        return overdueSafe.filter((o: any) => {
+          const sbn = norm2(o.soldByName || '')
+          if (!sbn) return false
+          for (const nick of myKvNicks) {
+            if (!nick) continue
+            if (sbn === nick || sbn.includes(nick) || nick.includes(sbn)) return true
+          }
+          return false
+        })
+      })()
     : []
   const allOverdue = (!isDismissed('overdue') && (isAdmin || isMgrSale))
     ? overdueSafe
@@ -22907,13 +22934,30 @@ function SaleOrderTrackingModule({ user, allUsers, mobile }: any) {
     const { data } = await query
     let list = data || []
 
-    // Filter phía client cho Sale: match sold_by_name với user.name
+    // Filter phía client cho Sale: match sold_by_name với user.name HOẶC bất kỳ nick trong kiotviet_user_names
     if (isSale) {
+      // Build set các nick KV được match (normalized)
+      const myKvNicks = new Set<string>()
+      // Luôn thêm user.name làm fallback (nếu KV account trùng tên)
+      if (user.name) myKvNicks.add(norm(user.name))
+      // Thêm tất cả KV nicks được admin map trong kiotviet_user_names
+      const kvNames = Array.isArray(user.kiotviet_user_names) ? user.kiotviet_user_names : []
+      kvNames.forEach((n: string) => {
+        if (n) myKvNicks.add(norm(n))
+      })
+      
       list = list.filter((o: any) => {
         const sbn = norm(o.sold_by_name || '')
-        const un  = norm(user.name || '')
-        // fuzzy: sbn chứa un hoặc un chứa sbn (xử lý trường hợp tên KV có suffix)
-        return sbn.includes(un) || un.includes(sbn)
+        if (!sbn) return false
+        // Match chính xác với 1 trong các nick đã map
+        for (const nick of myKvNicks) {
+          if (!nick) continue
+          if (sbn === nick) return true
+          // Fuzzy fallback: sbn chứa nick hoặc nick chứa sbn
+          // (để xử lý trường hợp KV có suffix lạ, VD "Ngân Trần (P)")
+          if (sbn.includes(nick) || nick.includes(sbn)) return true
+        }
+        return false
       })
     }
 
