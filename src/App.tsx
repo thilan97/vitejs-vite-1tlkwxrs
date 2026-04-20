@@ -12,7 +12,7 @@ const db = createClient(SUPABASE_URL, SUPABASE_KEY)
 // APP_VERSION — dùng để invalidate cache localStorage mỗi khi deploy version mới
 // (ngăn bug quyền user bị "reset" do cache position cũ sau deploy)
 // ⚠️ MỖI LẦN DEPLOY FEATURE MỚI CÓ PERMISSION MỚI, BUMP SỐ NÀY:
-const APP_VERSION = '2026.04.20.v84'
+const APP_VERSION = '2026.04.20.v85'
 
 // ════════════════════════════════════════════════════════════════
 // AUDIT LOG — ghi nhận các hành động phá hoại data để trace lại
@@ -23957,7 +23957,7 @@ function ErrorReportModule({ user, allUsers, mobile }: any) {
   const perm = getPerm(user)
   const isAdmin = perm.viewAllDashboard
   const p = mobile ? '14px' : '24px'
-  const db = supabase
+  // db là biến global (createClient) — không cần khai báo lại
 
   if (!perm.errorReport) return (
     <div style={{ padding:40, textAlign:'center', color:T.light }}>
