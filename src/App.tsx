@@ -12,7 +12,7 @@ const db = createClient(SUPABASE_URL, SUPABASE_KEY)
 // APP_VERSION — dùng để invalidate cache localStorage mỗi khi deploy version mới
 // (ngăn bug quyền user bị "reset" do cache position cũ sau deploy)
 // ⚠️ MỖI LẦN DEPLOY FEATURE MỚI CÓ PERMISSION MỚI, BUMP SỐ NÀY:
-const APP_VERSION = '2026.04.21.v101'
+const APP_VERSION = '2026.04.21.v102'
 
 // ════════════════════════════════════════════════════════════════
 // AUDIT LOG — ghi nhận các hành động phá hoại data để trace lại
@@ -22366,6 +22366,17 @@ function WarehouseStatsModule({ user, allUsers, mobile }: any) {
   const [returnSlips, setReturnSlips] = useState<any[]>([])
   const [loading, setLoading] = useState(true)
   const [viewTab, setViewTab] = useState<'score'|'pack'|'pick'|'sale'>('score')
+  // NV bị loại khỏi tính trung bình team (mặc định: QL + PTC)
+  const [excludedFromAvg, setExcludedFromAvg] = useState<Set<string>>(() => {
+    const khoUsers = allUsers.filter((u: any) => u.dept_id === 'kho' && u.active !== false)
+    const defaultExcluded = new Set<string>()
+    khoUsers.forEach((u: any) => {
+      if (u.position?.is_position_manager || u.position?.is_payroll_fixed) {
+        defaultExcluded.add(u.id)
+      }
+    })
+    return defaultExcluded
+  })
 
   if (!perm.viewWarehouseStats) {
     return (
@@ -22685,27 +22696,31 @@ function WarehouseStatsModule({ user, allUsers, mobile }: any) {
     }).sort((a, b) => b.totalScore - a.totalScore)
   }, [packerStats, pickerStats, attendance, wrongOrders, returnSlips, allUsers])
 
-  // Team averages (để NV Kho thấy so sánh)
+  // Team averages (để NV Kho thấy so sánh) — chỉ tính NV không bị loại khỏi avg
   const teamAverages = useMemo(() => {
     if (performanceScores.length === 0) return null
-    const n = performanceScores.length
+    const included = performanceScores.filter(p => !excludedFromAvg.has(p.user_id))
+    if (included.length === 0) return null
+    const n = included.length
     return {
-      avgScore:    Math.round(performanceScores.reduce((s, p) => s + p.totalScore, 0) / n),
-      avgSpeed:    Math.round(performanceScores.reduce((s, p) => s + p.speedScore, 0) / n),
-      avgVolume:   Math.round(performanceScores.reduce((s, p) => s + p.volumeScore, 0) / n),
-      avgQuality:  Math.round(performanceScores.reduce((s, p) => s + p.qualityScore, 0) / n),
-      avgPackSpeed:Math.round(performanceScores.reduce((s, p) => s + (p.packSpeedScore || 50), 0) / n),
-      avgOpsHour:  performanceScores.reduce((s, p) => s + p.ops_per_hour, 0) / n,
-      totalOps:    performanceScores.reduce((s, p) => s + p.total_ops, 0),
-      totalValue:  performanceScores.reduce((s, p) => s + p.total_value, 0),
-      totalErrors: performanceScores.reduce((s, p) => s + p.errors, 0),
+      avgScore:    Math.round(included.reduce((s, p) => s + p.totalScore, 0) / n),
+      avgSpeed:    Math.round(included.reduce((s, p) => s + p.speedScore, 0) / n),
+      avgVolume:   Math.round(included.reduce((s, p) => s + p.volumeScore, 0) / n),
+      avgQuality:  Math.round(included.reduce((s, p) => s + p.qualityScore, 0) / n),
+      avgPackSpeed:Math.round(included.reduce((s, p) => s + (p.packSpeedScore || 50), 0) / n),
+      avgOpsHour:  included.reduce((s, p) => s + p.ops_per_hour, 0) / n,
+      totalOps:    included.reduce((s, p) => s + p.total_ops, 0),
+      totalValue:  included.reduce((s, p) => s + p.total_value, 0),
+      totalErrors: included.reduce((s, p) => s + p.errors, 0),
       teamOverallQuality: (() => {
-        const totalOps = performanceScores.reduce((s, p) => s + p.total_ops, 0)
-        const totalErrors = performanceScores.reduce((s, p) => s + p.errors, 0)
+        const totalOps = included.reduce((s, p) => s + p.total_ops, 0)
+        const totalErrors = included.reduce((s, p) => s + p.errors, 0)
         return totalOps > 0 ? Math.round((1 - totalErrors/totalOps) * 100) : 100
       })(),
+      includedCount: n,
+      totalCount: performanceScores.length,
     }
-  }, [performanceScores])
+  }, [performanceScores, excludedFromAvg])
 
   const isAdmin = perm.viewAllDashboard
   const myScoreEntry = performanceScores.find(p => p.user_id === user.id)
@@ -22788,15 +22803,85 @@ function WarehouseStatsModule({ user, allUsers, mobile }: any) {
             description="Chưa có NV Kho nào có hoạt động trong khoảng thời gian đã chọn."/>
         ) : (
           <>
-            {/* ── Team overview cards ── */}
+            {/* ── Panel chọn NV tính trung bình ── */}
+            {isAdmin && (
+              <Card style={{ padding:12, marginBottom:12 }}>
+                <div style={{ display:'flex', alignItems:'center', justifyContent:'space-between',
+                  marginBottom:8, flexWrap:'wrap', gap:6 }}>
+                  <div>
+                    <span style={{ fontSize:FS.sm, fontWeight:700, color:T.dark }}>
+                      🎯 Tính trung bình theo NV
+                    </span>
+                    <span style={{ fontSize:FS.xs, color:T.light, marginLeft:8 }}>
+                      {performanceScores.length - excludedFromAvg.size}/{performanceScores.length} NV được tính vào avg
+                    </span>
+                  </div>
+                  <div style={{ display:'flex', gap:6 }}>
+                    <button onClick={() => setExcludedFromAvg(new Set())}
+                      style={{ padding:'3px 10px', fontSize:11, borderRadius:12, cursor:'pointer',
+                        fontFamily:'inherit', fontWeight:600,
+                        border:`1px solid ${T.green}`, background:'#F0FDF4', color:T.green }}>
+                      Chọn tất cả
+                    </button>
+                    <button onClick={() => {
+                      const defaultEx = new Set<string>()
+                      performanceScores.forEach(p => {
+                        if (p.user?.position?.is_position_manager || p.user?.position?.is_payroll_fixed) {
+                          defaultEx.add(p.user_id)
+                        }
+                      })
+                      setExcludedFromAvg(defaultEx)
+                    }}
+                      style={{ padding:'3px 10px', fontSize:11, borderRadius:12, cursor:'pointer',
+                        fontFamily:'inherit', fontWeight:600,
+                        border:`1px solid ${T.border}`, background:'#fff', color:T.med }}>
+                      Mặc định
+                    </button>
+                  </div>
+                </div>
+                <div style={{ display:'flex', flexWrap:'wrap', gap:6 }}>
+                  {performanceScores.map(p => {
+                    const excluded = excludedFromAvg.has(p.user_id)
+                    const isManager = p.user?.position?.is_position_manager
+                    const isPTC = p.user?.position?.is_payroll_fixed
+                    return (
+                      <button key={p.user_id}
+                        onClick={() => {
+                          setExcludedFromAvg(prev => {
+                            const next = new Set(prev)
+                            if (next.has(p.user_id)) next.delete(p.user_id)
+                            else next.add(p.user_id)
+                            return next
+                          })
+                        }}
+                        title={isManager ? 'Quản lý Kho' : isPTC ? 'Phụ trách chung' : 'Nhân viên Kho'}
+                        style={{ padding:'4px 10px', fontSize:11, borderRadius:14, cursor:'pointer',
+                          fontFamily:'inherit', fontWeight:600, transition:'all .15s',
+                          border:`1.5px solid ${excluded ? T.border : T.gold}`,
+                          background: excluded ? '#F5F5F5' : T.goldBg,
+                          color: excluded ? T.light : T.goldText,
+                          textDecoration: excluded ? 'line-through' : 'none' }}>
+                        {(isManager || isPTC) ? '👑 ' : ''}{p.user?.name || p.user_id.slice(0,6)}
+                        {excluded ? ' ✗' : ' ✓'}
+                      </button>
+                    )
+                  })}
+                </div>
+                {excludedFromAvg.size > 0 && (
+                  <div style={{ marginTop:8, fontSize:FS.xs, color:T.amber }}>
+                    ⚠️ {excludedFromAvg.size} NV bị loại khỏi tính trung bình team (gạch ngang). Leaderboard vẫn hiển thị đầy đủ.
+                  </div>
+                )}
+              </Card>
+            )}
             {teamAverages && (
               <div style={{ display:'grid',
                 gridTemplateColumns: mobile ? '1fr 1fr' : 'repeat(4, 1fr)',
                 gap: SP[3], marginBottom: SP[4] }}>
                 {[
-                  { label:'Tổng nghiệp vụ', val: Math.round(teamAverages.totalOps).toLocaleString('vi-VN'), sub:'đơn (nhặt + đóng)', color:T.blue, icon:'📦' },
+                  { label:'Tổng nghiệp vụ', val: Math.round(teamAverages.totalOps).toLocaleString('vi-VN'), sub:`đơn (nhặt + đóng) · ${teamAverages.includedCount} NV`, color:T.blue, icon:'📦' },
                   { label:'Doanh thu', val: fmtMoney(Math.round(teamAverages.totalValue)) + 'đ', sub: 'giá trị đã đóng', color:T.goldText, icon:'💰' },
-                  { label:'Năng suất TB', val: teamAverages.avgOpsHour.toFixed(2), sub:'nghiệp vụ / giờ / NV', color:T.green, icon:'⚡' },
+                  { label:'Năng suất TB', val: teamAverages.avgOpsHour.toFixed(2), sub:`ng.vụ/giờ/NV · ${teamAverages.includedCount}/${teamAverages.totalCount} NV`, color:T.green, icon:'⚡' },
                   { label:'Chất lượng', val: teamAverages.teamOverallQuality + '%', sub:`${teamAverages.totalErrors} lỗi`, color: teamAverages.teamOverallQuality >= 95 ? T.green : T.amber, icon:'🎯' },
                 ].map((c, i) => (
                   <Card key={i} style={{ padding:`${SP[3]}px ${SP[4]}px` }}>
@@ -22838,12 +22923,14 @@ function WarehouseStatsModule({ user, allUsers, mobile }: any) {
                   </div>
                   {teamAverages && (
                     <div style={{ textAlign:'right' }}>
-                      <div style={{ fontSize:FS.xs, color:T.light }}>Trung bình team</div>
+                      <div style={{ fontSize:FS.xs, color:T.light }}>
+                        TB team ({teamAverages.includedCount}/{teamAverages.totalCount} NV)
+                      </div>
                       <div style={{ fontSize:FS.xl, fontWeight:700, color:T.med }}>
                         {teamAverages.avgScore}
                       </div>
                       <div style={{ fontSize:FS.xs, color: myScoreEntry.totalScore >= teamAverages.avgScore ? T.green : T.red, fontWeight:600 }}>
-                        {myScoreEntry.totalScore >= teamAverages.avgScore ? '↑' : '↓'} {Math.abs(myScoreEntry.totalScore - teamAverages.avgScore)} so với avg
+                        {myScoreEntry.totalScore >= teamAverages.avgScore ? '↑' : '↓'} {Math.abs(myScoreEntry.totalScore - teamAverages.avgScore)} so avg
                       </div>
                     </div>
                   )}
