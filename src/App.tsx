@@ -12,7 +12,7 @@ const db = createClient(SUPABASE_URL, SUPABASE_KEY)
 // APP_VERSION — dùng để invalidate cache localStorage mỗi khi deploy version mới
 // (ngăn bug quyền user bị "reset" do cache position cũ sau deploy)
 // ⚠️ MỖI LẦN DEPLOY FEATURE MỚI CÓ PERMISSION MỚI, BUMP SỐ NÀY:
-const APP_VERSION = '2026.04.21.v106'
+const APP_VERSION = '2026.04.21.v107'
 
 // ════════════════════════════════════════════════════════════════
 // AUDIT LOG — ghi nhận các hành động phá hoại data để trace lại
@@ -2163,10 +2163,10 @@ function Dashboard({ user, checklist, tasks, allUsers, attendance, leaveRequests
         <Card style={{ marginTop:14 }}>
           <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:12, flexWrap:'wrap', gap:6 }}>
             <div style={{ fontSize:13, fontWeight:600, color:T.dark }}>
-              🏭 Xếp hạng hiệu suất NV Kho hôm nay
+              🏭 Xếp hạng nhanh NV Kho hôm nay
             </div>
             <div style={{ fontSize:10, color:T.light, fontStyle:'italic' }}>
-              Speed 40% · Volume 25% · Quality 20% · Pack Speed 15%
+              Năng suất theo ngày · MBO tháng xem ở 📊 Hiệu suất kho
             </div>
           </div>
 
@@ -22600,19 +22600,15 @@ function WarehouseStatsModule({ user, allUsers, mobile }: any) {
     total_picked: pickerStats.reduce((s, ps: any) => s + ps.order_count, 0),
   }), [orders, packerStats, pickerStats])
 
-  // ═══ COMPOSITE PERFORMANCE SCORE (40% Speed / 25% Volume / 20% Quality / 15% Pack Speed) ═══
+  // ═══ MBO PERFORMANCE SCORE (35% Chuyên cần / 25% Khối lượng / 25% Tốc độ / 15% Chất lượng) ═══
   // Chỉ tính cho NV Kho
   const performanceScores = useMemo(() => {
     // Lấy NV Kho
     const khoUsers = allUsers.filter((u: any) => u.dept_id === 'kho' && u.active !== false)
 
-    // Compute giờ làm per user
-    // Logic: Chấm công mặc định là "đi làm bình thường"
-    //  - T2-T7: mặc định 8h (full day), trừ giờ nếu có record bất thường (late/half/absent/sick/leave)
-    //  - CN: mặc định nghỉ (0h), chỉ tính giờ nếu QM chấm đi làm thủ công
-    const hoursByUser = new Map<string, number>()
-
-    // Build map: user_id → { date: attendance_record } để lookup nhanh
+    // ── 1. Tính CHUYÊN CẦN: base 100, trừ theo vi phạm ──
+    // T2-T7: mặc định đi làm (không trừ), trừ theo record bất thường
+    // CN: mặc định nghỉ (không trừ, không thưởng), tính nếu có record đi làm
     const attByUserDate = new Map<string, Map<string, any>>()
     attendance.forEach((a: any) => {
       if (!a.user_id || !a.date) return
@@ -22620,7 +22616,7 @@ function WarehouseStatsModule({ user, allUsers, mobile }: any) {
       attByUserDate.get(a.user_id)!.set(a.date, a)
     })
 
-    // Enumerate tất cả ngày trong kỳ
+    // Enumerate ngày trong kỳ
     const from = new Date(fromDate + 'T00:00:00')
     const to   = new Date(toDate   + 'T00:00:00')
     const daysInRange: { date: string; isSunday: boolean }[] = []
@@ -22629,24 +22625,58 @@ function WarehouseStatsModule({ user, allUsers, mobile }: any) {
       daysInRange.push({ date: dateStr, isSunday: d.getDay() === 0 })
     }
 
+    // Tính giờ làm (để so ops_per_hour) + breakdown chuyên cần
+    const hoursByUser = new Map<string, number>()
+    const attendanceScoreByUser = new Map<string, any>()
+
     khoUsers.forEach((u: any) => {
       const userAtts = attByUserDate.get(u.id) || new Map()
       let totalHours = 0
+      let score = 100
+      const breakdown = {
+        late_small: 0, late_medium: 0, late_large: 0,  // <15, 15-30, >30
+        early_out: 0,
+        half: 0,
+        leave_excused: 0,   // sick + leave
+        absent_unexcused: 0, // absent
+      }
+
       daysInRange.forEach(({ date, isSunday }) => {
         const rec = userAtts.get(date)
         if (isSunday) {
-          // CN: mặc định nghỉ (0h), chỉ tính nếu có record chấm đi làm
+          // CN: không tính vào chuyên cần base, chỉ cộng giờ làm nếu có
           if (rec) totalHours += computeAttHours(rec, u.dept_id)
-        } else {
-          // T2-T7: mặc định đi làm (8h), trừ giờ nếu có record bất thường
-          totalHours += computeAttHours(rec || null, u.dept_id)
+          return
+        }
+        // T2-T7
+        if (!rec) {
+          // Không có record = đi làm bình thường (full 8h, không trừ điểm)
+          totalHours += computeAttHours(null, u.dept_id)
+          return
+        }
+        const status = rec.status
+        const lateMins = Number(rec.late_mins || 0)
+        totalHours += computeAttHours(rec, u.dept_id)
+
+        if (status === 'late') {
+          if (lateMins < 15)      { score -= 1; breakdown.late_small++ }
+          else if (lateMins <= 30){ score -= 3; breakdown.late_medium++ }
+          else                    { score -= 5; breakdown.late_large++ }
+        } else if (status === 'early_out') {
+          score -= 3; breakdown.early_out++
+        } else if (status === 'half') {
+          score -= 5; breakdown.half++
+        } else if (status === 'leave' || status === 'sick') {
+          score -= 2; breakdown.leave_excused++
+        } else if (status === 'absent') {
+          score -= 15; breakdown.absent_unexcused++
         }
       })
       if (totalHours > 0) hoursByUser.set(u.id, totalHours)
+      attendanceScoreByUser.set(u.id, { score: Math.max(0, score), breakdown })
     })
 
-
-    // Compute số lỗi per user (wrong + return)
+    // ── 2. Tính LỖI per user ──
     const errorsByUser = new Map<string, number>()
     wrongOrders.forEach((w: any) => {
       if (!w.violator_id) return
@@ -22657,20 +22687,22 @@ function WarehouseStatsModule({ user, allUsers, mobile }: any) {
       errorsByUser.set(r.violator_id, (errorsByUser.get(r.violator_id) || 0) + 1)
     })
 
-    // Build per-user metrics: merge packer + picker + attendance + errors
+    // ── 3. Build metrics per user ──
     const metricsByUser = new Map<string, any>()
     khoUsers.forEach((u: any) => {
       const packer = packerStats.find((s: any) => s.user_id === u.id)
       const picker = pickerStats.find((s: any) => s.user_id === u.id)
       const packed = packer?.order_count || 0
       const picked = picker?.order_count || 0
-      const totalOps = packed + picked  // Tổng nghiệp vụ
+      const totalOps = packed + picked
       const hours = hoursByUser.get(u.id) || 0
       const errors = errorsByUser.get(u.id) || 0
       const value = (packer?.total_value || 0)
       const items = packer?.total_sp_qty || 0
       const avgPackMin = packer?.avg_pack_minutes || 0
-      if (totalOps === 0 && hours === 0) return
+      const attScore = attendanceScoreByUser.get(u.id) || { score: 100, breakdown: {} }
+      // Chỉ loại NV không có dữ liệu gì cả (có thể đã nghỉ việc)
+      if (totalOps === 0 && hours === 0 && attScore.score === 100) return
       metricsByUser.set(u.id, {
         user_id: u.id,
         user: u,
@@ -22682,6 +22714,8 @@ function WarehouseStatsModule({ user, allUsers, mobile }: any) {
         total_items: items,
         avg_pack_minutes: avgPackMin,
         errors,
+        attendance_score: attScore.score,
+        attendance_breakdown: attScore.breakdown,
         ops_per_hour: hours > 0 ? totalOps / hours : 0,
         error_rate: totalOps > 0 ? errors / totalOps : 0,
       })
@@ -22690,61 +22724,86 @@ function WarehouseStatsModule({ user, allUsers, mobile }: any) {
     const metricsArr = Array.from(metricsByUser.values())
     if (metricsArr.length === 0) return []
 
-    // Team baseline: median ops_per_hour + max ops để normalize
-    const opsPerHourSorted = metricsArr
-      .filter(m => m.working_hours > 0)
-      .map(m => m.ops_per_hour)
-      .sort((a, b) => a - b)
-    const teamMedian = opsPerHourSorted.length > 0
-      ? opsPerHourSorted[Math.floor(opsPerHourSorted.length / 2)]
+    // ── 4. Team baselines cho Khối lượng & Tốc độ ──
+    // Khối lượng: tính avg team (loại NV không bị exclude từ avg config)
+    const includedForBaseline = metricsArr.filter(m => !excludedFromAvg.has(m.user_id))
+    const avgTeamOps = includedForBaseline.length > 0
+      ? includedForBaseline.reduce((s, m) => s + m.total_ops, 0) / includedForBaseline.length
       : 1
-    const maxOps = Math.max(1, ...metricsArr.map(m => m.total_ops))
-    // Baseline pack duration (phút): median của team (loại người không có data)
-    const packMinSorted = metricsArr
-      .filter(m => m.avg_pack_minutes > 0)
+
+    // Tốc độ đóng: median team phút/đơn (loại NV đóng < 3 đơn vì không đủ sample)
+    const packMinSorted = includedForBaseline
+      .filter(m => m.avg_pack_minutes > 0 && m.orders_packed >= 3)
       .map(m => m.avg_pack_minutes)
       .sort((a, b) => a - b)
     const teamMedianPackMin = packMinSorted.length > 0
       ? packMinSorted[Math.floor(packMinSorted.length / 2)]
       : 0
 
-    // Compute scores
+    // ── 5. Compute final scores ──
     return metricsArr.map(m => {
-      // Speed: so với median team. Đạt median = 50, gấp đôi = 100
-      const speedScore = m.working_hours > 0 && teamMedian > 0
-        ? Math.min(100, Math.round((m.ops_per_hour / teamMedian) * 50))
-        : 0
-      // Volume: so với top team
-      const volumeScore = Math.round((m.total_ops / maxOps) * 100)
-      // Quality: tỷ lệ đúng
-      const qualityScore = Math.max(0, Math.round((1 - m.error_rate) * 100))
-      // Pack Speed với confidence weighting:
-      //   NV đóng < 3 đơn → không đủ sample, kéo về 50 (neutral)
-      //   ≥ 3 đơn → full confidence, raw formula (nhanh hơn median → điểm cao)
+      // 1. Chuyên cần (35%) — đã tính sẵn
+      const attendanceScore = m.attendance_score
+
+      // 2. Khối lượng (25%) — so với avg team (piecewise linear)
+      //   ≥ 150% avg → 100đ, 120% → 85, 100% → 70, 80% → 50, 50% → 20, ≤ 30% → 0
+      const ratio = avgTeamOps > 0 ? m.total_ops / avgTeamOps : 0
+      let volumeScore = 0
+      if (ratio >= 1.5)       volumeScore = 100
+      else if (ratio >= 1.2)  volumeScore = 85 + Math.round((ratio - 1.2) / 0.3 * 15)
+      else if (ratio >= 1.0)  volumeScore = 70 + Math.round((ratio - 1.0) / 0.2 * 15)
+      else if (ratio >= 0.8)  volumeScore = 50 + Math.round((ratio - 0.8) / 0.2 * 20)
+      else if (ratio >= 0.5)  volumeScore = 20 + Math.round((ratio - 0.5) / 0.3 * 30)
+      else if (ratio >= 0.3)  volumeScore = Math.round((ratio - 0.3) / 0.2 * 20)
+      else                    volumeScore = 0
+
+      // 3. Tốc độ đóng (25%) — so với median, confidence weighting
+      //   ≥ 1.5x nhanh → 100đ, 1.2x → 80, 1.0x → 60, 0.8x → 40, ≤ 0.5x → 0
       const MIN_PACK_SAMPLES = 3
       const confidence = Math.min(1, (m.orders_packed || 0) / MIN_PACK_SAMPLES)
-      const rawPackSpeed = m.avg_pack_minutes > 0 && teamMedianPackMin > 0
-        ? Math.min(100, Math.round((teamMedianPackMin / m.avg_pack_minutes) * 50))
-        : 50
-      const packSpeedScore = Math.round(50 + (rawPackSpeed - 50) * confidence)
-      // Composite: 40% Speed + 25% Volume + 20% Quality + 15% Pack Speed
+      let rawSpeedScore = 50 // neutral default
+      if (m.avg_pack_minutes > 0 && teamMedianPackMin > 0) {
+        const speedRatio = teamMedianPackMin / m.avg_pack_minutes
+        if (speedRatio >= 1.5)      rawSpeedScore = 100
+        else if (speedRatio >= 1.2) rawSpeedScore = 80 + Math.round((speedRatio - 1.2) / 0.3 * 20)
+        else if (speedRatio >= 1.0) rawSpeedScore = 60 + Math.round((speedRatio - 1.0) / 0.2 * 20)
+        else if (speedRatio >= 0.8) rawSpeedScore = 40 + Math.round((speedRatio - 0.8) / 0.2 * 20)
+        else if (speedRatio >= 0.5) rawSpeedScore = Math.round((speedRatio - 0.5) / 0.3 * 40)
+        else                        rawSpeedScore = 0
+      }
+      // Confidence weighting: ít data → kéo về 50 neutral
+      const speedScore = Math.round(50 + (rawSpeedScore - 50) * confidence)
+
+      // 4. Chất lượng (15%) — bậc thang theo số lỗi
+      let qualityScore = 100
+      if (m.errors === 0)      qualityScore = 100
+      else if (m.errors === 1) qualityScore = 85
+      else if (m.errors === 2) qualityScore = 70
+      else if (m.errors === 3) qualityScore = 50
+      else if (m.errors === 4) qualityScore = 30
+      else                     qualityScore = 0
+
+      // Composite: 35% Chuyên cần + 25% Khối lượng + 25% Tốc độ + 15% Chất lượng
       const totalScore = Math.round(
-        speedScore * 0.40 + volumeScore * 0.25 + qualityScore * 0.20 + packSpeedScore * 0.15
+        attendanceScore * 0.35 + volumeScore * 0.25 + speedScore * 0.25 + qualityScore * 0.15
       )
-      // Grade
-      let grade = '🔴', gradeLabel = 'Cần cải thiện'
-      if (totalScore >= 90)      { grade = '🌟'; gradeLabel = 'Xuất sắc' }
-      else if (totalScore >= 75) { grade = '✅'; gradeLabel = 'Đạt yêu cầu' }
-      else if (totalScore >= 60) { grade = '⚠️'; gradeLabel = 'Cần cải thiện' }
-      else                       { grade = '🔴'; gradeLabel = 'Dưới kỳ vọng' }
+
+      // Grade (MBO 5 hạng)
+      let grade = '🔴', gradeLabel = 'Kém', gradeCode = 'C'
+      if (totalScore >= 85)      { grade = '🌟'; gradeLabel = 'Xuất sắc';     gradeCode = 'A'  }
+      else if (totalScore >= 75) { grade = '⭐'; gradeLabel = 'Khá';         gradeCode = 'B+' }
+      else if (totalScore >= 65) { grade = '✅'; gradeLabel = 'Bình thường'; gradeCode = 'B'  }
+      else if (totalScore >= 50) { grade = '⚠️'; gradeLabel = 'Chưa tốt';    gradeCode = 'B-' }
+      else                       { grade = '🔴'; gradeLabel = 'Kém';         gradeCode = 'C'  }
+
       return {
         ...m,
-        speedScore, volumeScore, qualityScore, packSpeedScore, totalScore,
+        attendanceScore, volumeScore, speedScore, qualityScore, totalScore,
         pack_confidence: confidence,
-        grade, gradeLabel,
+        grade, gradeLabel, gradeCode,
       }
     }).sort((a, b) => b.totalScore - a.totalScore)
-  }, [packerStats, pickerStats, attendance, wrongOrders, returnSlips, allUsers, fromDate, toDate])
+  }, [packerStats, pickerStats, attendance, wrongOrders, returnSlips, allUsers, fromDate, toDate, excludedFromAvg])
 
   // Team averages (để NV Kho thấy so sánh) — chỉ tính NV không bị loại khỏi avg
   const teamAverages = useMemo(() => {
@@ -22753,20 +22812,28 @@ function WarehouseStatsModule({ user, allUsers, mobile }: any) {
     if (included.length === 0) return null
     const n = included.length
     return {
-      avgScore:    Math.round(included.reduce((s, p) => s + p.totalScore, 0) / n),
-      avgSpeed:    Math.round(included.reduce((s, p) => s + p.speedScore, 0) / n),
-      avgVolume:   Math.round(included.reduce((s, p) => s + p.volumeScore, 0) / n),
-      avgQuality:  Math.round(included.reduce((s, p) => s + p.qualityScore, 0) / n),
-      avgPackSpeed:Math.round(included.reduce((s, p) => s + (p.packSpeedScore || 50), 0) / n),
-      avgOpsHour:  included.reduce((s, p) => s + p.ops_per_hour, 0) / n,
-      totalOps:    included.reduce((s, p) => s + p.total_ops, 0),
-      totalValue:  included.reduce((s, p) => s + p.total_value, 0),
-      totalErrors: included.reduce((s, p) => s + p.errors, 0),
+      avgScore:      Math.round(included.reduce((s, p) => s + p.totalScore, 0) / n),
+      avgAttendance: Math.round(included.reduce((s, p) => s + p.attendanceScore, 0) / n),
+      avgVolume:     Math.round(included.reduce((s, p) => s + p.volumeScore, 0) / n),
+      avgSpeed:      Math.round(included.reduce((s, p) => s + p.speedScore, 0) / n),
+      avgQuality:    Math.round(included.reduce((s, p) => s + p.qualityScore, 0) / n),
+      avgOpsHour:    included.reduce((s, p) => s + p.ops_per_hour, 0) / n,
+      totalOps:      included.reduce((s, p) => s + p.total_ops, 0),
+      totalValue:    included.reduce((s, p) => s + p.total_value, 0),
+      totalErrors:   included.reduce((s, p) => s + p.errors, 0),
       teamOverallQuality: (() => {
         const totalOps = included.reduce((s, p) => s + p.total_ops, 0)
         const totalErrors = included.reduce((s, p) => s + p.errors, 0)
         return totalOps > 0 ? Math.round((1 - totalErrors/totalOps) * 100) : 100
       })(),
+      // Phân bố hạng MBO của team
+      gradeDistribution: {
+        A:   included.filter(p => p.gradeCode === 'A').length,
+        'B+': included.filter(p => p.gradeCode === 'B+').length,
+        B:   included.filter(p => p.gradeCode === 'B').length,
+        'B-': included.filter(p => p.gradeCode === 'B-').length,
+        C:   included.filter(p => p.gradeCode === 'C').length,
+      },
       includedCount: n,
       totalCount: performanceScores.length,
     }
@@ -22951,6 +23018,40 @@ function WarehouseStatsModule({ user, allUsers, mobile }: any) {
               </div>
             )}
 
+            {/* ── Phân bố hạng MBO (admin only) ── */}
+            {isAdmin && teamAverages && (
+              <Card style={{ padding:`${SP[4]}px`, marginBottom:SP[4] }}>
+                <div style={{ fontSize:FS.sm, fontWeight:700, color:T.dark, marginBottom:SP[3] }}>
+                  📊 Phân bố hạng MBO
+                  <span style={{ fontSize:FS.xs, color:T.light, fontWeight:400, marginLeft:6 }}>
+                    · {teamAverages.includedCount} NV
+                  </span>
+                </div>
+                <div style={{ display:'grid',
+                  gridTemplateColumns: mobile ? 'repeat(5, 1fr)' : 'repeat(5, 1fr)', gap:SP[2] }}>
+                  {[
+                    { code:'A',  label:'Xuất sắc',     val:teamAverages.gradeDistribution.A,    color:'#EAB308', bg:'#FEFCE8', icon:'🌟' },
+                    { code:'B+', label:'Khá',          val:teamAverages.gradeDistribution['B+'], color:'#0EA5E9', bg:'#F0F9FF', icon:'⭐' },
+                    { code:'B',  label:'Bình thường',  val:teamAverages.gradeDistribution.B,    color:T.green,   bg:T.greenBg, icon:'✅' },
+                    { code:'B-', label:'Chưa tốt',     val:teamAverages.gradeDistribution['B-'], color:T.amber,  bg:T.amberBg, icon:'⚠️' },
+                    { code:'C',  label:'Kém',          val:teamAverages.gradeDistribution.C,    color:T.red,     bg:T.redBg,   icon:'🔴' },
+                  ].map((g, i) => (
+                    <div key={i} style={{ padding:`${SP[3]}px ${SP[2]}px`, borderRadius:RD.sm,
+                      background:g.bg, border:`1px solid ${g.color}22`, textAlign:'center' }}>
+                      <div style={{ fontSize:FS.lg, marginBottom:2 }}>{g.icon}</div>
+                      <div style={{ fontSize:FS.x2l, fontWeight:900, color:g.color, lineHeight:1 }}>
+                        {g.val}
+                      </div>
+                      <div style={{ fontSize:FS.xs, color:T.med, fontWeight:700, marginTop:3 }}>
+                        Hạng {g.code}
+                      </div>
+                      <div style={{ fontSize:10, color:T.light, marginTop:1 }}>{g.label}</div>
+                    </div>
+                  ))}
+                </div>
+              </Card>
+            )}
+
             {/* ── Cá nhân card (cho NV Kho không phải admin) ── */}
             {!isAdmin && myScoreEntry && (
               <Card style={{ marginBottom:SP[4], padding:SP[5],
@@ -22992,10 +23093,10 @@ function WarehouseStatsModule({ user, allUsers, mobile }: any) {
                 <div style={{ display:'grid', gridTemplateColumns:mobile?'repeat(2, 1fr)':'repeat(4, 1fr)', gap:SP[3],
                   paddingTop:SP[3], borderTop:`1px solid ${T.goldBorder}` }}>
                   {[
-                    { label:'⚡ Tốc độ',     val: myScoreEntry.speedScore,              teamAvg: teamAverages?.avgSpeed,     color:T.blue,     weight:'40%' },
+                    { label:'🎯 Chuyên cần', val: myScoreEntry.attendanceScore,         teamAvg: teamAverages?.avgAttendance, color:T.red,      weight:'35%' },
                     { label:'📦 Khối lượng', val: myScoreEntry.volumeScore,             teamAvg: teamAverages?.avgVolume,    color:T.goldText, weight:'25%' },
-                    { label:'🎯 Chất lượng', val: myScoreEntry.qualityScore,            teamAvg: teamAverages?.avgQuality,   color:T.green,    weight:'20%' },
-                    { label:'🕐 Pack Speed', val: myScoreEntry.packSpeedScore ?? 50,    teamAvg: teamAverages?.avgPackSpeed, color:T.purple,   weight:'15%' },
+                    { label:'⚡ Tốc độ đóng', val: myScoreEntry.speedScore,             teamAvg: teamAverages?.avgSpeed,     color:T.blue,     weight:'25%' },
+                    { label:'✅ Chất lượng', val: myScoreEntry.qualityScore,            teamAvg: teamAverages?.avgQuality,   color:T.green,    weight:'15%' },
                   ].map((m, i) => (
                     <div key={i}>
                       <div style={{ fontSize:FS.xs, color:T.light, fontWeight:600, marginBottom:3 }}>
@@ -23040,10 +23141,10 @@ function WarehouseStatsModule({ user, allUsers, mobile }: any) {
                 display:'flex', justifyContent:'space-between', alignItems:'center' }}>
                 <div>
                   <div style={{ fontSize:FS.md, fontWeight:700, color:T.dark }}>
-                    🏆 Bảng xếp hạng hiệu suất
+                    🏆 Bảng xếp hạng MBO
                   </div>
                   <div style={{ fontSize:FS.xs, color:T.light, marginTop:2 }}>
-                    Score = 40% Tốc độ + 25% Khối lượng + 20% Chất lượng + 15% Pack Speed
+                    Score = 35% Chuyên cần + 25% Khối lượng + 25% Tốc độ + 15% Chất lượng
                   </div>
                 </div>
               </div>
@@ -23052,10 +23153,10 @@ function WarehouseStatsModule({ user, allUsers, mobile }: any) {
               <div style={{ padding:`${SP[2]}px ${SP[4]}px`, background:'#FAFAF8',
                 borderBottom:`1px solid ${T.border}`, fontSize:FS.xs, color:T.med,
                 display:'flex', gap:SP[4], flexWrap:'wrap', lineHeight:1.6 }}>
-                <span><b style={{color:T.blue}}>⚡ Tốc độ (40%)</b>: số nghiệp vụ hoàn thành/giờ làm, so với median team</span>
-                <span><b style={{color:T.goldText}}>📦 Khối lượng (25%)</b>: tổng nghiệp vụ (đóng + nhặt)</span>
-                <span><b style={{color:T.green}}>🎯 Chất lượng (20%)</b>: tỷ lệ không có lỗi</span>
-                <span><b style={{color:T.purple}}>🕐 Pack Speed (15%)</b>: TB phút đóng/đơn, so median. (*) = cần ≥ 3 đơn để full confidence</span>
+                <span><b style={{color:T.red}}>🎯 Chuyên cần (35%)</b>: 100đ trừ theo vi phạm (đi muộn, nghỉ...)</span>
+                <span><b style={{color:T.goldText}}>📦 Khối lượng (25%)</b>: tổng đơn (đóng + nhặt) so với avg team</span>
+                <span><b style={{color:T.blue}}>⚡ Tốc độ đóng (25%)</b>: TB phút đóng/đơn so median. (*) = cần ≥ 3 đơn</span>
+                <span><b style={{color:T.green}}>✅ Chất lượng (15%)</b>: không có lỗi (wrong + return)</span>
               </div>
 
               <div style={{ display:'flex', flexDirection:'column' }}>
@@ -23121,14 +23222,14 @@ function WarehouseStatsModule({ user, allUsers, mobile }: any) {
                         <div style={{ marginTop:SP[2], display:'flex',
                           height:10, borderRadius:RD.sm, overflow:'hidden',
                           border:`1px solid ${T.border}` }}>
-                          <div title={`Tốc độ: ${p.speedScore}`}
-                            style={{ width:`${p.speedScore * 0.40}%`, background:T.blue }}/>
+                          <div title={`Chuyên cần: ${p.attendanceScore}`}
+                            style={{ width:`${p.attendanceScore * 0.35}%`, background:T.red }}/>
                           <div title={`Khối lượng: ${p.volumeScore}`}
                             style={{ width:`${p.volumeScore * 0.25}%`, background:T.gold }}/>
+                          <div title={`Tốc độ đóng: ${p.speedScore}`}
+                            style={{ width:`${p.speedScore * 0.25}%`, background:T.blue }}/>
                           <div title={`Chất lượng: ${p.qualityScore}`}
-                            style={{ width:`${p.qualityScore * 0.20}%`, background:T.green }}/>
-                          <div title={`Pack Speed: ${p.packSpeedScore}`}
-                            style={{ width:`${(p.packSpeedScore||50) * 0.15}%`, background:T.purple }}/>
+                            style={{ width:`${p.qualityScore * 0.15}%`, background:T.green }}/>
                           <div style={{ flex:1, background:T.bg }}/>
                         </div>
                       )}
@@ -23143,16 +23244,20 @@ function WarehouseStatsModule({ user, allUsers, mobile }: any) {
                   background:T.bg, borderTop:`1px solid ${T.border}`,
                   fontSize:FS.xs, color:T.light, display:'flex', gap:SP[3], flexWrap:'wrap' }}>
                   <span style={{ display:'flex', alignItems:'center', gap:4 }}>
-                    <span style={{ width:10, height:10, background:T.blue, borderRadius:2 }}/>
-                    Tốc độ (50%) = đơn/giờ so với median team
+                    <span style={{ width:10, height:10, background:T.red, borderRadius:2 }}/>
+                    Chuyên cần (35%)
                   </span>
                   <span style={{ display:'flex', alignItems:'center', gap:4 }}>
                     <span style={{ width:10, height:10, background:T.gold, borderRadius:2 }}/>
-                    Khối lượng (30%) = tổng NV so với top team
+                    Khối lượng (25%)
+                  </span>
+                  <span style={{ display:'flex', alignItems:'center', gap:4 }}>
+                    <span style={{ width:10, height:10, background:T.blue, borderRadius:2 }}/>
+                    Tốc độ đóng (25%)
                   </span>
                   <span style={{ display:'flex', alignItems:'center', gap:4 }}>
                     <span style={{ width:10, height:10, background:T.green, borderRadius:2 }}/>
-                    Chất lượng (20%) = 100% - tỷ lệ lỗi (wrong + return)
+                    Chất lượng (15%)
                   </span>
                 </div>
               )}
