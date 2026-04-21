@@ -12,7 +12,7 @@ const db = createClient(SUPABASE_URL, SUPABASE_KEY)
 // APP_VERSION — dùng để invalidate cache localStorage mỗi khi deploy version mới
 // (ngăn bug quyền user bị "reset" do cache position cũ sau deploy)
 // ⚠️ MỖI LẦN DEPLOY FEATURE MỚI CÓ PERMISSION MỚI, BUMP SỐ NÀY:
-const APP_VERSION = '2026.04.21.v110'
+const APP_VERSION = '2026.04.21.v111'
 
 // ════════════════════════════════════════════════════════════════
 // AUDIT LOG — ghi nhận các hành động phá hoại data để trace lại
@@ -26803,25 +26803,31 @@ function GalleryModule({ user, allUsers, mobile }: any) {
   }
 
   // ── Fetch orders with photos ──
+  // Logic:
+  //  - Không search → pagination 20 đơn/lần (infinite scroll)
+  //  - Có search (customer HOẶC product) → fetch toàn bộ đơn trong date range (limit 5000), tắt pagination
   const fetchOrders = async (reset = false) => {
     if (!reset && loadingMore) return
     if (!reset && !hasMore) return
     if (reset) setLoading(true)
     else setLoadingMore(true)
 
+    // Phát hiện có search không (dùng debounced để sync với filteredOrders)
+    const hasSearch = !!(searchCustomerDeb.trim() || searchProductDeb.trim())
+
     try {
       const range = computeDateRange()
       let q = db.from('packing_workflow')
         .select('*')
         .order('packed_at', { ascending: false, nullsFirst: false })
-        .limit(20)
+        .limit(hasSearch ? 5000 : 20)
 
       // Date range filter (by packed_at, falling back to updated_at)
       if (range.from) q = q.gte('packed_at', range.from + 'T00:00:00')
       if (range.to)   q = q.lte('packed_at', range.to + 'T23:59:59')
 
-      // Cursor-based pagination
-      if (!reset && cursor) q = q.lt('packed_at', cursor)
+      // Cursor-based pagination — chỉ khi KHÔNG search
+      if (!hasSearch && !reset && cursor) q = q.lt('packed_at', cursor)
 
       // Status filter
       if (statusFilter === 'done') q = q.eq('status', 'done')
@@ -26841,12 +26847,18 @@ function GalleryModule({ user, allUsers, mobile }: any) {
         return true
       })
 
-      if (reset) setOrders(filtered)
+      // Khi có search → luôn reset, không append
+      if (reset || hasSearch) setOrders(filtered)
       else setOrders(prev => [...prev, ...filtered])
 
-      // Update cursor
-      if (list.length < 20) setHasMore(false)
-      else {
+      // Update cursor + hasMore
+      if (hasSearch) {
+        // Search mode: không pagination, đã load all trong range
+        setHasMore(false)
+        setCursor(null)
+      } else if (list.length < 20) {
+        setHasMore(false)
+      } else {
         const last = list[list.length - 1]
         setCursor(last.packed_at || null)
         setHasMore(true)
@@ -26866,6 +26878,15 @@ function GalleryModule({ user, allUsers, mobile }: any) {
     setHasMore(true)
     fetchOrders(true)
   }, [datePreset, fromDate, toDate, statusFilter, typeFilter])
+
+  // v100+: Re-fetch khi user bắt đầu/kết thúc search (dùng debounced để không spam)
+  // Khi bật search → load all trong range. Khi tắt search → quay lại pagination 20.
+  useEffect(() => {
+    setCursor(null)
+    setHasMore(true)
+    fetchOrders(true)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [searchCustomerDeb, searchProductDeb])
 
   // Infinite scroll trigger
   const sentinelRef = useRef<HTMLDivElement>(null)
@@ -27053,28 +27074,52 @@ function GalleryModule({ user, allUsers, mobile }: any) {
           </div>
         </div>
         {(searchCustomerDeb || searchProductDeb) && (
-          <div style={{ marginTop:6, fontSize:10, color:T.light,
-            display:'flex', gap:8, alignItems:'center', flexWrap:'wrap' }}>
-            <span>Lọc:</span>
-            {searchCustomerDeb && (
-              <span style={{ padding:'2px 6px', borderRadius:4,
-                background:T.blueBg, color:T.blue, fontWeight:600 }}>
-                👤 {searchCustomerDeb}
+          <>
+            <div style={{ marginTop:6, fontSize:10, color:T.light,
+              display:'flex', gap:8, alignItems:'center', flexWrap:'wrap' }}>
+              <span>Lọc:</span>
+              {searchCustomerDeb && (
+                <span style={{ padding:'2px 6px', borderRadius:4,
+                  background:T.blueBg, color:T.blue, fontWeight:600 }}>
+                  👤 {searchCustomerDeb}
+                </span>
+              )}
+              {searchProductDeb && (
+                <span style={{ padding:'2px 6px', borderRadius:4,
+                  background:T.goldBg, color:T.goldText, fontWeight:600 }}>
+                  📦 {searchProductDeb}
+                </span>
+              )}
+              <button onClick={() => { setSearchCustomer(''); setSearchProduct('') }}
+                style={{ border:'none', background:'transparent', color:T.red,
+                  cursor:'pointer', fontSize:10, textDecoration:'underline' }}>Xóa hết</button>
+              <span style={{ marginLeft:'auto', color:T.med }}>
+                → {filteredOrders.length} đơn
               </span>
-            )}
-            {searchProductDeb && (
-              <span style={{ padding:'2px 6px', borderRadius:4,
-                background:T.goldBg, color:T.goldText, fontWeight:600 }}>
-                📦 {searchProductDeb}
-              </span>
-            )}
-            <button onClick={() => { setSearchCustomer(''); setSearchProduct('') }}
-              style={{ border:'none', background:'transparent', color:T.red,
-                cursor:'pointer', fontSize:10, textDecoration:'underline' }}>Xóa hết</button>
-            <span style={{ marginLeft:'auto', color:T.med }}>
-              → {filteredOrders.length} đơn
-            </span>
-          </div>
+            </div>
+            <div style={{ marginTop:4, padding:'4px 8px', borderRadius:4,
+              background:T.blueBg, fontSize:10, color:T.blue,
+              display:'flex', alignItems:'center', gap:6 }}>
+              🔍 Đang tìm trong toàn bộ đơn của khoảng {(() => {
+                const r = computeDateRange()
+                if (datePreset === 'today') return 'hôm nay'
+                if (datePreset === 'week') return '7 ngày gần nhất'
+                if (datePreset === 'month') return '30 ngày gần nhất'
+                return `${r.from} → ${r.to}`
+              })()}
+              {(() => {
+                const r = computeDateRange()
+                if (!r.from || !r.to) return null
+                const days = Math.ceil((new Date(r.to).getTime() - new Date(r.from).getTime()) / 86400000)
+                if (days > 90) return (
+                  <span style={{ marginLeft:'auto', color:T.amber, fontWeight:600 }}>
+                    ⚠️ Phạm vi lớn ({days} ngày) — có thể chậm
+                  </span>
+                )
+                return null
+              })()}
+            </div>
+          </>
         )}
       </Card>
 
