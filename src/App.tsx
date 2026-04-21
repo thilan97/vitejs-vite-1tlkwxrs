@@ -12,7 +12,7 @@ const db = createClient(SUPABASE_URL, SUPABASE_KEY)
 // APP_VERSION — dùng để invalidate cache localStorage mỗi khi deploy version mới
 // (ngăn bug quyền user bị "reset" do cache position cũ sau deploy)
 // ⚠️ MỖI LẦN DEPLOY FEATURE MỚI CÓ PERMISSION MỚI, BUMP SỐ NÀY:
-const APP_VERSION = '2026.04.21.v111'
+const APP_VERSION = '2026.04.21.v112'
 
 // ════════════════════════════════════════════════════════════════
 // AUDIT LOG — ghi nhận các hành động phá hoại data để trace lại
@@ -1183,8 +1183,34 @@ const getGroupForPage = (pageId: string, perm: any, deptId = '') => {
   return groups.find((g: any) => g.pages.some((p: any) => p.id === pageId))
 }
 
+// v111: Tính badge số cho từng page dựa trên notifGroups
+// Map page ID → notification group IDs (1 page có thể tổng hợp nhiều noti group)
+const PAGE_TO_NOTIF_GROUPS: Record<string, string[]> = {
+  wrongord:   ['wo'],
+  returns:    ['ret'],
+  shortage:   ['shortage'],
+  expiry:     ['expiry', 'stale'],
+  payment:    ['pay', 'kiot'],
+  slowmoving: ['slowmoving'],
+  errreport:  ['errreport'],
+  // overdue → ko có page riêng, hiển thị ở sales/dashboard
+}
+
+const getPageBadge = (pageId: string, notifGroups: any[], pendingLeave = 0, pendingOT = 0, notifUnread = 0): number => {
+  // Static badges (đã có sẵn)
+  if (pageId === 'leave')         return pendingLeave
+  if (pageId === 'overtime')      return pendingOT
+  if (pageId === 'notifications') return notifUnread || 0
+  // Dynamic từ notifGroups
+  const mapped = PAGE_TO_NOTIF_GROUPS[pageId]
+  if (!mapped || !Array.isArray(notifGroups)) return 0
+  return notifGroups
+    .filter((g: any) => mapped.includes(g.id))
+    .reduce((sum: number, g: any) => sum + (g.items?.length || 0), 0)
+}
+
 function Sidebar(props: any) {
-  const { user, page, setPage, onLogout, pendingLeave, pendingOT, notifUnread } = props
+  const { user, page, setPage, onLogout, pendingLeave, pendingOT, notifUnread, notifGroups } = props
   const perm   = getPerm(user)
   const allGroups = NAV_GROUPS(perm, user?.dept_id||'')
   const navPrefs = getNavPrefs(user)
@@ -1208,9 +1234,9 @@ function Sidebar(props: any) {
       <nav style={{ flex:1, padding:'4px 10px 8px', overflowY:'auto' }}>
         {groups.map((group: any) => {
           const isActiveGroup = activeGroup?.id === group.id
-          const groupBadge = group.id==='hr' ? pendingLeave+pendingOT
-                           : group.id==='notifications_only' ? (notifUnread||0)
-                           : 0
+          // v111: Group badge = sum của tất cả page badge trong group
+          const groupBadge = group.pages.reduce((sum: number, p: any) =>
+            sum + getPageBadge(p.id, notifGroups || [], pendingLeave, pendingOT, notifUnread), 0)
           return (
             <div key={group.id} style={{ marginBottom:6 }}>
               {/* Section label */}
@@ -1226,7 +1252,7 @@ function Sidebar(props: any) {
                 {groupBadge>0 && (
                   <span style={{ background:T.red, color:'#fff', borderRadius:20,
                     fontSize:9, fontWeight:700, padding:'1px 6px', lineHeight:'16px' }}>
-                    {groupBadge}
+                    {groupBadge>99 ? '99+' : groupBadge}
                   </span>
                 )}
               </div>
@@ -1234,10 +1260,8 @@ function Sidebar(props: any) {
               {/* Items */}
               {group.pages.map((item: any) => {
                 const active = page === item.id
-                const badge  = item.id==='leave' ? pendingLeave
-                             : item.id==='overtime' ? pendingOT
-                             : item.id==='notifications' ? (notifUnread||0)
-                             : 0
+                // v111: Page badge tính từ getPageBadge
+                const badge = getPageBadge(item.id, notifGroups || [], pendingLeave, pendingOT, notifUnread)
                 return (
                   <button key={item.id} onClick={() => setPage(item.id)}
                     style={{
@@ -1278,7 +1302,7 @@ function Sidebar(props: any) {
                         color:'#fff', borderRadius:20,
                         fontSize:9, fontWeight:700, padding:'1px 6px', lineHeight:'16px',
                         flexShrink:0
-                      }}>{badge}</span>
+                      }}>{badge>99 ? '99+' : badge}</span>
                     )}
                   </button>
                 )
@@ -1319,7 +1343,7 @@ function Sidebar(props: any) {
   )
 }
 
-function BottomNav({ page, setPage, user, pendingLeave, pendingOT, notifUnread, onLogout }: any) {
+function BottomNav({ page, setPage, user, pendingLeave, pendingOT, notifUnread, notifGroups, onLogout }: any) {
   const perm   = getPerm(user)
   const allGroups = NAV_GROUPS(perm, user?.dept_id||'')
   const activeGroup = getGroupForPage(page, perm, user?.dept_id||'')
@@ -1414,12 +1438,10 @@ function BottomNav({ page, setPage, user, pendingLeave, pendingOT, notifUnread, 
     return false
   }
 
-  // Tính badge cho mỗi group (tổng notifications trong group)
+  // v111: Tính badge cho mỗi group = sum của tất cả page badge trong group
   const getGroupBadge = (group: any): number => {
-    let total = 0
-    if (group.id === 'hr') total += pendingLeave + pendingOT
-    if (group.id === 'dashboard' || group.id === 'notifications_only') total += (notifUnread || 0)
-    return total
+    return group.pages.reduce((sum: number, p: any) =>
+      sum + getPageBadge(p.id, notifGroups || [], pendingLeave, pendingOT, notifUnread), 0)
   }
 
   // v100: Badge cho slot (group hoặc page)
@@ -1430,10 +1452,7 @@ function BottomNav({ page, setPage, user, pendingLeave, pendingOT, notifUnread, 
     }
     if (slot.kind === 'group') return getGroupBadge(slot._group)
     if (slot.kind === 'page') {
-      if (slot.id === 'leave') return pendingLeave
-      if (slot.id === 'overtime') return pendingOT
-      if (slot.id === 'notifications') return (notifUnread || 0)
-      return 0
+      return getPageBadge(slot.id, notifGroups || [], pendingLeave, pendingOT, notifUnread)
     }
     return 0
   }
@@ -1486,6 +1505,9 @@ function BottomNav({ page, setPage, user, pendingLeave, pendingOT, notifUnread, 
             <div style={{ padding:'8px 12px 18px' }}>
               {allGroups.map((g: any) => {
                 const isActiveGroup = activeGroup?.id === g.id
+                // v111: Group badge = sum của tất cả page badge trong group
+                const groupBadge = g.pages.reduce((sum: number, p: any) =>
+                  sum + getPageBadge(p.id, notifGroups || [], pendingLeave, pendingOT, notifUnread), 0)
                 return (
                   <div key={g.id} style={{ marginBottom:6 }}>
                     {/* Group header */}
@@ -1498,14 +1520,18 @@ function BottomNav({ page, setPage, user, pendingLeave, pendingOT, notifUnread, 
                         {typeof g.icon === 'function' ? g.icon(13) : g.icon}
                       </span>
                       <span style={{ flex:1 }}>{g.label}</span>
+                      {groupBadge>0 && (
+                        <span style={{ background:T.red, color:'#fff', borderRadius:20,
+                          fontSize:9, fontWeight:700, padding:'1px 6px', lineHeight:'16px' }}>
+                          {groupBadge>99 ? '99+' : groupBadge}
+                        </span>
+                      )}
                     </div>
                     {/* Items */}
                     {g.pages.map((item: any) => {
                       const active = page === item.id
-                      const badge = item.id==='leave' ? pendingLeave
-                                  : item.id==='overtime' ? pendingOT
-                                  : item.id==='notifications' ? (notifUnread||0)
-                                  : 0
+                      // v111: Page badge từ getPageBadge
+                      const badge = getPageBadge(item.id, notifGroups || [], pendingLeave, pendingOT, notifUnread)
                       return (
                         <button key={item.id}
                           onClick={() => { setPage(item.id); setDrawerOpen(false) }}
@@ -1527,7 +1553,7 @@ function BottomNav({ page, setPage, user, pendingLeave, pendingOT, notifUnread, 
                           {badge>0 && (
                             <span style={{ background: active ? 'rgba(255,255,255,0.3)' : T.red,
                               color:'#fff', borderRadius:RD.full, fontSize:FS.xs, fontWeight:700,
-                              padding:'2px 7px', lineHeight:1 }}>{badge}</span>
+                              padding:'2px 7px', lineHeight:1 }}>{badge>99 ? '99+' : badge}</span>
                           )}
                         </button>
                       )
@@ -9776,7 +9802,7 @@ export default function App() {
         )}
         {!mobile && (
           <Sidebar user={user} page={validPage} setPage={setPage}
-            pendingLeave={pendingLeave} pendingOT={pendingOT} notifUnread={notifUnread}
+            pendingLeave={pendingLeave} pendingOT={pendingOT} notifUnread={notifUnread} notifGroups={notifGroups}
             onLogout={() => {
               localStorage.removeItem('la_user')
               localStorage.removeItem('la_app_version')
@@ -9870,7 +9896,7 @@ export default function App() {
           {validPage==='navprefs'   && <NavCustomizer user={user} setUser={setUser} mobile={mobile}/>}
           {validPage==='notes'      && <PersonalNotesModule user={user} mobile={mobile}/>}
         </main>
-        {mobile && <BottomNav user={user} page={validPage} setPage={setPage} pendingLeave={pendingLeave} pendingOT={pendingOT} notifUnread={notifUnread} onLogout={() => {
+        {mobile && <BottomNav user={user} page={validPage} setPage={setPage} pendingLeave={pendingLeave} pendingOT={pendingOT} notifUnread={notifUnread} notifGroups={notifGroups} onLogout={() => {
           localStorage.removeItem('la_user')
           localStorage.removeItem('la_app_version')
           setUser(null); setAllUsers([]); setChecklist([])
