@@ -12,7 +12,7 @@ const db = createClient(SUPABASE_URL, SUPABASE_KEY)
 // APP_VERSION — dùng để invalidate cache localStorage mỗi khi deploy version mới
 // (ngăn bug quyền user bị "reset" do cache position cũ sau deploy)
 // ⚠️ MỖI LẦN DEPLOY FEATURE MỚI CÓ PERMISSION MỚI, BUMP SỐ NÀY:
-const APP_VERSION = '2026.04.20.v100'
+const APP_VERSION = '2026.04.21.v101'
 
 // ════════════════════════════════════════════════════════════════
 // AUDIT LOG — ghi nhận các hành động phá hoại data để trace lại
@@ -197,7 +197,7 @@ const ATT_STATUS: any = {
   present:    { label:'✅ Có mặt',    color:T.green,  bg:T.greenBg  },
   late:       { label:'⏰ Đi muộn',   color:T.amber,  bg:T.amberBg  },
   early_out:  { label:'🏃 Về sớm',    color:'#7C3AED', bg:'#EDE9FE'  },
-  absent:  { label:'❌ Vắng',      color:T.red,    bg:T.redBg    },
+  absent:  { label:'❌ Nghỉ không lý do', color:T.red,    bg:T.redBg    },
   sick:    { label:'🏥 Nghỉ bệnh', color:T.purple, bg:T.purpleBg },
   leave:   { label:'🏖️ Nghỉ phép', color:T.blue,   bg:T.blueBg   },
   half:    { label:'🌓 Nửa ngày',  color:T.teal,   bg:T.tealBg   },
@@ -2038,7 +2038,7 @@ function Dashboard({ user, checklist, tasks, allUsers, attendance, leaveRequests
         {[
           { label:'Checklist xong', val:`${clDone}/${myCl.length}`,      icon:'✅', color:T.green },
           { label:'Checklist trễ',  val:myCl.filter(isOverdue).length,   icon:'🔴', color:T.red   },
-          { label:'Vắng hôm nay',   val:`${absentCount}/${staffCount}`,  icon:'🏠', color:T.amber },
+          { label:'Nghỉ KLý do hôm nay',   val:`${absentCount}/${staffCount}`,  icon:'🏠', color:T.amber },
           { label:'Chờ duyệt',      val:pendingLeave+pendingOT,          icon:'⏳', color:T.purple},
         ].map((k, i) => (
           <div key={i} style={{ background:T.card, border:`1px solid ${T.border}`,
@@ -3622,7 +3622,7 @@ function Attendance({ user, allUsers, leaveRequests, attendance, setAttendance, 
             </div>
             <div style={{ background:T.card, border:`1px solid ${T.border}`, borderRadius:'0 0 10px 10px', overflow:'hidden' }}>
               <table style={{ width:'100%', borderCollapse:'collapse' }}>
-                <TH cols={['Nhân viên','Ngày đi','Đi muộn','Vắng','Nghỉ bệnh','Nghỉ phép','Tỷ lệ']}/>
+                <TH cols={['Nhân viên','Ngày đi','Đi muộn','Nghỉ KLý do','Nghỉ bệnh','Nghỉ phép','Tỷ lệ']}/>
                 <tbody>
                   {group.users.map((u: any, i: number) => {
                     const ms = monthSummary(u.id)
