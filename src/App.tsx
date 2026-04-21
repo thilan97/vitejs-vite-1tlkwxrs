@@ -12,7 +12,7 @@ const db = createClient(SUPABASE_URL, SUPABASE_KEY)
 // APP_VERSION — dùng để invalidate cache localStorage mỗi khi deploy version mới
 // (ngăn bug quyền user bị "reset" do cache position cũ sau deploy)
 // ⚠️ MỖI LẦN DEPLOY FEATURE MỚI CÓ PERMISSION MỚI, BUMP SỐ NÀY:
-const APP_VERSION = '2026.04.21.v102'
+const APP_VERSION = '2026.04.21.v103'
 
 // ════════════════════════════════════════════════════════════════
 // AUDIT LOG — ghi nhận các hành động phá hoại data để trace lại
@@ -22366,17 +22366,9 @@ function WarehouseStatsModule({ user, allUsers, mobile }: any) {
   const [returnSlips, setReturnSlips] = useState<any[]>([])
   const [loading, setLoading] = useState(true)
   const [viewTab, setViewTab] = useState<'score'|'pack'|'pick'|'sale'>('score')
-  // NV bị loại khỏi tính trung bình team (mặc định: QL + PTC)
-  const [excludedFromAvg, setExcludedFromAvg] = useState<Set<string>>(() => {
-    const khoUsers = allUsers.filter((u: any) => u.dept_id === 'kho' && u.active !== false)
-    const defaultExcluded = new Set<string>()
-    khoUsers.forEach((u: any) => {
-      if (u.position?.is_position_manager || u.position?.is_payroll_fixed) {
-        defaultExcluded.add(u.id)
-      }
-    })
-    return defaultExcluded
-  })
+  // NV bị loại khỏi tính trung bình team — lưu/load từ settings DB
+  const [excludedFromAvg, setExcludedFromAvg] = useState<Set<string>>(new Set())
+  const [avgConfigLoaded, setAvgConfigLoaded] = useState(false)
 
   if (!perm.viewWarehouseStats) {
     return (
@@ -22431,6 +22423,37 @@ function WarehouseStatsModule({ user, allUsers, mobile }: any) {
   }
 
   useEffect(() => { fetchOrders() }, [fromDate, toDate])
+
+  // Load cấu hình NV loại khỏi avg từ DB (chỉ 1 lần khi mount)
+  useEffect(() => {
+    const fetchExcluded = async () => {
+      const { data } = await db.from('settings').select('warehouse_avg_excluded_ids').eq('id','main').single()
+      const savedIds: string[] = data?.warehouse_avg_excluded_ids || []
+      if (savedIds.length > 0) {
+        // Dùng cấu hình đã lưu
+        setExcludedFromAvg(new Set(savedIds))
+      } else {
+        // Lần đầu chưa có cấu hình → dùng mặc định (QL + PTC)
+        const khoUsers = allUsers.filter((u: any) => u.dept_id === 'kho' && u.active !== false)
+        const defaultEx = new Set<string>()
+        khoUsers.forEach((u: any) => {
+          if (u.position?.is_position_manager || u.position?.is_payroll_fixed) {
+            defaultEx.add(u.id)
+          }
+        })
+        setExcludedFromAvg(defaultEx)
+      }
+      setAvgConfigLoaded(true)
+    }
+    fetchExcluded()
+  }, [])
+
+  // Lưu cấu hình vào DB mỗi khi thay đổi (sau khi đã load xong)
+  const saveExcluded = async (newSet: Set<string>) => {
+    await db.from('settings').update({
+      warehouse_avg_excluded_ids: Array.from(newSet)
+    }).eq('id','main')
+  }
 
   // In-range checks
   const inRange = (iso: string|null) => {
@@ -22817,7 +22840,7 @@ function WarehouseStatsModule({ user, allUsers, mobile }: any) {
                     </span>
                   </div>
                   <div style={{ display:'flex', gap:6 }}>
-                    <button onClick={() => setExcludedFromAvg(new Set())}
+                    <button onClick={() => { const s = new Set<string>(); setExcludedFromAvg(s); saveExcluded(s) }}
                       style={{ padding:'3px 10px', fontSize:11, borderRadius:12, cursor:'pointer',
                         fontFamily:'inherit', fontWeight:600,
                         border:`1px solid ${T.green}`, background:'#F0FDF4', color:T.green }}>
@@ -22831,6 +22854,7 @@ function WarehouseStatsModule({ user, allUsers, mobile }: any) {
                         }
                       })
                       setExcludedFromAvg(defaultEx)
+                      saveExcluded(defaultEx)
                     }}
                       style={{ padding:'3px 10px', fontSize:11, borderRadius:12, cursor:'pointer',
                         fontFamily:'inherit', fontWeight:600,
@@ -22851,6 +22875,7 @@ function WarehouseStatsModule({ user, allUsers, mobile }: any) {
                             const next = new Set(prev)
                             if (next.has(p.user_id)) next.delete(p.user_id)
                             else next.add(p.user_id)
+                            saveExcluded(next)
                             return next
                           })
                         }}
