@@ -12,7 +12,7 @@ const db = createClient(SUPABASE_URL, SUPABASE_KEY)
 // APP_VERSION — dùng để invalidate cache localStorage mỗi khi deploy version mới
 // (ngăn bug quyền user bị "reset" do cache position cũ sau deploy)
 // ⚠️ MỖI LẦN DEPLOY FEATURE MỚI CÓ PERMISSION MỚI, BUMP SỐ NÀY:
-const APP_VERSION = '2026.04.21.v108'
+const APP_VERSION = '2026.04.21.v109'
 
 // ════════════════════════════════════════════════════════════════
 // AUDIT LOG — ghi nhận các hành động phá hoại data để trace lại
@@ -244,6 +244,7 @@ const getPerm = (user: any) => {
     manageExpiry:       isAdmin || (pos.perm_manage_inventory ?? false) || (pos.perm_manage_expiry ?? false),
     managePayment:      isAdmin || (pos.perm_manage_payment ?? false),
     editReturn:         isAdmin || (pos.perm_manage_inventory ?? false) || (pos.perm_edit_return ?? false),
+    auditReturns:       isAdmin || (pos.perm_audit_returns ?? false),
     deleteInvSession:   isAdmin || (pos.perm_manage_inventory ?? false) || (pos.perm_delete_inv_session ?? false),
     editPrice:          isAdmin || (pos.perm_edit_price ?? false),
     managePrograms:     isAdmin || (pos.perm_manage_programs ?? false),
@@ -336,6 +337,7 @@ const ALL_PERMS = [
   { key:'perm_manage_expiry',        label:'Quản lý date sản phẩm (QM Kho)',    group:'Kho'      },
   { key:'perm_delete_inv_session',   label:'Xóa phiên kiểm kê',                 group:'Kho'      },
   { key:'perm_edit_return',         label:'Sửa phiếu hàng hoàn (phần kho)',    group:'Kho'      },
+  { key:'perm_audit_returns',       label:'Audit phiếu hoàn (sửa ship + người vi phạm)', group:'Kho' },
   { key:'perm_manage_payment',       label:'Quản lý lệnh chuyển khoản',         group:'Sale'     },
   { key:'perm_edit_price',           label:'Sửa báo giá sản phẩm',              group:'Sale'     },
   { key:'perm_manage_programs',      label:'Quản lý chương trình nhãn hàng',    group:'Sale'     },
@@ -5851,12 +5853,177 @@ function ReturnKhoEditForm({ slip, products, onSave, onClose }: any) {
   )
 }
 
+// ── ReturnAuditForm — Audit phiếu hoàn (sửa ship + người vi phạm) ──────
+function ReturnAuditForm({ slip, allUsers, onSave, onClose }: any) {
+  const [shipFee, setShipFee] = useState(String(slip.total_ship || 0))
+  const [violatorId, setViolatorId] = useState(slip.violator_id || '')
+  const [violatorSearch, setViolatorSearch] = useState('')
+  const [showSearch, setShowSearch] = useState(false)
+
+  // Fuzzy search NV (kho + sale)
+  const norm = (s: string) => (s||'').toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g,'').replace(/đ/g,'d')
+  const violatorUsers = allUsers.filter((u: any) =>
+    (u.dept_id === 'kho' || u.dept_id === 'sale') && u.active !== false
+  )
+  const filteredUsers = violatorSearch.trim()
+    ? violatorUsers.filter((u: any) =>
+        norm(violatorSearch).split(/\s+/).every((t: string) =>
+          norm((u.name||'')+' '+(u.dept_name||u.dept_id||'')).includes(t)
+        )).slice(0, 8)
+    : violatorUsers.slice(0, 12)
+
+  const currentViolator = allUsers.find((u: any) => u.id === violatorId)
+  const saleUser = allUsers.find((u: any) => u.id === slip.sale_id)
+
+  const fmtMoney = (n: number) => Number(n||0).toLocaleString('vi-VN')
+
+  return (
+    <div style={{ padding:'8px 4px' }}>
+      {/* Thông tin phiếu (read-only) */}
+      <div style={{ background:'#FAF5FF', border:`1px solid ${T.purple}33`,
+        borderRadius:8, padding:'12px 14px', marginBottom:14 }}>
+        <div style={{ fontSize:11, color:T.purple, fontWeight:700, marginBottom:6,
+          textTransform:'uppercase', letterSpacing:.5 }}>
+          🔍 Audit phiếu hoàn
+        </div>
+        <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:8, fontSize:12 }}>
+          <div><span style={{ color:T.light }}>Ngày: </span><b>{slip.date}</b></div>
+          <div><span style={{ color:T.light }}>Mã hoàn: </span><b>{slip.return_order_code || '—'}</b></div>
+          <div><span style={{ color:T.light }}>Khách hàng: </span><b>{slip.customer_name || '—'}</b></div>
+          <div><span style={{ color:T.light }}>ĐH gốc: </span><b>{slip.original_order_code || '—'}</b></div>
+          <div style={{ gridColumn:'span 2' }}>
+            <span style={{ color:T.light }}>Sale: </span>
+            <b>{saleUser?.name || '—'}</b>
+            {slip.reason && <span style={{ color:T.med, marginLeft:10 }}>· Lý do: {slip.reason}</span>}
+          </div>
+          <div style={{ gridColumn:'span 2' }}>
+            <span style={{ color:T.light }}>SP: </span>
+            <span>{slip.lines.map((l: any) => `${l.product_name} (${l.quantity})`).join(' · ')}</span>
+          </div>
+        </div>
+        {slip.audited_by && (
+          <div style={{ marginTop:8, paddingTop:8, borderTop:`1px solid ${T.purple}22`,
+            fontSize:11, color:T.purple }}>
+            ✓ Đã audit lần trước bởi <b>{allUsers.find((u: any) => u.id === slip.audited_by)?.name || '?'}</b>
+            {slip.audited_at && <> lúc {new Date(slip.audited_at).toLocaleString('vi-VN')}</>}
+          </div>
+        )}
+      </div>
+
+      {/* Tiền ship hoàn */}
+      <div style={{ marginBottom:16 }}>
+        <label style={{ display:'block', fontSize:12, fontWeight:600, color:T.dark, marginBottom:6 }}>
+          💰 Tiền ship hoàn <span style={{ color:T.light, fontWeight:400 }}>(0 nếu không mất ship)</span>
+        </label>
+        <div style={{ display:'flex', gap:8, alignItems:'center' }}>
+          <input type="number" value={shipFee} onChange={e => setShipFee(e.target.value)}
+            placeholder="0"
+            style={{ flex:1, padding:'10px 14px', border:`1.5px solid ${T.border}`,
+              borderRadius:8, fontSize:14, fontFamily:'inherit', fontWeight:600,
+              color:T.dark, background:'#fff', outline:'none' }}
+            onFocus={e => e.target.style.borderColor = T.purple}
+            onBlur={e => e.target.style.borderColor = T.border}/>
+          <span style={{ fontSize:12, color:T.med }}>đ</span>
+        </div>
+        {Number(shipFee) > 0 && (
+          <div style={{ fontSize:11, color:T.amber, marginTop:4 }}>
+            💸 = {fmtMoney(Number(shipFee))} đ — sẽ trừ vào người vi phạm
+          </div>
+        )}
+        {Number(shipFee) === 0 && (
+          <div style={{ fontSize:11, color:T.green, marginTop:4 }}>
+            ✅ Không mất ship hoàn
+          </div>
+        )}
+      </div>
+
+      {/* Người vi phạm */}
+      <div style={{ marginBottom:16 }}>
+        <label style={{ display:'block', fontSize:12, fontWeight:600, color:T.dark, marginBottom:6 }}>
+          ⚠️ Người vi phạm <span style={{ color:T.light, fontWeight:400 }}>(để trống nếu không có)</span>
+        </label>
+
+        {/* Hiển thị người được chọn */}
+        {currentViolator && (
+          <div style={{ display:'flex', alignItems:'center', justifyContent:'space-between',
+            background:T.redBg, border:`1px solid ${T.red}33`, borderRadius:8,
+            padding:'8px 12px', marginBottom:8 }}>
+            <div>
+              <span style={{ fontSize:13, fontWeight:700, color:T.red }}>{currentViolator.name}</span>
+              <span style={{ fontSize:11, color:T.med, marginLeft:8 }}>
+                ({currentViolator.dept_name || currentViolator.dept_id})
+              </span>
+            </div>
+            <button onClick={() => { setViolatorId(''); setShowSearch(false) }}
+              style={{ padding:'2px 9px', borderRadius:14, border:`1px solid ${T.red}`,
+                background:'transparent', cursor:'pointer', fontSize:10, fontFamily:'inherit',
+                color:T.red, fontWeight:600 }}>
+              ✕ Bỏ chọn
+            </button>
+          </div>
+        )}
+
+        {/* Search box */}
+        {!currentViolator && (
+          <input type="text" value={violatorSearch}
+            onChange={e => { setViolatorSearch(e.target.value); setShowSearch(true) }}
+            onFocus={() => setShowSearch(true)}
+            placeholder="Tìm tên NV (vd: Hoài, Linh...)"
+            style={{ width:'100%', padding:'10px 14px', border:`1.5px solid ${T.border}`,
+              borderRadius:8, fontSize:13, fontFamily:'inherit', boxSizing:'border-box' as any,
+              background:'#fff', color:T.dark, outline:'none' }}/>
+        )}
+
+        {/* Dropdown */}
+        {!currentViolator && showSearch && filteredUsers.length > 0 && (
+          <div style={{ marginTop:6, border:`1px solid ${T.border}`, borderRadius:8,
+            background:'#fff', maxHeight:240, overflow:'auto' }}>
+            {filteredUsers.map((u: any) => (
+              <div key={u.id}
+                onClick={() => { setViolatorId(u.id); setViolatorSearch(''); setShowSearch(false) }}
+                style={{ padding:'8px 12px', cursor:'pointer', fontSize:12,
+                  borderBottom:`1px solid ${T.bg}`,
+                  display:'flex', justifyContent:'space-between', alignItems:'center' }}
+                onMouseEnter={e => (e.currentTarget as HTMLElement).style.background = T.bg}
+                onMouseLeave={e => (e.currentTarget as HTMLElement).style.background = '#fff'}>
+                <span style={{ fontWeight:500, color:T.dark }}>{u.name}</span>
+                <span style={{ fontSize:10, color:T.light }}>
+                  {u.dept_name || u.dept_id}
+                </span>
+              </div>
+            ))}
+          </div>
+        )}
+        {!currentViolator && showSearch && filteredUsers.length === 0 && (
+          <div style={{ marginTop:6, padding:'8px 12px', color:T.light, fontSize:11,
+            background:T.bg, borderRadius:8 }}>
+            Không tìm thấy NV
+          </div>
+        )}
+      </div>
+
+      {/* Footer */}
+      <div style={{ display:'flex', justifyContent:'flex-end', gap:10,
+        paddingTop:12, borderTop:`1px solid ${T.border}` }}>
+        <GoldBtn outline small onClick={onClose}>Hủy</GoldBtn>
+        <button onClick={() => onSave(Number(shipFee) || 0, violatorId)}
+          style={{ padding:'8px 18px', borderRadius:8, border:'none',
+            background:T.purple, color:'#fff', cursor:'pointer',
+            fontFamily:'inherit', fontSize:13, fontWeight:700 }}>
+          ✓ Chốt audit
+        </button>
+      </div>
+    </div>
+  )
+}
+
 // ── RETURN ITEMS (Báo cáo hàng hoàn) ─────────────────
 function ReturnItems({ user, allUsers, products, mobile }: any) {
   const [items,       setItems]     = React.useState<any[]>([])
   const [showAdd,     setShowAdd]   = React.useState(false)
   const [showEdit,    setShowEdit]  = React.useState<any>(null)
   const [showEditKho, setShowEditKho] = React.useState<any>(null)
+  const [showAudit,    setShowAudit]    = React.useState<any>(null)
   const [expandedSlip, setExpandedSlip] = React.useState<string|null>(null)
   const [tab,         setTab]       = React.useState<'list'|'stats'>('list')
   const [monthFilter, setMonthFilter] = React.useState(() => {
@@ -5871,6 +6038,8 @@ function ReturnItems({ user, allUsers, products, mobile }: any) {
   const canKiot     = perm.viewAllDashboard || perm.enterKiot
   // canEditKho: Admin, QM Kho (manageInventory), hoặc user được cấp perm_edit_return
   const canEditKhoAny = perm.viewAllDashboard || perm.editReturn
+  // canAudit: Admin hoặc user được cấp perm_audit_returns → sửa ship_fee + violator_id
+  const canAudit      = perm.viewAllDashboard || (perm as any).auditReturns
 
   const norm = (s: string) => (s||'')    .toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g,'').replace(/đ/g,'d')
 
@@ -5909,6 +6078,8 @@ function ReturnItems({ user, allUsers, products, mobile }: any) {
     entered_kiot:    rows.every((r: any) => r.entered_kiot),
     entered_kiot_by: rows[0].entered_kiot_by,
     entered_kiot_at: rows[0].entered_kiot_at,
+    audited_by:      rows[0].audited_by,
+    audited_at:      rows[0].audited_at,
     total_qty:   rows.reduce((s: number, r: any) => s+(r.quantity||0), 0),
     total_ship:  Number(rows[0].ship_fee)||0,
     lines: rows,
@@ -6047,6 +6218,22 @@ function ReturnItems({ user, allUsers, products, mobile }: any) {
       }).eq('id', id)
     }
     setShowEditKho(null)
+  }
+
+  // ── Audit: chỉ sửa ship_fee + violator_id, log audited_by + audited_at ───────
+  const updateSlipAudit = async (slip_id: string, ship_fee: number, violator_id: string) => {
+    const slipLineIds = items.filter((i: any) => (i.slip_id||i.id)===slip_id).map((i: any) => i.id)
+    const upd = {
+      ship_fee,
+      violator_id: violator_id || '',
+      audited_by: user.id,
+      audited_at: new Date().toISOString(),
+    }
+    setItems(prev => prev.map(i => slipLineIds.includes(i.id) ? {...i, ...upd} : i))
+    for (const id of slipLineIds) {
+      await db.from('return_items').update(upd).eq('id', id)
+    }
+    setShowAudit(null)
   }
 
   const delSlip = async (slip_id: string) => {
@@ -6299,6 +6486,14 @@ function ReturnItems({ user, allUsers, products, mobile }: any) {
                             style={{ padding:'3px 8px',borderRadius:20,border:`1px solid ${T.blue}`,
                               background:'#EFF6FF',cursor:'pointer',fontSize:10,fontFamily:'inherit',color:T.blue }}>Kho sửa</button>
                         )}
+                        {canAudit && (
+                          <button onClick={() => setShowAudit(slip)}
+                            style={{ padding:'3px 8px',borderRadius:20,border:`1.5px solid ${T.purple}`,
+                              background: slip.audited_by ? '#F5F3FF' : '#FAF5FF',
+                              cursor:'pointer',fontSize:10,fontFamily:'inherit',color:T.purple,fontWeight:700 }}>
+                            {slip.audited_by ? '✓' : '🔍'}
+                          </button>
+                        )}
                         {canEdit && (
                           <button onClick={() => delSlip(slip.slip_id)}
                             style={{ padding:'3px 8px',borderRadius:20,border:`1px solid ${T.redBg}`,
@@ -6416,6 +6611,16 @@ function ReturnItems({ user, allUsers, products, mobile }: any) {
                           style={{ padding:'3px 9px',borderRadius:20,border:`1px solid ${T.blue}`,
                             background:T.blueBg||'#EFF6FF',cursor:'pointer',fontSize:10,fontFamily:'inherit',
                             color:T.blue,fontWeight:600,whiteSpace:'nowrap' }}>Kho sửa</button>
+                      )}
+                      {canAudit && (
+                        <button onClick={() => setShowAudit(slip)}
+                          title={slip.audited_by ? `Đã audit lúc ${slip.audited_at ? new Date(slip.audited_at).toLocaleString('vi-VN') : ''}` : 'Audit phiếu này'}
+                          style={{ padding:'3px 9px',borderRadius:20,border:`1.5px solid ${T.purple}`,
+                            background: slip.audited_by ? '#F5F3FF' : '#FAF5FF',
+                            cursor:'pointer',fontSize:10,fontFamily:'inherit',
+                            color:T.purple,fontWeight:700,whiteSpace:'nowrap' }}>
+                          {slip.audited_by ? '✓ Audit' : '🔍 Audit'}
+                        </button>
                       )}
                       {canEdit && (
                         <button onClick={() => delSlip(slip.slip_id)}
@@ -6587,6 +6792,15 @@ function ReturnItems({ user, allUsers, products, mobile }: any) {
           slip={showEditKho} products={products}
           onSave={(khoData: any, lines: any[]) => updateSlipKho(showEditKho.slip_id, khoData, lines)}
           onClose={() => setShowEditKho(null)}/>}
+      </Modal>
+
+      <Modal open={!!showAudit} onClose={() => setShowAudit(null)}
+        title="🔍 Audit phiếu hoàn">
+        {showAudit && <ReturnAuditForm
+          slip={showAudit} allUsers={allUsers}
+          onSave={(shipFee: number, violatorId: string) =>
+            updateSlipAudit(showAudit.slip_id, shipFee, violatorId)}
+          onClose={() => setShowAudit(null)}/>}
       </Modal>
     </div>
   )
