@@ -12,7 +12,7 @@ const db = createClient(SUPABASE_URL, SUPABASE_KEY)
 // APP_VERSION — dùng để invalidate cache localStorage mỗi khi deploy version mới
 // (ngăn bug quyền user bị "reset" do cache position cũ sau deploy)
 // ⚠️ MỖI LẦN DEPLOY FEATURE MỚI CÓ PERMISSION MỚI, BUMP SỐ NÀY:
-const APP_VERSION = '2026.04.21.v105'
+const APP_VERSION = '2026.04.21.v106'
 
 // ════════════════════════════════════════════════════════════════
 // AUDIT LOG — ghi nhận các hành động phá hoại data để trace lại
@@ -22422,7 +22422,15 @@ function WarehouseStatsModule({ user, allUsers, mobile }: any) {
     setLoading(false)
   }
 
-  useEffect(() => { fetchOrders() }, [fromDate, toDate])
+  // Debounce fetch để khi user gõ ngày tay ko bị spam query
+  useEffect(() => {
+    // Validate ngày hợp lệ (YYYY-MM-DD, year 4 chữ số)
+    const validDate = (s: string) => /^\d{4}-\d{2}-\d{2}$/.test(s) && !isNaN(new Date(s).getTime())
+    if (!validDate(fromDate) || !validDate(toDate)) return
+    if (new Date(fromDate) > new Date(toDate)) return  // ngược logic
+    const timer = setTimeout(() => { fetchOrders() }, 400)
+    return () => clearTimeout(timer)
+  }, [fromDate, toDate])
 
   // Load cấu hình NV loại khỏi avg từ DB (chỉ 1 lần khi mount)
   useEffect(() => {
