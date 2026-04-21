@@ -12,7 +12,7 @@ const db = createClient(SUPABASE_URL, SUPABASE_KEY)
 // APP_VERSION — dùng để invalidate cache localStorage mỗi khi deploy version mới
 // (ngăn bug quyền user bị "reset" do cache position cũ sau deploy)
 // ⚠️ MỖI LẦN DEPLOY FEATURE MỚI CÓ PERMISSION MỚI, BUMP SỐ NÀY:
-const APP_VERSION = '2026.04.21.v103'
+const APP_VERSION = '2026.04.21.v104'
 
 // ════════════════════════════════════════════════════════════════
 // AUDIT LOG — ghi nhận các hành động phá hoại data để trace lại
@@ -22771,7 +22771,7 @@ function WarehouseStatsModule({ user, allUsers, mobile }: any) {
       {/* Tab switcher */}
       <div style={{ display:'flex', gap:6, marginBottom:12, flexWrap:'wrap' }}>
         {[
-          { id:'score', label:`🏆 Xếp hạng (${performanceScores.length})` },
+          { id:'score', label:`🏆 Xếp hạng (${performanceScores.filter(p => !excludedFromAvg.has(p.user_id)).length})` },
           { id:'pack', label:`📮 NV Đóng (${packerStats.length})` },
           { id:'pick', label:`📥 NV Nhặt (${pickerStats.length})` },
           { id:'sale', label:`👤 Theo Sale (${saleStats.length})` },
@@ -22894,7 +22894,7 @@ function WarehouseStatsModule({ user, allUsers, mobile }: any) {
                 </div>
                 {excludedFromAvg.size > 0 && (
                   <div style={{ marginTop:8, fontSize:FS.xs, color:T.amber }}>
-                    ⚠️ {excludedFromAvg.size} NV bị loại khỏi tính trung bình team (gạch ngang). Leaderboard vẫn hiển thị đầy đủ.
+                    ⚠️ {excludedFromAvg.size} NV bị loại khỏi bảng xếp hạng và tính trung bình team.
                   </div>
                 )}
               </Card>
@@ -23032,7 +23032,7 @@ function WarehouseStatsModule({ user, allUsers, mobile }: any) {
               </div>
 
               <div style={{ display:'flex', flexDirection:'column' }}>
-                {performanceScores.map((p, idx) => {
+                {performanceScores.filter(p => !excludedFromAvg.has(p.user_id)).map((p, idx, arr) => {
                   const isMe = p.user_id === user.id
                   // Admin thấy đầy đủ; NV Kho chỉ thấy mình
                   const showDetails = isAdmin || isMe
@@ -23042,7 +23042,7 @@ function WarehouseStatsModule({ user, allUsers, mobile }: any) {
                   return (
                     <div key={p.user_id} style={{
                       padding:`${SP[3]}px ${SP[4]}px`,
-                      borderBottom: idx < performanceScores.length - 1 ? `1px solid ${T.border}` : 'none',
+                      borderBottom: idx < arr.length - 1 ? `1px solid ${T.border}` : 'none',
                       background: rowBg,
                     }}>
                       <div style={{ display:'flex', alignItems:'center', gap:SP[3] }}>
