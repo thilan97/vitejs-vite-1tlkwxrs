@@ -12,7 +12,7 @@ const db = createClient(SUPABASE_URL, SUPABASE_KEY)
 // APP_VERSION — dùng để invalidate cache localStorage mỗi khi deploy version mới
 // (ngăn bug quyền user bị "reset" do cache position cũ sau deploy)
 // ⚠️ MỖI LẦN DEPLOY FEATURE MỚI CÓ PERMISSION MỚI, BUMP SỐ NÀY:
-const APP_VERSION = '2026.04.21.v109'
+const APP_VERSION = '2026.04.21.v110'
 
 // ════════════════════════════════════════════════════════════════
 // AUDIT LOG — ghi nhận các hành động phá hoại data để trace lại
@@ -245,6 +245,7 @@ const getPerm = (user: any) => {
     managePayment:      isAdmin || (pos.perm_manage_payment ?? false),
     editReturn:         isAdmin || (pos.perm_manage_inventory ?? false) || (pos.perm_edit_return ?? false),
     auditReturns:       isAdmin || (pos.perm_audit_returns ?? false),
+    allowEditPackedOrder: isAdmin || (pos.perm_manage_inventory ?? false) || (pos.perm_allow_edit_packed_order ?? false),
     deleteInvSession:   isAdmin || (pos.perm_manage_inventory ?? false) || (pos.perm_delete_inv_session ?? false),
     editPrice:          isAdmin || (pos.perm_edit_price ?? false),
     managePrograms:     isAdmin || (pos.perm_manage_programs ?? false),
@@ -338,6 +339,7 @@ const ALL_PERMS = [
   { key:'perm_delete_inv_session',   label:'Xóa phiên kiểm kê',                 group:'Kho'      },
   { key:'perm_edit_return',         label:'Sửa phiếu hàng hoàn (phần kho)',    group:'Kho'      },
   { key:'perm_audit_returns',       label:'Audit phiếu hoàn (sửa ship + người vi phạm)', group:'Kho' },
+  { key:'perm_allow_edit_packed_order', label:'Cho phép sửa đơn đã đóng',          group:'Kho'      },
   { key:'perm_manage_payment',       label:'Quản lý lệnh chuyển khoản',         group:'Sale'     },
   { key:'perm_edit_price',           label:'Sửa báo giá sản phẩm',              group:'Sale'     },
   { key:'perm_manage_programs',      label:'Quản lý chương trình nhãn hàng',    group:'Sale'     },
@@ -17315,6 +17317,106 @@ function ProductImageModalV2({ code, onClose }: any) {
   )
 }
 
+// ──────────────────────────────────────────────────────────────────────
+// AllowEditOrderModal — QM chọn lý do cho phép sửa đơn đã đóng
+// ──────────────────────────────────────────────────────────────────────
+function AllowEditOrderModal({ ord, onClose, onConfirm }: any) {
+  const [reason, setReason] = useState<'fix_photos'|'fix_packer'|'redo_packing'|''>('')
+
+  const REASONS = [
+    {
+      code: 'fix_photos' as const,
+      icon: '🖼️',
+      title: 'Sửa ảnh vì đóng sai hàng',
+      desc: 'NV được phép xoá/chụp lại ảnh đóng hàng. Đơn vẫn ở trạng thái "Đã đóng".',
+      color: '#0EA5E9',
+      bg: '#F0F9FF',
+    },
+    {
+      code: 'fix_packer' as const,
+      icon: '👤',
+      title: 'Sửa người đóng đơn',
+      desc: 'NV được phép cập nhật danh sách người đóng. Đơn vẫn ở trạng thái "Đã đóng".',
+      color: T.gold,
+      bg: T.goldBg,
+    },
+    {
+      code: 'redo_packing' as const,
+      icon: '🔄',
+      title: 'Đóng lại từ đầu',
+      desc: 'Reset đơn về trạng thái "Đang đóng", xoá ảnh đóng + danh sách người đóng. NV phải đóng lại từ đầu.',
+      color: T.red,
+      bg: T.redBg,
+    },
+  ]
+
+  return (
+    <div style={{ padding:'8px 4px' }}>
+      <div style={{ background:'#FAFAF8', border:`1px solid ${T.border}`,
+        borderRadius:8, padding:'10px 14px', marginBottom:14 }}>
+        <div style={{ fontSize:12, color:T.med, marginBottom:4 }}>
+          🔓 Cho phép sửa đơn: <b style={{ color:T.dark }}>{ord.order_code}</b>
+        </div>
+        <div style={{ fontSize:11, color:T.light }}>
+          KH: {ord.customer_name || '—'} · {(ord.items || []).length} SP
+        </div>
+      </div>
+
+      <div style={{ fontSize:12, fontWeight:600, color:T.dark, marginBottom:8 }}>
+        Chọn lý do cho phép sửa <span style={{ color:T.red }}>*</span>
+      </div>
+
+      <div style={{ display:'flex', flexDirection:'column', gap:8, marginBottom:16 }}>
+        {REASONS.map(r => (
+          <div key={r.code}
+            onClick={() => setReason(r.code)}
+            style={{
+              padding:'12px 14px', borderRadius:10, cursor:'pointer',
+              border: reason === r.code ? `2px solid ${r.color}` : `1.5px solid ${T.border}`,
+              background: reason === r.code ? r.bg : '#fff',
+              transition:'all .15s',
+              display:'flex', gap:12, alignItems:'flex-start'
+            }}>
+            <div style={{ fontSize:24, lineHeight:1 }}>{r.icon}</div>
+            <div style={{ flex:1 }}>
+              <div style={{ fontSize:13, fontWeight:700,
+                color: reason === r.code ? r.color : T.dark, marginBottom:3 }}>
+                {r.title}
+              </div>
+              <div style={{ fontSize:11, color:T.med, lineHeight:1.4 }}>
+                {r.desc}
+              </div>
+            </div>
+            {reason === r.code && (
+              <div style={{ fontSize:18, color:r.color }}>✓</div>
+            )}
+          </div>
+        ))}
+      </div>
+
+      {reason === 'redo_packing' && (
+        <div style={{ background:T.redBg, border:`1px solid ${T.red}33`,
+          borderRadius:8, padding:'10px 12px', marginBottom:14, fontSize:11, color:T.red }}>
+          ⚠️ <b>Cảnh báo:</b> Tất cả ảnh đóng hàng + danh sách người đóng sẽ bị xoá. Hành động này không thể hoàn tác.
+        </div>
+      )}
+
+      <div style={{ display:'flex', justifyContent:'flex-end', gap:10,
+        paddingTop:12, borderTop:`1px solid ${T.border}` }}>
+        <GoldBtn outline small onClick={onClose}>Hủy</GoldBtn>
+        <button onClick={() => reason && onConfirm(reason)}
+          disabled={!reason}
+          style={{ padding:'8px 18px', borderRadius:8, border:'none',
+            background: reason ? T.gold : '#ccc',
+            color:'#fff', cursor: reason ? 'pointer' : 'default',
+            fontFamily:'inherit', fontSize:13, fontWeight:700 }}>
+          🔓 Cho phép sửa
+        </button>
+      </div>
+    </div>
+  )
+}
+
 // ══════════════════════════════════════════════════════════════════════
 // ══ PACKING MODULE v2 — Đóng Đơn (2 loại ảnh: nhặt + thùng) ═══════════
 // ══════════════════════════════════════════════════════════════════════
@@ -17332,6 +17434,7 @@ function PackingModule({ user, allUsers, mobile, products }: any) {
   const [searchQ, setSearchQ] = useState('')
   const [joinConfirm, setJoinConfirm] = useState<any>(null)
   const [linkSuppOrder, setLinkSuppOrder] = useState<any>(null)  // đơn con đang chọn để link: open modal pick parent
+  const [showAllowEdit, setShowAllowEdit] = useState<any>(null)  // đơn đang được QM cấp quyền sửa
 
   const fetchData = async () => {
     setLoading(true)
@@ -17670,6 +17773,40 @@ function PackingModule({ user, allUsers, mobile, products }: any) {
     setOrders(prev => prev.map((o: any) => o.order_code === orderCode ? {...o, ...upd} : o))
   }
 
+  // QM cho phép sửa đơn đã đóng (chọn 1 trong 3 lý do)
+  const allowEditOrder = async (orderCode: string, reason: 'fix_photos'|'fix_packer'|'redo_packing') => {
+    const upd: any = {
+      edit_allowed_by: user.id,
+      edit_allowed_at: new Date().toISOString(),
+      edit_reason: reason,
+      edit_completed_at: null,
+      is_edit_locked: false,
+      updated_at: new Date().toISOString(),
+    }
+    // Nếu đóng lại từ đầu → reset status về 'picked' + xoá ảnh đóng + xoá packers
+    if (reason === 'redo_packing') {
+      upd.status = 'packing'
+      upd.photos_packed = []
+      upd.packed_by = null
+      upd.packed_by_ids = []
+      upd.packed_at = null
+      upd.active_packers = []
+    }
+    await db.from('packing_workflow').update(upd).eq('order_code', orderCode)
+    setOrders(prev => prev.map((o: any) => o.order_code === orderCode ? {...o, ...upd} : o))
+  }
+
+  // NV bấm "Hoàn tất sửa" → khoá lại đơn
+  const completeEditOrder = async (orderCode: string) => {
+    const upd: any = {
+      edit_completed_at: new Date().toISOString(),
+      is_edit_locked: true,
+      updated_at: new Date().toISOString(),
+    }
+    await db.from('packing_workflow').update(upd).eq('order_code', orderCode)
+    setOrders(prev => prev.map((o: any) => o.order_code === orderCode ? {...o, ...upd} : o))
+  }
+
   if (loading) return <div style={{ padding:p, textAlign:'center', color:T.light, paddingTop:40 }}>⏳ Đang tải...</div>
 
   const tryOpenOrder = (orderCode: string) => {
@@ -17905,6 +18042,16 @@ function PackingModule({ user, allUsers, mobile, products }: any) {
                         🚨 ĐƠN ĐÃ MỞ LẠI — SALE SỬA SAU KHI ĐÓNG
                       </div>
                     )}
+                    {/* Badge "ĐƯỢC CẤP QUYỀN SỬA" — NV đóng đơn dễ thấy */}
+                    {o.is_edit_locked === false && (o.packed_by_ids||[]).includes(user.id) && (
+                      <div style={{ marginTop:5, padding:'3px 8px', borderRadius:6,
+                        background:T.gold, color:'#fff', fontSize:9, fontWeight:800, letterSpacing:.3,
+                        overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap',
+                        maxWidth:'100%', boxSizing:'border-box' }}
+                        title="QM đã cấp quyền cho bạn sửa đơn này">
+                        🔓 BẠN ĐƯỢC CẤP QUYỀN SỬA ĐƠN NÀY
+                      </div>
+                    )}
                     {modCount > 0 && latestChange && (
                       <div style={{ marginTop:5, padding:'3px 8px', borderRadius:6,
                         background:T.amberBg, color:T.amber, fontSize:9, fontWeight:700,
@@ -17962,12 +18109,35 @@ function PackingModule({ user, allUsers, mobile, products }: any) {
             onAiRetry={(code: string) => runAiCheck(code)}
             onOpenLinkSupp={() => setLinkSuppOrder(selected)}
             onUnlinkSupp={(childCode: string) => unlinkSupplementary(childCode)}
+            onAllowEdit={() => setShowAllowEdit(selected)}
+            onCompleteEdit={() => completeEditOrder(selected.order_code)}
             canManageSupp={perm.viewAllDashboard || perm.approveLeave || perm.manageInventory || perm.assignPacking}
             canReviewAi={perm.viewAllDashboard || perm.approveLeave || perm.handlePriority}
-            readOnly={selected.status === 'done' || !canPack}
+            canAllowEdit={(perm as any).allowEditPackedOrder}
+            readOnly={
+              // Đơn done bị khoá → readOnly
+              // Đơn done nhưng QM đã cấp quyền (is_edit_locked=false) + user là người đóng → KHÔNG readOnly
+              selected.status === 'done'
+                ? (selected.is_edit_locked !== false || !(selected.packed_by_ids||[]).includes(user.id))
+                : !canPack
+            }
           />
         )}
       </div>
+      )}
+
+      {/* Modal cho phép sửa đơn đã đóng */}
+      {showAllowEdit && (
+        <Modal open={true} onClose={() => setShowAllowEdit(null)}
+          title="🔓 Cho phép sửa đơn">
+          <AllowEditOrderModal
+            ord={showAllowEdit}
+            onClose={() => setShowAllowEdit(null)}
+            onConfirm={async (reason: 'fix_photos'|'fix_packer'|'redo_packing') => {
+              await allowEditOrder(showAllowEdit.order_code, reason)
+              setShowAllowEdit(null)
+            }}/>
+        </Modal>
       )}
 
       {/* Modal xác nhận khi có NV khác đang đóng */}
@@ -18367,7 +18537,7 @@ function ChangeLogBanner({ ord }: any) {
   )
 }
 
-function PackingDetailPanel({ ord, mobile, user, allUsers, products, allOrders, onClose, onFinish, onUpdatePhotos, onUpdateNoBox, onJoinGroup, onLeaveGroup, onAiReview, onAiRetry, onOpenLinkSupp, onUnlinkSupp, canManageSupp, canReviewAi, readOnly }: any) {
+function PackingDetailPanel({ ord, mobile, user, allUsers, products, allOrders, onClose, onFinish, onUpdatePhotos, onUpdateNoBox, onJoinGroup, onLeaveGroup, onAiReview, onAiRetry, onOpenLinkSupp, onUnlinkSupp, onAllowEdit, onCompleteEdit, canManageSupp, canReviewAi, canAllowEdit, readOnly }: any) {
   const getName = (id: string) => allUsers.find((u: any) => u.id === id)?.name || '?'
   const totalItems = (ord.items || []).length
   const { min, max } = photoCountRangeV2(totalItems)
@@ -18484,6 +18654,88 @@ function PackingDetailPanel({ ord, mobile, user, allUsers, products, allOrders, 
           📝 {ord.description_kv}
         </div>
       )}
+
+      {/* ══ EDIT-ALLOW BANNER — đơn được QM cấp quyền sửa ══ */}
+      {ord.status === 'done' && ord.is_edit_locked === false && (() => {
+        const allowedBy = allUsers.find((u: any) => u.id === ord.edit_allowed_by)
+        const reasonMap: any = {
+          fix_photos:   { icon:'🖼️', text:'Sửa ảnh vì đóng sai hàng' },
+          fix_packer:   { icon:'👤', text:'Sửa người đóng đơn' },
+          redo_packing: { icon:'🔄', text:'Đóng lại từ đầu' },
+        }
+        const r = reasonMap[ord.edit_reason] || { icon:'🔓', text:'Cho phép sửa' }
+        const isMyOrder = (ord.packed_by_ids||[]).includes(user.id)
+        return (
+          <div style={{ padding:'12px 14px', marginBottom:12,
+            background:'#FFFBEB', border:`2px solid ${T.gold}`, borderRadius:10 }}>
+            <div style={{ display:'flex', alignItems:'flex-start', gap:10 }}>
+              <div style={{ fontSize:22 }}>🔓</div>
+              <div style={{ flex:1 }}>
+                <div style={{ fontSize:13, fontWeight:800, color:T.goldText, marginBottom:3 }}>
+                  ĐƠN ĐÃ ĐƯỢC CẤP QUYỀN SỬA
+                </div>
+                <div style={{ fontSize:11, color:T.dark, marginBottom:6 }}>
+                  <b>{r.icon} Lý do:</b> {r.text}
+                </div>
+                <div style={{ fontSize:11, color:T.med }}>
+                  Cấp bởi <b style={{ color:T.dark }}>{allowedBy?.name || '?'}</b>
+                  {ord.edit_allowed_at && <> lúc {new Date(ord.edit_allowed_at).toLocaleString('vi-VN')}</>}
+                </div>
+                {isMyOrder && (
+                  <div style={{ marginTop:8, padding:'6px 10px', background:T.goldBg,
+                    borderRadius:6, fontSize:11, color:T.goldText, fontWeight:600 }}>
+                    💡 Bạn là người đóng đơn này. Hãy sửa và bấm "Hoàn tất sửa" khi xong.
+                  </div>
+                )}
+              </div>
+              {isMyOrder && onCompleteEdit && (
+                <button onClick={() => {
+                  if (confirm('Bạn đã sửa xong đơn này? Sau khi bấm Hoàn tất sẽ khoá lại không sửa được nữa.')) {
+                    onCompleteEdit()
+                  }
+                }}
+                  style={{ padding:'8px 14px', borderRadius:8, border:'none',
+                    background:T.green, color:'#fff', cursor:'pointer',
+                    fontFamily:'inherit', fontSize:12, fontWeight:700,
+                    whiteSpace:'nowrap', flexShrink:0 }}>
+                  ✓ Hoàn tất sửa
+                </button>
+              )}
+            </div>
+          </div>
+        )
+      })()}
+
+      {/* ══ NÚT "CHO PHÉP SỬA ĐƠN" — chỉ QM, đơn done đang khoá ══ */}
+      {ord.status === 'done' && ord.is_edit_locked !== false && canAllowEdit && onAllowEdit && (
+        <div style={{ marginBottom:12, display:'flex', justifyContent:'flex-end' }}>
+          <button onClick={onAllowEdit}
+            title="Cho phép NV đóng đơn được sửa lại đơn này"
+            style={{ padding:'7px 14px', borderRadius:8,
+              border:`1.5px dashed ${T.gold}`, background:'#FFFBEB', color:T.goldText,
+              cursor:'pointer', fontFamily:'inherit', fontSize:12, fontWeight:700 }}>
+            🔓 Cho phép sửa đơn
+          </button>
+        </div>
+      )}
+
+      {/* ══ HISTORY: lần sửa trước đó ══ */}
+      {ord.status === 'done' && ord.edit_completed_at && ord.is_edit_locked === true && (() => {
+        const allowedBy = allUsers.find((u: any) => u.id === ord.edit_allowed_by)
+        const reasonMap: any = {
+          fix_photos:   'Sửa ảnh vì đóng sai hàng',
+          fix_packer:   'Sửa người đóng đơn',
+          redo_packing: 'Đóng lại từ đầu',
+        }
+        return (
+          <div style={{ padding:'8px 12px', marginBottom:12, background:'#F5F3FF',
+            border:`1px solid ${T.purple}33`, borderRadius:6, fontSize:11, color:T.purple }}>
+            ✓ Đơn này đã từng được mở lại để sửa: <b>{reasonMap[ord.edit_reason] || ord.edit_reason}</b>
+            {allowedBy && <> (cấp bởi {allowedBy.name}</>}
+            {ord.edit_completed_at && <>, hoàn tất {new Date(ord.edit_completed_at).toLocaleString('vi-VN')})</>}
+          </div>
+        )
+      })()}
 
       {/* ══ SUPPLEMENTARY ORDERS BANNER — hiện ở đơn gốc + đơn con ══ */}
       {ord.linked_to_order_code && (
