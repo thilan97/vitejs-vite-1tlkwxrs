@@ -12,7 +12,7 @@ const db = createClient(SUPABASE_URL, SUPABASE_KEY)
 // APP_VERSION — dùng để invalidate cache localStorage mỗi khi deploy version mới
 // (ngăn bug quyền user bị "reset" do cache position cũ sau deploy)
 // ⚠️ MỖI LẦN DEPLOY FEATURE MỚI CÓ PERMISSION MỚI, BUMP SỐ NÀY:
-const APP_VERSION = '2026.04.21.v104'
+const APP_VERSION = '2026.04.21.v105'
 
 // ════════════════════════════════════════════════════════════════
 // AUDIT LOG — ghi nhận các hành động phá hoại data để trace lại
@@ -22598,26 +22598,45 @@ function WarehouseStatsModule({ user, allUsers, mobile }: any) {
     // Lấy NV Kho
     const khoUsers = allUsers.filter((u: any) => u.dept_id === 'kho' && u.active !== false)
 
-    // Compute giờ làm per user (dựa SCHEDULE + status, vì attendance không có check_in/out)
+    // Compute giờ làm per user
+    // Logic: Chấm công mặc định là "đi làm bình thường"
+    //  - T2-T7: mặc định 8h (full day), trừ giờ nếu có record bất thường (late/half/absent/sick/leave)
+    //  - CN: mặc định nghỉ (0h), chỉ tính giờ nếu QM chấm đi làm thủ công
     const hoursByUser = new Map<string, number>()
+
+    // Build map: user_id → { date: attendance_record } để lookup nhanh
+    const attByUserDate = new Map<string, Map<string, any>>()
     attendance.forEach((a: any) => {
-      if (!a.user_id) return
-      const u = khoUsers.find((u: any) => u.id === a.user_id)
-      if (!u) return
-      const h = computeAttHours(a, u.dept_id)
-      if (h > 0) hoursByUser.set(a.user_id, (hoursByUser.get(a.user_id) || 0) + h)
+      if (!a.user_id || !a.date) return
+      if (!attByUserDate.has(a.user_id)) attByUserDate.set(a.user_id, new Map())
+      attByUserDate.get(a.user_id)!.set(a.date, a)
     })
-    // Fallback: NV có ops nhưng chưa chấm công → giả định 'present' cho các ngày đã có ops
-    // (đơn giản: ước tính từ số ngày có ops)
+
+    // Enumerate tất cả ngày trong kỳ
+    const from = new Date(fromDate + 'T00:00:00')
+    const to   = new Date(toDate   + 'T00:00:00')
+    const daysInRange: { date: string; isSunday: boolean }[] = []
+    for (let d = new Date(from); d <= to; d.setDate(d.getDate() + 1)) {
+      const dateStr = d.toISOString().split('T')[0]
+      daysInRange.push({ date: dateStr, isSunday: d.getDay() === 0 })
+    }
+
     khoUsers.forEach((u: any) => {
-      if (hoursByUser.has(u.id)) return
-      const packer = packerStats.find((s: any) => s.user_id === u.id)
-      const picker = pickerStats.find((s: any) => s.user_id === u.id)
-      if (!packer && !picker) return
-      // Ước lượng số ngày làm = tuần thứ hiện có đơn / fallback 1 ngày
-      const defaultH = computeAttHours(null, u.dept_id)
-      hoursByUser.set(u.id, defaultH)  // tối thiểu 1 ngày làm
+      const userAtts = attByUserDate.get(u.id) || new Map()
+      let totalHours = 0
+      daysInRange.forEach(({ date, isSunday }) => {
+        const rec = userAtts.get(date)
+        if (isSunday) {
+          // CN: mặc định nghỉ (0h), chỉ tính nếu có record chấm đi làm
+          if (rec) totalHours += computeAttHours(rec, u.dept_id)
+        } else {
+          // T2-T7: mặc định đi làm (8h), trừ giờ nếu có record bất thường
+          totalHours += computeAttHours(rec || null, u.dept_id)
+        }
+      })
+      if (totalHours > 0) hoursByUser.set(u.id, totalHours)
     })
+
 
     // Compute số lỗi per user (wrong + return)
     const errorsByUser = new Map<string, number>()
@@ -22717,7 +22736,7 @@ function WarehouseStatsModule({ user, allUsers, mobile }: any) {
         grade, gradeLabel,
       }
     }).sort((a, b) => b.totalScore - a.totalScore)
-  }, [packerStats, pickerStats, attendance, wrongOrders, returnSlips, allUsers])
+  }, [packerStats, pickerStats, attendance, wrongOrders, returnSlips, allUsers, fromDate, toDate])
 
   // Team averages (để NV Kho thấy so sánh) — chỉ tính NV không bị loại khỏi avg
   const teamAverages = useMemo(() => {
