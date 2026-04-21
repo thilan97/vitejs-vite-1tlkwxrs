@@ -12,7 +12,7 @@ const db = createClient(SUPABASE_URL, SUPABASE_KEY)
 // APP_VERSION — dùng để invalidate cache localStorage mỗi khi deploy version mới
 // (ngăn bug quyền user bị "reset" do cache position cũ sau deploy)
 // ⚠️ MỖI LẦN DEPLOY FEATURE MỚI CÓ PERMISSION MỚI, BUMP SỐ NÀY:
-const APP_VERSION = '2026.04.21.v112'
+const APP_VERSION = '2026.04.21.v113'
 
 // ════════════════════════════════════════════════════════════════
 // AUDIT LOG — ghi nhận các hành động phá hoại data để trace lại
@@ -1684,6 +1684,9 @@ function Dashboard({ user, checklist, tasks, allUsers, attendance, leaveRequests
   const [todayReturns,setTodayReturns]  = useState<any[]>([])
   const [loadingOps,  setLoadingOps]    = useState(true)
 
+  // v113: Dashboard dùng chung danh sách NV loại khỏi hiệu suất với module WarehousePerformance
+  const [excludedFromAvg, setExcludedFromAvg] = useState<Set<string>>(new Set())
+
   // KV Sales state
   const [kvSalesRows,    setKvSalesRows]    = useState<any[]>([])
   const [kvLastSyncAt,   setKvLastSyncAt]   = useState<string | null>(null)
@@ -1753,6 +1756,29 @@ function Dashboard({ user, checklist, tasks, allUsers, attendance, leaveRequests
     return () => clearInterval(iv)
   }, [fetchTodayOps, fetchKvSales, showKvSales])
 
+  // v113: Load warehouse_avg_excluded_ids - đồng bộ với module Hiệu suất kho
+  useEffect(() => {
+    const fetchExcluded = async () => {
+      const { data } = await db.from('settings')
+        .select('warehouse_avg_excluded_ids').eq('id','main').maybeSingle()
+      const savedIds: string[] = data?.warehouse_avg_excluded_ids || []
+      if (savedIds.length > 0) {
+        setExcludedFromAvg(new Set(savedIds))
+      } else {
+        // Fallback: QL + PTC (giống module Hiệu suất kho)
+        const khoUsers = allUsers.filter((u: any) => u.dept_id === 'kho' && u.active !== false)
+        const defaultEx = new Set<string>()
+        khoUsers.forEach((u: any) => {
+          if (u.position?.is_position_manager || u.position?.is_payroll_fixed) {
+            defaultEx.add(u.id)
+          }
+        })
+        setExcludedFromAvg(defaultEx)
+      }
+    }
+    if (allUsers.length > 0) fetchExcluded()
+  }, [allUsers])
+
   // Manual sync KV sales (admin only)
   const handleSyncKv = async () => {
     if (kvSyncing) return
@@ -1805,8 +1831,11 @@ function Dashboard({ user, checklist, tasks, allUsers, attendance, leaveRequests
 
   // ═══ Today NV Kho performance (v2: fix timezone + attendance + pack duration) ═══
   const todayWhPerf = useMemo(() => {
-    // Chỉ NV Kho
-    const khoUsers = allUsers.filter((u: any) => u.dept_id === 'kho' && u.active !== false && !isTestAccount(u))
+    // Chỉ NV Kho (v113: loại NV được set excluded trong module Hiệu suất kho — đồng bộ 2 nơi)
+    const khoUsers = allUsers.filter((u: any) =>
+      u.dept_id === 'kho' && u.active !== false && !isTestAccount(u)
+      && !excludedFromAvg.has(u.id)
+    )
     if (khoUsers.length === 0) return []
 
     // Range timestamp hôm nay theo LOCAL timezone (chính xác cho VN+7)
@@ -1945,7 +1974,7 @@ function Dashboard({ user, checklist, tasks, allUsers, attendance, leaveRequests
       else if (total >= 60) { grade = '⚠️'; gradeLabel = 'Cần cải thiện' }
       return { ...m, speed, volume, quality, packSpeed, total, grade, gradeLabel }
     }).sort((a, b) => b.total - a.total)
-  }, [allUsers, todayOrders, todayWrong, todayReturns, attendance, todayISOStr])
+  }, [allUsers, todayOrders, todayWrong, todayReturns, attendance, todayISOStr, excludedFromAvg])
 
   // ═══ KV Sales ranking (v2: merge multi-KV per app user, filter unmapped) ═══
   // Chỉ hiện NV Sale có mapping trong users.kiotviet_user_names
