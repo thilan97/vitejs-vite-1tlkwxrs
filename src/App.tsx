@@ -12,7 +12,7 @@ const db = createClient(SUPABASE_URL, SUPABASE_KEY)
 // APP_VERSION — dùng để invalidate cache localStorage mỗi khi deploy version mới
 // (ngăn bug quyền user bị "reset" do cache position cũ sau deploy)
 // ⚠️ MỖI LẦN DEPLOY FEATURE MỚI CÓ PERMISSION MỚI, BUMP SỐ NÀY:
-const APP_VERSION = '2026.04.21.v107'
+const APP_VERSION = '2026.04.21.v108'
 
 // ════════════════════════════════════════════════════════════════
 // AUDIT LOG — ghi nhận các hành động phá hoại data để trace lại
@@ -10185,6 +10185,7 @@ function SaturdayBanner({ user }: any) {
 function InvCheckRow({ check, products, allUsers, canEdit, onUpdate, idx, total }: any) {
   const [editing, setEditing] = useState(false)
   const [val, setVal] = useState(check.actual_qty != null ? String(check.actual_qty) : '')
+  const [showImg, setShowImg] = useState(false)
   const prod = products.find((p: any) => p.code === check.product_code)
   const checker = allUsers.find((u: any) => u.id === check.assigned_to)
   const diff = check.diff
@@ -10201,7 +10202,7 @@ function InvCheckRow({ check, products, allUsers, canEdit, onUpdate, idx, total 
   }
 
   return (
-    <div style={{ display:'grid', gridTemplateColumns:'1fr 70px 70px 80px 100px 80px',
+    <div style={{ display:'grid', gridTemplateColumns:'1fr 70px 70px 80px 100px 110px',
       padding:'8px 12px', gap:8, alignItems:'center',
       borderBottom: idx < total-1 ? `1px solid ${T.border}` : 'none',
       background: hasDiff ? '#FFF5F5' : idx%2===0 ? '#fff' : T.rowAlt }}>
@@ -10233,6 +10234,12 @@ function InvCheckRow({ check, products, allUsers, canEdit, onUpdate, idx, total 
         {check.status==='checked'?'✓ OK':check.status==='discrepancy'?'⚠️ Lệch':check.status==='confirmed'?'✅':check.status==='pending'?'Chờ':'—'}
       </span>
       <div style={{ display:'flex', gap:4, justifyContent:'flex-end' }}>
+        <button onClick={() => setShowImg(true)}
+          title="Xem ảnh sản phẩm"
+          style={{ padding:'3px 8px', borderRadius:20, border:`1px solid ${T.border}`,
+            background:'transparent', cursor:'pointer', fontSize:12, fontFamily:'inherit', color:T.med }}>
+          🖼️
+        </button>
         {canEdit && !editing && (
           <button onClick={() => setEditing(true)}
             style={{ padding:'3px 9px', borderRadius:20, border:`1px solid ${T.border}`,
@@ -10249,6 +10256,7 @@ function InvCheckRow({ check, products, allUsers, canEdit, onUpdate, idx, total 
               background:'transparent', cursor:'pointer', fontSize:10, fontFamily:'inherit', color:T.light }}>✕</button>
         </>}
       </div>
+      {showImg && <ProductImageModalV2 code={check.product_code} onClose={() => setShowImg(false)}/>}
     </div>
   )
 }
@@ -10257,6 +10265,7 @@ function InvCheckRow({ check, products, allUsers, canEdit, onUpdate, idx, total 
 // ── CheckListRow — 1 dòng trong list KK của NV ─────────────
 function CheckListRow({ check, isActive, onSelect, onConfirm, onSkip, idx, total }: any) {
   const [val, setVal] = useState(check.actual_qty != null ? String(check.actual_qty) : '')
+  const [showImg, setShowImg] = useState(false)
   const inputRef = React.useRef<HTMLInputElement>(null)
   const done = check.actual_qty != null
   const [editDone, setEditDone] = useState(false)
@@ -10381,8 +10390,16 @@ function CheckListRow({ check, isActive, onSelect, onConfirm, onSkip, idx, total
               ✓ Xác nhận
             </button>
           </div>
+          {/* Nút xem ảnh sản phẩm */}
+          <button onClick={() => setShowImg(true)}
+            style={{ marginTop:8, width:'100%', padding:'10px', borderRadius:12,
+              border:`1.5px solid ${T.blue}`, background:'#F0F9FF', cursor:'pointer',
+              fontFamily:'inherit', fontSize:13, color:T.blue, fontWeight:600 }}>
+            🖼️ Xem ảnh sản phẩm
+          </button>
         </div>
       )}
+      {showImg && <ProductImageModalV2 code={check.product_code} onClose={() => setShowImg(false)}/>}
     </div>
   )
 }
@@ -10515,6 +10532,7 @@ function MobileCheckInput({ session, myChecks, allChecks, user, allUsers, produc
 function DCInputRow({ check, onConfirm }: any) {
   const [val, setVal] = useState('')
   const [done, setDone] = useState(check.double_actual_qty != null)
+  const [showImg, setShowImg] = useState(false)
   const diff = val !== '' ? Number(val) - (check.actual_qty || 0) : null
 
   if (done) return (
@@ -10530,7 +10548,15 @@ function DCInputRow({ check, onConfirm }: any) {
 
   return (
     <div style={{ padding:'10px 0', borderBottom:`1px solid #DDD8FF` }}>
-      <div style={{ fontSize:12, fontWeight:700, color:'#4C1D95', marginBottom:4 }}>{check.product_name}</div>
+      <div style={{ display:'flex', alignItems:'center', justifyContent:'space-between', marginBottom:4 }}>
+        <div style={{ fontSize:12, fontWeight:700, color:'#4C1D95' }}>{check.product_name}</div>
+        <button onClick={() => setShowImg(true)} title="Xem ảnh sản phẩm"
+          style={{ padding:'2px 8px', borderRadius:12, border:`1px solid ${T.purple}`,
+            background:'#F5F3FF', cursor:'pointer', fontSize:11, fontFamily:'inherit',
+            color:T.purple, fontWeight:600 }}>
+          🖼️ Ảnh
+        </button>
+      </div>
       <div style={{ display:'flex', gap:8, alignItems:'center', fontSize:11, color:T.med, marginBottom:8 }}>
         <span>KK lần 1: <b>{check.actual_qty}</b></span>
         <span>Tồn HT: <b>{check.system_qty}</b></span>
@@ -10557,6 +10583,7 @@ function DCInputRow({ check, onConfirm }: any) {
           ✓ Xác nhận
         </button>
       </div>
+      {showImg && <ProductImageModalV2 code={check.product_code} onClose={() => setShowImg(false)}/>}
     </div>
   )
 }
