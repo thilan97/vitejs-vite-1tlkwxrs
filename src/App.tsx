@@ -19137,6 +19137,7 @@ function PackingDetailPanel({ ord, mobile, user, allUsers, products, allOrders, 
                 {(ord.photos_picked || []).map((ph: any, i: number) => {
                   const url = typeof ph === 'string' ? ph : (ph?.url || '')
                   const at  = typeof ph === 'string' ? '' : (ph?.at || '')
+                  const rot = (typeof ph === 'object' && typeof ph?.rot === 'number') ? ph.rot : 0
                   if (!url) return null
                   return (
                     <div key={i} style={{ position:'relative', borderRadius:6, overflow:'hidden',
@@ -19144,7 +19145,9 @@ function PackingDetailPanel({ ord, mobile, user, allUsers, products, allOrders, 
                       onClick={() => setPreviewPickedIdx(i)}>
                       <div style={{ aspectRatio:'1/1', overflow:'hidden' }}>
                         <img src={url} alt={`Ảnh nhặt ${i+1}`}
-                          style={{ width:'100%', height:'100%', objectFit:'cover', display:'block' }}/>
+                          style={{ width:'100%', height:'100%', objectFit:'cover', display:'block',
+                            transform: rot ? `rotate(${rot}deg)` : undefined,
+                            transition: 'transform 0.2s ease' }}/>
                       </div>
                       {at && (
                         <div style={{ fontSize:8, color:T.light, padding:'2px 4px', background:T.bg,
@@ -19249,13 +19252,23 @@ function PackingDetailPanel({ ord, mobile, user, allUsers, products, allOrders, 
         <ProductImageModalV2 code={showImgModal} onClose={() => setShowImgModal(null)}/>
       )}
 
-      {/* v114: Preview ảnh nhặt — dùng PhotoZoomViewer (zoom + pan + keyboard ←→) */}
+      {/* v114: Preview ảnh nhặt — dùng PhotoZoomViewer (zoom + pan + keyboard ←→ + xoay) */}
       {previewPickedIdx !== null && (ord.photos_picked || []).length > 0 && (
         <PhotoZoomViewer
           photos={ord.photos_picked}
           startIdx={previewPickedIdx}
           mobile={mobile}
           onClose={() => setPreviewPickedIdx(null)}
+          onRotate={(photoIdx: number, newRot: number) => {
+            // Persist rotation vào photos_picked qua onUpdatePhotos
+            const updated = (ord.photos_picked || []).map((p: any, i: number) => {
+              if (i !== photoIdx) return p
+              // String URL → convert thành object để lưu rot
+              if (typeof p === 'string') return { url: p, rot: newRot }
+              return { ...p, rot: newRot }
+            })
+            onUpdatePhotos('picked', updated)
+          }}
         />
       )}
     </div>
@@ -19340,13 +19353,16 @@ function PhotoSection({ title, subtitle, photos, min, max, readOnly, orderCode, 
         {photos.map((ph: any, i: number) => {
           const url = getUrl(ph)
           const at  = getAt(ph)
+          const rot = (typeof ph === 'object' && typeof ph?.rot === 'number') ? ph.rot : 0
           return (
             <div key={i} style={{ position:'relative', borderRadius:6, overflow:'hidden',
               border:`1px solid ${T.border}`, cursor:'pointer' }}
               onClick={() => setPreviewIdx(i)}>
               <div style={{ aspectRatio:'1/1', overflow:'hidden' }}>
                 <img src={url} alt={`Photo ${i+1}`}
-                  style={{ width:'100%', height:'100%', objectFit:'cover', display:'block' }}/>
+                  style={{ width:'100%', height:'100%', objectFit:'cover', display:'block',
+                    transform: rot ? `rotate(${rot}deg)` : undefined,
+                    transition: 'transform 0.2s ease' }}/>
               </div>
               {at && (
                 <div style={{ fontSize:8, color:T.light, padding:'3px 4px', background:T.bg,
@@ -19414,6 +19430,15 @@ function PhotoSection({ title, subtitle, photos, min, max, readOnly, orderCode, 
           startIdx={previewIdx}
           mobile={mobile}
           onClose={() => setPreviewIdx(null)}
+          onRotate={(photoIdx: number, newRot: number) => {
+            // v114: Persist rotation cho ảnh đóng
+            const updated = photos.map((p: any, i: number) => {
+              if (i !== photoIdx) return p
+              if (typeof p === 'string') return { url: p, rot: newRot }
+              return { ...p, rot: newRot }
+            })
+            if (onUpdate) onUpdate(updated)
+          }}
         />
       )}
     </div>
@@ -24777,6 +24802,14 @@ function SaleOrderTrackingModule({ user, allUsers, mobile }: any) {
   const [statusFilter, setStatusFilter] = useState<string>('active')
   const [dayRange, setDayRange] = useState(7)
   const [expanded, setExpanded] = useState<string|null>(null)
+  // v114: Date filter cho tab "Hoàn tất" — default = hôm nay (YYYY-MM-DD)
+  const [doneDateFilter, setDoneDateFilter] = useState<string>(() => {
+    const d = new Date()
+    const y = d.getFullYear()
+    const m = String(d.getMonth() + 1).padStart(2, '0')
+    const day = String(d.getDate()).padStart(2, '0')
+    return `${y}-${m}-${day}`
+  })
 
   const norm = (s: string) => (s||'').toLowerCase().normalize('NFD')
     .replace(/[\u0300-\u036f]/g,'').replace(/đ/g,'d').trim()
@@ -24846,9 +24879,21 @@ function SaleOrderTrackingModule({ user, allUsers, mobile }: any) {
     return new Date(o.purchase_date).getTime() <= testPeriodEnd
   }
 
+  // v114: Helper check packed_at có thuộc ngày doneDateFilter không (theo timezone VN)
+  const isPackedOnFilterDate = (o: any): boolean => {
+    if (!o.packed_at) return false
+    // packed_at là ISO UTC. Convert về VN date (YYYY-MM-DD) để so sánh
+    const d = new Date(o.packed_at)
+    const vnDate = new Date(d.getTime() + 7 * 3600 * 1000)  // +7h (VN = UTC+7)
+    const y = vnDate.getUTCFullYear()
+    const m = String(vnDate.getUTCMonth() + 1).padStart(2, '0')
+    const day = String(vnDate.getUTCDate()).padStart(2, '0')
+    return `${y}-${m}-${day}` === doneDateFilter
+  }
+
   const statusGroups: Record<string, (o: any) => boolean> = {
     active:    (o) => ['picking', 'packing'].includes(o.status) && !isBeforeTestPeriodEnd(o),
-    done:      (o) => o.status === 'done' && !isAdminPacked(o),
+    done:      (o) => o.status === 'done' && !isAdminPacked(o) && isPackedOnFilterDate(o),
     cancelled: (o) => o.status === 'cancelled',
     all:       ()  => true,
   }
@@ -24864,7 +24909,7 @@ function SaleOrderTrackingModule({ user, allUsers, mobile }: any) {
 
   const counts = {
     active:    orders.filter(o => ['picking','packing'].includes(o.status) && !isBeforeTestPeriodEnd(o)).length,
-    done:      orders.filter(o => o.status === 'done' && !isAdminPacked(o)).length,
+    done:      orders.filter(o => o.status === 'done' && !isAdminPacked(o) && isPackedOnFilterDate(o)).length,
     cancelled: orders.filter(o => o.status === 'cancelled').length,
     all:       orders.length,
   }
@@ -24888,7 +24933,19 @@ function SaleOrderTrackingModule({ user, allUsers, mobile }: any) {
   return (
     <div style={{ padding:`0 ${p} ${mobile?'80px':p}` }}>
       <Topbar mobile={mobile} title="📦 Theo dõi đơn hàng"
-        subtitle={isSale ? `Đơn của bạn trong ${dayRange} ngày gần đây` : `Tất cả đơn — ${dayRange} ngày`}
+        subtitle={(() => {
+          if (statusFilter === 'done') {
+            const [y,m,d] = doneDateFilter.split('-')
+            const dayStr = `${d}/${m}/${y}`
+            const todayStr = (() => {
+              const dt = new Date()
+              return `${dt.getFullYear()}-${String(dt.getMonth()+1).padStart(2,'0')}-${String(dt.getDate()).padStart(2,'0')}`
+            })()
+            const label = doneDateFilter === todayStr ? 'hôm nay' : dayStr
+            return isSale ? `Đơn hoàn tất của bạn ${label}` : `Đơn hoàn tất ${label}`
+          }
+          return isSale ? `Đơn của bạn trong ${dayRange} ngày gần đây` : `Tất cả đơn — ${dayRange} ngày`
+        })()}
         action={
           <button onClick={fetchOrders}
             style={{ padding:'5px 12px', borderRadius:20, border:`1px solid ${T.border}`,
@@ -24913,6 +24970,37 @@ function SaleOrderTrackingModule({ user, allUsers, mobile }: any) {
             <option value={15}>15 ngày</option>
             <option value={30}>30 ngày</option>
           </select>
+          {/* v114: Date picker cho tab Hoàn tất */}
+          {statusFilter === 'done' && (() => {
+            const todayStr = (() => {
+              const d = new Date()
+              return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`
+            })()
+            const isToday = doneDateFilter === todayStr
+            return (
+              <>
+                <div style={{ display:'flex', alignItems:'center', gap:6,
+                  padding:'4px 10px', borderRadius:6,
+                  background:T.goldBg, border:`1px solid ${T.gold}` }}>
+                  <span style={{ fontSize:11, color:T.goldText, fontWeight:600 }}>📅 Ngày:</span>
+                  <input type="date" value={doneDateFilter}
+                    onChange={e => setDoneDateFilter(e.target.value)}
+                    max={todayStr}
+                    style={{ padding:'3px 6px', border:`1px solid ${T.gold}`, borderRadius:4,
+                      fontSize:11, fontFamily:'inherit', background:'#fff', color:T.dark, outline:'none' }}/>
+                </div>
+                {!isToday && (
+                  <button onClick={() => setDoneDateFilter(todayStr)}
+                    style={{ padding:'4px 10px', borderRadius:6,
+                      border:`1px solid ${T.blue}`, background:T.blueBg,
+                      color:T.blue, cursor:'pointer', fontFamily:'inherit',
+                      fontSize:11, fontWeight:600 }}>
+                    ↻ Hôm nay
+                  </button>
+                )}
+              </>
+            )
+          })()}
           {!isSale && (
             <div style={{ fontSize:11, color:T.light }}>
               Hiển thị tất cả nhân viên
@@ -27062,6 +27150,7 @@ function GalleryModule({ user, allUsers, mobile }: any) {
   type FlatPhoto = {
     _url: string, _at: string, _by: string, _type: 'picked'|'packed',
     _orderCode: string, _customerName: string,
+    _photoIdx: number, rot?: number,
   }
 
   const dailyGroups = useMemo(() => {
@@ -27071,21 +27160,25 @@ function GalleryModule({ user, allUsers, mobile }: any) {
       const pickedArr = Array.isArray(o.photos_picked) ? o.photos_picked : []
       const packedArr = Array.isArray(o.photos_packed) ? o.photos_packed : []
       if (typeFilter !== 'packed') {
-        pickedArr.forEach((ph: any) => {
+        pickedArr.forEach((ph: any, phIdx: number) => {
           const u = getUrl(ph); if (!u) return
           flat.push({
             _url: u, _at: getAt(ph), _by: getBy(ph), _type: 'picked',
             _orderCode: o.order_code, _customerName: o.customer_name || '',
-          })
+            _photoIdx: phIdx,
+            rot: (typeof ph === 'object' && typeof ph?.rot === 'number') ? ph.rot : 0,
+          } as any)
         })
       }
       if (typeFilter !== 'picked') {
-        packedArr.forEach((ph: any) => {
+        packedArr.forEach((ph: any, phIdx: number) => {
           const u = getUrl(ph); if (!u) return
           flat.push({
             _url: u, _at: getAt(ph), _by: getBy(ph), _type: 'packed',
             _orderCode: o.order_code, _customerName: o.customer_name || '',
-          })
+            _photoIdx: phIdx,
+            rot: (typeof ph === 'object' && typeof ph?.rot === 'number') ? ph.rot : 0,
+          } as any)
         })
       }
     })
@@ -27345,7 +27438,31 @@ function GalleryModule({ user, allUsers, mobile }: any) {
       {/* Photo viewer modal */}
       {viewerOpen && (
         <PhotoZoomViewer photos={viewerPhotos} startIdx={viewerIdx} mobile={mobile}
-          onClose={() => setViewerOpen(false)}/>
+          onClose={() => setViewerOpen(false)}
+          onRotate={async (photoIdx: number, newRot: number) => {
+            // v114: Gallery rotation → update DB trực tiếp
+            const ph = viewerPhotos[photoIdx]
+            if (!ph || !ph._orderCode || !ph._type || ph._photoIdx === undefined) return
+            const ord = orders.find((o: any) => o.order_code === ph._orderCode)
+            if (!ord) return
+            const colName = ph._type === 'picked' ? 'photos_picked' : 'photos_packed'
+            const currentPhotos = ord[colName] || []
+            const updated = currentPhotos.map((p: any, i: number) => {
+              if (i !== ph._photoIdx) return p
+              if (typeof p === 'string') return { url: p, rot: newRot }
+              return { ...p, rot: newRot }
+            })
+            // Update DB + local state
+            const { error } = await db.from('packing_workflow')
+              .update({ [colName]: updated, updated_at: new Date().toISOString() })
+              .eq('order_code', ph._orderCode)
+            if (error) { console.error('Rotation save failed:', error); return }
+            setOrders((prev: any) => prev.map((o: any) =>
+              o.order_code === ph._orderCode ? { ...o, [colName]: updated } : o))
+            // Update viewerPhotos array để giữ rotation khi xem tiếp
+            setViewerPhotos((prev: any) => prev.map((p: any, i: number) =>
+              i === photoIdx ? { ...p, rot: newRot } : p))
+          }}/>
       )}
     </div>
   )
@@ -27364,10 +27481,12 @@ function DailyPhotoGroup({ day, mobile, allUsers, onOpenViewer }: any) {
       url: ph._url,
       at: ph._at,
       by: ph._by,
+      rot: ph.rot || 0,  // v114: truyền rotation hiện tại
       // Thêm overlay info để PhotoZoomViewer có thể dùng nếu muốn
       _orderCode: ph._orderCode,
       _customerName: ph._customerName,
       _type: ph._type,
+      _photoIdx: ph._photoIdx,  // v114: để update DB
     }))
     onOpenViewer(viewerPhotos, idx)
   }
@@ -27399,7 +27518,9 @@ function DailyPhotoGroup({ day, mobile, allUsers, onOpenViewer }: any) {
               background:'#f0f0f0',
             }}>
             <img src={ph._url} alt="" loading="lazy"
-              style={{ width:'100%', height:'100%', objectFit:'cover', display:'block' }}/>
+              style={{ width:'100%', height:'100%', objectFit:'cover', display:'block',
+                transform: ph.rot ? `rotate(${ph.rot}deg)` : undefined,
+                transition: 'transform 0.2s ease' }}/>
             {/* Badge loại ảnh (picked/packed) */}
             <div style={{
               position:'absolute', top:3, left:3, padding:'1px 5px',
@@ -27525,19 +27646,28 @@ function PhotoGrid({ photos, mobile, type, onClick }: any) {
 }
 
 // ── Photo zoom viewer modal — scroll zoom + pinch + pan drag ──
-function PhotoZoomViewer({ photos, startIdx, mobile, onClose }: any) {
+function PhotoZoomViewer({ photos, startIdx, mobile, onClose, onRotate }: any) {
   const [idx, setIdx] = useState(startIdx)
   const [zoom, setZoom] = useState(1)
   const [pan, setPan] = useState({ x:0, y:0 })
   const [dragging, setDragging] = useState(false)
   const dragStart = useRef({ x:0, y:0, panX:0, panY:0 })
   const pinchStart = useRef<{ dist: number, zoom: number } | null>(null)
+  // v114: Local rotation override (cho xoay ngay trong session trước khi DB cập nhật)
+  const [localRot, setLocalRot] = useState<{[k:number]: number}>({})
 
   const getUrl = (p: any): string => typeof p === 'string' ? p : (p?.url || '')
   const getAt  = (p: any): string => typeof p === 'string' ? '' : (p?.at || '')
+  // v114: Lấy rotation từ local state (ưu tiên) hoặc từ photo object
+  const getRot = (p: any, i: number): number => {
+    if (localRot[i] !== undefined) return localRot[i]
+    if (typeof p === 'object' && typeof p?.rot === 'number') return p.rot
+    return 0
+  }
 
   const photo = photos[idx]
   const url = photo ? getUrl(photo) : ''
+  const rot = getRot(photo, idx)
 
   // Reset zoom when changing photo
   useEffect(() => {
@@ -27554,10 +27684,21 @@ function PhotoZoomViewer({ photos, startIdx, mobile, onClose }: any) {
       else if (e.key === '+' || e.key === '=') setZoom(z => Math.min(z * 1.3, 8))
       else if (e.key === '-') setZoom(z => Math.max(z / 1.3, 0.5))
       else if (e.key === '0') { setZoom(1); setPan({ x:0, y:0 }) }
+      else if (e.key === 'r' || e.key === 'R') handleRotate()
     }
     window.addEventListener('keydown', handler)
     return () => window.removeEventListener('keydown', handler)
-  }, [idx, photos.length, onClose])
+  }, [idx, photos.length, onClose, rot])
+
+  // v114: Xoay ảnh 90° theo chiều kim đồng hồ, persist qua callback
+  const handleRotate = () => {
+    const newRot = (rot + 90) % 360
+    setLocalRot(prev => ({ ...prev, [idx]: newRot }))
+    if (onRotate) onRotate(idx, newRot)
+    // Reset zoom/pan khi xoay để ảnh fit lại
+    setZoom(1)
+    setPan({ x:0, y:0 })
+  }
 
   // Scroll wheel zoom
   const handleWheel = (e: any) => {
@@ -27641,6 +27782,12 @@ function PhotoZoomViewer({ photos, startIdx, mobile, onClose }: any) {
           <button onClick={() => setZoom(z => Math.min(z * 1.3, 8))}
             style={{ background:'rgba(255,255,255,0.15)', border:'none', color:'#fff',
               width:36, height:36, borderRadius:18, cursor:'pointer', fontSize:18 }}>+</button>
+          {/* v114: Nút xoay ảnh 90° (có callback onRotate → persist DB) */}
+          <button onClick={handleRotate}
+            title={onRotate ? `Xoay 90° (R) — Đã xoay: ${rot}°` : `Xoay 90° (R) — chỉ tạm thời`}
+            style={{ background: rot !== 0 ? 'rgba(234,179,8,0.3)' : 'rgba(255,255,255,0.15)',
+              border: rot !== 0 ? '1px solid rgba(234,179,8,0.6)' : 'none',
+              color:'#fff', width:36, height:36, borderRadius:18, cursor:'pointer', fontSize:16 }}>↻</button>
           <button onClick={() => window.open(url, '_blank')}
             title="Mở ảnh gốc"
             style={{ background:'rgba(255,255,255,0.15)', border:'none', color:'#fff',
@@ -27661,8 +27808,8 @@ function PhotoZoomViewer({ photos, startIdx, mobile, onClose }: any) {
           onDoubleClick={handleDoubleClick}
           onMouseDown={handleMouseDown}
           style={{ maxWidth:'100%', maxHeight:'100%', objectFit:'contain',
-            transform:`translate(${pan.x}px, ${pan.y}px) scale(${zoom})`,
-            transition: dragging ? 'none' : 'transform 0.15s ease',
+            transform:`translate(${pan.x}px, ${pan.y}px) scale(${zoom}) rotate(${rot}deg)`,
+            transition: dragging ? 'none' : 'transform 0.2s ease',
             cursor: zoom > 1 ? (dragging ? 'grabbing' : 'grab') : 'zoom-in',
             userSelect:'none', WebkitUserSelect:'none' as any }}/>
 
@@ -27694,7 +27841,7 @@ function PhotoZoomViewer({ photos, startIdx, mobile, onClose }: any) {
         {photo?._type === 'picked' ? '📥 Ảnh nhặt' : photo?._type === 'packed' ? '📦 Ảnh đóng' : ''}
         {getAt(photo) && <> • {new Date(getAt(photo)).toLocaleString('vi-VN')}</>}
         {!mobile && <div style={{ marginTop:4, fontSize:9, opacity:.6 }}>
-          Scroll để zoom • Kéo để di chuyển • Double-click để zoom nhanh • ← → để chuyển ảnh • Esc để thoát
+          Scroll để zoom • Kéo để di chuyển • Double-click để zoom nhanh • ← → để chuyển ảnh • R để xoay 90° • Esc để thoát
         </div>}
       </div>
     </div>
