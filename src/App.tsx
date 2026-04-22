@@ -27714,11 +27714,27 @@ function InventorySyncModule({ user, allUsers, mobile }: any) {
       setSummary(lastSummary)
 
       if (lastSummary?.sync_batch_id) {
-        const { data: hist, error: e3 } = await db.from('inventory_sync_history')
-          .select('*').eq('sync_batch_id', lastSummary.sync_batch_id).limit(10000)
-        if (e3) console.error('[INV-SYNC] inventory_sync_history error:', e3)
-        else console.log('[INV-SYNC] history rows:', hist?.length)
-        setItems(hist || [])
+        // v115 FIX: Pagination để bypass Supabase default max_rows=1000
+        const allHist: any[] = []
+        let from = 0
+        const PAGE = 1000
+        while (true) {
+          const { data: histPage, error: eHist } = await db.from('inventory_sync_history')
+            .select('*')
+            .eq('sync_batch_id', lastSummary.sync_batch_id)
+            .range(from, from + PAGE - 1)
+          if (eHist) {
+            console.error('[INV-SYNC] inventory_sync_history error:', eHist)
+            break
+          }
+          if (!histPage || histPage.length === 0) break
+          allHist.push(...histPage)
+          if (histPage.length < PAGE) break
+          from += PAGE
+          if (from > 20000) break  // safety cap
+        }
+        console.log('[INV-SYNC] history rows:', allHist.length)
+        setItems(allHist)
       } else {
         setItems([])
       }
