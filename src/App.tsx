@@ -12,7 +12,7 @@ const db = createClient(SUPABASE_URL, SUPABASE_KEY)
 // APP_VERSION — dùng để invalidate cache localStorage mỗi khi deploy version mới
 // (ngăn bug quyền user bị "reset" do cache position cũ sau deploy)
 // ⚠️ MỖI LẦN DEPLOY FEATURE MỚI CÓ PERMISSION MỚI, BUMP SỐ NÀY:
-const APP_VERSION = '2026.04.21.v113'
+const APP_VERSION = '2026.04.22.v114'
 
 // ════════════════════════════════════════════════════════════════
 // AUDIT LOG — ghi nhận các hành động phá hoại data để trace lại
@@ -17619,7 +17619,10 @@ function PackingModule({ user, allUsers, mobile, products }: any) {
     // và user hiện tại KHÔNG có trong active_packers → KHÔNG tự thêm user vào packed_by_ids.
     // Chỉ giữ lại packers gốc. Điều này tránh trường hợp QM/NV mở xem đơn đã sửa mà bị ghi nhận thành packer.
     const activePackers: string[] = ord.active_packers || []
+    // v114: Mở rộng check wasEverPackedBefore — thêm điều kiện packed_by_ids non-empty
+    // (trường hợp Edge Function revert reset packed_at=null nhưng giữ packed_by_ids)
     const wasEverPackedBefore = !!ord.packed_at || ord.had_mod_after_done === true
+      || (Array.isArray(ord.packed_by_ids) && ord.packed_by_ids.length > 0)
     const currentUserActivelyPacking = activePackers.includes(user.id)
     let finalPackerIds: string[]
     let finalPackedBy: string
@@ -17663,9 +17666,16 @@ function PackingModule({ user, allUsers, mobile, products }: any) {
   }
 
   // Thêm user vào active_packers khi qua Gate (chụp xong ảnh nhặt, chuẩn bị đóng)
+  // v114 BUG FIX: Thêm safeguard — nếu đơn đã từng đóng xong (had_mod_after_done=true
+  // hoặc đã có packed_by_ids) → KHÔNG auto-join, chỉ cho user actively thao tác mới vào group
   const joinPackingGroup = async (orderCode: string) => {
     const ord = orders.find((o: any) => o.order_code === orderCode)
     if (!ord) return
+    // Safeguard: chặn auto-join nếu đơn đã từng đóng xong
+    const wasEverPacked = ord.had_mod_after_done === true ||
+      (Array.isArray(ord.packed_by_ids) && ord.packed_by_ids.length > 0) ||
+      !!ord.packed_at
+    if (wasEverPacked) return  // Giữ nguyên người đóng lần đầu
     const current: string[] = ord.active_packers || []
     if (current.includes(user.id)) return  // đã trong group
     const next = [...current, user.id]
@@ -17851,15 +17861,23 @@ function PackingModule({ user, allUsers, mobile, products }: any) {
     setOrders(prev => prev.map((o: any) => o.order_code === orderCode ? {...o, ...upd} : o))
   }
 
-  // NV bấm "Hoàn tất sửa" → khoá lại đơn
-  const completeEditOrder = async (orderCode: string) => {
+  // NV bấm "Hoàn tất sửa" → khoá lại đơn + lưu ghi chú (bắt buộc)
+  // v114: Ghi chú giải thích đã xử lý gì (bắt buộc điền trước khi gọi hàm này)
+  const completeEditOrder = async (orderCode: string, note: string) => {
+    if (!note || !note.trim()) {
+      alert('⚠️ Vui lòng điền ghi chú giải thích đã xử lý gì trước khi hoàn tất sửa')
+      return false
+    }
     const upd: any = {
       edit_completed_at: new Date().toISOString(),
+      edit_completed_by: user.id,
+      edit_note: note.trim(),
       is_edit_locked: true,
       updated_at: new Date().toISOString(),
     }
     await db.from('packing_workflow').update(upd).eq('order_code', orderCode)
     setOrders(prev => prev.map((o: any) => o.order_code === orderCode ? {...o, ...upd} : o))
+    return true
   }
 
   if (loading) return <div style={{ padding:p, textAlign:'center', color:T.light, paddingTop:40 }}>⏳ Đang tải...</div>
@@ -18165,7 +18183,7 @@ function PackingModule({ user, allUsers, mobile, products }: any) {
             onOpenLinkSupp={() => setLinkSuppOrder(selected)}
             onUnlinkSupp={(childCode: string) => unlinkSupplementary(childCode)}
             onAllowEdit={() => setShowAllowEdit(selected)}
-            onCompleteEdit={() => completeEditOrder(selected.order_code)}
+            onCompleteEdit={(note: string) => completeEditOrder(selected.order_code, note)}
             canManageSupp={perm.viewAllDashboard || perm.approveLeave || perm.manageInventory || perm.assignPacking}
             canReviewAi={perm.viewAllDashboard || perm.approveLeave || perm.handlePriority}
             canAllowEdit={(perm as any).allowEditPackedOrder}
@@ -18618,6 +18636,8 @@ function PackingDetailPanel({ ord, mobile, user, allUsers, products, allOrders, 
   const [phase, setPhase] = useState<'gate'|'detail'>(initialPhase)
   // Một khi qua gate thì không quay lại, kể cả xoá ảnh
   const [hasPassedGate, setHasPassedGate] = useState(initialPhase === 'detail')
+  // v114: Input ghi chú khi hoàn tất sửa đơn (bắt buộc)
+  const [editNoteInput, setEditNoteInput] = useState('')
 
   // Auto join group khi vào phase DETAIL (chỉ nếu chưa trong group + đơn chưa done + !readOnly)
   // QUAN TRỌNG: KHÔNG auto-join nếu đơn đã từng được đóng (có packed_at hoặc had_mod_after_done)
@@ -18742,15 +18762,44 @@ function PackingDetailPanel({ ord, mobile, user, allUsers, products, allOrders, 
                     💡 Bạn là người đóng đơn này. Hãy sửa và bấm "Hoàn tất sửa" khi xong.
                   </div>
                 )}
+                {/* v114: Textarea ghi chú bắt buộc */}
+                {isMyOrder && onCompleteEdit && (
+                  <div style={{ marginTop:10 }}>
+                    <label style={{ display:'block', fontSize:11, fontWeight:700,
+                      color:T.goldText, marginBottom:4 }}>
+                      📝 Ghi chú <span style={{ color:T.red }}>*</span>
+                      <span style={{ fontWeight:400, color:T.med, marginLeft:6 }}>
+                        (bắt buộc — mô tả rõ đã xử lý vấn đề gì)
+                      </span>
+                    </label>
+                    <textarea
+                      value={editNoteInput}
+                      onChange={(e) => setEditNoteInput(e.target.value)}
+                      placeholder="VD: Đã chụp lại ảnh vì quên chụp chai sữa rửa mặt của khách..."
+                      rows={3}
+                      style={{ width:'100%', padding:8, borderRadius:6,
+                        border:`1.5px solid ${T.gold}`, fontFamily:'inherit',
+                        fontSize:12, resize:'vertical', boxSizing:'border-box',
+                        background:'#fff', color:T.dark }}
+                    />
+                  </div>
+                )}
               </div>
               {isMyOrder && onCompleteEdit && (
-                <button onClick={() => {
+                <button onClick={async () => {
+                  if (!editNoteInput.trim()) {
+                    alert('⚠️ Vui lòng điền ghi chú trước khi hoàn tất sửa')
+                    return
+                  }
                   if (confirm('Bạn đã sửa xong đơn này? Sau khi bấm Hoàn tất sẽ khoá lại không sửa được nữa.')) {
-                    onCompleteEdit()
+                    const ok = await onCompleteEdit(editNoteInput.trim())
+                    if (ok) setEditNoteInput('')
                   }
                 }}
+                  disabled={!editNoteInput.trim()}
                   style={{ padding:'8px 14px', borderRadius:8, border:'none',
-                    background:T.green, color:'#fff', cursor:'pointer',
+                    background: editNoteInput.trim() ? T.green : '#ccc',
+                    color:'#fff', cursor: editNoteInput.trim() ? 'pointer' : 'not-allowed',
                     fontFamily:'inherit', fontSize:12, fontWeight:700,
                     whiteSpace:'nowrap', flexShrink:0 }}>
                   ✓ Hoàn tất sửa
@@ -18777,17 +18826,29 @@ function PackingDetailPanel({ ord, mobile, user, allUsers, products, allOrders, 
       {/* ══ HISTORY: lần sửa trước đó ══ */}
       {ord.status === 'done' && ord.edit_completed_at && ord.is_edit_locked === true && (() => {
         const allowedBy = allUsers.find((u: any) => u.id === ord.edit_allowed_by)
+        const completedBy = allUsers.find((u: any) => u.id === ord.edit_completed_by)
         const reasonMap: any = {
           fix_photos:   'Sửa ảnh vì đóng sai hàng',
           fix_packer:   'Sửa người đóng đơn',
           redo_packing: 'Đóng lại từ đầu',
         }
         return (
-          <div style={{ padding:'8px 12px', marginBottom:12, background:'#F5F3FF',
-            border:`1px solid ${T.purple}33`, borderRadius:6, fontSize:11, color:T.purple }}>
-            ✓ Đơn này đã từng được mở lại để sửa: <b>{reasonMap[ord.edit_reason] || ord.edit_reason}</b>
-            {allowedBy && <> (cấp bởi {allowedBy.name}</>}
-            {ord.edit_completed_at && <>, hoàn tất {new Date(ord.edit_completed_at).toLocaleString('vi-VN')})</>}
+          <div style={{ padding:'10px 12px', marginBottom:12, background:'#F5F3FF',
+            border:`1px solid ${T.purple}33`, borderRadius:8, fontSize:11, color:T.purple }}>
+            <div style={{ fontWeight:700, marginBottom:4 }}>
+              ✓ Đơn này đã từng được mở lại để sửa: <b>{reasonMap[ord.edit_reason] || ord.edit_reason}</b>
+            </div>
+            <div style={{ color:T.med, fontSize:10, marginBottom:4 }}>
+              {allowedBy && <>Cấp bởi <b style={{ color:T.purple }}>{allowedBy.name}</b></>}
+              {completedBy && <> • Hoàn tất bởi <b style={{ color:T.purple }}>{completedBy.name}</b></>}
+              {ord.edit_completed_at && <> lúc {new Date(ord.edit_completed_at).toLocaleString('vi-VN')}</>}
+            </div>
+            {ord.edit_note && (
+              <div style={{ marginTop:6, padding:'6px 8px', background:'#fff',
+                borderLeft:`3px solid ${T.purple}`, borderRadius:4, fontSize:11, color:T.dark }}>
+                <b style={{ color:T.purple }}>📝 Ghi chú:</b> {ord.edit_note}
+              </div>
+            )}
           </div>
         )
       })()}
@@ -26986,12 +27047,13 @@ function GalleryModule({ user, allUsers, mobile }: any) {
 
     return orders.filter((o: any) => {
       // ═══ Filter 1: Khách hàng / mã đơn ═══
+      // v114: KHÔNG include sold_by_name — search KH chỉ match theo KH
+      // (nếu cần search theo Sale thì thêm field riêng sau)
       if (custTokens.length > 0) {
         const custHay = norm2([
           o.order_code || '',
           o.customer_name || '',
           o.customer_code || '',
-          o.sold_by_name || '',
         ].join(' '))
         // Tất cả token phải match (AND)
         if (!custTokens.every(tok => custHay.includes(tok))) return false
