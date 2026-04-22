@@ -12,7 +12,7 @@ const db = createClient(SUPABASE_URL, SUPABASE_KEY)
 // APP_VERSION — dùng để invalidate cache localStorage mỗi khi deploy version mới
 // (ngăn bug quyền user bị "reset" do cache position cũ sau deploy)
 // ⚠️ MỖI LẦN DEPLOY FEATURE MỚI CÓ PERMISSION MỚI, BUMP SỐ NÀY:
-const APP_VERSION = '2026.04.22.v114'
+const APP_VERSION = '2026.04.22.v115'
 
 // ════════════════════════════════════════════════════════════════
 // AUDIT LOG — ghi nhận các hành động phá hoại data để trace lại
@@ -261,6 +261,7 @@ const getPerm = (user: any) => {
     viewSlowMoving:     isAdmin || (pos.perm_view_slow_moving ?? false) || (pos.perm_approve_leave ?? false),
     viewGallery:        isAdmin || (pos.perm_view_gallery ?? false) || (pos.perm_manage_inventory ?? false) || (user?.dept_id === 'sale'),
     errorReport:        isAdmin || (pos.perm_error_report ?? false),
+    accountingInventorySync: isAdmin || (pos.perm_accounting_inventory_sync ?? false),
   }
 }
 
@@ -355,6 +356,7 @@ const ALL_PERMS = [
   { key:'perm_view_slow_moving',         label:'Xem hàng bán chậm (Admin/QM Sale)', group:'Sale'  },
   { key:'perm_view_gallery',             label:'Xem Gallery ảnh hàng đi',         group:'Sale'     },
   { key:'perm_error_report',             label:'Báo cáo lỗi sai (Error Report)',   group:'Quản trị' },
+  { key:'perm_accounting_inventory_sync', label:'Đối soát tồn kho MISA ↔ KV',     group:'Kế toán'  },
 ]
 // ── UTILITIES ────────────────────────────────────
 const fmtNow   = () => new Date().toLocaleString('vi-VN',{hour:'2-digit',minute:'2-digit',day:'2-digit',month:'2-digit',year:'numeric'})
@@ -1152,6 +1154,14 @@ const NAV_GROUPS = (perm: any, deptId = '') => {
         { id:'leave',      icon:Ico.palm, emoji:'🏖️', label:'Nghỉ phép' },
         { id:'orgchart',   icon:Ico.network, emoji:'🏢', label:'Sơ đồ tổ chức' },
       ]
+    },
+
+    // ══ KẾ TOÁN ══
+    perm.accountingInventorySync && {
+      id:'accounting', icon:Ico.briefcase, emoji:'🧾', label:'Kế toán',
+      pages:[
+        perm.accountingInventorySync && { id:'invsync', icon:Ico.barChart, emoji:'📊', label:'Đối soát tồn kho' },
+      ].filter(Boolean)
     },
 
     // ══ QUẢN TRỊ ══
@@ -9917,6 +9927,7 @@ export default function App() {
           {validPage==='slowmoving' && <SlowMovingModule {...pp}/>}
           {validPage==='gallery'    && <GalleryModule {...pp}/>}
           {validPage==='errreport'  && <ErrorReportModule {...pp}/>}
+          {validPage==='invsync'    && <InventorySyncModule {...pp}/>}
           {validPage==='schedule'   && <WarehouseScheduleModule {...pp} leaveRequests={leaveRequests} attendance={attendance}/>}
           {validPage==='whstats'    && <WarehouseStatsModule {...pp}/>}
           {validPage==='priority'   && <PriorityRequestModule {...pp}/>}
@@ -27670,6 +27681,314 @@ function PhotoGrid({ photos, mobile, type, onClick }: any) {
 }
 
 // ── Photo zoom viewer modal — scroll zoom + pinch + pan drag ──
+// ══════════════════════════════════════════════════════════════════════
+// ══ INVENTORY SYNC MODULE — Đối soát tồn kho MISA ↔ KV ═══════════════
+// ══════════════════════════════════════════════════════════════════════
+function InventorySyncModule({ user, allUsers, mobile }: any) {
+  const p = mobile ? '16px' : '24px'
+  const [settings, setSettings] = useState<any>(null)
+  const [items, setItems] = useState<any[]>([])
+  const [alert, setAlert] = useState<any>(null)
+  const [loading, setLoading] = useState(true)
+  const [syncing, setSyncing] = useState(false)
+  const [filter, setFilter] = useState<'all'|'diff'|'increasing'>('diff')
+  const [searchQ, setSearchQ] = useState('')
+
+  const norm2 = (s: string) => (s||'').toLowerCase().normalize('NFD')
+    .replace(/[\u0300-\u036f]/g,'').replace(/đ/g,'d').trim()
+
+  const loadData = async () => {
+    setLoading(true)
+    try {
+      // 1. Load settings
+      const { data: s } = await db.from('misa_settings').select('*').eq('id', 1).single()
+      setSettings(s)
+
+      // 2. Load latest alert + history
+      const { data: lastAlert } = await db.from('inventory_sync_alerts')
+        .select('*').order('sync_at', { ascending: false }).limit(1).maybeSingle()
+      setAlert(lastAlert)
+
+      if (lastAlert?.sync_batch_id) {
+        const { data: hist } = await db.from('inventory_sync_history')
+          .select('*').eq('sync_batch_id', lastAlert.sync_batch_id).limit(10000)
+        setItems(hist || [])
+      } else {
+        setItems([])
+      }
+    } catch (e: any) {
+      console.error('Load invsync data failed:', e)
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  useEffect(() => { loadData() }, [])
+
+  const handleSync = async () => {
+    if (syncing) return
+    const ok = confirm('Bắt đầu đồng bộ tồn kho với MISA?\n\n(Quá trình có thể mất 30s-2 phút tùy số lượng SP)')
+    if (!ok) return
+    setSyncing(true)
+    try {
+      const res = await fetch(`${SUPABASE_URL}/functions/v1/misa-sync-inventory`, {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${SUPABASE_ANON}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ triggered_by: user.id }),
+      })
+      const data = await res.json()
+      if (!data.success) {
+        alert2(`❌ Lỗi sync: ${data.error || 'Unknown'}`)
+      } else {
+        alert2(`✅ Đồng bộ xong!\n\n• Tổng SP: ${data.total_products}\n• Mã lệch: ${data.items_with_diff}\n• Lệch tăng: ${data.items_increasing}\n• Thời gian: ${Math.round(data.duration_ms/1000)}s`)
+      }
+      await loadData()
+    } catch (e: any) {
+      alert2('❌ Lỗi: ' + (e.message || String(e)))
+    } finally {
+      setSyncing(false)
+    }
+  }
+
+  // Filter + sort (lệch tăng lên đầu, rồi lệch thường, rồi khớp)
+  const displayed = useMemo(() => {
+    let rows = items
+    if (filter === 'diff') rows = rows.filter(r => Number(r.abs_diff) > 0)
+    else if (filter === 'increasing') rows = rows.filter(r => r.is_increasing)
+    if (searchQ.trim()) {
+      const tokens = norm2(searchQ).split(/\s+/).filter(Boolean)
+      rows = rows.filter(r => {
+        const hay = norm2(`${r.product_code} ${r.product_name}`)
+        return tokens.every(t => hay.includes(t))
+      })
+    }
+    // Sort: increasing first, then abs_diff desc, then code asc
+    return [...rows].sort((a, b) => {
+      if (a.is_increasing !== b.is_increasing) return a.is_increasing ? -1 : 1
+      if (Number(b.abs_diff) !== Number(a.abs_diff)) return Number(b.abs_diff) - Number(a.abs_diff)
+      return (a.product_code || '').localeCompare(b.product_code || '')
+    })
+  }, [items, filter, searchQ])
+
+  // Alert2 helper (vì alert() có thể bị chặn ở 1 số browser)
+  const alert2 = (msg: string) => alert(msg)
+
+  const fmtNum = (n: number) => Number(n || 0).toLocaleString('vi-VN')
+  const fmtAbs = (n: number) => { const v = Number(n || 0); return v === 0 ? '—' : fmtNum(Math.abs(v)) }
+
+  // Timestamp helper
+  const fmtTs = (iso: string | null) => {
+    if (!iso) return 'Chưa sync lần nào'
+    const d = new Date(iso)
+    const diffMin = Math.floor((Date.now() - d.getTime()) / 60000)
+    if (diffMin < 1) return 'vừa xong'
+    if (diffMin < 60) return `${diffMin} phút trước`
+    if (diffMin < 1440) return `${Math.floor(diffMin/60)}h trước`
+    return d.toLocaleString('vi-VN', { hour:'2-digit', minute:'2-digit', day:'2-digit', month:'2-digit' })
+  }
+
+  return (
+    <div style={{ padding:`0 ${p} ${mobile?'80px':p}` }}>
+      <Topbar mobile={mobile} title="📊 Đối soát tồn kho"
+        subtitle="So sánh tồn KiotViet với MISA Kế toán"
+        action={
+          <button onClick={handleSync} disabled={syncing}
+            style={{ padding:'6px 14px', borderRadius:20,
+              border:`1.5px solid ${T.blue}`,
+              background: syncing ? T.light : T.blue,
+              color:'#fff', cursor: syncing ? 'wait' : 'pointer',
+              fontFamily:'inherit', fontSize:12, fontWeight:700 }}>
+            {syncing ? '⏳ Đang đồng bộ...' : '🔄 Đồng bộ ngay'}
+          </button>
+        }/>
+
+      {/* Summary card */}
+      <Card style={{ padding:14, marginBottom:12 }}>
+        <div style={{ display:'flex', justifyContent:'space-between', alignItems:'flex-start',
+          gap:12, flexWrap:'wrap' }}>
+          <div>
+            <div style={{ fontSize:11, color:T.med, marginBottom:4 }}>
+              🕒 Lần sync gần nhất
+            </div>
+            <div style={{ fontSize:14, fontWeight:700, color:T.dark }}>
+              {fmtTs(settings?.last_sync_at)}
+            </div>
+            {settings?.last_sync_status === 'error' && (
+              <div style={{ fontSize:10, color:T.red, marginTop:4 }}>
+                ❌ Lỗi: {settings.last_sync_error}
+              </div>
+            )}
+            {settings?.last_sync_status === 'running' && (
+              <div style={{ fontSize:10, color:T.blue, marginTop:4 }}>
+                ⏳ Đang chạy sync...
+              </div>
+            )}
+          </div>
+          {alert && (
+            <div style={{ display:'flex', gap:10, flexWrap:'wrap' }}>
+              <div style={{ textAlign:'center', minWidth:90 }}>
+                <div style={{ fontSize:10, color:T.med }}>Tổng SP</div>
+                <div style={{ fontSize:18, fontWeight:700, color:T.dark }}>{fmtNum(alert.total_products)}</div>
+              </div>
+              <div style={{ textAlign:'center', minWidth:90,
+                padding:'4px 10px', borderRadius:8,
+                background: alert.items_with_diff > 0 ? '#FEF2F2' : T.greenBg }}>
+                <div style={{ fontSize:10, color:T.med }}>Mã lệch</div>
+                <div style={{ fontSize:18, fontWeight:700,
+                  color: alert.items_with_diff > 0 ? T.red : T.green }}>
+                  {fmtNum(alert.items_with_diff)}
+                </div>
+              </div>
+              {alert.items_increasing > 0 && (
+                <div style={{ textAlign:'center', minWidth:90,
+                  padding:'4px 10px', borderRadius:8, background:'#FEF2F2',
+                  border:`1.5px solid ${T.red}` }}>
+                  <div style={{ fontSize:10, color:T.red, fontWeight:600 }}>🔴 Lệch tăng</div>
+                  <div style={{ fontSize:18, fontWeight:800, color:T.red }}>
+                    {fmtNum(alert.items_increasing)}
+                  </div>
+                </div>
+              )}
+              <div style={{ textAlign:'center', minWidth:90 }}>
+                <div style={{ fontSize:10, color:T.med }}>Tổng |lệch|</div>
+                <div style={{ fontSize:18, fontWeight:700, color:T.dark }}>{fmtNum(alert.total_abs_diff)}</div>
+                {alert.prev_total_abs_diff !== null && alert.prev_total_abs_diff !== undefined && (
+                  <div style={{ fontSize:9, color: Number(alert.total_abs_diff) > Number(alert.prev_total_abs_diff) ? T.red : T.green }}>
+                    {Number(alert.total_abs_diff) > Number(alert.prev_total_abs_diff) ? '↑' : '↓'} {fmtNum(Math.abs(Number(alert.total_abs_diff) - Number(alert.prev_total_abs_diff||0)))}
+                  </div>
+                )}
+              </div>
+            </div>
+          )}
+        </div>
+      </Card>
+
+      {/* Filter */}
+      <Card style={{ padding:12, marginBottom:12 }}>
+        <input value={searchQ} onChange={e => setSearchQ(e.target.value)}
+          placeholder="🔍 Tìm theo mã SP hoặc tên..."
+          style={{ width:'100%', padding:'9px 12px', border:`1px solid ${T.border}`, borderRadius:8,
+            fontSize:12, fontFamily:'inherit', color:T.dark, background:'#fff', outline:'none',
+            boxSizing:'border-box' as any, marginBottom:10 }}/>
+        <div style={{ display:'flex', gap:6, flexWrap:'wrap' }}>
+          {[
+            { id:'diff', label:'⚠️ Chỉ mã lệch', count: items.filter(r => Number(r.abs_diff)>0).length },
+            { id:'increasing', label:'🔴 Lệch tăng', count: items.filter(r => r.is_increasing).length },
+            { id:'all', label:'📋 Tất cả', count: items.length },
+          ].map(t => (
+            <button key={t.id} onClick={() => setFilter(t.id as any)}
+              style={{ padding:'5px 12px', borderRadius:20, cursor:'pointer',
+                fontFamily:'inherit', fontSize:11,
+                border:`1.5px solid ${filter===t.id?T.gold:T.border}`,
+                background: filter===t.id?T.goldBg:'transparent',
+                color: filter===t.id?T.goldText:T.med,
+                fontWeight: filter===t.id?700:400 }}>
+              {t.label} {t.count > 0 && `(${t.count})`}
+            </button>
+          ))}
+        </div>
+      </Card>
+
+      {/* Table */}
+      {loading ? (
+        <div style={{ padding:'40px 20px', textAlign:'center', color:T.light }}>⏳ Đang tải...</div>
+      ) : displayed.length === 0 ? (
+        <EmptyState icon={Ico.barChart}
+          title={alert ? 'Không có mã lệch' : 'Chưa có dữ liệu sync'}
+          description={alert ? 'Tất cả SP đều khớp — tuyệt vời!' : 'Bấm "🔄 Đồng bộ ngay" để bắt đầu.'}/>
+      ) : (
+        <Card style={{ padding:0, overflow:'hidden' }}>
+          <div style={{ overflowX:'auto' }}>
+            <table style={{ width:'100%', borderCollapse:'collapse', fontSize:12 }}>
+              <thead>
+                <tr style={{ background:T.bg, borderBottom:`2px solid ${T.border}` }}>
+                  <th style={{ padding:'10px 12px', textAlign:'left', fontWeight:700, color:T.med, fontSize:11 }}>Mã SP</th>
+                  <th style={{ padding:'10px 12px', textAlign:'left', fontWeight:700, color:T.med, fontSize:11 }}>Tên</th>
+                  <th style={{ padding:'10px 8px', textAlign:'right', fontWeight:700, color:T.med, fontSize:11 }}>KV</th>
+                  <th style={{ padding:'10px 8px', textAlign:'right', fontWeight:700, color:T.med, fontSize:11 }}>MISA</th>
+                  <th style={{ padding:'10px 8px', textAlign:'right', fontWeight:700, color:T.med, fontSize:11 }}>Lệch</th>
+                  <th style={{ padding:'10px 8px', textAlign:'center', fontWeight:700, color:T.med, fontSize:11 }}>Xu hướng</th>
+                </tr>
+              </thead>
+              <tbody>
+                {displayed.map((r: any, i: number) => {
+                  const absDiff = Number(r.abs_diff || 0)
+                  const diff = Number(r.diff || 0)
+                  const prevAbs = r.prev_abs_diff === null || r.prev_abs_diff === undefined
+                    ? null : Number(r.prev_abs_diff)
+                  return (
+                    <tr key={r.id || i} style={{
+                      borderBottom:`1px solid ${T.border}`,
+                      background: r.is_increasing ? '#FEF2F2' : (absDiff > 0 ? '#FFFBEB' : '#fff'),
+                    }}>
+                      <td style={{ padding:'8px 12px', fontFamily:'monospace', fontWeight:600, color:T.dark }}>
+                        {r.is_increasing && <span style={{ color:T.red, marginRight:4 }}>🔴</span>}
+                        {r.product_code}
+                      </td>
+                      <td style={{ padding:'8px 12px', color:T.dark, fontSize:11 }}>
+                        {r.product_name}
+                        {r.match_source === 'kv_only' && (
+                          <span style={{ marginLeft:6, fontSize:9, padding:'1px 6px', borderRadius:4,
+                            background:T.amberBg, color:T.amber, fontWeight:600 }}>Chỉ KV</span>
+                        )}
+                        {r.match_source === 'misa_only' && (
+                          <span style={{ marginLeft:6, fontSize:9, padding:'1px 6px', borderRadius:4,
+                            background:T.blueBg, color:T.blue, fontWeight:600 }}>Chỉ MISA</span>
+                        )}
+                      </td>
+                      <td style={{ padding:'8px 8px', textAlign:'right', fontFamily:'monospace', color:T.dark }}>
+                        {fmtNum(r.kv_qty)}
+                      </td>
+                      <td style={{ padding:'8px 8px', textAlign:'right', fontFamily:'monospace', color:T.dark }}>
+                        {fmtNum(r.misa_qty)}
+                      </td>
+                      <td style={{ padding:'8px 8px', textAlign:'right', fontFamily:'monospace', fontWeight:700,
+                        color: absDiff === 0 ? T.green : (diff > 0 ? T.amber : T.red) }}>
+                        {absDiff === 0 ? '0' : (diff > 0 ? `+${fmtNum(absDiff)}` : `-${fmtNum(absDiff)}`)}
+                      </td>
+                      <td style={{ padding:'8px 8px', textAlign:'center', fontSize:10 }}>
+                        {prevAbs === null ? (
+                          <span style={{ color:T.light }}>—</span>
+                        ) : r.is_increasing ? (
+                          <span style={{ color:T.red, fontWeight:700 }}>
+                            ↑ {fmtNum(absDiff - prevAbs)}
+                          </span>
+                        ) : absDiff < prevAbs ? (
+                          <span style={{ color:T.green, fontWeight:700 }}>
+                            ↓ {fmtNum(prevAbs - absDiff)}
+                          </span>
+                        ) : absDiff > 0 ? (
+                          <span style={{ color:T.med }}>→</span>
+                        ) : (
+                          <span style={{ color:T.green }}>✓</span>
+                        )}
+                      </td>
+                    </tr>
+                  )
+                })}
+              </tbody>
+            </table>
+          </div>
+        </Card>
+      )}
+
+      {/* Info footer */}
+      <div style={{ marginTop:16, padding:12, background:T.bg, borderRadius:8,
+        fontSize:10, color:T.light, lineHeight:1.6 }}>
+        💡 <b>Giải thích</b>:
+        <br/>• <b>Lệch (KV - MISA)</b>: Dương = KV nhiều hơn MISA • Âm = MISA nhiều hơn KV
+        <br/>• <b>🔴 Lệch tăng</b>: Mức lệch của SP này đã tăng so với lần đồng bộ trước (cần kiểm tra)
+        <br/>• <b>↓</b>: Lệch đã giảm — tốt! Mục tiêu: tất cả về 0
+        <br/>• <b>Chỉ KV / Chỉ MISA</b>: SP chỉ tồn tại ở 1 trong 2 hệ thống
+      </div>
+    </div>
+  )
+}
+
+
 function PhotoZoomViewer({ photos, startIdx, mobile, onClose, onRotate }: any) {
   const [idx, setIdx] = useState(startIdx)
   const [zoom, setZoom] = useState(1)
