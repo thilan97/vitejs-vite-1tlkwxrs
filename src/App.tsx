@@ -24802,8 +24802,10 @@ function SaleOrderTrackingModule({ user, allUsers, mobile }: any) {
   const [statusFilter, setStatusFilter] = useState<string>('active')
   const [dayRange, setDayRange] = useState(7)
   const [expanded, setExpanded] = useState<string|null>(null)
-  // v114: Date filter cho tab "Hoàn tất" — default = hôm nay (YYYY-MM-DD)
-  const [doneDateFilter, setDoneDateFilter] = useState<string>(() => {
+  // v114: Mode filter cho tab "Hoàn tất" — default = today
+  //   'today' = chỉ hôm nay, '3d' = 3 ngày gần, '7d' = 7 ngày gần, 'custom' = chọn ngày
+  const [doneMode, setDoneMode] = useState<'today'|'3d'|'7d'|'custom'>('today')
+  const [doneCustomDate, setDoneCustomDate] = useState<string>(() => {
     const d = new Date()
     const y = d.getFullYear()
     const m = String(d.getMonth() + 1).padStart(2, '0')
@@ -24879,21 +24881,37 @@ function SaleOrderTrackingModule({ user, allUsers, mobile }: any) {
     return new Date(o.purchase_date).getTime() <= testPeriodEnd
   }
 
-  // v114: Helper check packed_at có thuộc ngày doneDateFilter không (theo timezone VN)
-  const isPackedOnFilterDate = (o: any): boolean => {
+  // v114: Helper check packed_at có thuộc ngày filter (theo timezone VN)
+  // Support 4 modes: today / 3d / 7d / custom
+  const isPackedInDoneRange = (o: any): boolean => {
     if (!o.packed_at) return false
-    // packed_at là ISO UTC. Convert về VN date (YYYY-MM-DD) để so sánh
+    const packedTime = new Date(o.packed_at).getTime()
+    const now = Date.now()
+
+    if (doneMode === 'today') {
+      // Hôm nay (theo VN timezone)
+      const todayVN = new Date()
+      todayVN.setHours(0, 0, 0, 0)  // 00:00 local
+      return packedTime >= todayVN.getTime()
+    }
+    if (doneMode === '3d') {
+      return packedTime >= now - 3 * 86400000
+    }
+    if (doneMode === '7d') {
+      return packedTime >= now - 7 * 86400000
+    }
+    // custom: filter theo ngày chọn (YYYY-MM-DD)
     const d = new Date(o.packed_at)
-    const vnDate = new Date(d.getTime() + 7 * 3600 * 1000)  // +7h (VN = UTC+7)
+    const vnDate = new Date(d.getTime() + 7 * 3600 * 1000)
     const y = vnDate.getUTCFullYear()
     const m = String(vnDate.getUTCMonth() + 1).padStart(2, '0')
     const day = String(vnDate.getUTCDate()).padStart(2, '0')
-    return `${y}-${m}-${day}` === doneDateFilter
+    return `${y}-${m}-${day}` === doneCustomDate
   }
 
   const statusGroups: Record<string, (o: any) => boolean> = {
     active:    (o) => ['picking', 'packing'].includes(o.status) && !isBeforeTestPeriodEnd(o),
-    done:      (o) => o.status === 'done' && !isAdminPacked(o) && isPackedOnFilterDate(o),
+    done:      (o) => o.status === 'done' && !isAdminPacked(o) && isPackedInDoneRange(o),
     cancelled: (o) => o.status === 'cancelled',
     all:       ()  => true,
   }
@@ -24909,7 +24927,7 @@ function SaleOrderTrackingModule({ user, allUsers, mobile }: any) {
 
   const counts = {
     active:    orders.filter(o => ['picking','packing'].includes(o.status) && !isBeforeTestPeriodEnd(o)).length,
-    done:      orders.filter(o => o.status === 'done' && !isAdminPacked(o) && isPackedOnFilterDate(o)).length,
+    done:      orders.filter(o => o.status === 'done' && !isAdminPacked(o) && isPackedInDoneRange(o)).length,
     cancelled: orders.filter(o => o.status === 'cancelled').length,
     all:       orders.length,
   }
@@ -24935,13 +24953,14 @@ function SaleOrderTrackingModule({ user, allUsers, mobile }: any) {
       <Topbar mobile={mobile} title="📦 Theo dõi đơn hàng"
         subtitle={(() => {
           if (statusFilter === 'done') {
-            const [y,m,d] = doneDateFilter.split('-')
-            const dayStr = `${d}/${m}/${y}`
-            const todayStr = (() => {
-              const dt = new Date()
-              return `${dt.getFullYear()}-${String(dt.getMonth()+1).padStart(2,'0')}-${String(dt.getDate()).padStart(2,'0')}`
-            })()
-            const label = doneDateFilter === todayStr ? 'hôm nay' : dayStr
+            let label = ''
+            if (doneMode === 'today') label = 'hôm nay'
+            else if (doneMode === '3d') label = '3 ngày gần đây'
+            else if (doneMode === '7d') label = '7 ngày gần đây'
+            else {
+              const [y,m,d] = doneCustomDate.split('-')
+              label = `${d}/${m}/${y}`
+            }
             return isSale ? `Đơn hoàn tất của bạn ${label}` : `Đơn hoàn tất ${label}`
           }
           return isSale ? `Đơn của bạn trong ${dayRange} ngày gần đây` : `Tất cả đơn — ${dayRange} ngày`
@@ -24962,45 +24981,43 @@ function SaleOrderTrackingModule({ user, allUsers, mobile }: any) {
             fontSize:12, fontFamily:'inherit', color:T.dark, background:'#fff', outline:'none',
             boxSizing:'border-box' as any, marginBottom:10 }}/>
         <div style={{ display:'flex', gap:8, flexWrap:'wrap', alignItems:'center' }}>
-          <select value={dayRange} onChange={e => setDayRange(Number(e.target.value))}
-            style={{ padding:'5px 10px', border:`1px solid ${T.border}`, borderRadius:6,
-              fontSize:11, fontFamily:"inherit", background:"#fff", color:T.dark, outline:"none" }}>
-            <option value={3}>3 ngày</option>
-            <option value={7}>7 ngày</option>
-            <option value={15}>15 ngày</option>
-            <option value={30}>30 ngày</option>
-          </select>
-          {/* v114: Date picker cho tab Hoàn tất */}
-          {statusFilter === 'done' && (() => {
-            const todayStr = (() => {
-              const d = new Date()
-              return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`
-            })()
-            const isToday = doneDateFilter === todayStr
-            return (
-              <>
-                <div style={{ display:'flex', alignItems:'center', gap:6,
-                  padding:'4px 10px', borderRadius:6,
-                  background:T.goldBg, border:`1px solid ${T.gold}` }}>
-                  <span style={{ fontSize:11, color:T.goldText, fontWeight:600 }}>📅 Ngày:</span>
-                  <input type="date" value={doneDateFilter}
-                    onChange={e => setDoneDateFilter(e.target.value)}
+          {/* v114: Tab "Hoàn tất" dùng dropdown riêng với 4 options */}
+          {statusFilter === 'done' ? (
+            <>
+              <select value={doneMode}
+                onChange={e => setDoneMode(e.target.value as any)}
+                style={{ padding:'5px 10px', border:`1.5px solid ${T.gold}`, borderRadius:6,
+                  fontSize:11, fontFamily:'inherit', background:T.goldBg, color:T.goldText,
+                  fontWeight:600, outline:'none', cursor:'pointer' }}>
+                <option value="today">📅 Hôm nay</option>
+                <option value="3d">📅 3 ngày gần đây</option>
+                <option value="7d">📅 7 ngày gần đây</option>
+                <option value="custom">📅 Tuỳ chọn ngày...</option>
+              </select>
+              {doneMode === 'custom' && (() => {
+                const todayStr = (() => {
+                  const d = new Date()
+                  return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`
+                })()
+                return (
+                  <input type="date" value={doneCustomDate}
+                    onChange={e => setDoneCustomDate(e.target.value)}
                     max={todayStr}
-                    style={{ padding:'3px 6px', border:`1px solid ${T.gold}`, borderRadius:4,
+                    style={{ padding:'5px 8px', border:`1.5px solid ${T.gold}`, borderRadius:6,
                       fontSize:11, fontFamily:'inherit', background:'#fff', color:T.dark, outline:'none' }}/>
-                </div>
-                {!isToday && (
-                  <button onClick={() => setDoneDateFilter(todayStr)}
-                    style={{ padding:'4px 10px', borderRadius:6,
-                      border:`1px solid ${T.blue}`, background:T.blueBg,
-                      color:T.blue, cursor:'pointer', fontFamily:'inherit',
-                      fontSize:11, fontWeight:600 }}>
-                    ↻ Hôm nay
-                  </button>
-                )}
-              </>
-            )
-          })()}
+                )
+              })()}
+            </>
+          ) : (
+            <select value={dayRange} onChange={e => setDayRange(Number(e.target.value))}
+              style={{ padding:'5px 10px', border:`1px solid ${T.border}`, borderRadius:6,
+                fontSize:11, fontFamily:"inherit", background:"#fff", color:T.dark, outline:"none" }}>
+              <option value={3}>3 ngày</option>
+              <option value={7}>7 ngày</option>
+              <option value={15}>15 ngày</option>
+              <option value={30}>30 ngày</option>
+            </select>
+          )}
           {!isSale && (
             <div style={{ fontSize:11, color:T.light }}>
               Hiển thị tất cả nhân viên
@@ -25492,7 +25509,14 @@ function ErrorReportModule({ user, allUsers, mobile }: any) {
       const blob = await compressImageV2(file, 1920, 0.82)
       const ts = Date.now()
       const sub = target === 'resolve' ? 'resolution' : 'error-reports'
-      const path = `${sub}/${user.id}_${ts}.jpg`
+      // v114 FIX: Sanitize user.id để bỏ ký tự tiếng Việt/unicode
+      // (Supabase Storage key không nhận Unicode như "đ", "ê"...)
+      const safeUserId = (user.id || 'unknown')
+        .normalize('NFD')
+        .replace(/[\u0300-\u036f]/g, '')
+        .replace(/đ/g, 'd').replace(/Đ/g, 'D')
+        .replace(/[^a-zA-Z0-9_-]/g, '_')
+      const path = `${sub}/${safeUserId}_${ts}.jpg`
       const { data, error } = await db.storage.from('packing-photos').upload(path, blob, {
         contentType: 'image/jpeg', upsert: false,
       })
