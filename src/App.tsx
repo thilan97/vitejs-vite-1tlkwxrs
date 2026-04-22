@@ -27688,7 +27688,7 @@ function InventorySyncModule({ user, allUsers, mobile }: any) {
   const p = mobile ? '16px' : '24px'
   const [settings, setSettings] = useState<any>(null)
   const [items, setItems] = useState<any[]>([])
-  const [alert, setAlert] = useState<any>(null)
+  const [summary, setSummary] = useState<any>(null)  // v115 FIX: đổi tên từ 'alert' (tránh shadow window.alert)
   const [loading, setLoading] = useState(true)
   const [syncing, setSyncing] = useState(false)
   const [filter, setFilter] = useState<'all'|'diff'|'increasing'>('diff')
@@ -27700,18 +27700,18 @@ function InventorySyncModule({ user, allUsers, mobile }: any) {
   const loadData = async () => {
     setLoading(true)
     try {
-      // 1. Load settings
-      const { data: s } = await db.from('misa_settings').select('*').eq('id', 1).single()
+      // 1. Load settings (dùng maybeSingle để handle case 0 rows)
+      const { data: s } = await db.from('misa_settings').select('*').eq('id', 1).maybeSingle()
       setSettings(s)
 
       // 2. Load latest alert + history
-      const { data: lastAlert } = await db.from('inventory_sync_alerts')
+      const { data: lastSummary } = await db.from('inventory_sync_alerts')
         .select('*').order('sync_at', { ascending: false }).limit(1).maybeSingle()
-      setAlert(lastAlert)
+      setSummary(lastSummary)
 
-      if (lastAlert?.sync_batch_id) {
+      if (lastSummary?.sync_batch_id) {
         const { data: hist } = await db.from('inventory_sync_history')
-          .select('*').eq('sync_batch_id', lastAlert.sync_batch_id).limit(10000)
+          .select('*').eq('sync_batch_id', lastSummary.sync_batch_id).limit(10000)
         setItems(hist || [])
       } else {
         setItems([])
@@ -27741,13 +27741,13 @@ function InventorySyncModule({ user, allUsers, mobile }: any) {
       })
       const data = await res.json()
       if (!data.success) {
-        alert2(`❌ Lỗi sync: ${data.error || 'Unknown'}`)
+        window.alert(`❌ Lỗi sync: ${data.error || 'Unknown'}`)
       } else {
-        alert2(`✅ Đồng bộ xong!\n\n• Tổng SP: ${data.total_products}\n• Mã lệch: ${data.items_with_diff}\n• Lệch tăng: ${data.items_increasing}\n• Thời gian: ${Math.round(data.duration_ms/1000)}s`)
+        window.alert(`✅ Đồng bộ xong!\n\n• Tổng SP: ${data.total_products}\n• Mã lệch: ${data.items_with_diff}\n• Lệch tăng: ${data.items_increasing}\n• Thời gian: ${Math.round(data.duration_ms/1000)}s`)
       }
       await loadData()
     } catch (e: any) {
-      alert2('❌ Lỗi: ' + (e.message || String(e)))
+      window.alert('❌ Lỗi: ' + (e.message || String(e)))
     } finally {
       setSyncing(false)
     }
@@ -27773,9 +27773,7 @@ function InventorySyncModule({ user, allUsers, mobile }: any) {
     })
   }, [items, filter, searchQ])
 
-  // Alert2 helper (vì alert() có thể bị chặn ở 1 số browser)
-  const alert2 = (msg: string) => alert(msg)
-
+  // v115 FIX: bỏ alert2 helper, dùng window.alert trực tiếp
   const fmtNum = (n: number) => Number(n || 0).toLocaleString('vi-VN')
   const fmtAbs = (n: number) => { const v = Number(n || 0); return v === 0 ? '—' : fmtNum(Math.abs(v)) }
 
@@ -27827,37 +27825,37 @@ function InventorySyncModule({ user, allUsers, mobile }: any) {
               </div>
             )}
           </div>
-          {alert && (
+          {summary && (
             <div style={{ display:'flex', gap:10, flexWrap:'wrap' }}>
               <div style={{ textAlign:'center', minWidth:90 }}>
                 <div style={{ fontSize:10, color:T.med }}>Tổng SP</div>
-                <div style={{ fontSize:18, fontWeight:700, color:T.dark }}>{fmtNum(alert.total_products)}</div>
+                <div style={{ fontSize:18, fontWeight:700, color:T.dark }}>{fmtNum(summary.total_products)}</div>
               </div>
               <div style={{ textAlign:'center', minWidth:90,
                 padding:'4px 10px', borderRadius:8,
-                background: alert.items_with_diff > 0 ? '#FEF2F2' : T.greenBg }}>
+                background: summary.items_with_diff > 0 ? '#FEF2F2' : T.greenBg }}>
                 <div style={{ fontSize:10, color:T.med }}>Mã lệch</div>
                 <div style={{ fontSize:18, fontWeight:700,
-                  color: alert.items_with_diff > 0 ? T.red : T.green }}>
-                  {fmtNum(alert.items_with_diff)}
+                  color: summary.items_with_diff > 0 ? T.red : T.green }}>
+                  {fmtNum(summary.items_with_diff)}
                 </div>
               </div>
-              {alert.items_increasing > 0 && (
+              {summary.items_increasing > 0 && (
                 <div style={{ textAlign:'center', minWidth:90,
                   padding:'4px 10px', borderRadius:8, background:'#FEF2F2',
                   border:`1.5px solid ${T.red}` }}>
                   <div style={{ fontSize:10, color:T.red, fontWeight:600 }}>🔴 Lệch tăng</div>
                   <div style={{ fontSize:18, fontWeight:800, color:T.red }}>
-                    {fmtNum(alert.items_increasing)}
+                    {fmtNum(summary.items_increasing)}
                   </div>
                 </div>
               )}
               <div style={{ textAlign:'center', minWidth:90 }}>
                 <div style={{ fontSize:10, color:T.med }}>Tổng |lệch|</div>
-                <div style={{ fontSize:18, fontWeight:700, color:T.dark }}>{fmtNum(alert.total_abs_diff)}</div>
-                {alert.prev_total_abs_diff !== null && alert.prev_total_abs_diff !== undefined && (
-                  <div style={{ fontSize:9, color: Number(alert.total_abs_diff) > Number(alert.prev_total_abs_diff) ? T.red : T.green }}>
-                    {Number(alert.total_abs_diff) > Number(alert.prev_total_abs_diff) ? '↑' : '↓'} {fmtNum(Math.abs(Number(alert.total_abs_diff) - Number(alert.prev_total_abs_diff||0)))}
+                <div style={{ fontSize:18, fontWeight:700, color:T.dark }}>{fmtNum(summary.total_abs_diff)}</div>
+                {summary.prev_total_abs_diff !== null && summary.prev_total_abs_diff !== undefined && (
+                  <div style={{ fontSize:9, color: Number(summary.total_abs_diff) > Number(summary.prev_total_abs_diff) ? T.red : T.green }}>
+                    {Number(summary.total_abs_diff) > Number(summary.prev_total_abs_diff) ? '↑' : '↓'} {fmtNum(Math.abs(Number(summary.total_abs_diff) - Number(summary.prev_total_abs_diff||0)))}
                   </div>
                 )}
               </div>
@@ -27897,8 +27895,8 @@ function InventorySyncModule({ user, allUsers, mobile }: any) {
         <div style={{ padding:'40px 20px', textAlign:'center', color:T.light }}>⏳ Đang tải...</div>
       ) : displayed.length === 0 ? (
         <EmptyState icon={Ico.barChart}
-          title={alert ? 'Không có mã lệch' : 'Chưa có dữ liệu sync'}
-          description={alert ? 'Tất cả SP đều khớp — tuyệt vời!' : 'Bấm "🔄 Đồng bộ ngay" để bắt đầu.'}/>
+          title={summary ? 'Không có mã lệch' : 'Chưa có dữ liệu sync'}
+          description={summary ? 'Tất cả SP đều khớp — tuyệt vời!' : 'Bấm "🔄 Đồng bộ ngay" để bắt đầu.'}/>
       ) : (
         <Card style={{ padding:0, overflow:'hidden' }}>
           <div style={{ overflowX:'auto' }}>
