@@ -27701,23 +27701,29 @@ function InventorySyncModule({ user, allUsers, mobile }: any) {
     setLoading(true)
     try {
       // 1. Load settings (dùng maybeSingle để handle case 0 rows)
-      const { data: s } = await db.from('misa_settings').select('*').eq('id', 1).maybeSingle()
+      const { data: s, error: e1 } = await db.from('misa_settings').select('*').eq('id', 1).maybeSingle()
+      if (e1) console.error('[INV-SYNC] misa_settings error:', e1)
+      else console.log('[INV-SYNC] misa_settings:', s)
       setSettings(s)
 
       // 2. Load latest alert + history
-      const { data: lastSummary } = await db.from('inventory_sync_alerts')
+      const { data: lastSummary, error: e2 } = await db.from('inventory_sync_alerts')
         .select('*').order('sync_at', { ascending: false }).limit(1).maybeSingle()
+      if (e2) console.error('[INV-SYNC] inventory_sync_alerts error:', e2)
+      else console.log('[INV-SYNC] lastSummary:', lastSummary)
       setSummary(lastSummary)
 
       if (lastSummary?.sync_batch_id) {
-        const { data: hist } = await db.from('inventory_sync_history')
+        const { data: hist, error: e3 } = await db.from('inventory_sync_history')
           .select('*').eq('sync_batch_id', lastSummary.sync_batch_id).limit(10000)
+        if (e3) console.error('[INV-SYNC] inventory_sync_history error:', e3)
+        else console.log('[INV-SYNC] history rows:', hist?.length)
         setItems(hist || [])
       } else {
         setItems([])
       }
     } catch (e: any) {
-      console.error('Load invsync data failed:', e)
+      console.error('[INV-SYNC] Load data failed:', e)
     } finally {
       setLoading(false)
     }
