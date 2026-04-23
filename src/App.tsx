@@ -28850,15 +28850,16 @@ function GhtkSettingsPanel({ user, mobile }: any) {
   const [saving, setSaving] = useState(false)
   // v119: Test panel
   const [testForm, setTestForm] = useState({
-    pick_tel:    '',
-    cust_name:   'Khách Test',
-    cust_tel:    '0912345678',
-    cust_address:'Xóm 12',
+    pick_tel:     '',
+    cust_name:    'Khách Test',
+    cust_tel:     '0912345678',
+    cust_address: 'Xóm 12',
     cust_province:'Ninh Bình',
     cust_district:'Kim Sơn',
-    cust_ward:   'Quang Thiện',
-    weight_kg:   '5',
-    pick_money:  '0',
+    cust_ward:    'Quang Thiện',
+    weight_kg:    '5',
+    pick_money:   '0',
+    order_value:  '500000',   // Giá trị hàng khai báo (VND), mặc định 500k
   })
   const [testing, setTesting]     = useState(false)
   const [testResult, setTestResult] = useState<any>(null)
@@ -28942,7 +28943,8 @@ function GhtkSettingsPanel({ user, mobile }: any) {
           district:   testForm.cust_district,
           ward:       testForm.cust_ward,
           hamlet:     'Khác',
-          pick_money: Number(testForm.pick_money || 0),
+          pick_money:  Number(testForm.pick_money || 0),
+          order_value: Math.min(Number(testForm.order_value || 500000), 3000000),
           is_freeship: 0,
           tags:       [3],
           note:       'Test đơn — huỷ sau khi kiểm tra',
@@ -29126,6 +29128,18 @@ function GhtkSettingsPanel({ user, mobile }: any) {
             <input type="number" min={0} value={testForm.pick_money}
               onChange={e => setTestForm(f => ({...f, pick_money:e.target.value}))}
               style={fieldStyle}/>
+          </div>
+          <div>
+            <label style={labelStyle}>
+              Giá trị hàng khai báo (đ)
+              <span style={{ fontSize:9, color:T.light, marginLeft:6 }}>max 3,000,000đ</span>
+            </label>
+            <input type="number" min={1} max={3000000} value={testForm.order_value}
+              onChange={e => setTestForm(f => ({...f, order_value: String(Math.min(Number(e.target.value), 3000000))}))}
+              style={{ ...fieldStyle, borderColor: Number(testForm.order_value) > 3000000 ? T.red : T.border }}/>
+            {Number(testForm.order_value) > 3000000 && (
+              <div style={{ fontSize:10, color:T.red, marginTop:2 }}>Tự động cap về 3,000,000đ</div>
+            )}
           </div>
         </div>
         <div style={{ display:'grid', gridTemplateColumns: mobile ? '1fr' : '1fr 1fr 1fr', gap:10, marginBottom:14 }}>
