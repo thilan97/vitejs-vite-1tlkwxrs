@@ -12,7 +12,7 @@ const db = createClient(SUPABASE_URL, SUPABASE_KEY)
 // APP_VERSION — dùng để invalidate cache localStorage mỗi khi deploy version mới
 // (ngăn bug quyền user bị "reset" do cache position cũ sau deploy)
 // ⚠️ MỖI LẦN DEPLOY FEATURE MỚI CÓ PERMISSION MỚI, BUMP SỐ NÀY:
-const APP_VERSION = '2026.04.23.v119'
+const APP_VERSION = '2026.04.23.v120'
 
 // ════════════════════════════════════════════════════════════════
 // AUDIT LOG — ghi nhận các hành động phá hoại data để trace lại
@@ -28848,6 +28848,21 @@ function GhtkSettingsPanel({ user, mobile }: any) {
   const [settings, setSettings] = useState<any>(null)
   const [loading, setLoading] = useState(true)
   const [saving, setSaving] = useState(false)
+  // v119: Test panel
+  const [testForm, setTestForm] = useState({
+    pick_tel:    '',
+    cust_name:   'Khách Test',
+    cust_tel:    '0912345678',
+    cust_address:'Xóm 12',
+    cust_province:'Ninh Bình',
+    cust_district:'Kim Sơn',
+    cust_ward:   'Quang Thiện',
+    weight_kg:   '5',
+    pick_money:  '0',
+  })
+  const [testing, setTesting]     = useState(false)
+  const [testResult, setTestResult] = useState<any>(null)
+
   const [form, setForm] = useState({
     api_token: '', x_client_source: '',
     pick_name: '', pick_tel: '', pick_address: '',
@@ -28894,6 +28909,59 @@ function GhtkSettingsPanel({ user, mobile }: any) {
       window.alert('✅ Đã lưu cấu hình GHTK')
     } finally {
       setSaving(false)
+    }
+  }
+
+  // v119: Tạo đơn test GHTK
+  const runTest = async () => {
+    if (!form.api_token.trim()) { window.alert('❌ Cần lưu API Token trước'); return }
+    if (!testForm.pick_tel.trim()) { window.alert('❌ Cần nhập SĐT kho'); return }
+    if (!testForm.cust_tel.trim() || !testForm.cust_name.trim()) {
+      window.alert('❌ Cần nhập thông tin KH test'); return
+    }
+    setTesting(true)
+    setTestResult(null)
+    try {
+      const payload = {
+        order_code: `TEST_${Date.now()}`,
+        // Override settings bằng form hiện tại (chưa lưu cũng test được)
+        api_token:      form.api_token,
+        x_client_source: form.x_client_source,
+        pick_name:      form.pick_name || 'LA Global Beauty',
+        pick_tel:       testForm.pick_tel || form.pick_tel,
+        pick_address:   form.pick_address,
+        pick_province:  form.pick_province,
+        pick_district:  form.pick_district,
+        pick_ward:      form.pick_ward,
+        customer_info: {
+          name:       testForm.cust_name,
+          tel:        testForm.cust_tel,
+          address:    testForm.cust_address,
+          province:   testForm.cust_province,
+          district:   testForm.cust_district,
+          ward:       testForm.cust_ward,
+          hamlet:     'Khác',
+          pick_money: Number(testForm.pick_money || 0),
+          is_freeship: 0,
+          tags:       [3],
+          note:       'Test đơn — huỷ sau khi kiểm tra',
+        },
+        boxes: [{ box_no: 1, weight_kg: Number(testForm.weight_kg || 5) }],
+      }
+      const res = await fetch(`${SUPABASE_URL}/functions/v1/ghtk-create-order`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${SUPABASE_ANON}`,
+        },
+        body: JSON.stringify(payload),
+      })
+      const json = await res.json()
+      setTestResult(json)
+    } catch(e: any) {
+      setTestResult({ success: false, error: e.message })
+    } finally {
+      setTesting(false)
     }
   }
 
@@ -29004,6 +29072,147 @@ function GhtkSettingsPanel({ user, mobile }: any) {
             fontFamily:'inherit', fontSize:13, fontWeight:700 }}>
           {saving ? '⏳ Đang lưu...' : '💾 Lưu cấu hình'}
         </button>
+      </div>
+
+      {/* v119: Test Panel */}
+      <div style={{ marginTop:24, paddingTop:20, borderTop:`2px dashed ${T.border}` }}>
+        <div style={{ fontSize:14, fontWeight:700, color:T.dark, marginBottom:4 }}>
+          🧪 Tạo đơn test GHTK
+        </div>
+        <div style={{ fontSize:11, color:T.light, marginBottom:14 }}>
+          Tạo 1 đơn test để kiểm tra kết nối API. <b>Nhớ huỷ đơn trên GHTK sau khi test!</b>
+        </div>
+
+        <div style={{ display:'grid', gridTemplateColumns: mobile ? '1fr' : '1fr 1fr', gap:10, marginBottom:10 }}>
+          <div>
+            <label style={labelStyle}>SĐT kho lấy hàng *</label>
+            <input value={testForm.pick_tel || form.pick_tel}
+              onChange={e => setTestForm(f => ({...f, pick_tel:e.target.value}))}
+              placeholder="0912345678" style={fieldStyle}/>
+          </div>
+          <div>
+            <label style={labelStyle}>Cân nặng test (kg)</label>
+            <input type="number" min={0.1} step={0.1} value={testForm.weight_kg}
+              onChange={e => setTestForm(f => ({...f, weight_kg:e.target.value}))}
+              style={fieldStyle}/>
+          </div>
+        </div>
+
+        <div style={{ fontSize:12, fontWeight:700, color:T.med, margin:'10px 0 8px' }}>
+          👤 Thông tin KH test
+        </div>
+        <div style={{ display:'grid', gridTemplateColumns: mobile ? '1fr' : '1fr 1fr', gap:10, marginBottom:10 }}>
+          <div>
+            <label style={labelStyle}>Tên KH *</label>
+            <input value={testForm.cust_name}
+              onChange={e => setTestForm(f => ({...f, cust_name:e.target.value}))}
+              placeholder="Nguyễn Văn A" style={fieldStyle}/>
+          </div>
+          <div>
+            <label style={labelStyle}>SĐT KH *</label>
+            <input value={testForm.cust_tel}
+              onChange={e => setTestForm(f => ({...f, cust_tel:e.target.value}))}
+              placeholder="0912345678" style={fieldStyle}/>
+          </div>
+          <div>
+            <label style={labelStyle}>Địa chỉ chi tiết</label>
+            <input value={testForm.cust_address}
+              onChange={e => setTestForm(f => ({...f, cust_address:e.target.value}))}
+              placeholder="Xóm 12" style={fieldStyle}/>
+          </div>
+          <div>
+            <label style={labelStyle}>COD (đ) — 0 nếu không thu</label>
+            <input type="number" min={0} value={testForm.pick_money}
+              onChange={e => setTestForm(f => ({...f, pick_money:e.target.value}))}
+              style={fieldStyle}/>
+          </div>
+        </div>
+        <div style={{ display:'grid', gridTemplateColumns: mobile ? '1fr' : '1fr 1fr 1fr', gap:10, marginBottom:14 }}>
+          <div>
+            <label style={labelStyle}>Tỉnh/TP</label>
+            <input value={testForm.cust_province}
+              onChange={e => setTestForm(f => ({...f, cust_province:e.target.value}))}
+              placeholder="Ninh Bình" style={fieldStyle}/>
+          </div>
+          <div>
+            <label style={labelStyle}>Quận/Huyện</label>
+            <input value={testForm.cust_district}
+              onChange={e => setTestForm(f => ({...f, cust_district:e.target.value}))}
+              placeholder="Kim Sơn" style={fieldStyle}/>
+          </div>
+          <div>
+            <label style={labelStyle}>Phường/Xã</label>
+            <input value={testForm.cust_ward}
+              onChange={e => setTestForm(f => ({...f, cust_ward:e.target.value}))}
+              placeholder="Quang Thiện" style={fieldStyle}/>
+          </div>
+        </div>
+
+        <button onClick={runTest} disabled={testing}
+          style={{ padding:'9px 24px', borderRadius:20,
+            border:`1.5px solid ${testing ? T.border : T.blue}`,
+            background: testing ? T.border : T.blueBg,
+            color: testing ? T.light : T.blue,
+            cursor: testing ? 'wait' : 'pointer',
+            fontFamily:'inherit', fontSize:13, fontWeight:700 }}>
+          {testing ? '⏳ Đang gọi GHTK...' : '🚀 Tạo đơn test'}
+        </button>
+
+        {/* Kết quả test */}
+        {testResult && (
+          <div style={{ marginTop:16, padding:14, borderRadius:10,
+            background: testResult.success ? T.greenBg : T.redBg,
+            border:`1px solid ${testResult.success ? T.green : T.red}` }}>
+            <div style={{ fontWeight:700, fontSize:13, marginBottom:10,
+              color: testResult.success ? T.green : T.red }}>
+              {testResult.success ? '✅ Tạo đơn thành công!' : '❌ Tạo đơn thất bại'}
+            </div>
+
+            {testResult.results?.map((r: any) => (
+              <div key={r.box_no} style={{ marginBottom:10, padding:10, borderRadius:8,
+                background:'#fff', border:`1px solid ${r.success ? T.green : T.red}` }}>
+                <div style={{ fontWeight:700, color:T.dark, marginBottom:6 }}>
+                  📦 Thùng {r.box_no} — {r.weight_kg}kg {r.is_bigsize ? '(BIGSIZE)' : '(thường)'}
+                </div>
+                {r.success ? (
+                  <div style={{ display:'flex', gap:16, flexWrap:'wrap' }}>
+                    <span style={{ fontSize:12 }}>🏷 Label ID: <b style={{ color:T.blue }}>{r.label_id}</b></span>
+                    <span style={{ fontSize:12 }}>💰 Phí ship: <b>{Number(r.fee||0).toLocaleString('vi-VN')}đ</b></span>
+                    <span style={{ fontSize:12 }}>💵 COD: <b>{Number(r.cod||0).toLocaleString('vi-VN')}đ</b></span>
+                  </div>
+                ) : (
+                  <div style={{ fontSize:12, color:T.red }}>{r.status_text || r.raw?.message || 'Lỗi không xác định'}</div>
+                )}
+              </div>
+            ))}
+
+            {testResult.error && (
+              <div style={{ fontSize:12, color:T.red }}>{testResult.error}</div>
+            )}
+
+            <div style={{ marginTop:10 }}>
+              <div style={{ fontSize:11, fontWeight:700, color:T.med, marginBottom:4 }}>📋 Raw response:</div>
+              <pre style={{ fontSize:10, color:T.dark, background:'rgba(0,0,0,0.04)',
+                padding:8, borderRadius:6, overflow:'auto', maxHeight:200,
+                whiteSpace:'pre-wrap', wordBreak:'break-word', margin:0 }}>
+                {JSON.stringify(testResult, null, 2)}
+              </pre>
+            </div>
+
+            {testResult.success && (
+              <div style={{ marginTop:10, padding:'8px 12px', borderRadius:6,
+                background:'#FEF3C7', border:'1px solid #FCD34D', fontSize:12, color:'#92400E' }}>
+                ⚠️ <b>Nhớ vào GHTK huỷ đơn test này!</b> Label ID: {testResult.results?.map((r: any) => r.label_id).join(', ')}
+              </div>
+            )}
+
+            <button onClick={() => setTestResult(null)}
+              style={{ marginTop:10, padding:'4px 14px', borderRadius:20, fontSize:11, cursor:'pointer',
+                border:`1px solid ${testResult.success ? T.green : T.red}`,
+                background:'transparent', color: testResult.success ? T.green : T.red,
+                fontFamily:'inherit' }}>Đóng</button>
+          </div>
+        )}
       </div>
     </Card>
   )
