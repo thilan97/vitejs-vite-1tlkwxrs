@@ -12,7 +12,7 @@ const db = createClient(SUPABASE_URL, SUPABASE_KEY)
 // APP_VERSION — dùng để invalidate cache localStorage mỗi khi deploy version mới
 // (ngăn bug quyền user bị "reset" do cache position cũ sau deploy)
 // ⚠️ MỖI LẦN DEPLOY FEATURE MỚI CÓ PERMISSION MỚI, BUMP SỐ NÀY:
-const APP_VERSION = '2026.04.23.v121'
+const APP_VERSION = '2026.04.23.v122'
 
 // ════════════════════════════════════════════════════════════════
 // AUDIT LOG — ghi nhận các hành động phá hoại data để trace lại
@@ -19778,6 +19778,11 @@ function PackingDetailPanel({ ord, mobile, user, allUsers, products, allOrders, 
             </div>
           )}
 
+          {/* v122: Phase 3 — Section GHTK (điền cân + tạo đơn) */}
+          {ord.is_ghtk_order && !ord.no_box && (
+            <GhtkPackingSection ord={ord} user={user} mobile={mobile}/>
+          )}
+
           {/* Footer */}
           {!readOnly && (
             <div style={{ display:'flex', gap:8, paddingTop:14, marginTop:14, borderTop:`1px solid ${T.border}` }}>
@@ -28889,6 +28894,324 @@ function GhtkOrderRow({ order: o, tab, mobile, onRefresh, user, onFillInfo }: an
 
 
 // ── GHTK Settings Panel ──
+// ══════════════════════════════════════════════════════════════════════
+// v122: GHTK Packing Section — NV Kho điền cân thùng + tạo đơn
+// ══════════════════════════════════════════════════════════════════════
+function GhtkPackingSection({ ord, user, mobile }: any) {
+  const perm = getPerm(user)
+  const canWeight = perm.ghtkWeight
+  const info = ord.ghtk_customer_info || {}
+  const hasCustInfo = !!(info.name && info.tel && info.address && info.province)
+  const existingBoxes = ord.ghtk_boxes || []
+  const existingLabels = ord.ghtk_labels || []
+  const hasLabels = existingLabels.length > 0
+
+  // State: boxes = [{ box_no, weight_kg }]
+  const [boxes, setBoxes] = useState<any[]>(() => {
+    if (existingBoxes.length > 0) return existingBoxes
+    return [{ box_no: 1, weight_kg: '' }]
+  })
+  const [creating, setCreating] = useState(false)
+  const [createResult, setCreateResult] = useState<any>(null)
+
+  const addBox = () => {
+    if (hasLabels) return
+    setBoxes((prev: any[]) => [...prev, { box_no: prev.length + 1, weight_kg: '' }])
+  }
+
+  const removeBox = (idx: number) => {
+    if (hasLabels) return
+    if (boxes.length === 1) return
+    setBoxes((prev: any[]) => prev.filter((_: any, i: number) => i !== idx)
+      .map((b: any, i: number) => ({ ...b, box_no: i + 1 })))
+  }
+
+  const updateBoxWeight = (idx: number, value: string) => {
+    if (hasLabels) return
+    setBoxes((prev: any[]) => prev.map((b: any, i: number) =>
+      i === idx ? { ...b, weight_kg: value } : b
+    ))
+  }
+
+  // Save boxes to DB (không tạo đơn)
+  const saveBoxes = async () => {
+    const cleanBoxes = boxes.map((b: any) => ({
+      box_no: b.box_no,
+      weight_kg: Number(b.weight_kg || 0),
+    }))
+    await db.from('packing_workflow')
+      .update({ ghtk_boxes: cleanBoxes, updated_at: new Date().toISOString() })
+      .eq('order_code', ord.order_code)
+  }
+
+  // Create GHTK order (call Edge Function)
+  const createGhtkOrder = async () => {
+    if (!hasCustInfo) {
+      alert('❌ Sale chưa điền info KH. Báo Sale vào module GHTK điền info trước.')
+      return
+    }
+    // Validate cân
+    const invalidBox = boxes.find((b: any) => !b.weight_kg || Number(b.weight_kg) <= 0)
+    if (invalidBox) {
+      alert('❌ Thùng ' + invalidBox.box_no + ' chưa có cân nặng hợp lệ.')
+      return
+    }
+
+    setCreating(true)
+    setCreateResult(null)
+    try {
+      await saveBoxes()  // lưu cân trước
+
+      const totalAmountVnd = Math.min(Number(ord.total_amount || 0) * 1000, 3000000)
+
+      const payload = {
+        order_code: ord.order_code,
+        customer_info: {
+          name:        info.name,
+          tel:         info.tel,
+          address:     info.address,
+          ward:        info.ward || '',
+          district:    info.district || '',
+          province:    info.province,
+          hamlet:      info.hamlet || 'Khác',
+          pick_money:  Number(info.pick_money || 0),
+          order_value: totalAmountVnd,
+          is_freeship: Number(info.is_freeship || 0),
+          tags:        info.tags || [3],
+          note:        info.note || '',
+        },
+        boxes: boxes.map((b: any) => ({
+          box_no: b.box_no,
+          weight_kg: Number(b.weight_kg),
+        })),
+      }
+
+      const res = await fetch(`${SUPABASE_URL}/functions/v1/ghtk-create-order`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${SUPABASE_ANON}`,
+        },
+        body: JSON.stringify(payload),
+      })
+      const json = await res.json()
+      setCreateResult(json)
+    } catch (e: any) {
+      setCreateResult({ success: false, error: e.message })
+    } finally {
+      setCreating(false)
+    }
+  }
+
+  // Reset để tạo lại
+  const retry = () => {
+    setCreateResult(null)
+  }
+
+  const totalWeight = boxes.reduce((s, b) => s + Number(b.weight_kg || 0), 0)
+  const anyBigsize = boxes.some((b: any) => Number(b.weight_kg || 0) >= 20)
+
+  return (
+    <div style={{ padding:'14px', marginBottom:14, borderRadius:10,
+      background:'#EFF6FF', border:`2px solid ${T.blue}` }}>
+
+      <div style={{ display:'flex', alignItems:'center', gap:8, marginBottom:10 }}>
+        <span style={{ fontSize:14, fontWeight:700, color:T.blue }}>🚚 GHTK — Đóng thùng & Tạo đơn</span>
+        {hasLabels && (
+          <span style={{ fontSize:10, padding:'2px 10px', borderRadius:12,
+            background:T.greenBg, color:T.green, fontWeight:700 }}>
+            ✓ Đã tạo {existingLabels.length} nhãn
+          </span>
+        )}
+      </div>
+
+      {/* Info KH */}
+      {!hasCustInfo ? (
+        <div style={{ padding:'10px 12px', borderRadius:8, background:T.amberBg,
+          border:`1px solid ${T.amber}`, marginBottom:10 }}>
+          <div style={{ fontSize:12, color:T.amber, fontWeight:700 }}>
+            ⚠️ Chưa có thông tin KH
+          </div>
+          <div style={{ fontSize:11, color:T.med, marginTop:3 }}>
+            Sale cần vào module 🚚 GHTK → "Chờ điền info" để điền trước khi Kho tạo đơn.
+          </div>
+        </div>
+      ) : (
+        <div style={{ padding:'8px 12px', borderRadius:6, background:'#fff',
+          border:`1px solid ${T.border}`, marginBottom:10, fontSize:11 }}>
+          <div style={{ color:T.dark }}>
+            👤 <b>{info.name}</b> • 📞 {info.tel}
+            {Number(info.pick_money || 0) > 0 && (
+              <span style={{ marginLeft:8, color:T.red, fontWeight:700 }}>
+                💰 COD: {Number(info.pick_money).toLocaleString('vi-VN')}đ
+              </span>
+            )}
+          </div>
+          <div style={{ color:T.med, fontSize:10, marginTop:2 }}>
+            📍 {info.address}, {info.ward && info.ward + ', '}{info.district && info.district + ', '}{info.province}
+          </div>
+        </div>
+      )}
+
+      {/* Labels đã tạo */}
+      {hasLabels && (
+        <div style={{ marginBottom:10, padding:10, background:T.greenBg, borderRadius:8,
+          border:`1px solid ${T.green}` }}>
+          <div style={{ fontSize:12, fontWeight:700, color:T.green, marginBottom:6 }}>
+            ✅ Đã tạo đơn GHTK ({existingLabels.length} nhãn)
+          </div>
+          {existingLabels.map((l: any, i: number) => (
+            <div key={i} style={{ fontSize:11, color:T.dark, marginBottom:3 }}>
+              📦 Thùng {l.box_no}: <b style={{ color:T.blue }}>{l.label_id}</b>
+              {l.is_bigsize && <span style={{ color:T.amber, marginLeft:6 }}>(BIGSIZE)</span>}
+              {' · '}Phí: {Number(l.fee||0).toLocaleString('vi-VN')}đ
+              {Number(l.cod_amount) > 0 && (
+                <span style={{ color:T.red, marginLeft:6 }}>COD: {Number(l.cod_amount).toLocaleString('vi-VN')}đ</span>
+              )}
+            </div>
+          ))}
+          <div style={{ fontSize:10, color:T.light, marginTop:6, fontStyle:'italic' }}>
+            💡 Bước tiếp: QM vào module GHTK tab "🖨 Đã tạo đơn" để in nhãn
+          </div>
+        </div>
+      )}
+
+      {/* Form điền cân */}
+      {!hasLabels && (
+        <>
+          <div style={{ fontSize:12, fontWeight:700, color:T.dark, marginBottom:8 }}>
+            ⚖️ Cân nặng từng thùng
+            <span style={{ fontSize:10, color:T.light, marginLeft:6, fontWeight:400 }}>
+              (≥20kg sẽ tạo đơn bigsize riêng)
+            </span>
+          </div>
+
+          <div style={{ display:'flex', flexDirection:'column', gap:6, marginBottom:10 }}>
+            {boxes.map((b: any, i: number) => {
+              const isBig = Number(b.weight_kg || 0) >= 20
+              return (
+                <div key={i} style={{ display:'flex', alignItems:'center', gap:8,
+                  padding:'8px 10px', borderRadius:6,
+                  background: isBig ? '#FFFBEB' : '#fff',
+                  border:`1px solid ${isBig ? T.amber : T.border}` }}>
+                  <span style={{ minWidth:70, fontSize:12, fontWeight:700, color:T.dark }}>
+                    📦 Thùng {b.box_no}
+                  </span>
+                  <input type="number" min={0.1} step={0.1}
+                    value={b.weight_kg}
+                    onChange={e => updateBoxWeight(i, e.target.value)}
+                    disabled={!canWeight || hasLabels}
+                    placeholder="Cân (kg)"
+                    style={{ flex:1, minWidth:80, padding:'6px 10px', border:`1px solid ${T.border}`,
+                      borderRadius:5, fontSize:12, fontFamily:'inherit', color:T.dark,
+                      background:'#fff', outline:'none' }}/>
+                  <span style={{ fontSize:11, color:T.med, minWidth:28 }}>kg</span>
+                  {isBig && (
+                    <span style={{ fontSize:9, fontWeight:700, padding:'2px 7px', borderRadius:10,
+                      background:T.amberBg, color:T.amber }}>BIGSIZE</span>
+                  )}
+                  {boxes.length > 1 && canWeight && !hasLabels && (
+                    <button onClick={() => removeBox(i)}
+                      style={{ background:'none', border:'none', color:T.red, cursor:'pointer',
+                        fontSize:18, padding:'0 4px' }}>×</button>
+                  )}
+                </div>
+              )
+            })}
+          </div>
+
+          {canWeight && (
+            <div style={{ display:'flex', gap:8, alignItems:'center', marginBottom:10 }}>
+              <button onClick={addBox}
+                style={{ padding:'5px 12px', borderRadius:14, border:`1px dashed ${T.blue}`,
+                  background:'transparent', color:T.blue, cursor:'pointer',
+                  fontSize:11, fontFamily:'inherit' }}>
+                + Thêm thùng
+              </button>
+              {totalWeight > 0 && (
+                <span style={{ fontSize:11, color:T.med, marginLeft:'auto' }}>
+                  Tổng: <b style={{ color:T.dark }}>{totalWeight.toFixed(1)}kg</b>
+                  {anyBigsize && <span style={{ color:T.amber, marginLeft:4 }}>• có bigsize</span>}
+                </span>
+              )}
+            </div>
+          )}
+
+          {/* Nút tạo đơn */}
+          {canWeight && hasCustInfo && (
+            <button onClick={createGhtkOrder} disabled={creating}
+              style={{ width:'100%', padding:'10px', borderRadius:8,
+                border:`1.5px solid ${creating ? T.border : T.blue}`,
+                background: creating ? T.border : T.blue,
+                color:'#fff', cursor: creating ? 'wait' : 'pointer',
+                fontFamily:'inherit', fontSize:13, fontWeight:700 }}>
+              {creating ? '⏳ Đang tạo đơn GHTK...' : '🚚 Tạo đơn GHTK'}
+            </button>
+          )}
+
+          {!canWeight && (
+            <div style={{ fontSize:11, color:T.light, fontStyle:'italic', textAlign:'center', padding:8 }}>
+              Bạn không có quyền điền cân thùng GHTK.
+            </div>
+          )}
+        </>
+      )}
+
+      {/* Kết quả tạo đơn */}
+      {createResult && (
+        <div style={{ marginTop:10, padding:10, borderRadius:8,
+          background: createResult.success ? T.greenBg : T.redBg,
+          border:`1px solid ${createResult.success ? T.green : T.red}` }}>
+          {createResult.success ? (
+            <>
+              <div style={{ fontSize:12, fontWeight:700, color:T.green, marginBottom:6 }}>
+                ✅ Tạo đơn GHTK thành công!
+              </div>
+              {createResult.results?.map((r: any) => (
+                <div key={r.box_no} style={{ fontSize:11, color:T.dark, marginBottom:3 }}>
+                  📦 Thùng {r.box_no}: <b style={{ color:T.blue }}>{r.label_id}</b>
+                  {' · '}Phí: {Number(r.fee||0).toLocaleString('vi-VN')}đ
+                </div>
+              ))}
+              <div style={{ fontSize:10, color:T.light, marginTop:6 }}>
+                Tự reload sau 2 giây để cập nhật UI...
+              </div>
+              {(() => {
+                setTimeout(() => window.location.reload(), 2000)
+                return null
+              })()}
+            </>
+          ) : (
+            <>
+              <div style={{ fontSize:12, fontWeight:700, color:T.red, marginBottom:6 }}>
+                ❌ Tạo đơn thất bại
+              </div>
+              {createResult.failed?.map((f: string, i: number) => (
+                <div key={i} style={{ fontSize:11, color:T.dark, marginBottom:3 }}>• {f}</div>
+              ))}
+              {createResult.error && (
+                <div style={{ fontSize:11, color:T.red }}>{createResult.error}</div>
+              )}
+              <button onClick={retry}
+                style={{ marginTop:8, padding:'5px 14px', borderRadius:14, fontSize:11,
+                  border:`1px solid ${T.red}`, background:'transparent', color:T.red,
+                  cursor:'pointer', fontFamily:'inherit' }}>
+                🔄 Thử lại
+              </button>
+            </>
+          )}
+        </div>
+      )}
+
+      {/* Soft enforce note */}
+      <div style={{ marginTop:10, fontSize:10, color:T.light, fontStyle:'italic' }}>
+        💡 Bạn vẫn có thể bấm "Hoàn tất đóng hàng" dù chưa tạo đơn GHTK (soft mode).
+      </div>
+    </div>
+  )
+}
+
+
 // ══════════════════════════════════════════════════════════════════════
 // v121: GHTK Fill Customer Modal — Sale điền info KH qua paste 3 dòng
 // ══════════════════════════════════════════════════════════════════════
