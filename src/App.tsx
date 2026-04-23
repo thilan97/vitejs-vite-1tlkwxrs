@@ -12,7 +12,7 @@ const db = createClient(SUPABASE_URL, SUPABASE_KEY)
 // APP_VERSION — dùng để invalidate cache localStorage mỗi khi deploy version mới
 // (ngăn bug quyền user bị "reset" do cache position cũ sau deploy)
 // ⚠️ MỖI LẦN DEPLOY FEATURE MỚI CÓ PERMISSION MỚI, BUMP SỐ NÀY:
-const APP_VERSION = '2026.04.23.v118'
+const APP_VERSION = '2026.04.23.v119'
 
 // ════════════════════════════════════════════════════════════════
 // AUDIT LOG — ghi nhận các hành động phá hoại data để trace lại
@@ -6291,6 +6291,8 @@ function ReturnItems({ user, allUsers, products, mobile }: any) {
     const n = new Date(); return `${n.getFullYear()}-${String(n.getMonth()+1).padStart(2,'0')}`
   })
   const [searchQ, setSearchQ] = React.useState('')
+  // v118: Sort ngày
+  const [dateSort, setDateSort] = React.useState<'desc'|'asc'>('desc')  // default: gần → xa (mới trước)
   const p = mobile ? '16px' : '24px'
   const perm  = getPerm(user)
   const isKho  = user.dept_id === 'kho'
@@ -6352,7 +6354,11 @@ function ReturnItems({ user, allUsers, products, mobile }: any) {
       norm([slip.customer_name,slip.return_order_code,slip.reason,
         ...slip.lines.map((r: any) => r.product_name)].join(' ')).includes(t)
     )
-  }).sort((a: any, b: any) => (a.date||'')    .localeCompare(b.date||'')); // cũ → mới
+  }).sort((a: any, b: any) => {
+    // v118: Sort theo dateSort state
+    const cmp = (a.date||'').localeCompare(b.date||'')
+    return dateSort === 'asc' ? cmp : -cmp
+  });
 
   // ── Stats (based on raw items) ──────────────────
   const CONDITIONS = ['Bình thường', 'Móp', 'Rách', 'Hỏng', 'Khác']
@@ -6598,6 +6604,14 @@ function ReturnItems({ user, allUsers, products, mobile }: any) {
           placeholder="🔍 Tìm sản phẩm, KH, sale..."
           style={{ flex:1, minWidth:140, padding:'6px 10px', border:`1px solid ${T.border}`, borderRadius:8,
             fontSize:12, fontFamily:'inherit', color:T.dark, background:T.bg, outline:'none' }}/>
+        {/* v118: Sort ngày */}
+        <select value={dateSort} onChange={e => setDateSort(e.target.value as any)}
+          title="Sắp xếp theo ngày"
+          style={{ padding:'6px 10px', border:`1px solid ${T.border}`, borderRadius:8,
+            fontSize:11, fontFamily:'inherit', color:T.dark, background:'#fff', outline:'none', cursor:'pointer' }}>
+          <option value="desc">📅 Gần → Xa (mới trước)</option>
+          <option value="asc">📅 Xa → Gần (cũ trước)</option>
+        </select>
       </div>
 
       {tab==='stats' ? (
@@ -14616,6 +14630,8 @@ function ExpiryModule({ user, mobile, products, batches, setBatches }: any) {
   const [importErrors, setImportErrors]   = useState<string[]>([])
   const [importPreview, setImportPreview] = useState<any[]|null>(null)
   const [saving, setSaving]         = useState(false)
+  const [syncing, setSyncing]       = useState(false)      // v119: sync tồn KV
+  const [syncResult, setSyncResult] = useState<any>(null)  // v119: kết quả sync
 
   const today = new Date()
   const pad   = mobile ? '16px' : '24px'
@@ -14712,6 +14728,81 @@ function ExpiryModule({ user, mobile, products, batches, setBatches }: any) {
     if (!confirm('Xóa lô hàng này? Thao tác không thể hoàn tác.')) return
     await db.from('product_batches').delete().eq('id', id)
     setBatches((prev: any[]) => prev.filter((b: any) => b.id !== id))
+  }
+
+  // v119: Đồng bộ tồn KiotViet → product_batches (A+B)
+  const syncKvStock = async () => {
+    setSyncing(true)
+    setSyncResult(null)
+    try {
+      // Bước 1: Lấy danh sách mã SP có trong batches
+      const uniqueCodes = [...new Set((batches || []).map((b: any) => b.product_code).filter(Boolean))]
+      if (uniqueCodes.length === 0) { setSyncResult({ error: 'Không có lô hàng nào.' }); return }
+
+      // Bước 2: Lấy stock từ products table (đã sync từ KV qua cron)
+      const { data: prods, error: prodErr } = await db.from('products')
+        .select('code, stock, name').in('code', uniqueCodes)
+      if (prodErr) { setSyncResult({ error: prodErr.message }); return }
+
+      const stockMap: Record<string, number> = {}
+      ;(prods || []).forEach((p: any) => { stockMap[p.code] = Number(p.stock ?? 0) })
+
+      // Bước 3: Tính số lô active per SP
+      const activeBatchesByCode: Record<string, any[]> = {}
+      ;(batches || []).forEach((b: any) => {
+        if ((b.qty_remaining || 0) <= 0) return
+        if (!activeBatchesByCode[b.product_code]) activeBatchesByCode[b.product_code] = []
+        activeBatchesByCode[b.product_code].push(b)
+      })
+
+      // Bước 4: Auto-sync qty_remaining cho SP chỉ có đúng 1 lô active
+      const singleLotCodes = Object.entries(activeBatchesByCode)
+        .filter(([, bList]) => bList.length === 1)
+        .map(([code, bList]) => ({ code, batch: bList[0] }))
+
+      const multiLotCodes = Object.entries(activeBatchesByCode)
+        .filter(([, bList]) => bList.length > 1)
+        .map(([code, bList]) => ({
+          code,
+          batchCount: bList.length,
+          batchQtyTotal: bList.reduce((s: number, b: any) => s + (b.qty_remaining || 0), 0),
+          kvStock: stockMap[code] ?? null,
+          diff: bList.reduce((s: number, b: any) => s + (b.qty_remaining || 0), 0) - (stockMap[code] ?? 0),
+        }))
+        .filter(r => r.kvStock !== null && r.diff !== 0)  // chỉ báo những SP có lệch
+
+      let autoSynced = 0, skippedSame = 0
+      const now = new Date().toISOString()
+
+      for (const { code, batch } of singleLotCodes) {
+        const kvStock = stockMap[code]
+        if (kvStock === undefined || kvStock === null) continue
+        if (batch.qty_remaining === kvStock) { skippedSame++; continue }
+        // Cập nhật qty_remaining = tồn KV
+        const { error } = await db.from('product_batches')
+          .update({ qty_remaining: kvStock, last_updated_at: now, last_updated_by: user.id })
+          .eq('id', batch.id)
+        if (!error) {
+          setBatches((prev: any[]) => prev.map((b: any) =>
+            b.id === batch.id ? { ...b, qty_remaining: kvStock, last_updated_at: now } : b
+          ))
+          autoSynced++
+        }
+      }
+
+      setSyncResult({
+        ok: true,
+        autoSynced,
+        skippedSame,
+        multiLot: multiLotCodes,
+        lastSync: now,
+      })
+
+    } catch(e: any) {
+      setSyncResult({ error: e.message })
+    } finally {
+      setSyncing(false)
+    }
   }
 
   // ── Import Excel ──
@@ -14814,6 +14905,16 @@ function ExpiryModule({ user, mobile, products, batches, setBatches }: any) {
         subtitle="Theo dõi hạn sử dụng theo lô hàng · Đồng bộ tồn KiotViet"
         action={canManage ? (
           <div style={{ display:'flex', gap:8, flexWrap:'wrap' }}>
+            <button onClick={syncKvStock} disabled={syncing}
+              style={{ padding:'7px 14px', borderRadius:20,
+                border:`1.5px solid ${T.blue}`,
+                background: syncing ? T.border : T.blueBg,
+                color: syncing ? T.light : T.blue,
+                cursor: syncing ? 'wait' : 'pointer',
+                fontSize:12, fontFamily:'inherit', fontWeight:600,
+                whiteSpace:'nowrap', display:'flex', alignItems:'center', gap:6 }}>
+              {syncing ? '⏳ Đang đồng bộ...' : '🔄 Đồng bộ tồn KV'}
+            </button>
             <GoldBtn small onClick={downloadTemplate}>📥 File mẫu</GoldBtn>
             <label style={{ padding:'7px 14px', borderRadius:20, border:`1px solid ${T.border}`,
               cursor:'pointer', fontSize:12, color:T.med, background:'#fff',
@@ -14826,6 +14927,66 @@ function ExpiryModule({ user, mobile, products, batches, setBatches }: any) {
           </div>
         ) : undefined}
       />
+
+      {/* v119: Sync result panel */}
+      {syncResult && (
+        <div style={{ margin:'0 0 16px', padding:'14px 16px', borderRadius:10,
+          background: syncResult.error ? T.redBg : T.greenBg,
+          border: `1px solid ${syncResult.error ? T.red : T.green}` }}>
+          {syncResult.error ? (
+            <div style={{ color:T.red, fontWeight:700 }}>❌ Lỗi đồng bộ: {syncResult.error}</div>
+          ) : (
+            <>
+              <div style={{ fontWeight:700, color:T.green, fontSize:13, marginBottom:8 }}>
+                ✅ Đồng bộ tồn KV hoàn tất
+              </div>
+              <div style={{ fontSize:12, color:T.dark, marginBottom:4 }}>
+                🔄 Auto-cập nhật: <b>{syncResult.autoSynced}</b> lô (SP chỉ có 1 lô active)
+                {syncResult.skippedSame > 0 && <span style={{ color:T.light }}> · {syncResult.skippedSame} lô đã khớp</span>}
+              </div>
+              {syncResult.multiLot?.length > 0 && (
+                <div style={{ marginTop:10 }}>
+                  <div style={{ fontSize:12, fontWeight:700, color:T.amber, marginBottom:6 }}>
+                    ⚠️ {syncResult.multiLot.length} SP có nhiều lô — cần cập nhật thủ công:
+                  </div>
+                  <div style={{ background:'#fff', borderRadius:8, overflow:'hidden',
+                    border:`1px solid ${T.border}` }}>
+                    {syncResult.multiLot.map((r: any, i: number) => (
+                      <div key={r.code} style={{ display:'grid',
+                        gridTemplateColumns:'100px 1fr 70px 70px 70px',
+                        padding:'7px 12px', gap:8, alignItems:'center', fontSize:11,
+                        borderBottom: i < syncResult.multiLot.length-1 ? `1px solid ${T.border}` : 'none',
+                        background: i%2===0 ? '#fff' : T.rowAlt }}>
+                        <span style={{ fontFamily:'monospace', color:T.light }}>{r.code}</span>
+                        <span style={{ color:T.dark }}>{r.batchCount} lô active</span>
+                        <span style={{ textAlign:'right', color:T.med }}>Lô: {r.batchQtyTotal}</span>
+                        <span style={{ textAlign:'right', color:T.blue }}>KV: {r.kvStock}</span>
+                        <span style={{ textAlign:'right', fontWeight:700,
+                          color: r.diff > 0 ? T.amber : T.blue }}>
+                          {r.diff > 0 ? `+${r.diff}` : r.diff}
+                        </span>
+                      </div>
+                    ))}
+                  </div>
+                  <div style={{ fontSize:10, color:T.light, marginTop:6, fontStyle:'italic' }}>
+                    💡 Vào tab "Danh sách lô" → tìm mã SP → sửa qty_remaining từng lô cho đúng tổng KV
+                  </div>
+                </div>
+              )}
+              {syncResult.multiLot?.length === 0 && syncResult.autoSynced === 0 && (
+                <div style={{ fontSize:12, color:T.light, fontStyle:'italic' }}>
+                  Tất cả lô đã khớp với tồn KV ✓
+                </div>
+              )}
+            </>
+          )}
+          <button onClick={() => setSyncResult(null)}
+            style={{ marginTop:10, padding:'3px 12px', borderRadius:20, fontSize:11,
+              border:`1px solid ${syncResult.error ? T.red : T.green}`,
+              background:'transparent', color: syncResult.error ? T.red : T.green,
+              cursor:'pointer', fontFamily:'inherit' }}>Đóng</button>
+        </div>
+      )}
 
       {/* Error panel */}
       {importErrors.length > 0 && (
