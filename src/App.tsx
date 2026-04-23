@@ -29694,7 +29694,10 @@ function GhtkManualOrderModal({ user, mobile, onClose, onCreated }: any) {
     // Link KV (optional)
     kv_order_code: '',
     shop_order_id: '',
+    // v123: paste support
+    is_other_receiver: false,
   })
+  const [pasteText, setPasteText] = useState('')
   const [items, setItems] = useState<{ id: number; name: string; weight: number; qty: number }[]>([
     { id: 1, name: '', weight: 0, qty: 1 }
   ])
@@ -29754,6 +29757,101 @@ function GhtkManualOrderModal({ user, mobile, onClose, onCreated }: any) {
     }, 600)
     return () => clearTimeout(t)
   }, [form.district, vnTree.length])
+
+  // v123: Smart parse paste text — lấy từ GhtkFillCustomerModal
+  const parsePaste = (text: string) => {
+    if (!text.trim()) return
+
+    const norm = (s: string) => (s||'').toLowerCase().normalize('NFD')
+      .replace(/[\u0300-\u036f]/g, '').replace(/đ/g, 'd').trim()
+
+    let working = text.trim()
+
+    // ── Bước 1: Trích SĐT ──
+    let tel = ''
+    const telPatterns = [
+      /(?:^|[^0-9])(84\d{9,10})(?:[^0-9]|$)/,
+      /(?:^|[^0-9])(0\d{9,10})(?:[^0-9]|$)/,
+    ]
+    for (const pat of telPatterns) {
+      const m = working.match(pat)
+      if (m) {
+        tel = m[1]
+        if (tel.startsWith('84')) tel = '0' + tel.slice(2)
+        working = working.replace(m[1], ' ').trim()
+        break
+      }
+    }
+
+    // ── Bước 2: Tìm tên (guess dòng ngắn không có số) ──
+    // Manual order không có o.customer_name → dùng fallback heuristic luôn
+    let name = ''
+    const lines = working.split(/\n/).map(l => l.trim()).filter(Boolean)
+    const nameCandidate = lines.find(l => {
+      const words = l.split(/\s+/).filter(Boolean)
+      const hasDigit = /\d/.test(l)
+      const commaCount = (l.match(/,/g) || []).length
+      const addrKeywords = /\b(ngõ|ngach|số|duong|đường|phuong|phường|quan|quận|xa|xã|huyen|huyện|tp|tinh|tỉnh|thanh pho|thành phố)\b/i
+      if (addrKeywords.test(l)) return false
+      return words.length >= 2 && words.length <= 5 && !hasDigit && commaCount <= 1
+    })
+    if (nameCandidate) {
+      name = nameCandidate
+      working = lines.filter(l => l !== nameCandidate).join('\n').trim()
+    }
+
+    // ── Bước 3: Phần còn lại = địa chỉ ──
+    const fullAddr = working.replace(/\n/g, ', ').trim()
+    const parts = fullAddr.split(',').map(s => s.trim()).filter(Boolean)
+    let address = '', ward = '', district = '', province = ''
+
+    if (parts.length >= 4) {
+      province = parts[parts.length - 1]
+      district = parts[parts.length - 2]
+      ward = parts[parts.length - 3]
+      address = parts.slice(0, parts.length - 3).join(', ')
+    } else if (parts.length === 3) {
+      province = parts[2]
+      ward = parts[1]
+      address = parts[0]
+    } else if (parts.length === 2) {
+      province = parts[1]
+      address = parts[0]
+    } else {
+      address = parts[0] || ''
+    }
+
+    setForm(f => ({
+      ...f,
+      tel:      tel || f.tel,
+      name:     name || f.name,
+      address:  address || f.address,
+      ward:     ward || f.ward,
+      district: district || f.district,
+      province: province || f.province,
+    }))
+  }
+
+  // Auto-parse khi pasteText thay đổi (debounce 300ms)
+  useEffect(() => {
+    if (!pasteText.trim()) return
+    const t = setTimeout(() => parsePaste(pasteText), 300)
+    return () => clearTimeout(t)
+  }, [pasteText])
+
+  // Auto-sanitize district (xử lý sáp nhập 2025)
+  useEffect(() => {
+    if (!form.district || !form.province) return
+    const dNorm = form.district.toLowerCase().trim()
+    const pNorm = form.province.toLowerCase().trim()
+    const badPrefixes = ['tỉnh ', 'thành phố ', 'tp ', 'tp.']
+    const startsBad = badPrefixes.some(p => dNorm.startsWith(p))
+    if (dNorm === pNorm || startsBad) {
+      setForm(f => ({...f, district: ''}))
+      setSmartMsg('🧹 Đã xoá Quận/Huyện không hợp lệ (sáp nhập 2025)')
+      setTimeout(() => setSmartMsg(''), 3500)
+    }
+  }, [form.district, form.province])
 
   // ── Items helpers ──
   const addItem = () => setItems(prev => [...prev, { id: Date.now(), name:'', weight:0, qty:1 }])
@@ -29931,6 +30029,54 @@ function GhtkManualOrderModal({ user, mobile, onClose, onCreated }: any) {
             )}
           </div>
         )}
+
+        {/* ── PASTE BOX ── */}
+        <div style={{ marginBottom:16, padding:14, borderRadius:10,
+          background:T.blueBg, border:`1.5px dashed ${T.blue}` }}>
+          <div style={{ display:'flex', alignItems:'center', justifyContent:'space-between',
+            gap:10, marginBottom:8, flexWrap:'wrap' }}>
+            <div style={{ fontSize:13, fontWeight:700, color:T.blue }}>
+              📋 Dán thông tin người nhận (Ctrl+V)
+            </div>
+            <button onClick={() => setForm(f => ({...f, is_other_receiver: !f.is_other_receiver}))}
+              style={{ padding:'4px 12px', borderRadius:14, cursor:'pointer',
+                fontFamily:'inherit', fontSize:11,
+                border:`1.5px solid ${form.is_other_receiver ? T.purple : T.border}`,
+                background: form.is_other_receiver ? T.purpleBg : '#fff',
+                color: form.is_other_receiver ? T.purple : T.med,
+                fontWeight: form.is_other_receiver ? 700 : 500 }}>
+              {form.is_other_receiver ? '✓ ' : ''}🔀 KH nhờ người khác nhận
+            </button>
+          </div>
+          <div style={{ fontSize:11, color:T.med, marginBottom:10, lineHeight:1.5 }}>
+            App tự tìm <b>SĐT</b> (theo pattern số) và <b>tên</b> (đoán dòng ngắn không có số),
+            phần còn lại là địa chỉ. Paste tự do, không cần đúng thứ tự!
+          </div>
+          <div style={{ padding:'10px 14px', borderRadius:8, background:'#fff',
+            border:`1px solid ${T.border}`, marginBottom:10,
+            fontSize:11, color:T.light, textAlign:'center', lineHeight:1.7 }}>
+            <div style={{ color:T.med, fontStyle:'italic', marginBottom:4 }}>Ví dụ:</div>
+            <div style={{ color:T.dark }}>0987654321</div>
+            <div style={{ color:T.dark }}>Nguyễn Văn A</div>
+            <div style={{ color:T.dark }}>35 Hoàng Quốc Việt, Nghĩa Đô, Cầu Giấy, Hà Nội</div>
+          </div>
+          <textarea value={pasteText}
+            onChange={e => setPasteText(e.target.value)}
+            placeholder="Dán thông tin ở đây (SĐT/tên/địa chỉ theo thứ tự nào cũng được)..."
+            rows={4}
+            style={{ width:'100%', padding:'10px 12px', border:`1px solid ${T.border}`,
+              borderRadius:8, fontSize:12, fontFamily:'inherit', color:T.dark,
+              background:'#fff', outline:'none', resize:'vertical',
+              boxSizing:'border-box' as any }}/>
+          {pasteText.trim() && (
+            <button onClick={() => { setPasteText(''); }}
+              style={{ marginTop:6, padding:'4px 12px', borderRadius:14, cursor:'pointer',
+                fontFamily:'inherit', fontSize:11, border:`1px solid ${T.border}`,
+                background:'#fff', color:T.med }}>
+              🧹 Xoá nội dung đã dán
+            </button>
+          )}
+        </div>
 
         {/* ── NGƯỜI NHẬN ── */}
         <div style={{ marginBottom:20 }}>
