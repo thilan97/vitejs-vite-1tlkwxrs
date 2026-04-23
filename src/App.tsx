@@ -28619,6 +28619,8 @@ function GhtkModule({ user, allUsers, mobile }: any) {
   const [searchQ, setSearchQ] = useState('')
   // v121: Phase 2 - modal điền info KH
   const [fillInfoOrder, setFillInfoOrder] = useState<any>(null)
+  // v122: Ngày bắt đầu quản lý GHTK
+  const [ghtkStartDate, setGhtkStartDate] = useState<string|null>(null)
 
   const norm2 = (s: string) => (s||'').toLowerCase().normalize('NFD')
     .replace(/[\u0300-\u036f]/g,'').replace(/đ/g,'d').trim()
@@ -28626,11 +28628,22 @@ function GhtkModule({ user, allUsers, mobile }: any) {
   const fetchOrders = async () => {
     setLoading(true)
     try {
-      const fromDate = new Date(Date.now() - 30 * 86400000).toISOString()
+      // v122: Load cutoff date từ ghtk_settings
+      const { data: settings } = await db.from('ghtk_settings')
+        .select('ghtk_start_date').eq('id', 1).maybeSingle()
+      const cutoff = settings?.ghtk_start_date || null
+      setGhtkStartDate(cutoff)
+
+      // Default: lấy 30 ngày gần đây
+      const defaultFrom = new Date(Date.now() - 30 * 86400000).toISOString()
+      // Nếu có cutoff → dùng ngày lớn hơn giữa cutoff và 30 ngày
+      const cutoffIso = cutoff ? new Date(cutoff + 'T00:00:00+07:00').toISOString() : null
+      const effectiveFrom = cutoffIso && cutoffIso > defaultFrom ? cutoffIso : defaultFrom
+
       const { data, error } = await db.from('packing_workflow')
         .select('*')
         .eq('is_ghtk_order', true)
-        .gte('purchase_date', fromDate)
+        .gte('purchase_date', effectiveFrom)
         .order('purchase_date', { ascending: false })
         .limit(500)
       if (error) {
@@ -28703,7 +28716,9 @@ function GhtkModule({ user, allUsers, mobile }: any) {
   return (
     <div style={{ padding:`0 ${p} ${mobile?'80px':p}` }}>
       <Topbar mobile={mobile} title="🚚 GHTK"
-        subtitle="Tích hợp Giao Hàng Tiết Kiệm — tạo đơn và in nhãn"
+        subtitle={ghtkStartDate
+          ? `Đơn từ ngày ${ghtkStartDate.split('-').reverse().join('/')} trở về sau`
+          : "Tích hợp Giao Hàng Tiết Kiệm — tạo đơn và in nhãn"}
         action={
           <button onClick={fetchOrders}
             style={{ padding:'5px 12px', borderRadius:20, border:`1px solid ${T.border}`,
@@ -29576,6 +29591,7 @@ function GhtkSettingsPanel({ user, mobile }: any) {
     pick_province: '', pick_district: '', pick_ward: '',
     default_is_freeship: 0,
     enforce_ghtk_required: false,
+    ghtk_start_date: '',  // v122: ngày bắt đầu quản lý đơn GHTK
   })
 
   useEffect(() => {
@@ -29594,6 +29610,7 @@ function GhtkSettingsPanel({ user, mobile }: any) {
           pick_ward: data.pick_ward || '',
           default_is_freeship: data.default_is_freeship || 0,
           enforce_ghtk_required: !!data.enforce_ghtk_required,
+          ghtk_start_date: data.ghtk_start_date || '',
         })
       }
       setLoading(false)
@@ -29610,6 +29627,7 @@ function GhtkSettingsPanel({ user, mobile }: any) {
       const { error } = await db.from('ghtk_settings').upsert({
         id: 1,
         ...form,
+        ghtk_start_date: form.ghtk_start_date || null,  // v122: empty string → null
         updated_at: new Date().toISOString(),
         updated_by: user.id,
       }, { onConflict: 'id' })
@@ -29745,6 +29763,37 @@ function GhtkSettingsPanel({ user, mobile }: any) {
             onChange={e => setForm(f => ({...f, pick_ward:e.target.value}))}
             placeholder="Láng Thượng" style={fieldStyle}/>
         </div>
+      </div>
+
+      <div style={{ fontSize:14, fontWeight:700, color:T.dark, marginBottom:14,
+        paddingTop:14, borderTop:`1px solid ${T.border}` }}>📅 Phạm vi quản lý đơn</div>
+
+      <div style={{ marginBottom:20 }}>
+        <label style={labelStyle}>
+          Ngày bắt đầu quản lý đơn GHTK
+          <span style={{ fontSize:10, color:T.light, marginLeft:6, fontWeight:400 }}>
+            (Đơn trước ngày này sẽ KHÔNG hiện trong module GHTK)
+          </span>
+        </label>
+        <div style={{ display:'flex', gap:8, alignItems:'center', flexWrap:'wrap' }}>
+          <input type="date" value={form.ghtk_start_date}
+            onChange={e => setForm(f => ({...f, ghtk_start_date:e.target.value}))}
+            style={{ ...fieldStyle, maxWidth:200 }}/>
+          {form.ghtk_start_date && (
+            <button onClick={() => setForm(f => ({...f, ghtk_start_date:''}))}
+              style={{ padding:'6px 12px', borderRadius:6, border:`1px solid ${T.border}`,
+                background:'transparent', color:T.med, cursor:'pointer',
+                fontSize:11, fontFamily:'inherit' }}>
+              🧹 Xóa
+            </button>
+          )}
+        </div>
+        {form.ghtk_start_date && (
+          <div style={{ marginTop:6, fontSize:11, color:T.blue,
+            padding:'6px 10px', background:T.blueBg, borderRadius:6 }}>
+            💡 Chỉ hiển thị đơn có ngày tạo KV từ <b>{form.ghtk_start_date.split('-').reverse().join('/')}</b> trở về sau.
+          </div>
+        )}
       </div>
 
       <div style={{ fontSize:14, fontWeight:700, color:T.dark, marginBottom:14,
