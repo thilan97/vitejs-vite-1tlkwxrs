@@ -29291,6 +29291,9 @@ function GhtkFillCustomerModal({ order: o, user, mobile, onClose, onSaved }: any
   })
   const [defaultFreeship, setDefaultFreeship] = useState(0)
   const [saving, setSaving] = useState(false)
+  // v122: Check địa chỉ GHTK
+  const [checking, setChecking] = useState(false)
+  const [checkResult, setCheckResult] = useState<any>(null)
 
   // Load default is_freeship từ ghtk_settings
   useEffect(() => {
@@ -29335,9 +29338,9 @@ function GhtkFillCustomerModal({ order: o, user, mobile, onClose, onSaved }: any
     let name = ''
     const lines = working.split(/\n/).map(l => l.trim()).filter(Boolean)
 
-    if (!form.is_other_receiver && ord.customer_name) {
+    if (!form.is_other_receiver && o.customer_name) {
       // Fuzzy match với customer_name KV
-      const normKv = norm(ord.customer_name)
+      const normKv = norm(o.customer_name)
       const matchLine = lines.find(l => {
         const normL = norm(l)
         if (!normL || normL.length < 2) return false
@@ -29394,7 +29397,7 @@ function GhtkFillCustomerModal({ order: o, user, mobile, onClose, onSaved }: any
     setForm(f => ({
       ...f,
       tel:      tel || f.tel,
-      name:     name || (f.is_other_receiver ? f.name : (ord.customer_name || f.name)),
+      name:     name || (f.is_other_receiver ? f.name : (o.customer_name || f.name)),
       address:  address || f.address,
       ward:     ward || f.ward,
       district: district || f.district,
@@ -29409,6 +29412,11 @@ function GhtkFillCustomerModal({ order: o, user, mobile, onClose, onSaved }: any
     return () => clearTimeout(t)
   }, [pasteText])
 
+  // v122: Reset check result khi địa chỉ thay đổi
+  useEffect(() => {
+    if (checkResult) setCheckResult(null)
+  }, [form.address, form.ward, form.district, form.province])
+
   const validate = () => {
     if (!form.tel.trim()) return 'Cần SĐT người nhận'
     const telClean = form.tel.replace(/[^0-9]/g, '')
@@ -29420,6 +29428,44 @@ function GhtkFillCustomerModal({ order: o, user, mobile, onClose, onSaved }: any
       return 'Chọn "Có thu tiền" thì phải nhập số tiền COD > 0'
     }
     return null
+  }
+
+  // v122: Check địa chỉ GHTK
+  const checkAddress = async () => {
+    const err = validate()
+    if (err) { window.alert('❌ ' + err); return }
+    setChecking(true)
+    setCheckResult(null)
+    try {
+      const totalAmountVnd = Math.min(Number(o.total_amount || 0) * 1000, 3000000)
+      const payload = {
+        customer_info: {
+          name:       form.name.trim(),
+          tel:        form.tel.replace(/[^0-9]/g, ''),
+          address:    form.address.trim(),
+          ward:       form.ward.trim(),
+          district:   form.district.trim(),
+          province:   form.province.trim(),
+          is_freeship: Number(form.is_freeship),
+        },
+        weight_gram: 500,
+        value: totalAmountVnd,
+      }
+      const res = await fetch(`${SUPABASE_URL}/functions/v1/ghtk-check-address`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${SUPABASE_ANON}`,
+        },
+        body: JSON.stringify(payload),
+      })
+      const json = await res.json()
+      setCheckResult(json)
+    } catch(e: any) {
+      setCheckResult({ success: false, error: e.message })
+    } finally {
+      setChecking(false)
+    }
   }
 
   const save = async () => {
@@ -29499,8 +29545,8 @@ function GhtkFillCustomerModal({ order: o, user, mobile, onClose, onSaved }: any
 
         <div style={{ fontSize:10, color:T.med, marginBottom:8, lineHeight:1.6 }}>
           App tự tìm <b>SĐT</b> (theo pattern số) và <b>tên</b>
-          {!form.is_other_receiver && ord.customer_name && (
-            <> (ưu tiên khớp <b style={{ color:T.green }}>"{ord.customer_name}"</b>)</>
+          {!form.is_other_receiver && o.customer_name && (
+            <> (ưu tiên khớp <b style={{ color:T.green }}>"{o.customer_name}"</b>)</>
           )}
           , phần còn lại là địa chỉ. Paste tự do, không cần đúng thứ tự!
         </div>
@@ -29578,6 +29624,65 @@ function GhtkFillCustomerModal({ order: o, user, mobile, onClose, onSaved }: any
             onChange={e => setForm(f => ({...f, province:e.target.value}))}
             placeholder="Hà Nội" style={fieldStyle}/>
         </div>
+      </div>
+
+      {/* v122: Check địa chỉ GHTK */}
+      <div style={{ marginBottom:14, padding:10, borderRadius:8,
+        background: checkResult?.success ? T.greenBg
+          : (checkResult && !checkResult.success ? T.redBg : '#F9FAFB'),
+        border:`1px solid ${checkResult?.success ? T.green
+          : (checkResult && !checkResult.success ? T.red : T.border)}` }}>
+        <div style={{ display:'flex', alignItems:'center', gap:8, flexWrap:'wrap' }}>
+          <button onClick={checkAddress} disabled={checking || saving}
+            style={{ padding:'6px 14px', borderRadius:16, cursor:'pointer',
+              border:`1.5px solid ${T.blue}`,
+              background: checking ? T.border : T.blueBg,
+              color: checking ? T.light : T.blue,
+              fontSize:12, fontFamily:'inherit', fontWeight:700 }}>
+            {checking ? '⏳ Đang kiểm tra...' : '🔍 Kiểm tra địa chỉ GHTK'}
+          </button>
+          <span style={{ fontSize:10, color:T.light, fontStyle:'italic' }}>
+            GHTK sẽ validate địa chỉ + ước tính phí ship
+          </span>
+        </div>
+
+        {checkResult?.success && (
+          <div style={{ marginTop:8, padding:'8px 10px', borderRadius:6,
+            background:'#fff', border:`1px solid ${T.green}` }}>
+            <div style={{ fontSize:12, fontWeight:700, color:T.green, marginBottom:4 }}>
+              ✅ Địa chỉ hợp lệ — Tạo đơn được!
+            </div>
+            <div style={{ fontSize:11, color:T.dark, display:'flex', gap:14, flexWrap:'wrap' }}>
+              <span>💰 Phí ship dự kiến: <b>{Number(checkResult.fee?.ship_fee || 0).toLocaleString('vi-VN')}đ</b></span>
+              {checkResult.fee?.insurance_fee > 0 && (
+                <span>🛡 Bảo hiểm: <b>{Number(checkResult.fee.insurance_fee).toLocaleString('vi-VN')}đ</b></span>
+              )}
+              <span style={{ color:T.med }}>
+                Tổng: <b style={{ color:T.dark }}>{Number(checkResult.fee?.total || 0).toLocaleString('vi-VN')}đ</b>
+              </span>
+            </div>
+            {checkResult.fee?.estimated_deliver_time && (
+              <div style={{ fontSize:10, color:T.med, marginTop:3 }}>
+                ⏱ Giao dự kiến: {checkResult.fee.estimated_deliver_time}
+              </div>
+            )}
+          </div>
+        )}
+
+        {checkResult && !checkResult.success && (
+          <div style={{ marginTop:8, padding:'8px 10px', borderRadius:6,
+            background:'#fff', border:`1px solid ${T.red}` }}>
+            <div style={{ fontSize:12, fontWeight:700, color:T.red, marginBottom:4 }}>
+              ❌ Địa chỉ không hợp lệ
+            </div>
+            <div style={{ fontSize:11, color:T.dark }}>
+              {checkResult.error || 'GHTK không chấp nhận địa chỉ này'}
+            </div>
+            <div style={{ fontSize:10, color:T.light, marginTop:4, fontStyle:'italic' }}>
+              💡 Kiểm tra chính tả tên tỉnh / quận / phường và sửa lại
+            </div>
+          </div>
+        )}
       </div>
 
       {/* COD */}
