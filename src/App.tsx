@@ -12,7 +12,7 @@ const db = createClient(SUPABASE_URL, SUPABASE_KEY)
 // APP_VERSION — dùng để invalidate cache localStorage mỗi khi deploy version mới
 // (ngăn bug quyền user bị "reset" do cache position cũ sau deploy)
 // ⚠️ MỖI LẦN DEPLOY FEATURE MỚI CÓ PERMISSION MỚI, BUMP SỐ NÀY:
-const APP_VERSION = '2026.04.22.v115'
+const APP_VERSION = '2026.04.23.v117'
 
 // ════════════════════════════════════════════════════════════════
 // AUDIT LOG — ghi nhận các hành động phá hoại data để trace lại
@@ -262,6 +262,10 @@ const getPerm = (user: any) => {
     viewGallery:        isAdmin || (pos.perm_view_gallery ?? false) || (pos.perm_manage_inventory ?? false) || (user?.dept_id === 'sale'),
     errorReport:        isAdmin || (pos.perm_error_report ?? false),
     accountingInventorySync: isAdmin || (pos.perm_accounting_inventory_sync ?? false),
+    ghtkSettings:       isAdmin || (pos.perm_ghtk_settings ?? false),
+    ghtkFillCustomer:   isAdmin || (pos.perm_ghtk_fill_customer ?? false) || (user?.dept_id === 'sale'),
+    ghtkWeight:         isAdmin || (pos.perm_ghtk_weight ?? false) || (pos.perm_manage_inventory ?? false),
+    ghtkPrintLabel:     isAdmin || (pos.perm_ghtk_print_label ?? false),
   }
 }
 
@@ -357,6 +361,10 @@ const ALL_PERMS = [
   { key:'perm_view_gallery',             label:'Xem Gallery ảnh hàng đi',         group:'Sale'     },
   { key:'perm_error_report',             label:'Báo cáo lỗi sai (Error Report)',   group:'Quản trị' },
   { key:'perm_accounting_inventory_sync', label:'Đối soát tồn kho MISA ↔ KV',     group:'Kế toán'  },
+  { key:'perm_ghtk_settings',            label:'Cấu hình GHTK (Admin)',            group:'Kho'      },
+  { key:'perm_ghtk_fill_customer',       label:'Điền info KH GHTK (Sale)',         group:'Sale'     },
+  { key:'perm_ghtk_weight',              label:'Điền cân thùng GHTK (Kho)',        group:'Kho'      },
+  { key:'perm_ghtk_print_label',         label:'In nhãn GHTK (QM Kho)',            group:'Kho'      },
 ]
 // ── UTILITIES ────────────────────────────────────
 const fmtNow   = () => new Date().toLocaleString('vi-VN',{hour:'2-digit',minute:'2-digit',day:'2-digit',month:'2-digit',year:'numeric'})
@@ -1102,6 +1110,8 @@ const NAV_GROUPS = (perm: any, deptId = '') => {
         (deptId==='sale' || deptId==='kho' || perm.viewAllDashboard) && { id:'expiry', icon:Ico.calendar, emoji:'📅', label:'Date SP' },
         perm.viewWarehouseStats && { id:'whstats', icon:Ico.barChart, emoji:'📊', label:'Hiệu suất Kho' },
         { id:'schedule', icon:Ico.calendar, emoji:'🗓️', label:'Lịch Kho' },
+        (perm.ghtkFillCustomer || perm.ghtkWeight || perm.ghtkPrintLabel || perm.ghtkSettings)
+          && { id:'ghtk', icon:Ico.truck, emoji:'🚚', label:'GHTK' },
       ].filter(Boolean)
     },
 
@@ -10112,6 +10122,7 @@ export default function App() {
           {validPage==='gallery'    && <GalleryModule {...pp}/>}
           {validPage==='errreport'  && <ErrorReportModule {...pp}/>}
           {validPage==='invsync'    && <InventorySyncModule {...pp}/>}
+          {validPage==='ghtk'       && <GhtkModule {...pp}/>}
           {validPage==='schedule'   && <WarehouseScheduleModule {...pp} leaveRequests={leaveRequests} attendance={attendance}/>}
           {validPage==='whstats'    && <WarehouseStatsModule {...pp}/>}
           {validPage==='priority'   && <PriorityRequestModule {...pp}/>}
@@ -28197,6 +28208,419 @@ function InventorySyncModule({ user, allUsers, mobile }: any) {
         <br/>• <b>Lưu ý</b>: Chỉ hiển thị SP có trên MISA. SP chỉ có trên KV (SHIP, VAT...) đã được loại.
       </div>
     </div>
+  )
+}
+
+
+// ══════════════════════════════════════════════════════════════════════
+// ══ GHTK MODULE — Giao Hàng Tiết Kiệm integration (Phase 1 skeleton) ═
+// ══════════════════════════════════════════════════════════════════════
+function GhtkModule({ user, allUsers, mobile }: any) {
+  const p = mobile ? '16px' : '24px'
+  const perm = getPerm(user)
+
+  // Tabs mặc định theo quyền: Sale vào Chờ điền, Kho vào Chờ cân
+  const [tab, setTab] = useState<'pending_info'|'pending_weight'|'ready'|'created'|'delivered'|'settings'>(
+    perm.ghtkFillCustomer && !perm.ghtkWeight ? 'pending_info' : 'pending_weight'
+  )
+
+  const [orders, setOrders] = useState<any[]>([])
+  const [loading, setLoading] = useState(true)
+  const [searchQ, setSearchQ] = useState('')
+
+  const norm2 = (s: string) => (s||'').toLowerCase().normalize('NFD')
+    .replace(/[\u0300-\u036f]/g,'').replace(/đ/g,'d').trim()
+
+  const fetchOrders = async () => {
+    setLoading(true)
+    try {
+      const fromDate = new Date(Date.now() - 30 * 86400000).toISOString()
+      const { data, error } = await db.from('packing_workflow')
+        .select('*')
+        .eq('is_ghtk_order', true)
+        .gte('purchase_date', fromDate)
+        .order('purchase_date', { ascending: false })
+        .limit(500)
+      if (error) {
+        console.error('[GHTK] fetch error:', error)
+        setOrders([])
+      } else {
+        setOrders(data || [])
+      }
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  useEffect(() => { fetchOrders() }, [])
+
+  // Categorize orders theo tab
+  const categorized = useMemo(() => {
+    const result = {
+      pending_info: [] as any[],     // chưa điền customer_info
+      pending_weight: [] as any[],   // đã có customer_info, chưa đủ cân thùng
+      ready: [] as any[],            // đủ cân, chưa tạo đơn GHTK
+      created: [] as any[],          // đã tạo đơn, chưa giao xong
+      delivered: [] as any[],        // tất cả label đã delivered (status=5) hoặc cancelled
+    }
+    for (const o of orders) {
+      const hasInfo = !!(o.ghtk_customer_info?.name && o.ghtk_customer_info?.tel)
+      const boxes = o.ghtk_boxes || []
+      const labels = o.ghtk_labels || []
+      const hasCreatedLabels = labels.length > 0
+
+      if (hasCreatedLabels) {
+        // Check tất cả labels đã delivered
+        const allDone = labels.every((l: any) =>
+          l.status === '5' || l.status === '6' || l.status === '-1' || l.status === 5 || l.status === 6)
+        if (allDone) result.delivered.push(o)
+        else result.created.push(o)
+      } else if (!hasInfo) {
+        result.pending_info.push(o)
+      } else if (boxes.length === 0) {
+        result.pending_weight.push(o)
+      } else {
+        result.ready.push(o)
+      }
+    }
+    return result
+  }, [orders])
+
+  const filtered = useMemo(() => {
+    if (tab === 'settings') return []
+    let list = categorized[tab as keyof typeof categorized] || []
+    if (searchQ.trim()) {
+      const tokens = norm2(searchQ).split(/\s+/).filter(Boolean)
+      list = list.filter((o: any) => {
+        const hay = norm2(`${o.order_code} ${o.customer_name || ''} ${o.ghtk_customer_info?.name || ''} ${o.ghtk_customer_info?.tel || ''}`)
+        return tokens.every(t => hay.includes(t))
+      })
+    }
+    return list
+  }, [tab, categorized, searchQ])
+
+  const TABS = [
+    { id:'pending_info',   label:'📝 Chờ điền info',  count: categorized.pending_info.length,   show: perm.ghtkFillCustomer },
+    { id:'pending_weight', label:'⚖️ Chờ cân thùng',   count: categorized.pending_weight.length, show: perm.ghtkWeight },
+    { id:'ready',          label:'🚚 Sẵn sàng tạo',    count: categorized.ready.length,          show: perm.ghtkPrintLabel || perm.ghtkWeight },
+    { id:'created',        label:'🖨 Đã tạo đơn',      count: categorized.created.length,        show: true },
+    { id:'delivered',      label:'📦 Đã giao',         count: categorized.delivered.length,      show: true },
+    { id:'settings',       label:'⚙️ Cấu hình',        count: 0,                                  show: perm.ghtkSettings },
+  ].filter(t => t.show)
+
+  return (
+    <div style={{ padding:`0 ${p} ${mobile?'80px':p}` }}>
+      <Topbar mobile={mobile} title="🚚 GHTK"
+        subtitle="Tích hợp Giao Hàng Tiết Kiệm — tạo đơn và in nhãn"
+        action={
+          <button onClick={fetchOrders}
+            style={{ padding:'5px 12px', borderRadius:20, border:`1px solid ${T.border}`,
+              background:'transparent', cursor:'pointer', fontFamily:'inherit', fontSize:11, color:T.med }}>
+            🔄 Refresh
+          </button>
+        }/>
+
+      {/* Tabs */}
+      <div style={{ display:'flex', gap:6, marginBottom:12, flexWrap:'wrap' }}>
+        {TABS.map(t => (
+          <button key={t.id} onClick={() => setTab(t.id as any)}
+            style={{ padding:'6px 14px', borderRadius:20, cursor:'pointer',
+              fontFamily:'inherit', fontSize:12,
+              border:`1.5px solid ${tab===t.id?T.gold:T.border}`,
+              background: tab===t.id?T.goldBg:'transparent',
+              color: tab===t.id?T.goldText:T.med,
+              fontWeight: tab===t.id?700:500 }}>
+            {t.label} {t.count > 0 && `(${t.count})`}
+          </button>
+        ))}
+      </div>
+
+      {/* Content */}
+      {tab === 'settings' ? (
+        <GhtkSettingsPanel user={user} mobile={mobile}/>
+      ) : (
+        <>
+          {/* Search */}
+          <Card style={{ padding:12, marginBottom:12 }}>
+            <input value={searchQ} onChange={e => setSearchQ(e.target.value)}
+              placeholder="🔍 Tìm theo mã đơn, tên KH, SĐT..."
+              style={{ width:'100%', padding:'9px 12px', border:`1px solid ${T.border}`, borderRadius:8,
+                fontSize:12, fontFamily:'inherit', color:T.dark, background:'#fff', outline:'none',
+                boxSizing:'border-box' as any }}/>
+          </Card>
+
+          {loading ? (
+            <div style={{ padding:'40px 20px', textAlign:'center', color:T.light }}>⏳ Đang tải...</div>
+          ) : filtered.length === 0 ? (
+            <EmptyState icon={Ico.truck}
+              title={searchQ ? 'Không tìm thấy đơn' : (
+                tab === 'pending_info' ? 'Không có đơn chờ điền info' :
+                tab === 'pending_weight' ? 'Không có đơn chờ cân thùng' :
+                tab === 'ready' ? 'Không có đơn sẵn sàng tạo' :
+                tab === 'created' ? 'Không có đơn đã tạo' :
+                'Không có đơn đã giao'
+              )}
+              description={tab === 'pending_info' ? 'Đơn KV có ghi chú "GHTK" sẽ tự xuất hiện ở đây để Sale điền info.' :
+                tab === 'pending_weight' ? 'Các đơn đã điền info KH, chờ Kho cân và đóng thùng.' :
+                'Phase tiếp theo sẽ hoàn thiện các chức năng này.'}/>
+          ) : (
+            <div style={{ display:'flex', flexDirection:'column', gap:8 }}>
+              {filtered.map((o: any) => (
+                <GhtkOrderRow key={o.order_code} order={o} tab={tab} mobile={mobile}
+                  onRefresh={fetchOrders} user={user}/>
+              ))}
+            </div>
+          )}
+        </>
+      )}
+
+      {/* Info footer */}
+      <div style={{ marginTop:16, padding:12, background:T.bg, borderRadius:8,
+        fontSize:10, color:T.light, lineHeight:1.6 }}>
+        💡 <b>Quy trình GHTK</b>:
+        <br/>1. Sale note "GHTK" khi lên đơn KV → đơn tự vào tab "Chờ điền info"
+        <br/>2. Sale điền: tên, SĐT, địa chỉ KH, COD, ship policy → chuyển sang "Chờ cân thùng"
+        <br/>3. Kho chụp ảnh đóng hàng → điền cân từng thùng → auto-tạo đơn GHTK (tách riêng theo thùng, ≥20kg = bigsize)
+        <br/>4. QM bấm in nhãn A6 → dán lên thùng → chụp ảnh thùng đã dán → Hoàn tất
+      </div>
+    </div>
+  )
+}
+
+
+// ── GHTK Order Row (placeholder — sẽ chi tiết ở Phase 2+) ──
+function GhtkOrderRow({ order: o, tab, mobile, onRefresh, user }: any) {
+  const info = o.ghtk_customer_info || {}
+  const boxes = o.ghtk_boxes || []
+  const labels = o.ghtk_labels || []
+
+  return (
+    <Card style={{ padding:12 }}>
+      <div style={{ display:'flex', alignItems:'flex-start', gap:12, flexWrap:'wrap' }}>
+        <div style={{ flex:1, minWidth:200 }}>
+          <div style={{ fontSize:13, fontWeight:700, color:T.dark }}>
+            📦 {o.order_code}
+            {o.customer_name && <span style={{ marginLeft:8, fontSize:12, color:T.med, fontWeight:500 }}>• {o.customer_name}</span>}
+          </div>
+          <div style={{ fontSize:10, color:T.light, marginTop:3 }}>
+            Ngày tạo: {o.purchase_date ? new Date(o.purchase_date).toLocaleDateString('vi-VN') : '—'}
+            {o.sold_by_name && <> • Sale: {o.sold_by_name}</>}
+          </div>
+          {o.description_kv && (
+            <div style={{ fontSize:11, color:T.med, marginTop:4,
+              background:T.bg, padding:'4px 8px', borderRadius:4 }}>
+              📝 {o.description_kv}
+            </div>
+          )}
+          {/* Info KH đã điền */}
+          {info.name && (
+            <div style={{ fontSize:11, color:T.dark, marginTop:6 }}>
+              👤 <b>{info.name}</b> • 📞 {info.tel}
+              {info.pick_money > 0 && (
+                <span style={{ marginLeft:8, color:T.red, fontWeight:700 }}>
+                  💰 COD: {Number(info.pick_money).toLocaleString('vi-VN')}đ
+                </span>
+              )}
+              {(!info.pick_money || info.pick_money === 0) && (
+                <span style={{ marginLeft:8, color:T.light, fontSize:10 }}>(không COD)</span>
+              )}
+            </div>
+          )}
+          {/* Số thùng */}
+          {boxes.length > 0 && (
+            <div style={{ fontSize:11, color:T.blue, marginTop:4 }}>
+              📦 {boxes.length} thùng: {boxes.map((b: any) => `${b.weight_kg}kg${Number(b.weight_kg) >= 20 ? '*' : ''}`).join(' + ')}
+              {boxes.some((b: any) => Number(b.weight_kg) >= 20) && (
+                <span style={{ marginLeft:6, fontSize:9, color:T.amber }}>(* = bigsize)</span>
+              )}
+            </div>
+          )}
+          {/* Labels */}
+          {labels.length > 0 && (
+            <div style={{ fontSize:11, color:T.green, marginTop:4 }}>
+              🏷 {labels.length} nhãn GHTK: {labels.map((l: any) => l.label_id).join(', ')}
+            </div>
+          )}
+        </div>
+
+        {/* Action placeholder */}
+        <div style={{ fontSize:10, color:T.light, fontStyle:'italic', padding:'4px 10px',
+          background:T.bg, borderRadius:6 }}>
+          {tab === 'pending_info' ? 'Phase 2: Nút "Điền info KH"' :
+           tab === 'pending_weight' ? 'Phase 3: Điền trong màn Đóng đơn' :
+           tab === 'ready' ? 'Phase 4: Auto tạo đơn khi điền cân' :
+           tab === 'created' ? 'Phase 4: Nút "In nhãn"' :
+           'Đã giao'}
+        </div>
+      </div>
+    </Card>
+  )
+}
+
+
+// ── GHTK Settings Panel ──
+function GhtkSettingsPanel({ user, mobile }: any) {
+  const [settings, setSettings] = useState<any>(null)
+  const [loading, setLoading] = useState(true)
+  const [saving, setSaving] = useState(false)
+  const [form, setForm] = useState({
+    api_token: '', x_client_source: '',
+    pick_name: '', pick_tel: '', pick_address: '',
+    pick_province: '', pick_district: '', pick_ward: '',
+    default_is_freeship: 0,
+    enforce_ghtk_required: false,
+  })
+
+  useEffect(() => {
+    (async () => {
+      const { data } = await db.from('ghtk_settings').select('*').eq('id', 1).maybeSingle()
+      if (data) {
+        setSettings(data)
+        setForm({
+          api_token: data.api_token || '',
+          x_client_source: data.x_client_source || '',
+          pick_name: data.pick_name || '',
+          pick_tel: data.pick_tel || '',
+          pick_address: data.pick_address || '',
+          pick_province: data.pick_province || '',
+          pick_district: data.pick_district || '',
+          pick_ward: data.pick_ward || '',
+          default_is_freeship: data.default_is_freeship || 0,
+          enforce_ghtk_required: !!data.enforce_ghtk_required,
+        })
+      }
+      setLoading(false)
+    })()
+  }, [])
+
+  const save = async () => {
+    if (!form.api_token.trim()) { window.alert('❌ Cần API Token'); return }
+    if (!form.pick_name.trim() || !form.pick_tel.trim() || !form.pick_address.trim()) {
+      window.alert('❌ Cần đầy đủ thông tin kho lấy hàng'); return
+    }
+    setSaving(true)
+    try {
+      const { error } = await db.from('ghtk_settings').update({
+        ...form,
+        updated_at: new Date().toISOString(),
+        updated_by: user.id,
+      }).eq('id', 1)
+      if (error) { window.alert('❌ Lỗi: ' + error.message); return }
+      window.alert('✅ Đã lưu cấu hình GHTK')
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  if (loading) return <div style={{ padding:'40px', textAlign:'center', color:T.light }}>⏳</div>
+
+  const fieldStyle: any = {
+    width:'100%', padding:'8px 12px', border:`1px solid ${T.border}`, borderRadius:6,
+    fontSize:12, fontFamily:'inherit', color:T.dark, background:'#fff', outline:'none',
+    boxSizing:'border-box',
+  }
+  const labelStyle: any = { display:'block', fontSize:11, color:T.med, marginBottom:4, fontWeight:600 }
+
+  return (
+    <Card style={{ padding:16 }}>
+      <div style={{ fontSize:14, fontWeight:700, color:T.dark, marginBottom:14 }}>🔑 Credentials GHTK</div>
+
+      <div style={{ marginBottom:12 }}>
+        <label style={labelStyle}>API Token (lấy từ khachhang.giaohangtietkiem.vn) *</label>
+        <input type="password" value={form.api_token}
+          onChange={e => setForm(f => ({...f, api_token:e.target.value}))}
+          placeholder="APITokenSample-ca441e70288c..." style={fieldStyle}/>
+      </div>
+
+      <div style={{ marginBottom:20 }}>
+        <label style={labelStyle}>X-Client-Source (Partner code — nếu có)</label>
+        <input value={form.x_client_source}
+          onChange={e => setForm(f => ({...f, x_client_source:e.target.value}))}
+          placeholder="S308157" style={fieldStyle}/>
+      </div>
+
+      <div style={{ fontSize:14, fontWeight:700, color:T.dark, marginBottom:14,
+        paddingTop:14, borderTop:`1px solid ${T.border}` }}>🏠 Địa chỉ kho lấy hàng</div>
+
+      <div style={{ display:'grid', gridTemplateColumns: mobile ? '1fr' : '1fr 1fr', gap:12, marginBottom:12 }}>
+        <div>
+          <label style={labelStyle}>Tên kho *</label>
+          <input value={form.pick_name}
+            onChange={e => setForm(f => ({...f, pick_name:e.target.value}))}
+            placeholder="VD: LA Global Beauty" style={fieldStyle}/>
+        </div>
+        <div>
+          <label style={labelStyle}>Số điện thoại *</label>
+          <input value={form.pick_tel}
+            onChange={e => setForm(f => ({...f, pick_tel:e.target.value}))}
+            placeholder="0912345678" style={fieldStyle}/>
+        </div>
+      </div>
+
+      <div style={{ marginBottom:12 }}>
+        <label style={labelStyle}>Địa chỉ chi tiết (số nhà, đường) *</label>
+        <input value={form.pick_address}
+          onChange={e => setForm(f => ({...f, pick_address:e.target.value}))}
+          placeholder="123 Nguyễn Chí Thanh" style={fieldStyle}/>
+      </div>
+
+      <div style={{ display:'grid', gridTemplateColumns: mobile ? '1fr' : '1fr 1fr 1fr', gap:12, marginBottom:20 }}>
+        <div>
+          <label style={labelStyle}>Tỉnh/TP *</label>
+          <input value={form.pick_province}
+            onChange={e => setForm(f => ({...f, pick_province:e.target.value}))}
+            placeholder="Hà Nội" style={fieldStyle}/>
+        </div>
+        <div>
+          <label style={labelStyle}>Quận/Huyện *</label>
+          <input value={form.pick_district}
+            onChange={e => setForm(f => ({...f, pick_district:e.target.value}))}
+            placeholder="Đống Đa" style={fieldStyle}/>
+        </div>
+        <div>
+          <label style={labelStyle}>Phường/Xã *</label>
+          <input value={form.pick_ward}
+            onChange={e => setForm(f => ({...f, pick_ward:e.target.value}))}
+            placeholder="Láng Thượng" style={fieldStyle}/>
+        </div>
+      </div>
+
+      <div style={{ fontSize:14, fontWeight:700, color:T.dark, marginBottom:14,
+        paddingTop:14, borderTop:`1px solid ${T.border}` }}>⚙️ Mặc định</div>
+
+      <div style={{ marginBottom:12 }}>
+        <label style={labelStyle}>Policy ship mặc định</label>
+        <select value={form.default_is_freeship}
+          onChange={e => setForm(f => ({...f, default_is_freeship: Number(e.target.value)}))}
+          style={fieldStyle}>
+          <option value={0}>KH trả ship (mặc định)</option>
+          <option value={1}>Shop trả ship</option>
+        </select>
+      </div>
+
+      <label style={{ display:'flex', alignItems:'center', gap:8, fontSize:12, cursor:'pointer',
+        padding:'10px 12px', background:T.bg, borderRadius:6, marginBottom:20 }}>
+        <input type="checkbox" checked={form.enforce_ghtk_required}
+          onChange={e => setForm(f => ({...f, enforce_ghtk_required:e.target.checked}))}/>
+        <div>
+          <div style={{ color:T.dark, fontWeight:600 }}>Bắt buộc điền đủ info GHTK trước khi hoàn tất đơn</div>
+          <div style={{ fontSize:10, color:T.light, marginTop:2 }}>
+            Mặc định OFF (soft) — cho hoàn tất đơn kể cả chưa tạo GHTK. Bật ON khi đội ngũ đã quen flow.
+          </div>
+        </div>
+      </label>
+
+      <div style={{ display:'flex', gap:10, justifyContent:'flex-end' }}>
+        <button onClick={save} disabled={saving}
+          style={{ padding:'8px 20px', borderRadius:20,
+            border:`1.5px solid ${T.gold}`,
+            background: saving ? T.border : T.gold,
+            color:'#fff', cursor: saving ? 'wait' : 'pointer',
+            fontFamily:'inherit', fontSize:13, fontWeight:700 }}>
+          {saving ? '⏳ Đang lưu...' : '💾 Lưu cấu hình'}
+        </button>
+      </div>
+    </Card>
   )
 }
 
