@@ -29279,6 +29279,7 @@ function GhtkFillCustomerModal({ order: o, user, mobile, onClose, onSaved }: any
     name:       existing.name || '',
     tel:        existing.tel || '',
     address:    existing.address || '',
+    hamlet:     existing.hamlet || '',  // v122: Đường/Xóm/Thôn
     ward:       existing.ward || '',
     district:   existing.district || '',
     province:   existing.province || '',
@@ -29443,6 +29444,7 @@ function GhtkFillCustomerModal({ order: o, user, mobile, onClose, onSaved }: any
           name:       form.name.trim(),
           tel:        form.tel.replace(/[^0-9]/g, ''),
           address:    form.address.trim(),
+          hamlet:     form.hamlet.trim(),
           ward:       form.ward.trim(),
           district:   form.district.trim(),
           province:   form.province.trim(),
@@ -29480,7 +29482,7 @@ function GhtkFillCustomerModal({ order: o, user, mobile, onClose, onSaved }: any
         ward:        form.ward.trim(),
         district:    form.district.trim(),
         province:    form.province.trim(),
-        hamlet:      'Khác',
+        hamlet:      form.hamlet.trim() || 'Khác',
         pick_money:  form.has_cod ? Number(form.pick_money || 0) : 0,
         is_freeship: Number(form.is_freeship),
         tags:        form.tags,
@@ -29603,6 +29605,18 @@ function GhtkFillCustomerModal({ order: o, user, mobile, onClose, onSaved }: any
         <input value={form.address}
           onChange={e => setForm(f => ({...f, address:e.target.value}))}
           placeholder="35 Hoàng Quốc Việt" style={fieldStyle}/>
+      </div>
+
+      <div style={{ marginBottom:10 }}>
+        <label style={labelStyle}>
+          Đường/Xóm/Thôn/Ngõ
+          <span style={{ fontSize:9, color:T.light, marginLeft:6, fontWeight:400 }}>
+            (VD: Ngõ 234, Xóm 12, Thôn Đồng Kho — giúp shipper tìm nhà)
+          </span>
+        </label>
+        <input value={form.hamlet}
+          onChange={e => setForm(f => ({...f, hamlet:e.target.value}))}
+          placeholder="Xóm 12 / Ngõ 234 / Thôn..." style={fieldStyle}/>
       </div>
 
       <div style={{ display:'grid', gridTemplateColumns: mobile ? '1fr' : '1fr 1fr 1fr', gap:10, marginBottom:16 }}>
