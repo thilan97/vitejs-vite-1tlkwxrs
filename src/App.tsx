@@ -12,7 +12,7 @@ const db = createClient(SUPABASE_URL, SUPABASE_KEY)
 // APP_VERSION — dùng để invalidate cache localStorage mỗi khi deploy version mới
 // (ngăn bug quyền user bị "reset" do cache position cũ sau deploy)
 // ⚠️ MỖI LẦN DEPLOY FEATURE MỚI CÓ PERMISSION MỚI, BUMP SỐ NÀY:
-const APP_VERSION = '2026.04.23.v120'
+const APP_VERSION = '2026.04.23.v121'
 
 // ════════════════════════════════════════════════════════════════
 // AUDIT LOG — ghi nhận các hành động phá hoại data để trace lại
@@ -28612,6 +28612,8 @@ function GhtkModule({ user, allUsers, mobile }: any) {
   const [orders, setOrders] = useState<any[]>([])
   const [loading, setLoading] = useState(true)
   const [searchQ, setSearchQ] = useState('')
+  // v121: Phase 2 - modal điền info KH
+  const [fillInfoOrder, setFillInfoOrder] = useState<any>(null)
 
   const norm2 = (s: string) => (s||'').toLowerCase().normalize('NFD')
     .replace(/[\u0300-\u036f]/g,'').replace(/đ/g,'d').trim()
@@ -28752,7 +28754,8 @@ function GhtkModule({ user, allUsers, mobile }: any) {
             <div style={{ display:'flex', flexDirection:'column', gap:8 }}>
               {filtered.map((o: any) => (
                 <GhtkOrderRow key={o.order_code} order={o} tab={tab} mobile={mobile}
-                  onRefresh={fetchOrders} user={user}/>
+                  onRefresh={fetchOrders} user={user}
+                  onFillInfo={() => setFillInfoOrder(o)}/>
               ))}
             </div>
           )}
@@ -28768,13 +28771,21 @@ function GhtkModule({ user, allUsers, mobile }: any) {
         <br/>3. Kho chụp ảnh đóng hàng → điền cân từng thùng → auto-tạo đơn GHTK (tách riêng theo thùng, ≥20kg = bigsize)
         <br/>4. QM bấm in nhãn A6 → dán lên thùng → chụp ảnh thùng đã dán → Hoàn tất
       </div>
+
+      {/* v121: Modal điền info KH */}
+      {fillInfoOrder && (
+        <GhtkFillCustomerModal
+          order={fillInfoOrder} user={user} mobile={mobile}
+          onClose={() => setFillInfoOrder(null)}
+          onSaved={() => { setFillInfoOrder(null); fetchOrders() }}/>
+      )}
     </div>
   )
 }
 
 
-// ── GHTK Order Row (placeholder — sẽ chi tiết ở Phase 2+) ──
-function GhtkOrderRow({ order: o, tab, mobile, onRefresh, user }: any) {
+// ── GHTK Order Row ──
+function GhtkOrderRow({ order: o, tab, mobile, onRefresh, user, onFillInfo }: any) {
   const info = o.ghtk_customer_info || {}
   const boxes = o.ghtk_boxes || []
   const labels = o.ghtk_labels || []
@@ -28828,14 +28839,48 @@ function GhtkOrderRow({ order: o, tab, mobile, onRefresh, user }: any) {
           )}
         </div>
 
-        {/* Action placeholder */}
-        <div style={{ fontSize:10, color:T.light, fontStyle:'italic', padding:'4px 10px',
-          background:T.bg, borderRadius:6 }}>
-          {tab === 'pending_info' ? 'Phase 2: Nút "Điền info KH"' :
-           tab === 'pending_weight' ? 'Phase 3: Điền trong màn Đóng đơn' :
-           tab === 'ready' ? 'Phase 4: Auto tạo đơn khi điền cân' :
-           tab === 'created' ? 'Phase 4: Nút "In nhãn"' :
-           'Đã giao'}
+        {/* Action area */}
+        <div style={{ display:'flex', gap:8, alignItems:'flex-start' }}>
+          {tab === 'pending_info' && getPerm(user).ghtkFillCustomer && (
+            <button onClick={onFillInfo}
+              style={{ padding:'7px 14px', borderRadius:20, cursor:'pointer',
+                border:`1.5px solid ${T.blue}`, background:T.blueBg, color:T.blue,
+                fontSize:12, fontWeight:700, fontFamily:'inherit', whiteSpace:'nowrap' }}>
+              📝 Điền info KH
+            </button>
+          )}
+          {tab === 'pending_info' && info.name && getPerm(user).ghtkFillCustomer && (
+            <button onClick={onFillInfo}
+              style={{ padding:'5px 12px', borderRadius:20, cursor:'pointer',
+                border:`1px solid ${T.border}`, background:'transparent', color:T.med,
+                fontSize:11, fontFamily:'inherit' }}>
+              ✏️ Sửa
+            </button>
+          )}
+          {tab === 'pending_weight' && (
+            <div style={{ fontSize:10, color:T.light, fontStyle:'italic', padding:'4px 10px',
+              background:T.bg, borderRadius:6 }}>
+              Chờ Kho điền cân trong màn Đóng đơn
+            </div>
+          )}
+          {tab === 'ready' && (
+            <div style={{ fontSize:10, color:T.light, fontStyle:'italic', padding:'4px 10px',
+              background:T.bg, borderRadius:6 }}>
+              Sẵn sàng tạo đơn GHTK
+            </div>
+          )}
+          {tab === 'created' && (
+            <div style={{ fontSize:10, color:T.light, fontStyle:'italic', padding:'4px 10px',
+              background:T.bg, borderRadius:6 }}>
+              Nút "In nhãn" — Phase 4
+            </div>
+          )}
+          {tab === 'delivered' && (
+            <div style={{ fontSize:10, color:T.green, padding:'4px 10px',
+              background:T.greenBg, borderRadius:6 }}>
+              ✓ Đã giao
+            </div>
+          )}
         </div>
       </div>
     </Card>
@@ -28844,6 +28889,344 @@ function GhtkOrderRow({ order: o, tab, mobile, onRefresh, user }: any) {
 
 
 // ── GHTK Settings Panel ──
+// ══════════════════════════════════════════════════════════════════════
+// v121: GHTK Fill Customer Modal — Sale điền info KH qua paste 3 dòng
+// ══════════════════════════════════════════════════════════════════════
+function GhtkFillCustomerModal({ order: o, user, mobile, onClose, onSaved }: any) {
+  const existing = o.ghtk_customer_info || {}
+  const [pasteText, setPasteText] = useState('')
+  const [form, setForm] = useState({
+    name:       existing.name || '',
+    tel:        existing.tel || '',
+    address:    existing.address || '',
+    ward:       existing.ward || '',
+    district:   existing.district || '',
+    province:   existing.province || '',
+    has_cod:    Number(existing.pick_money || 0) > 0,
+    pick_money: String(existing.pick_money || 0),
+    is_freeship: existing.is_freeship ?? 0,
+    tags:       existing.tags || [3],
+    note:       existing.note || '',
+  })
+  const [defaultFreeship, setDefaultFreeship] = useState(0)
+  const [saving, setSaving] = useState(false)
+
+  // Load default is_freeship từ ghtk_settings
+  useEffect(() => {
+    (async () => {
+      const { data } = await db.from('ghtk_settings').select('default_is_freeship').eq('id', 1).maybeSingle()
+      if (data && !existing.tel) {
+        setDefaultFreeship(data.default_is_freeship || 0)
+        setForm(f => ({ ...f, is_freeship: data.default_is_freeship || 0 }))
+      }
+    })()
+  }, [])
+
+  // Parse paste
+  const parsePaste = (text: string) => {
+    const lines = text.split('\n').map(l => l.trim()).filter(Boolean)
+    if (lines.length === 0) return
+
+    // Dòng 1 = SĐT (chỉ lấy chữ số)
+    const telLine = lines[0] || ''
+    const telMatch = telLine.replace(/[^0-9]/g, '')
+
+    // Dòng 2 = Tên
+    const nameLine = lines[1] || ''
+
+    // Dòng 3+ = địa chỉ (có thể nhiều dòng → join bằng dấu phẩy)
+    const addrLines = lines.slice(2)
+    const fullAddr = addrLines.join(', ')
+
+    // Split địa chỉ theo dấu phẩy, tách ngược từ phải
+    const parts = fullAddr.split(',').map(s => s.trim()).filter(Boolean)
+    let address = '', ward = '', district = '', province = ''
+
+    if (parts.length >= 4) {
+      // 4 phần: chi tiết, phường, quận, tỉnh
+      province = parts[parts.length - 1]
+      district = parts[parts.length - 2]
+      ward = parts[parts.length - 3]
+      address = parts.slice(0, parts.length - 3).join(', ')
+    } else if (parts.length === 3) {
+      // 3 phần: chi tiết, phường, tỉnh (bỏ quận sau sáp nhập)
+      province = parts[2]
+      ward = parts[1]
+      address = parts[0]
+    } else if (parts.length === 2) {
+      // 2 phần: chi tiết, tỉnh
+      province = parts[1]
+      address = parts[0]
+    } else {
+      // 1 phần: chỉ chi tiết
+      address = parts[0] || ''
+    }
+
+    setForm(f => ({
+      ...f,
+      tel:      telMatch || f.tel,
+      name:     nameLine || f.name,
+      address:  address || f.address,
+      ward:     ward || f.ward,
+      district: district || f.district,
+      province: province || f.province,
+    }))
+  }
+
+  // Tự parse khi text thay đổi (debounce đơn giản)
+  useEffect(() => {
+    if (!pasteText.trim()) return
+    const t = setTimeout(() => parsePaste(pasteText), 300)
+    return () => clearTimeout(t)
+  }, [pasteText])
+
+  const validate = () => {
+    if (!form.tel.trim()) return 'Cần SĐT người nhận'
+    const telClean = form.tel.replace(/[^0-9]/g, '')
+    if (telClean.length < 10 || telClean.length > 11) return 'SĐT phải có 10-11 số'
+    if (!form.name.trim()) return 'Cần tên người nhận'
+    if (!form.address.trim()) return 'Cần địa chỉ chi tiết'
+    if (!form.province.trim()) return 'Cần tỉnh/TP'
+    if (form.has_cod && (!form.pick_money || Number(form.pick_money) <= 0)) {
+      return 'Chọn "Có thu tiền" thì phải nhập số tiền COD > 0'
+    }
+    return null
+  }
+
+  const save = async () => {
+    const err = validate()
+    if (err) { window.alert('❌ ' + err); return }
+    setSaving(true)
+    try {
+      const info = {
+        name:        form.name.trim(),
+        tel:         form.tel.replace(/[^0-9]/g, ''),
+        address:     form.address.trim(),
+        ward:        form.ward.trim(),
+        district:    form.district.trim(),
+        province:    form.province.trim(),
+        hamlet:      'Khác',
+        pick_money:  form.has_cod ? Number(form.pick_money || 0) : 0,
+        is_freeship: Number(form.is_freeship),
+        tags:        form.tags,
+        note:        form.note.trim(),
+        filled_by:   user.id,
+        filled_at:   new Date().toISOString(),
+      }
+      const { error } = await db.from('packing_workflow')
+        .update({ ghtk_customer_info: info, updated_at: new Date().toISOString() })
+        .eq('order_code', o.order_code)
+      if (error) { window.alert('❌ Lỗi lưu: ' + error.message); return }
+      onSaved()
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  const fieldStyle: any = {
+    width:'100%', padding:'8px 11px', border:`1px solid ${T.border}`, borderRadius:6,
+    fontSize:12, fontFamily:'inherit', color:T.dark, background:'#fff', outline:'none',
+    boxSizing:'border-box',
+  }
+  const labelStyle: any = { display:'block', fontSize:11, color:T.med, marginBottom:3, fontWeight:600 }
+
+  return (
+    <Modal open onClose={onClose} title={`📝 Điền info KH — ${o.order_code}`} wide>
+      {/* Thông tin đơn từ KV (read-only) */}
+      <div style={{ padding:'10px 12px', background:T.bg, borderRadius:8, marginBottom:14, fontSize:11 }}>
+        <div style={{ color:T.med }}>
+          📦 <b style={{ color:T.dark }}>{o.order_code}</b>
+          {o.customer_name && <span> • KH KV: {o.customer_name}</span>}
+          {o.sold_by_name && <span> • Sale: {o.sold_by_name}</span>}
+        </div>
+        {o.description_kv && (
+          <div style={{ color:T.dark, marginTop:4, fontStyle:'italic' }}>📝 {o.description_kv}</div>
+        )}
+        <div style={{ color:T.blue, marginTop:4 }}>
+          💎 Giá trị hàng (auto): {Math.min((Number(o.total_amount || 0) * 1000), 3000000).toLocaleString('vi-VN')}đ
+          {Number(o.total_amount || 0) * 1000 > 3000000 && (
+            <span style={{ color:T.amber, fontSize:10, marginLeft:4 }}>(cap 3tr)</span>
+          )}
+        </div>
+      </div>
+
+      {/* Paste zone */}
+      <div style={{ marginBottom:16, padding:12, background:'#EFF6FF',
+        border:`1.5px dashed ${T.blue}`, borderRadius:10 }}>
+        <div style={{ fontSize:12, fontWeight:700, color:T.blue, marginBottom:6 }}>
+          📋 Dán thông tin người nhận (Ctrl+V)
+        </div>
+        <div style={{ fontSize:10, color:T.med, marginBottom:8, lineHeight:1.5 }}>
+          Mẫu 3 dòng:<br/>
+          <code style={{ color:T.dark }}>
+            0987654321<br/>
+            Nguyễn Văn A<br/>
+            35 Hoàng Quốc Việt, Nghĩa Đô, Cầu Giấy, Hà Nội
+          </code>
+        </div>
+        <textarea value={pasteText}
+          onChange={e => setPasteText(e.target.value)}
+          placeholder="Dán thông tin ở đây..."
+          rows={4}
+          style={{ width:'100%', padding:'8px 11px', border:`1px solid ${T.border}`, borderRadius:6,
+            fontSize:12, fontFamily:'inherit', color:T.dark, background:'#fff', outline:'none',
+            boxSizing:'border-box' as any, resize:'vertical' }}/>
+        {pasteText && (
+          <button onClick={() => setPasteText('')}
+            style={{ marginTop:6, padding:'3px 10px', borderRadius:14, fontSize:10,
+              border:`1px solid ${T.border}`, background:'transparent', color:T.med,
+              cursor:'pointer', fontFamily:'inherit' }}>
+            🧹 Clear
+          </button>
+        )}
+      </div>
+
+      {/* Form 4 ô địa chỉ sale sửa được */}
+      <div style={{ fontSize:12, fontWeight:700, color:T.dark, marginBottom:8 }}>
+        👤 Thông tin người nhận (kiểm tra & sửa nếu sai)
+      </div>
+
+      <div style={{ display:'grid', gridTemplateColumns: mobile ? '1fr' : '1fr 1fr', gap:10, marginBottom:10 }}>
+        <div>
+          <label style={labelStyle}>SĐT người nhận *</label>
+          <input value={form.tel}
+            onChange={e => setForm(f => ({...f, tel:e.target.value}))}
+            placeholder="0912345678" style={fieldStyle}/>
+        </div>
+        <div>
+          <label style={labelStyle}>Tên người nhận *</label>
+          <input value={form.name}
+            onChange={e => setForm(f => ({...f, name:e.target.value}))}
+            placeholder="Nguyễn Văn A" style={fieldStyle}/>
+        </div>
+      </div>
+
+      <div style={{ marginBottom:10 }}>
+        <label style={labelStyle}>Địa chỉ chi tiết (số nhà, đường) *</label>
+        <input value={form.address}
+          onChange={e => setForm(f => ({...f, address:e.target.value}))}
+          placeholder="35 Hoàng Quốc Việt" style={fieldStyle}/>
+      </div>
+
+      <div style={{ display:'grid', gridTemplateColumns: mobile ? '1fr' : '1fr 1fr 1fr', gap:10, marginBottom:16 }}>
+        <div>
+          <label style={labelStyle}>Phường/Xã</label>
+          <input value={form.ward}
+            onChange={e => setForm(f => ({...f, ward:e.target.value}))}
+            placeholder="Nghĩa Đô" style={fieldStyle}/>
+        </div>
+        <div>
+          <label style={labelStyle}>Quận/Huyện</label>
+          <input value={form.district}
+            onChange={e => setForm(f => ({...f, district:e.target.value}))}
+            placeholder="Cầu Giấy" style={fieldStyle}/>
+        </div>
+        <div>
+          <label style={labelStyle}>Tỉnh/TP *</label>
+          <input value={form.province}
+            onChange={e => setForm(f => ({...f, province:e.target.value}))}
+            placeholder="Hà Nội" style={fieldStyle}/>
+        </div>
+      </div>
+
+      {/* COD */}
+      <div style={{ fontSize:12, fontWeight:700, color:T.dark, marginBottom:8,
+        paddingTop:12, borderTop:`1px solid ${T.border}` }}>
+        💰 Tiền thu hộ (COD)
+      </div>
+      <div style={{ marginBottom: form.has_cod ? 10 : 16 }}>
+        <div style={{ display:'flex', gap:10, flexWrap:'wrap' }}>
+          <label style={{ display:'flex', alignItems:'center', gap:6, cursor:'pointer',
+            padding:'8px 14px', borderRadius:20, fontSize:12,
+            border:`1.5px solid ${!form.has_cod ? T.green : T.border}`,
+            background: !form.has_cod ? T.greenBg : '#fff',
+            color: !form.has_cod ? T.green : T.med, fontWeight:700 }}>
+            <input type="radio" checked={!form.has_cod}
+              onChange={() => setForm(f => ({...f, has_cod:false, pick_money:'0'}))}
+              style={{ display:'none' }}/>
+            {!form.has_cod ? '●' : '○'} Không thu tiền (đã chuyển khoản)
+          </label>
+          <label style={{ display:'flex', alignItems:'center', gap:6, cursor:'pointer',
+            padding:'8px 14px', borderRadius:20, fontSize:12,
+            border:`1.5px solid ${form.has_cod ? T.red : T.border}`,
+            background: form.has_cod ? T.redBg : '#fff',
+            color: form.has_cod ? T.red : T.med, fontWeight:700 }}>
+            <input type="radio" checked={form.has_cod}
+              onChange={() => setForm(f => ({...f, has_cod:true}))}
+              style={{ display:'none' }}/>
+            {form.has_cod ? '●' : '○'} Có thu tiền
+          </label>
+        </div>
+      </div>
+      {form.has_cod && (
+        <div style={{ marginBottom:16, padding:10, background:T.redBg, borderRadius:8,
+          border:`1px solid ${T.red}` }}>
+          <label style={labelStyle}>Số tiền COD (đ) *</label>
+          <input type="number" min={0} value={form.pick_money}
+            onChange={e => setForm(f => ({...f, pick_money:e.target.value}))}
+            placeholder="500000" style={fieldStyle}/>
+          <div style={{ fontSize:10, color:T.red, marginTop:4, fontWeight:600 }}>
+            ⚠️ Shipper sẽ thu {Number(form.pick_money || 0).toLocaleString('vi-VN')}đ khi giao
+          </div>
+        </div>
+      )}
+
+      {/* Ship policy + tags */}
+      <div style={{ display:'grid', gridTemplateColumns: mobile ? '1fr' : '1fr 1fr', gap:10, marginBottom:16 }}>
+        <div>
+          <label style={labelStyle}>Phí ship ai trả?</label>
+          <select value={form.is_freeship}
+            onChange={e => setForm(f => ({...f, is_freeship: Number(e.target.value)}))}
+            style={fieldStyle}>
+            <option value={0}>KH trả ship</option>
+            <option value={1}>Shop trả ship</option>
+          </select>
+        </div>
+        <div>
+          <label style={labelStyle}>Cho xem hàng?</label>
+          <select value={form.tags[0] || 3}
+            onChange={e => setForm(f => ({...f, tags:[Number(e.target.value)]}))}
+            style={fieldStyle}>
+            <option value={3}>Không cho xem hàng (mặc định)</option>
+            <option value={1}>Cho xem, không cho thử</option>
+            <option value={2}>Cho xem, cho thử</option>
+            <option value={7}>Đồng kiểm</option>
+          </select>
+        </div>
+      </div>
+
+      {/* Note */}
+      <div style={{ marginBottom:16 }}>
+        <label style={labelStyle}>Ghi chú cho shipper (tùy chọn)</label>
+        <input value={form.note}
+          onChange={e => setForm(f => ({...f, note:e.target.value}))}
+          placeholder="VD: Gọi trước khi giao 30'"
+          style={fieldStyle}/>
+      </div>
+
+      {/* Action buttons */}
+      <div style={{ display:'flex', gap:10, justifyContent:'flex-end',
+        paddingTop:14, borderTop:`1px solid ${T.border}` }}>
+        <button onClick={onClose} disabled={saving}
+          style={{ padding:'8px 18px', borderRadius:20, border:`1px solid ${T.border}`,
+            background:'transparent', color:T.med, cursor:'pointer',
+            fontSize:12, fontFamily:'inherit' }}>
+          Hủy
+        </button>
+        <button onClick={save} disabled={saving}
+          style={{ padding:'8px 24px', borderRadius:20,
+            border:`1.5px solid ${T.gold}`,
+            background: saving ? T.border : T.gold,
+            color:'#fff', cursor: saving ? 'wait' : 'pointer',
+            fontSize:13, fontFamily:'inherit', fontWeight:700 }}>
+          {saving ? '⏳ Đang lưu...' : '✓ Xác nhận & Lưu'}
+        </button>
+      </div>
+    </Modal>
+  )
+}
+
+
 function GhtkSettingsPanel({ user, mobile }: any) {
   const [settings, setSettings] = useState<any>(null)
   const [loading, setLoading] = useState(true)
