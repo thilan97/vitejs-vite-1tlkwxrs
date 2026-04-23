@@ -3450,7 +3450,24 @@ function Attendance({ user, allUsers, leaveRequests, attendance, setAttendance, 
   })
   const [editRow, setEditRow]   = useState<any>(null)
   const [editForm, setEditForm] = useState({ status:'present', late_mins:0, reason:'', notes:'' })
+  // v116: Ra ngoài
+  const [outRecords, setOutRecords] = useState<any[]>([])
+  const [outForm, setOutForm]   = useState({ at:'', mins:15, reason:'' })
+  const [addingOut, setAddingOut] = useState(false)
   const p = mobile ? '16px' : '24px'
+
+  const isQM = getPerm(user).approveLeave || getPerm(user).viewAllDashboard
+
+  // v116: Tổng phút ra ngoài trong ngày
+  const totalOutMins = (rec: any) => (rec?.out_records || []).reduce((s: number, r: any) => s + Number(r.mins || 0), 0)
+
+  // v116: Màu badge theo tổng phút
+  const outBadgeStyle = (mins: number) => {
+    if (mins <= 0) return null
+    if (mins <= 15) return { bg:'#FFFBEB', color:'#D97706', border:'#FCD34D' }
+    if (mins <= 30) return { bg:'#FFF7ED', color:'#EA580C', border:'#FDBA74' }
+    return { bg:'#FEF2F2', color:'#DC2626', border:'#FCA5A5' }
+  }
 
   const canMarkAll  = getPerm(user).viewAllAttendance
   const canMarkDept = getPerm(user).markAttendance
@@ -3493,6 +3510,7 @@ function Attendance({ user, allUsers, leaveRequests, attendance, setAttendance, 
       late_mins:Number(overrides.late_mins ?? editForm.late_mins),
       reason:   overrides.reason   ?? editForm.reason,
       notes:    overrides.notes    ?? editForm.notes,
+      out_records: overrides.out_records ?? outRecords,  // v116
       marked_by:user.id, created_at:fmtNow()
     }
     setAttendance((prev: any) => ex ? prev.map((r: any) => r.id===ex.id ? rec : r) : [...prev, rec])
@@ -3501,12 +3519,15 @@ function Attendance({ user, allUsers, leaveRequests, attendance, setAttendance, 
   }
 
   const quickMark = (u: any, d: string, status: string) =>
-    saveRec(u, d, { status, late_mins:0, reason:'', notes:'' })
+    saveRec(u, d, { status, late_mins:0, reason:'', notes:'', out_records: getRec(u.id, d)?.out_records || [] })
 
   const openEdit = (u: any, d: string) => {
     const rec = getRec(u.id, d)
     setEditRow({ u, d })
     setEditForm({ status:rec?.status||(hasLeave(u.id,d)?'leave':'present'), late_mins:rec?.late_mins||0, reason:rec?.reason||'', notes:rec?.notes||'' })
+    setOutRecords(rec?.out_records || [])  // v116
+    setOutForm({ at: new Date().toTimeString().slice(0,5), mins:15, reason:'' })
+    setAddingOut(false)
   }
 
   const scheduleLabel = (deptId: string) => {
@@ -3527,7 +3548,7 @@ function Attendance({ user, allUsers, leaveRequests, attendance, setAttendance, 
   })
 
   const monthSummary = (uid: string) => {
-    let present=0,late=0,absent=0,sick=0,leave=0,half=0
+    let present=0,late=0,absent=0,sick=0,leave=0,half=0,outMins=0
     monthDays.forEach(({ iso, isWeekend }) => {
       if (isWeekend) return
       const s = getStatus(uid, iso)
@@ -3538,8 +3559,10 @@ function Attendance({ user, allUsers, leaveRequests, attendance, setAttendance, 
       else if (s==='sick') sick++
       else if (s==='leave') leave++
       else if (s==='half') half++
+      // v116: cộng dồn phút ra ngoài
+      outMins += totalOutMins(getRec(uid, iso))
     })
-    return { present, late, absent, sick, leave, half }
+    return { present, late, absent, sick, leave, half, outMins }
   }
 
   const renderToday = () => (
@@ -3569,6 +3592,22 @@ function Attendance({ user, allUsers, leaveRequests, attendance, setAttendance, 
                     <div style={{ fontSize:10, color:T.gold }}>{u.position_name||''}</div>
                     {rec?.late_mins>0 && <div style={{ fontSize:11, color:T.amber }}>Muộn {rec.late_mins} phút</div>}
                     {rec?.reason && <div style={{ fontSize:11, color:T.light }}>Lý do: {rec.reason}</div>}
+                    {/* v116: Badge ra ngoài */}
+                    {(() => {
+                      const mins = totalOutMins(rec)
+                      const bs = outBadgeStyle(mins)
+                      if (!bs) return null
+                      const recs = rec?.out_records || []
+                      return (
+                        <div style={{ display:'flex', alignItems:'center', gap:4, marginTop:2 }}
+                          title={recs.map((r: any) => `${r.at} — ${r.mins}' (${r.reason})`).join('\n')}>
+                          <span style={{ fontSize:10, fontWeight:700, padding:'1px 7px', borderRadius:10,
+                            background:bs.bg, color:bs.color, border:`1px solid ${bs.border}` }}>
+                            🚪 Ra ngoài {recs.length} lần / {mins}'
+                          </span>
+                        </div>
+                      )
+                    })()}
                   </div>
                   {canMark && !mobile && (
                     <div style={{ display:'flex', gap:5 }}>
@@ -3654,6 +3693,13 @@ function Attendance({ user, allUsers, leaveRequests, attendance, setAttendance, 
                                   {status==='present'?'✅':status==='late'?'⏰':status==='absent'?'❌':status==='sick'?'🏥':status==='leave'?'🏖️':'🌓'}
                                 </span>
                                 {rec?.late_mins>0 && <span style={{ fontSize:9, color:T.amber }}>+{rec.late_mins}'</span>}
+                                {/* v116: dot ra ngoài */}
+                                {(() => {
+                                  const mins = totalOutMins(rec)
+                                  const bs = outBadgeStyle(mins)
+                                  if (!bs) return null
+                                  return <span style={{ fontSize:9, fontWeight:700, color:bs.color }}>🚪{mins}'</span>
+                                })()}
                               </div>
                             )}
                           </td>
@@ -3691,7 +3737,7 @@ function Attendance({ user, allUsers, leaveRequests, attendance, setAttendance, 
             </div>
             <div style={{ background:T.card, border:`1px solid ${T.border}`, borderRadius:'0 0 10px 10px', overflow:'hidden' }}>
               <table style={{ width:'100%', borderCollapse:'collapse' }}>
-                <TH cols={['Nhân viên','Ngày đi','Đi muộn','Nghỉ KLý do','Nghỉ bệnh','Nghỉ phép','Tỷ lệ']}/>
+                <TH cols={['Nhân viên','Ngày đi','Đi muộn','Nghỉ KLý do','Nghỉ bệnh','Nghỉ phép','Ra ngoài','Tỷ lệ']}/>
                 <tbody>
                   {group.users.map((u: any, i: number) => {
                     const ms = monthSummary(u.id)
@@ -3707,6 +3753,17 @@ function Attendance({ user, allUsers, leaveRequests, attendance, setAttendance, 
                         <td style={{ padding:'10px', textAlign:'center', fontSize:13, fontWeight:600, color:ms.absent>0?T.red:T.light }}>{ms.absent}</td>
                         <td style={{ padding:'10px', textAlign:'center', fontSize:13, fontWeight:600, color:ms.sick>0?T.purple:T.light }}>{ms.sick}</td>
                         <td style={{ padding:'10px', textAlign:'center', fontSize:13, fontWeight:600, color:ms.leave>0?T.blue:T.light }}>{ms.leave}</td>
+                        {/* v116: Ra ngoài */}
+                        <td style={{ padding:'10px', textAlign:'center' }}>
+                          {ms.outMins > 0 ? (() => {
+                            const bs = outBadgeStyle(ms.outMins)!
+                            const hrs = Math.floor(ms.outMins / 60)
+                            const mins = ms.outMins % 60
+                            const label = hrs > 0 ? `${hrs}h${mins > 0 ? mins + "'" : ''}` : `${ms.outMins}'`
+                            return <span style={{ fontSize:12, fontWeight:700, padding:'2px 8px', borderRadius:10,
+                              background:bs.bg, color:bs.color, border:`1px solid ${bs.border}` }}>🚪 {label}</span>
+                          })() : <span style={{ color:T.light, fontSize:12 }}>—</span>}
+                        </td>
                         <td style={{ padding:'10px', textAlign:'center' }}>
                           <span style={{ fontSize:14, fontWeight:700, color:pct>=90?T.green:pct>=75?T.amber:T.red }}>{pct}%</span>
                         </td>
@@ -3761,7 +3818,134 @@ function Attendance({ user, allUsers, leaveRequests, attendance, setAttendance, 
         <Inp label="Ghi chú" value={editForm.notes}
           onChange={(v) => setEditForm(f => ({...f, notes:v}))}
           placeholder="Ghi chú..."/>
-        <div style={{ display:'flex', justifyContent:'flex-end', gap:10 }}>
+
+        {/* v116: Section Ra ngoài — chỉ QM */}
+        {isQM && (
+          <div style={{ marginTop:16, borderTop:`1px solid ${T.border}`, paddingTop:14 }}>
+            <div style={{ display:'flex', alignItems:'center', justifyContent:'space-between', marginBottom:10 }}>
+              <div style={{ fontSize:13, fontWeight:700, color:T.dark }}>
+                🚪 Ra ngoài
+                {outRecords.length > 0 && (() => {
+                  const total = outRecords.reduce((s: number, r: any) => s + Number(r.mins||0), 0)
+                  const bs = outBadgeStyle(total)!
+                  return <span style={{ marginLeft:8, fontSize:11, padding:'1px 8px', borderRadius:10,
+                    background:bs.bg, color:bs.color, border:`1px solid ${bs.border}` }}>
+                    {outRecords.length} lần / {total} phút
+                  </span>
+                })()}
+              </div>
+              {!addingOut && (
+                <button onClick={() => setAddingOut(true)}
+                  style={{ padding:'4px 12px', borderRadius:6, border:`1px solid ${T.blue}`,
+                    background:T.blueBg, color:T.blue, cursor:'pointer', fontSize:12,
+                    fontFamily:'inherit', fontWeight:600 }}>
+                  + Thêm
+                </button>
+              )}
+            </div>
+
+            {/* Danh sách các lần ra ngoài */}
+            {outRecords.length > 0 && (
+              <div style={{ display:'flex', flexDirection:'column', gap:6, marginBottom:10 }}>
+                {outRecords.map((r: any, i: number) => {
+                  const bs = outBadgeStyle(Number(r.mins))
+                  return (
+                    <div key={i} style={{ display:'flex', alignItems:'center', gap:8,
+                      padding:'7px 10px', borderRadius:8,
+                      background: bs?.bg || T.bg,
+                      border:`1px solid ${bs?.border || T.border}` }}>
+                      <span style={{ fontSize:13 }}>🕐</span>
+                      <span style={{ fontSize:12, fontWeight:700, color:T.dark, minWidth:38 }}>{r.at}</span>
+                      <span style={{ fontSize:12, fontWeight:700, padding:'1px 8px', borderRadius:10,
+                        background: bs?.bg || T.bg, color: bs?.color || T.med,
+                        border:`1px solid ${bs?.border || T.border}` }}>
+                        {r.mins}'
+                      </span>
+                      <span style={{ fontSize:12, color:T.med, flex:1 }}>{r.reason}</span>
+                      <button onClick={() => setOutRecords((prev: any) => prev.filter((_: any, j: number) => j !== i))}
+                        style={{ background:'none', border:'none', cursor:'pointer', color:T.red,
+                          fontSize:16, padding:'0 4px', lineHeight:1 }}>×</button>
+                    </div>
+                  )
+                })}
+              </div>
+            )}
+
+            {/* Form thêm lần ra ngoài */}
+            {addingOut && (
+              <div style={{ padding:'12px', background:T.bg, borderRadius:10,
+                border:`1.5px solid ${T.blue}`, marginBottom:8 }}>
+                <div style={{ fontSize:12, fontWeight:700, color:T.blue, marginBottom:10 }}>Thêm lần ra ngoài</div>
+                <div style={{ display:'flex', gap:8, flexWrap:'wrap', marginBottom:10 }}>
+                  <div style={{ flex:'0 0 auto' }}>
+                    <div style={{ fontSize:11, color:T.med, marginBottom:4 }}>Giờ ra</div>
+                    <input type="time" value={outForm.at}
+                      onChange={e => setOutForm(f => ({...f, at:e.target.value}))}
+                      style={{ padding:'6px 10px', border:`1px solid ${T.border}`, borderRadius:6,
+                        fontSize:12, fontFamily:'inherit', color:T.dark, background:'#fff', outline:'none' }}/>
+                  </div>
+                  <div style={{ flex:'0 0 auto' }}>
+                    <div style={{ fontSize:11, color:T.med, marginBottom:4 }}>Số phút</div>
+                    <div style={{ display:'flex', gap:5 }}>
+                      {[15, 30, 60].map(m => (
+                        <button key={m} onClick={() => setOutForm(f => ({...f, mins:m}))}
+                          style={{ padding:'6px 12px', borderRadius:6, cursor:'pointer',
+                            fontFamily:'inherit', fontSize:12, fontWeight:700,
+                            border:`1.5px solid ${outForm.mins===m ? T.blue : T.border}`,
+                            background: outForm.mins===m ? T.blueBg : '#fff',
+                            color: outForm.mins===m ? T.blue : T.med }}>
+                          {m}'
+                        </button>
+                      ))}
+                      <input type="number" min={1} max={240} value={outForm.mins}
+                        onChange={e => setOutForm(f => ({...f, mins:Number(e.target.value)}))}
+                        style={{ width:54, padding:'6px 8px', border:`1px solid ${T.border}`, borderRadius:6,
+                          fontSize:12, fontFamily:'inherit', color:T.dark, background:'#fff', outline:'none',
+                          textAlign:'center' }}/>
+                    </div>
+                  </div>
+                </div>
+                <div style={{ marginBottom:10 }}>
+                  <div style={{ fontSize:11, color:T.med, marginBottom:4 }}>Lý do <span style={{ color:T.red }}>*</span></div>
+                  <input value={outForm.reason}
+                    onChange={e => setOutForm(f => ({...f, reason:e.target.value}))}
+                    placeholder="Nhập lý do bắt buộc..."
+                    style={{ width:'100%', padding:'7px 10px', border:`1px solid ${outForm.reason.trim() ? T.border : T.red}`,
+                      borderRadius:6, fontSize:12, fontFamily:'inherit', color:T.dark,
+                      background:'#fff', outline:'none', boxSizing:'border-box' as any }}/>
+                </div>
+                <div style={{ display:'flex', gap:8, justifyContent:'flex-end' }}>
+                  <button onClick={() => setAddingOut(false)}
+                    style={{ padding:'5px 14px', borderRadius:6, border:`1px solid ${T.border}`,
+                      background:'transparent', cursor:'pointer', fontSize:12, fontFamily:'inherit', color:T.med }}>
+                    Hủy
+                  </button>
+                  <button
+                    disabled={!outForm.at || !outForm.reason.trim()}
+                    onClick={() => {
+                      if (!outForm.at || !outForm.reason.trim()) return
+                      setOutRecords((prev: any) => [...prev, { at:outForm.at, mins:outForm.mins, reason:outForm.reason.trim() }])
+                      setOutForm({ at: new Date().toTimeString().slice(0,5), mins:15, reason:'' })
+                      setAddingOut(false)
+                    }}
+                    style={{ padding:'5px 14px', borderRadius:6, cursor:'pointer', fontFamily:'inherit',
+                      fontSize:12, fontWeight:700,
+                      border:`1.5px solid ${!outForm.at || !outForm.reason.trim() ? T.border : T.blue}`,
+                      background: !outForm.at || !outForm.reason.trim() ? T.bg : T.blueBg,
+                      color: !outForm.at || !outForm.reason.trim() ? T.light : T.blue }}>
+                    ✓ Thêm
+                  </button>
+                </div>
+              </div>
+            )}
+
+            {outRecords.length === 0 && !addingOut && (
+              <div style={{ fontSize:11, color:T.light, fontStyle:'italic' }}>Chưa có lần ra ngoài nào.</div>
+            )}
+          </div>
+        )}
+
+        <div style={{ display:'flex', justifyContent:'flex-end', gap:10, marginTop:16 }}>
           <GoldBtn outline small onClick={() => setEditRow(null)}>Hủy</GoldBtn>
           <GoldBtn small onClick={() => saveRec(editRow.u, editRow.d)}>Lưu</GoldBtn>
         </div>
