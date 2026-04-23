@@ -29871,13 +29871,25 @@ function GhtkFillCustomerModal({ order: o, user, mobile, onClose, onSaved }: any
     if (err) { window.alert('❌ ' + err); return }
     setSaving(true)
     try {
+      // v122: Auto-sanitize district để không gửi sai lên GHTK
+      let cleanDistrict = form.district.trim()
+      const cleanProvince = form.province.trim()
+      // Nếu district trùng province (sau normalize) hoặc bắt đầu bằng "tỉnh"/"thành phố"/"tp" → clear
+      if (cleanDistrict) {
+        const normD = normAddr(cleanDistrict)
+        const normP = normAddr(cleanProvince)
+        if (normD === normP || /^(tinh|thanh pho|tp)\s/i.test(normD)) {
+          cleanDistrict = ''
+        }
+      }
+
       const info = {
         name:        form.name.trim(),
         tel:         form.tel.replace(/[^0-9]/g, ''),
         address:     form.address.trim(),
         ward:        form.ward.trim(),
-        district:    form.district.trim(),
-        province:    form.province.trim(),
+        district:    cleanDistrict,
+        province:    cleanProvince,
         hamlet:      form.hamlet.trim() || 'Khác',
         pick_money:  form.has_cod ? Number(form.pick_money || 0) : 0,
         is_freeship: Number(form.is_freeship),
@@ -30053,6 +30065,34 @@ function GhtkFillCustomerModal({ order: o, user, mobile, onClose, onSaved }: any
           {smartFillMsg}
         </div>
       )}
+
+      {/* v122: Warning khi district trùng province hoặc sai format */}
+      {(() => {
+        const d = form.district.trim()
+        const p = form.province.trim()
+        if (!d || !p) return null
+        const normD = normAddr(d)
+        const normP = normAddr(p)
+        const looksWrong = normD === normP || /^(tinh|thanh pho|tp)\s/i.test(normD)
+        if (!looksWrong) return null
+        return (
+          <div style={{ marginBottom:12, padding:'8px 12px', borderRadius:6,
+            background:T.amberBg, border:`1px solid ${T.amber}`,
+            display:'flex', alignItems:'center', justifyContent:'space-between', gap:8, flexWrap:'wrap' }}>
+            <div style={{ fontSize:11, color:T.amber, fontWeight:600 }}>
+              ⚠️ Quận/Huyện có vẻ sai (trùng Tỉnh hoặc có "Tỉnh/TP" ở đầu).
+              Sau sáp nhập 2025 nhiều tỉnh bỏ cấp Huyện → nên để TRỐNG.
+            </div>
+            <button onClick={() => setForm(f => ({...f, district:''}))}
+              style={{ padding:'4px 10px', borderRadius:12, fontSize:11,
+                border:`1px solid ${T.amber}`, background:'#fff', color:T.amber,
+                cursor:'pointer', fontFamily:'inherit', fontWeight:700 }}>
+              🧹 Xóa Quận/Huyện
+            </button>
+          </div>
+        )
+      })()}
+
       {!vnTree.length && (
         <div style={{ marginBottom:12, fontSize:10, color:T.light, fontStyle:'italic' }}>
           ⏳ Đang tải dataset địa chỉ VN để hỗ trợ auto-fill...
