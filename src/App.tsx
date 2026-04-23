@@ -28928,6 +28928,9 @@ function GhtkPackingSection({ ord, user, mobile }: any) {
   })
   const [creating, setCreating] = useState(false)
   const [createResult, setCreateResult] = useState<any>(null)
+  // v122: Lưu cân độc lập (không tạo đơn)
+  const [savingBoxes, setSavingBoxes] = useState(false)
+  const [savedJustNow, setSavedJustNow] = useState(false)
 
   const addBox = () => {
     if (hasLabels) return
@@ -28957,6 +28960,25 @@ function GhtkPackingSection({ ord, user, mobile }: any) {
     await db.from('packing_workflow')
       .update({ ghtk_boxes: cleanBoxes, updated_at: new Date().toISOString() })
       .eq('order_code', ord.order_code)
+  }
+
+  // v122: Save boxes độc lập (nút riêng để test)
+  const handleSaveBoxesOnly = async () => {
+    const invalidBox = boxes.find((b: any) => !b.weight_kg || Number(b.weight_kg) <= 0)
+    if (invalidBox) {
+      alert('❌ Thùng ' + invalidBox.box_no + ' chưa có cân nặng hợp lệ.')
+      return
+    }
+    setSavingBoxes(true)
+    try {
+      await saveBoxes()
+      setSavedJustNow(true)
+      setTimeout(() => setSavedJustNow(false), 2500)
+    } catch(e: any) {
+      alert('❌ Lỗi lưu: ' + e.message)
+    } finally {
+      setSavingBoxes(false)
+    }
   }
 
   // Create GHTK order (call Edge Function)
@@ -29152,16 +29174,36 @@ function GhtkPackingSection({ ord, user, mobile }: any) {
             </div>
           )}
 
-          {/* Nút tạo đơn */}
-          {canWeight && hasCustInfo && (
-            <button onClick={createGhtkOrder} disabled={creating}
-              style={{ width:'100%', padding:'10px', borderRadius:8,
-                border:`1.5px solid ${creating ? T.border : T.blue}`,
-                background: creating ? T.border : T.blue,
-                color:'#fff', cursor: creating ? 'wait' : 'pointer',
-                fontFamily:'inherit', fontSize:13, fontWeight:700 }}>
-              {creating ? '⏳ Đang tạo đơn GHTK...' : '🚚 Tạo đơn GHTK'}
-            </button>
+          {/* v122: 2 nút — Lưu cân (luôn hiện khi canWeight) + Tạo đơn (cần info KH) */}
+          {canWeight && (
+            <div style={{ display:'flex', gap:8, flexDirection: mobile ? 'column' : 'row' }}>
+              <button onClick={handleSaveBoxesOnly} disabled={savingBoxes || creating}
+                style={{ flex:1, padding:'10px', borderRadius:8,
+                  border:`1.5px solid ${savingBoxes ? T.border : T.gold}`,
+                  background: savedJustNow ? T.greenBg : (savingBoxes ? T.border : 'transparent'),
+                  color: savedJustNow ? T.green : (savingBoxes ? T.light : T.goldText),
+                  cursor: savingBoxes ? 'wait' : 'pointer',
+                  fontFamily:'inherit', fontSize:13, fontWeight:700 }}>
+                {savingBoxes ? '⏳ Đang lưu...' : savedJustNow ? '✓ Đã lưu' : '💾 Lưu cân thùng'}
+              </button>
+              {hasCustInfo ? (
+                <button onClick={createGhtkOrder} disabled={creating || savingBoxes}
+                  style={{ flex:2, padding:'10px', borderRadius:8,
+                    border:`1.5px solid ${creating ? T.border : T.blue}`,
+                    background: creating ? T.border : T.blue,
+                    color:'#fff', cursor: creating ? 'wait' : 'pointer',
+                    fontFamily:'inherit', fontSize:13, fontWeight:700 }}>
+                  {creating ? '⏳ Đang tạo đơn GHTK...' : '🚚 Tạo đơn GHTK'}
+                </button>
+              ) : (
+                <div style={{ flex:2, padding:'10px', borderRadius:8,
+                  border:`1.5px dashed ${T.border}`, background:T.bg,
+                  color:T.light, fontSize:11, textAlign:'center',
+                  fontStyle:'italic', display:'flex', alignItems:'center', justifyContent:'center' }}>
+                  Cần Sale điền info KH trước khi tạo đơn
+                </div>
+              )}
+            </div>
           )}
 
           {!canWeight && (
