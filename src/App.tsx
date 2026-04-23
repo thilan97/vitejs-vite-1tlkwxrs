@@ -27776,8 +27776,11 @@ function InventorySyncModule({ user, allUsers, mobile }: any) {
   }
 
   // Filter + sort (lệch tăng lên đầu, rồi lệch thường, rồi khớp)
+  // v115: Chỉ hiển thị SP có trên MISA (loại bỏ match_source='kv_only')
+  const itemsOnMisa = useMemo(() => items.filter(r => r.match_source !== 'kv_only'), [items])
+
   const displayed = useMemo(() => {
-    let rows = items
+    let rows = itemsOnMisa
     if (filter === 'diff') rows = rows.filter(r => Number(r.abs_diff) > 0)
     else if (filter === 'increasing') rows = rows.filter(r => r.is_increasing)
     if (searchQ.trim()) {
@@ -27813,7 +27816,7 @@ function InventorySyncModule({ user, allUsers, mobile }: any) {
   return (
     <div style={{ padding:`0 ${p} ${mobile?'80px':p}` }}>
       <Topbar mobile={mobile} title="📊 Đối soát tồn kho"
-        subtitle="So sánh tồn KiotViet với MISA Kế toán"
+        subtitle="So sánh tồn KiotViet với MISA Kế toán — chỉ hiển thị SP có trên MISA"
         action={
           <button onClick={handleSync} disabled={syncing}
             style={{ padding:'6px 14px', borderRadius:20,
@@ -27847,42 +27850,44 @@ function InventorySyncModule({ user, allUsers, mobile }: any) {
               </div>
             )}
           </div>
-          {summary && (
+          {summary && (() => {
+            // v115: Tính lại các con số từ itemsOnMisa (đã loại kv_only)
+            const onMisaCount = itemsOnMisa.length
+            const diffCount = itemsOnMisa.filter(r => Number(r.abs_diff) > 0).length
+            const incrCount = itemsOnMisa.filter(r => r.is_increasing).length
+            const totalAbs = itemsOnMisa.reduce((s, r) => s + Number(r.abs_diff || 0), 0)
+            return (
             <div style={{ display:'flex', gap:10, flexWrap:'wrap' }}>
               <div style={{ textAlign:'center', minWidth:90 }}>
-                <div style={{ fontSize:10, color:T.med }}>Tổng SP</div>
-                <div style={{ fontSize:18, fontWeight:700, color:T.dark }}>{fmtNum(summary.total_products)}</div>
+                <div style={{ fontSize:10, color:T.med }}>SP trên MISA</div>
+                <div style={{ fontSize:18, fontWeight:700, color:T.dark }}>{fmtNum(onMisaCount)}</div>
               </div>
               <div style={{ textAlign:'center', minWidth:90,
                 padding:'4px 10px', borderRadius:8,
-                background: summary.items_with_diff > 0 ? '#FEF2F2' : T.greenBg }}>
+                background: diffCount > 0 ? '#FEF2F2' : T.greenBg }}>
                 <div style={{ fontSize:10, color:T.med }}>Mã lệch</div>
                 <div style={{ fontSize:18, fontWeight:700,
-                  color: summary.items_with_diff > 0 ? T.red : T.green }}>
-                  {fmtNum(summary.items_with_diff)}
+                  color: diffCount > 0 ? T.red : T.green }}>
+                  {fmtNum(diffCount)}
                 </div>
               </div>
-              {summary.items_increasing > 0 && (
+              {incrCount > 0 && (
                 <div style={{ textAlign:'center', minWidth:90,
                   padding:'4px 10px', borderRadius:8, background:'#FEF2F2',
                   border:`1.5px solid ${T.red}` }}>
                   <div style={{ fontSize:10, color:T.red, fontWeight:600 }}>🔴 Lệch tăng</div>
                   <div style={{ fontSize:18, fontWeight:800, color:T.red }}>
-                    {fmtNum(summary.items_increasing)}
+                    {fmtNum(incrCount)}
                   </div>
                 </div>
               )}
               <div style={{ textAlign:'center', minWidth:90 }}>
                 <div style={{ fontSize:10, color:T.med }}>Tổng |lệch|</div>
-                <div style={{ fontSize:18, fontWeight:700, color:T.dark }}>{fmtNum(summary.total_abs_diff)}</div>
-                {summary.prev_total_abs_diff !== null && summary.prev_total_abs_diff !== undefined && (
-                  <div style={{ fontSize:9, color: Number(summary.total_abs_diff) > Number(summary.prev_total_abs_diff) ? T.red : T.green }}>
-                    {Number(summary.total_abs_diff) > Number(summary.prev_total_abs_diff) ? '↑' : '↓'} {fmtNum(Math.abs(Number(summary.total_abs_diff) - Number(summary.prev_total_abs_diff||0)))}
-                  </div>
-                )}
+                <div style={{ fontSize:18, fontWeight:700, color:T.dark }}>{fmtNum(totalAbs)}</div>
               </div>
             </div>
-          )}
+            )
+          })()}
         </div>
       </Card>
 
@@ -27895,9 +27900,9 @@ function InventorySyncModule({ user, allUsers, mobile }: any) {
             boxSizing:'border-box' as any, marginBottom:10 }}/>
         <div style={{ display:'flex', gap:6, flexWrap:'wrap' }}>
           {[
-            { id:'diff', label:'⚠️ Chỉ mã lệch', count: items.filter(r => Number(r.abs_diff)>0).length },
-            { id:'increasing', label:'🔴 Lệch tăng', count: items.filter(r => r.is_increasing).length },
-            { id:'all', label:'📋 Tất cả', count: items.length },
+            { id:'diff', label:'⚠️ Chỉ mã lệch', count: itemsOnMisa.filter(r => Number(r.abs_diff)>0).length },
+            { id:'increasing', label:'🔴 Lệch tăng', count: itemsOnMisa.filter(r => r.is_increasing).length },
+            { id:'all', label:'📋 Tất cả', count: itemsOnMisa.length },
           ].map(t => (
             <button key={t.id} onClick={() => setFilter(t.id as any)}
               style={{ padding:'5px 12px', borderRadius:20, cursor:'pointer',
@@ -27950,13 +27955,9 @@ function InventorySyncModule({ user, allUsers, mobile }: any) {
                       </td>
                       <td style={{ padding:'8px 12px', color:T.dark, fontSize:11 }}>
                         {r.product_name}
-                        {r.match_source === 'kv_only' && (
-                          <span style={{ marginLeft:6, fontSize:9, padding:'1px 6px', borderRadius:4,
-                            background:T.amberBg, color:T.amber, fontWeight:600 }}>Chỉ KV</span>
-                        )}
                         {r.match_source === 'misa_only' && (
                           <span style={{ marginLeft:6, fontSize:9, padding:'1px 6px', borderRadius:4,
-                            background:T.blueBg, color:T.blue, fontWeight:600 }}>Chỉ MISA</span>
+                            background:T.blueBg, color:T.blue, fontWeight:600 }} title="SP có trên MISA nhưng KV chưa có">Chỉ MISA</span>
                         )}
                       </td>
                       <td style={{ padding:'8px 8px', textAlign:'right', fontFamily:'monospace', color:T.dark }}>
@@ -28002,7 +28003,8 @@ function InventorySyncModule({ user, allUsers, mobile }: any) {
         <br/>• <b>Lệch (KV - MISA)</b>: Dương = KV nhiều hơn MISA • Âm = MISA nhiều hơn KV
         <br/>• <b>🔴 Lệch tăng</b>: Mức lệch của SP này đã tăng so với lần đồng bộ trước (cần kiểm tra)
         <br/>• <b>↓</b>: Lệch đã giảm — tốt! Mục tiêu: tất cả về 0
-        <br/>• <b>Chỉ KV / Chỉ MISA</b>: SP chỉ tồn tại ở 1 trong 2 hệ thống
+        <br/>• <b>Chỉ MISA</b>: SP có trên MISA nhưng KiotViet chưa có — cần kiểm tra
+        <br/>• <b>Lưu ý</b>: Chỉ hiển thị các SP có trên MISA. Các SP chỉ có trên KV (SHIP, VAT, v.v.) đã được loại.
       </div>
     </div>
   )
