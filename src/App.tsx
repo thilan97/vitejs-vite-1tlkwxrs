@@ -12,7 +12,7 @@ const db = createClient(SUPABASE_URL, SUPABASE_KEY)
 // APP_VERSION — dùng để invalidate cache localStorage mỗi khi deploy version mới
 // (ngăn bug quyền user bị "reset" do cache position cũ sau deploy)
 // ⚠️ MỖI LẦN DEPLOY FEATURE MỚI CÓ PERMISSION MỚI, BUMP SỐ NÀY:
-const APP_VERSION = '2026.04.23.v122'
+const APP_VERSION = '2026.04.23.v123'
 
 // ════════════════════════════════════════════════════════════════
 // AUDIT LOG — ghi nhận các hành động phá hoại data để trace lại
@@ -28641,6 +28641,8 @@ function GhtkModule({ user, allUsers, mobile }: any) {
   const [editBoxesOrder, setEditBoxesOrder] = useState<any>(null)
   // v122: Ngày bắt đầu quản lý GHTK
   const [ghtkStartDate, setGhtkStartDate] = useState<string|null>(null)
+  // v123: Tạo đơn thủ công
+  const [showManualOrder, setShowManualOrder] = useState(false)
 
   const norm2 = (s: string) => (s||'').toLowerCase().normalize('NFD')
     .replace(/[\u0300-\u036f]/g,'').replace(/đ/g,'d').trim()
@@ -28740,11 +28742,21 @@ function GhtkModule({ user, allUsers, mobile }: any) {
           ? `Đơn từ ngày ${ghtkStartDate.split('-').reverse().join('/')} trở về sau`
           : "Tích hợp Giao Hàng Tiết Kiệm — tạo đơn và in nhãn"}
         action={
-          <button onClick={fetchOrders}
-            style={{ padding:'5px 12px', borderRadius:20, border:`1px solid ${T.border}`,
-              background:'transparent', cursor:'pointer', fontFamily:'inherit', fontSize:11, color:T.med }}>
-            🔄 Refresh
-          </button>
+          <div style={{ display:'flex', gap:6 }}>
+            {perm.ghtkSettings && (
+              <button onClick={() => setShowManualOrder(true)}
+                style={{ padding:'5px 14px', borderRadius:20, border:`1.5px solid ${T.green}`,
+                  background:T.greenBg, cursor:'pointer', fontFamily:'inherit', fontSize:11,
+                  color:T.green, fontWeight:700 }}>
+                ✍️ Tạo đơn thủ công
+              </button>
+            )}
+            <button onClick={fetchOrders}
+              style={{ padding:'5px 12px', borderRadius:20, border:`1px solid ${T.border}`,
+                background:'transparent', cursor:'pointer', fontFamily:'inherit', fontSize:11, color:T.med }}>
+              🔄 Refresh
+            </button>
+          </div>
         }/>
 
       {/* Tabs */}
@@ -28827,6 +28839,14 @@ function GhtkModule({ user, allUsers, mobile }: any) {
           order={editBoxesOrder} user={user} mobile={mobile}
           onClose={() => setEditBoxesOrder(null)}
           onSaved={() => { setEditBoxesOrder(null); fetchOrders() }}/>
+      )}
+
+      {/* v123: Modal tạo đơn thủ công */}
+      {showManualOrder && (
+        <GhtkManualOrderModal
+          user={user} mobile={mobile}
+          onClose={() => setShowManualOrder(false)}
+          onCreated={() => { setShowManualOrder(false); fetchOrders() }}/>
       )}
     </div>
   )
@@ -29634,6 +29654,642 @@ function findAddrByDistrict(tree: any[], districtName: string, hints: { province
     return results.filter(r => r.score === 1.0)
   }
   return results
+}
+
+
+// ══════════════════════════════════════════════════════════════════════
+// v123: GHTK Manual Order Modal — QM/Admin tạo đơn ship thủ công
+// ══════════════════════════════════════════════════════════════════════
+function GhtkManualOrderModal({ user, mobile, onClose, onCreated }: any) {
+  const fieldStyle: any = {
+    width:'100%', padding:'8px 12px', border:`1px solid ${T.border}`, borderRadius:6,
+    fontSize:12, fontFamily:'inherit', color:T.dark, background:'#fff', outline:'none',
+    boxSizing:'border-box',
+  }
+  const labelStyle: any = { display:'block', fontSize:11, color:T.med, marginBottom:4, fontWeight:600 }
+  const sectionTitle = (icon: string, label: string) => (
+    <div style={{ fontSize:13, fontWeight:700, color:T.dark, marginBottom:12, paddingBottom:8,
+      borderBottom:`1px solid ${T.border}`, display:'flex', alignItems:'center', gap:6 }}>
+      <span>{icon}</span> {label}
+    </div>
+  )
+
+  // ── State form ──
+  const [form, setForm] = useState({
+    // Người nhận
+    tel: '', name: '', address: '', hamlet: '',
+    ward: '', district: '', province: '',
+    // Sản phẩm (list)
+    // handled bên dưới
+    // Ship options
+    transport: 'road' as 'road' | 'fly',
+    use_ghtk_insurance: false,
+    // COD
+    has_cod: false,
+    pick_money: '',
+    order_value: '',
+    is_freeship: 0,
+    tags: [3] as number[],
+    note: '',
+    // Link KV (optional)
+    kv_order_code: '',
+    shop_order_id: '',
+  })
+  const [items, setItems] = useState<{ id: number; name: string; weight: number; qty: number }[]>([
+    { id: 1, name: '', weight: 0, qty: 1 }
+  ])
+  const [boxes, setBoxes] = useState<{ box_no: number; weight_kg: number }[]>([
+    { box_no: 1, weight_kg: 0 }
+  ])
+
+  // Address smart fill
+  const [vnTree, setVnTree] = useState<any[]>([])
+  const [smartMsg, setSmartMsg] = useState('')
+  const [checking, setChecking] = useState(false)
+  const [checkResult, setCheckResult] = useState<any>(null)
+
+  // Kết quả tạo đơn
+  const [creating, setCreating] = useState(false)
+  const [createResult, setCreateResult] = useState<any>(null)
+
+  useEffect(() => { loadVnAddressTree().then(t => setVnTree(t)) }, [])
+
+  // Smart fill ward → district/province
+  useEffect(() => {
+    if (!vnTree.length || !form.ward || form.ward.length < 2) return
+    if (form.district && form.province) return
+    const t = setTimeout(() => {
+      const matches = findAddrByWard(vnTree, form.ward, {
+        province: form.province || undefined,
+        district: form.district || undefined,
+      })
+      if (matches.length === 1) {
+        const m = matches[0]
+        const up: any = {}
+        if (!form.district && m.district) up.district = m.district
+        if (!form.province && m.province) up.province = m.province
+        if (Object.keys(up).length) {
+          setForm(f => ({...f, ...up}))
+          setSmartMsg(`✨ Auto-fill: ${Object.values(up).join(', ')}`)
+          setTimeout(() => setSmartMsg(''), 3500)
+        }
+      }
+    }, 600)
+    return () => clearTimeout(t)
+  }, [form.ward, vnTree.length])
+
+  // Smart fill district → province
+  useEffect(() => {
+    if (!vnTree.length || !form.district || form.district.length < 2) return
+    if (form.province) return
+    const t = setTimeout(() => {
+      const matches = findAddrByDistrict(vnTree, form.district, {
+        province: form.province || undefined,
+      })
+      if (matches.length === 1) {
+        setForm(f => ({...f, province: matches[0].province}))
+        setSmartMsg(`✨ Auto-fill tỉnh: ${matches[0].province}`)
+        setTimeout(() => setSmartMsg(''), 3500)
+      }
+    }, 600)
+    return () => clearTimeout(t)
+  }, [form.district, vnTree.length])
+
+  // ── Items helpers ──
+  const addItem = () => setItems(prev => [...prev, { id: Date.now(), name:'', weight:0, qty:1 }])
+  const removeItem = (id: number) => setItems(prev => prev.filter(i => i.id !== id))
+  const updateItem = (id: number, field: string, val: any) =>
+    setItems(prev => prev.map(i => i.id === id ? {...i, [field]: val} : i))
+
+  // ── Boxes helpers ──
+  const addBox = () => setBoxes(prev => [...prev, { box_no: prev.length + 1, weight_kg: 0 }])
+  const removeBox = (idx: number) => {
+    if (boxes.length === 1) return
+    setBoxes(prev => prev.filter((_, i) => i !== idx).map((b, i) => ({...b, box_no: i+1})))
+  }
+  const updateBox = (idx: number, val: number) =>
+    setBoxes(prev => prev.map((b, i) => i === idx ? {...b, weight_kg: val} : b))
+
+  // Tổng KL items (để tham chiếu)
+  const totalItemWeight = items.reduce((s, i) => s + Number(i.weight || 0) * Number(i.qty || 1), 0)
+  const totalBoxWeight  = boxes.reduce((s, b) => s + Number(b.weight_kg || 0), 0)
+  const anyBigsize = boxes.some(b => Number(b.weight_kg) >= 20)
+
+  // ── Kiểm tra địa chỉ GHTK ──
+  const checkAddress = async () => {
+    if (!form.province) { alert('Chưa có Tỉnh/TP'); return }
+    setChecking(true); setCheckResult(null)
+    try {
+      const res = await fetch(`${SUPABASE_URL}/functions/v1/ghtk-check-address`, {
+        method: 'POST',
+        headers: { 'Content-Type':'application/json', 'Authorization':`Bearer ${SUPABASE_ANON}` },
+        body: JSON.stringify({
+          province: form.province,
+          district: form.district || '',
+          ward: form.ward || '',
+          address: form.address || '',
+        }),
+      })
+      setCheckResult(await res.json())
+    } catch(e: any) {
+      setCheckResult({ success: false, error: e.message })
+    } finally {
+      setChecking(false)
+    }
+  }
+
+  // ── Tạo đơn GHTK ──
+  const handleCreate = async () => {
+    if (!form.tel || !form.name || !form.province) {
+      alert('❌ Cần điền: SĐT, Tên người nhận, Tỉnh/TP'); return
+    }
+    if (boxes.some(b => !b.weight_kg || Number(b.weight_kg) <= 0)) {
+      alert('❌ Cần điền cân nặng cho tất cả thùng'); return
+    }
+
+    setCreating(true); setCreateResult(null)
+    try {
+      // v123: tạo mã đơn thủ công: MAN-{timestamp}
+      const manualCode = `MAN-${Date.now()}`
+      const orderValue = Math.min(Number(form.order_value || 0), 3000000)
+
+      const payload = {
+        order_code: form.kv_order_code || manualCode,
+        customer_info: {
+          name:        form.name,
+          tel:         form.tel,
+          address:     form.address,
+          hamlet:      form.hamlet || 'Khác',
+          ward:        form.ward || '',
+          district:    form.district || '',
+          province:    form.province,
+          pick_money:  form.has_cod ? Number(form.pick_money || 0) : 0,
+          order_value: orderValue,
+          is_freeship: Number(form.is_freeship || 0),
+          tags:        form.tags,
+          note:        form.note || '',
+          transport:   form.transport,
+        },
+        boxes: boxes.map(b => ({ box_no: b.box_no, weight_kg: Number(b.weight_kg) })),
+      }
+
+      const res = await fetch(`${SUPABASE_URL}/functions/v1/ghtk-create-order`, {
+        method: 'POST',
+        headers: { 'Content-Type':'application/json', 'Authorization':`Bearer ${SUPABASE_ANON}` },
+        body: JSON.stringify(payload),
+      })
+      const json = await res.json()
+      setCreateResult(json)
+
+      // Nếu thành công → lưu vào packing_workflow với is_manual_order=true
+      if (json.success && json.labels) {
+        const linkedCode = form.kv_order_code || manualCode
+        // Upsert: nếu có kv_order_code thì update đơn KV, else insert mới
+        if (form.kv_order_code) {
+          await db.from('packing_workflow').update({
+            is_ghtk_order: true,
+            ghtk_customer_info: payload.customer_info,
+            ghtk_boxes: boxes,
+            ghtk_labels: json.labels,
+            ghtk_created_at: new Date().toISOString(),
+          }).eq('order_code', form.kv_order_code)
+        } else {
+          await db.from('packing_workflow').insert({
+            id: `manual_${Date.now()}`,
+            order_code: manualCode,
+            customer_name: form.name,
+            purchase_date: new Date().toISOString(),
+            status: 'done',
+            is_ghtk_order: true,
+            is_manual_order: true,
+            ghtk_customer_info: payload.customer_info,
+            ghtk_boxes: boxes,
+            ghtk_labels: json.labels,
+            ghtk_created_at: new Date().toISOString(),
+            sold_by: user?.id || null,
+            sold_by_name: user?.name || null,
+            description_kv: `Đơn thủ công${form.shop_order_id ? ' · Mã shop: '+form.shop_order_id : ''}`,
+            total_amount: Number(form.order_value || 0) / 1000,
+          })
+        }
+      }
+    } catch(e: any) {
+      setCreateResult({ success: false, error: e.message })
+    } finally {
+      setCreating(false)
+    }
+  }
+
+  const gr2 = { display:'grid', gridTemplateColumns: mobile ? '1fr' : '1fr 1fr', gap:12 } as any
+  const gr3 = { display:'grid', gridTemplateColumns: mobile ? '1fr' : '1fr 1fr 1fr', gap:12 } as any
+
+  return (
+    <Modal open wide title="✍️ Tạo đơn GHTK thủ công"
+      onClose={onClose}>
+      <div style={{ maxHeight:'80vh', overflowY:'auto', padding: mobile ? '0 4px 80px' : '0 0 80px' }}>
+
+        {/* Kết quả tạo đơn */}
+        {createResult && (
+          <div style={{ marginBottom:16, padding:14, borderRadius:8,
+            background: createResult.success ? T.greenBg : T.redBg,
+            border:`1px solid ${createResult.success ? T.green : T.red}` }}>
+            {createResult.success ? (
+              <>
+                <div style={{ fontSize:13, fontWeight:700, color:T.green, marginBottom:6 }}>
+                  ✅ Tạo đơn thành công!
+                </div>
+                {(createResult.labels || []).map((l: any) => (
+                  <div key={l.label_id} style={{ fontSize:11, color:T.dark, marginTop:4 }}>
+                    📦 Thùng {l.box_no}: <b>{l.label_id}</b>
+                    {l.fee > 0 && <span style={{ marginLeft:8, color:T.blue }}>Phí: {Number(l.fee).toLocaleString('vi-VN')}đ</span>}
+                    {l.estimated_pick_time && <span style={{ marginLeft:8, color:T.light }}>Lấy: {l.estimated_pick_time}</span>}
+                    {l.estimated_deliver_time && <span style={{ marginLeft:8, color:T.light }}>→ Giao: {l.estimated_deliver_time}</span>}
+                  </div>
+                ))}
+                <button onClick={onCreated}
+                  style={{ marginTop:10, padding:'7px 16px', borderRadius:20, cursor:'pointer',
+                    border:`1.5px solid ${T.green}`, background:T.green, color:'#fff',
+                    fontSize:12, fontWeight:700, fontFamily:'inherit' }}>
+                  ✅ Đóng & Refresh danh sách
+                </button>
+              </>
+            ) : (
+              <>
+                <div style={{ fontSize:13, fontWeight:700, color:T.red, marginBottom:4 }}>
+                  ❌ Lỗi tạo đơn
+                </div>
+                <div style={{ fontSize:11, color:T.red }}>
+                  {createResult.error || JSON.stringify(createResult)}
+                </div>
+                <button onClick={() => setCreateResult(null)}
+                  style={{ marginTop:8, padding:'5px 12px', borderRadius:14, cursor:'pointer',
+                    border:`1px solid ${T.red}`, background:'#fff', color:T.red,
+                    fontSize:11, fontFamily:'inherit' }}>
+                  Thử lại
+                </button>
+              </>
+            )}
+          </div>
+        )}
+
+        {/* ── NGƯỜI NHẬN ── */}
+        <div style={{ marginBottom:20 }}>
+          {sectionTitle('👤', 'Người nhận')}
+          <div style={{ ...gr2, marginBottom:12 }}>
+            <div>
+              <label style={labelStyle}>Số điện thoại *</label>
+              <input value={form.tel} onChange={e => setForm(f => ({...f, tel:e.target.value}))}
+                placeholder="0912345678" style={fieldStyle}/>
+            </div>
+            <div>
+              <label style={labelStyle}>Tên người nhận *</label>
+              <input value={form.name} onChange={e => setForm(f => ({...f, name:e.target.value}))}
+                placeholder="Nguyễn Văn A" style={fieldStyle}/>
+            </div>
+          </div>
+
+          <div style={{ marginBottom:12 }}>
+            <label style={labelStyle}>Địa chỉ chi tiết (số nhà, tên đường)</label>
+            <input value={form.address} onChange={e => setForm(f => ({...f, address:e.target.value}))}
+              placeholder="123 Nguyễn Chí Thanh" style={fieldStyle}/>
+          </div>
+
+          <div style={{ marginBottom:12 }}>
+            <label style={labelStyle}>Đường/Xóm/Thôn/Ngõ (cho địa chỉ nông thôn)</label>
+            <input value={form.hamlet} onChange={e => setForm(f => ({...f, hamlet:e.target.value}))}
+              placeholder="Thôn Đồng Tâm / Xóm 3 / Ngõ 12..." style={fieldStyle}/>
+          </div>
+
+          <div style={{ ...gr3, marginBottom:8 }}>
+            <div>
+              <label style={labelStyle}>Phường/Xã</label>
+              <input value={form.ward} onChange={e => setForm(f => ({...f, ward:e.target.value}))}
+                placeholder="Phường Láng Thượng" style={fieldStyle}/>
+            </div>
+            <div>
+              <label style={labelStyle}>Quận/Huyện</label>
+              <input value={form.district} onChange={e => setForm(f => ({...f, district:e.target.value}))}
+                placeholder="Quận Đống Đa" style={fieldStyle}/>
+            </div>
+            <div>
+              <label style={labelStyle}>Tỉnh/TP *</label>
+              <input value={form.province} onChange={e => setForm(f => ({...f, province:e.target.value}))}
+                placeholder="Hà Nội" style={fieldStyle}/>
+            </div>
+          </div>
+
+          {/* Smart fill msg */}
+          {smartMsg && (
+            <div style={{ fontSize:10, color:T.blue, marginBottom:6 }}>{smartMsg}</div>
+          )}
+
+          {/* Warning district = province (sáp nhập) */}
+          {form.district && form.province && (
+            form.district.toLowerCase() === form.province.toLowerCase() ||
+            form.district.startsWith('Tỉnh') || form.district.startsWith('Thành phố')
+          ) && (
+            <div style={{ padding:'6px 10px', borderRadius:6, background:T.amberBg,
+              border:`1px solid ${T.amber}`, fontSize:11, color:T.amber, marginBottom:8 }}>
+              ⚠️ Quận/Huyện trùng tỉnh hoặc không hợp lệ (tỉnh đã sáp nhập bỏ cấp huyện?). Hãy để trống Quận/Huyện.
+            </div>
+          )}
+
+          {/* Nút kiểm tra địa chỉ */}
+          <div style={{ display:'flex', alignItems:'center', gap:10, flexWrap:'wrap' }}>
+            <button onClick={checkAddress} disabled={checking || !form.province}
+              style={{ padding:'6px 14px', borderRadius:16, cursor:'pointer',
+                border:`1.5px solid ${T.blue}`, background:T.blueBg, color:T.blue,
+                fontSize:11, fontWeight:700, fontFamily:'inherit',
+                opacity: (!form.province || checking) ? 0.5 : 1 }}>
+              {checking ? '⏳ Đang kiểm tra...' : '🔍 Kiểm tra địa chỉ GHTK'}
+            </button>
+            {checkResult && (
+              <div style={{ fontSize:11,
+                color: checkResult.success ? T.green : T.red, fontWeight:600 }}>
+                {checkResult.success
+                  ? `✅ Hợp lệ${checkResult.fee ? ` · Phí ước tính: ${Number(checkResult.fee).toLocaleString('vi-VN')}đ` : ''}${checkResult.deliver_time ? ` · ${checkResult.deliver_time}` : ''}`
+                  : `❌ ${checkResult.error || 'Địa chỉ chưa nhận dạng được'}`}
+              </div>
+            )}
+          </div>
+        </div>
+
+        {/* ── SẢN PHẨM ── */}
+        <div style={{ marginBottom:20 }}>
+          {sectionTitle('📦', 'Sản phẩm')}
+          {items.map((item, idx) => (
+            <div key={item.id} style={{ display:'flex', gap:8, marginBottom:8, alignItems:'center' }}>
+              <div style={{ flex:3 }}>
+                {idx === 0 && <label style={labelStyle}>Tên sản phẩm</label>}
+                <input value={item.name}
+                  onChange={e => updateItem(item.id, 'name', e.target.value)}
+                  placeholder={`SP ${idx+1}...`} style={fieldStyle}/>
+              </div>
+              <div style={{ flex:1 }}>
+                {idx === 0 && <label style={labelStyle}>KL (kg)</label>}
+                <input type="number" min="0" step="0.1" value={item.weight || ''}
+                  onChange={e => updateItem(item.id, 'weight', parseFloat(e.target.value) || 0)}
+                  placeholder="0" style={fieldStyle}/>
+              </div>
+              <div style={{ flex:1 }}>
+                {idx === 0 && <label style={labelStyle}>SL</label>}
+                <input type="number" min="1" value={item.qty}
+                  onChange={e => updateItem(item.id, 'qty', parseInt(e.target.value) || 1)}
+                  placeholder="1" style={fieldStyle}/>
+              </div>
+              <div style={{ paddingTop: idx === 0 ? 18 : 0 }}>
+                <button onClick={() => removeItem(item.id)}
+                  disabled={items.length === 1}
+                  style={{ width:30, height:30, borderRadius:15, border:`1px solid ${T.border}`,
+                    background:'#fff', color:T.red, cursor:'pointer', fontSize:14,
+                    opacity: items.length === 1 ? 0.3 : 1 }}>
+                  ✕
+                </button>
+              </div>
+            </div>
+          ))}
+          <button onClick={addItem}
+            style={{ padding:'5px 14px', borderRadius:14, border:`1px dashed ${T.border}`,
+              background:'transparent', color:T.med, cursor:'pointer',
+              fontSize:11, fontFamily:'inherit' }}>
+            + Thêm sản phẩm
+          </button>
+          <div style={{ marginTop:8, fontSize:11, color:T.light }}>
+            Tổng KL sản phẩm: <b>{totalItemWeight.toFixed(2)}kg</b>
+            <span style={{ marginLeft:8, color:T.light }}>(dùng để tham chiếu khi điền thùng)</span>
+          </div>
+        </div>
+
+        {/* ── THÙNG & CÂN ── */}
+        <div style={{ marginBottom:20 }}>
+          {sectionTitle('⚖️', 'Thùng & Cân nặng')}
+          {boxes.map((box, idx) => (
+            <div key={idx} style={{ display:'flex', gap:8, marginBottom:8, alignItems:'center' }}>
+              <div style={{ fontSize:12, color:T.med, width:64, flexShrink:0 }}>
+                Thùng {box.box_no}
+              </div>
+              <div style={{ flex:1 }}>
+                {idx === 0 && <label style={labelStyle}>Cân nặng (kg) *</label>}
+                <input type="number" min="0.1" step="0.1" value={box.weight_kg || ''}
+                  onChange={e => updateBox(idx, parseFloat(e.target.value) || 0)}
+                  placeholder="0.0" style={{
+                    ...fieldStyle,
+                    border: Number(box.weight_kg) >= 20
+                      ? `2px solid ${T.amber}` : `1px solid ${T.border}`,
+                  }}/>
+              </div>
+              {Number(box.weight_kg) >= 20 && (
+                <div style={{ fontSize:10, color:T.amber, fontWeight:700, whiteSpace:'nowrap' }}>
+                  🔶 BIGSIZE
+                </div>
+              )}
+              <button onClick={() => removeBox(idx)}
+                disabled={boxes.length === 1}
+                style={{ width:30, height:30, borderRadius:15, border:`1px solid ${T.border}`,
+                  background:'#fff', color:T.red, cursor:'pointer', fontSize:14,
+                  marginTop: idx === 0 ? 18 : 0,
+                  opacity: boxes.length === 1 ? 0.3 : 1 }}>
+                ✕
+              </button>
+            </div>
+          ))}
+          <button onClick={addBox}
+            style={{ padding:'5px 14px', borderRadius:14, border:`1px dashed ${T.border}`,
+              background:'transparent', color:T.med, cursor:'pointer',
+              fontSize:11, fontFamily:'inherit' }}>
+            + Thêm thùng
+          </button>
+          <div style={{ marginTop:8, fontSize:11, color:T.light }}>
+            Tổng: <b>{totalBoxWeight.toFixed(2)}kg</b> · {boxes.length} thùng
+            {anyBigsize && <span style={{ marginLeft:6, color:T.amber, fontWeight:700 }}>⚠️ Có thùng ≥20kg → BIGSIZE</span>}
+          </div>
+        </div>
+
+        {/* ── PHÍ & COD ── */}
+        <div style={{ marginBottom:20 }}>
+          {sectionTitle('💰', 'Tiền thu hộ & Phí ship')}
+
+          {/* COD toggle */}
+          <div style={{ display:'flex', gap:8, marginBottom:12 }}>
+            <button onClick={() => setForm(f => ({...f, has_cod:false, pick_money:''}))}
+              style={{ flex:1, padding:'9px 0', borderRadius:8, cursor:'pointer',
+                fontFamily:'inherit', fontSize:12, fontWeight:700,
+                border:`2px solid ${!form.has_cod ? T.green : T.border}`,
+                background: !form.has_cod ? T.greenBg : '#fff',
+                color: !form.has_cod ? T.green : T.med }}>
+              🆓 Không thu tiền
+            </button>
+            <button onClick={() => setForm(f => ({...f, has_cod:true}))}
+              style={{ flex:1, padding:'9px 0', borderRadius:8, cursor:'pointer',
+                fontFamily:'inherit', fontSize:12, fontWeight:700,
+                border:`2px solid ${form.has_cod ? T.red : T.border}`,
+                background: form.has_cod ? T.redBg : '#fff',
+                color: form.has_cod ? T.red : T.med }}>
+              💵 Có thu tiền (COD)
+            </button>
+          </div>
+
+          {form.has_cod && (
+            <div style={{ marginBottom:12 }}>
+              <label style={labelStyle}>Số tiền thu hộ (COD) — đơn vị: đồng</label>
+              <input type="number" min="0" step="1000" value={form.pick_money}
+                onChange={e => setForm(f => ({...f, pick_money:e.target.value}))}
+                placeholder="VD: 350000" style={fieldStyle}/>
+              {Number(form.pick_money) > 0 && (
+                <div style={{ fontSize:11, color:T.red, marginTop:4 }}>
+                  💰 COD: {Number(form.pick_money).toLocaleString('vi-VN')}đ
+                </div>
+              )}
+            </div>
+          )}
+
+          <div style={{ ...gr2, marginBottom:12 }}>
+            <div>
+              <label style={labelStyle}>Giá trị hàng (đồng) — tối đa 3,000,000đ</label>
+              <input type="number" min="0" step="1000" value={form.order_value}
+                onChange={e => setForm(f => ({...f, order_value:e.target.value}))}
+                placeholder="VD: 500000" style={fieldStyle}/>
+              {Number(form.order_value) > 3000000 && (
+                <div style={{ fontSize:10, color:T.amber, marginTop:3 }}>
+                  ⚠️ Giá trị cap 3,000,000đ theo giới hạn GHTK
+                </div>
+              )}
+            </div>
+            <div>
+              <label style={labelStyle}>Phí ship</label>
+              <div style={{ display:'flex', gap:8 }}>
+                <button onClick={() => setForm(f => ({...f, is_freeship:0}))}
+                  style={{ flex:1, padding:'8px 0', borderRadius:6, cursor:'pointer',
+                    fontFamily:'inherit', fontSize:11, fontWeight:600,
+                    border:`1.5px solid ${form.is_freeship===0 ? T.blue : T.border}`,
+                    background: form.is_freeship===0 ? T.blueBg : '#fff',
+                    color: form.is_freeship===0 ? T.blue : T.med }}>
+                  Khách trả
+                </button>
+                <button onClick={() => setForm(f => ({...f, is_freeship:1}))}
+                  style={{ flex:1, padding:'8px 0', borderRadius:6, cursor:'pointer',
+                    fontFamily:'inherit', fontSize:11, fontWeight:600,
+                    border:`1.5px solid ${form.is_freeship===1 ? T.green : T.border}`,
+                    background: form.is_freeship===1 ? T.greenBg : '#fff',
+                    color: form.is_freeship===1 ? T.green : T.med }}>
+                  Shop trả
+                </button>
+              </div>
+            </div>
+          </div>
+
+          {/* Phương thức vận chuyển */}
+          <div style={{ marginBottom:12 }}>
+            <label style={labelStyle}>Phương thức vận chuyển</label>
+            <div style={{ display:'flex', gap:8 }}>
+              <button onClick={() => setForm(f => ({...f, transport:'road'}))}
+                style={{ flex:1, padding:'8px 0', borderRadius:6, cursor:'pointer',
+                  fontFamily:'inherit', fontSize:12, fontWeight:600,
+                  border:`2px solid ${form.transport==='road' ? T.blue : T.border}`,
+                  background: form.transport==='road' ? T.blueBg : '#fff',
+                  color: form.transport==='road' ? T.blue : T.med }}>
+                🚛 Đường BỘ
+              </button>
+              <button onClick={() => setForm(f => ({...f, transport:'fly'}))}
+                style={{ flex:1, padding:'8px 0', borderRadius:6, cursor:'pointer',
+                  fontFamily:'inherit', fontSize:12, fontWeight:600,
+                  border:`2px solid ${form.transport==='fly' ? T.purple : T.border}`,
+                  background: form.transport==='fly' ? T.purpleBg : '#fff',
+                  color: form.transport==='fly' ? T.purple : T.med }}>
+                ✈️ Đường BAY
+              </button>
+            </div>
+          </div>
+        </div>
+
+        {/* ── DỊCH VỤ & GHI CHÚ ── */}
+        <div style={{ marginBottom:20 }}>
+          {sectionTitle('📋', 'Ghi chú & Dịch vụ')}
+
+          <div style={{ marginBottom:12 }}>
+            <label style={labelStyle}>Ghi chú cho shipper</label>
+            <textarea value={form.note} onChange={e => setForm(f => ({...f, note:e.target.value}))}
+              placeholder="VD: Gọi trước khi giao, hàng dễ vỡ..."
+              rows={2} style={{ ...fieldStyle, resize:'vertical' }}/>
+          </div>
+
+          {/* Tags */}
+          <div style={{ marginBottom:12 }}>
+            <label style={labelStyle}>Tags dịch vụ (có thể chọn nhiều)</label>
+            <div style={{ display:'flex', gap:6, flexWrap:'wrap' }}>
+              {[
+                { id:1, label:'Cho xem hàng' },
+                { id:2, label:'Không cho xem hàng' },
+                { id:3, label:'Cho thử hàng' },
+                { id:10, label:'Cho đổi hàng' },
+                { id:7, label:'Gọi trước' },
+                { id:11, label:'Freeship' },
+              ].map(tag => {
+                const active = form.tags.includes(tag.id)
+                return (
+                  <button key={tag.id}
+                    onClick={() => setForm(f => ({
+                      ...f,
+                      tags: active ? f.tags.filter(t => t !== tag.id) : [...f.tags, tag.id]
+                    }))}
+                    style={{ padding:'4px 10px', borderRadius:12, cursor:'pointer',
+                      fontFamily:'inherit', fontSize:11,
+                      border:`1.5px solid ${active ? T.gold : T.border}`,
+                      background: active ? T.goldBg : '#fff',
+                      color: active ? T.goldText : T.med,
+                      fontWeight: active ? 700 : 400 }}>
+                    {active ? '✓ ' : ''}{tag.label}
+                  </button>
+                )
+              })}
+            </div>
+          </div>
+        </div>
+
+        {/* ── LINK KV (optional) ── */}
+        <div style={{ marginBottom:20 }}>
+          {sectionTitle('🔗', 'Liên kết đơn KiotViet (không bắt buộc)')}
+          <div style={{ ...gr2 }}>
+            <div>
+              <label style={labelStyle}>Mã đơn KV (để gắn nhãn GHTK vào đơn KV)</label>
+              <input value={form.kv_order_code}
+                onChange={e => setForm(f => ({...f, kv_order_code:e.target.value.toUpperCase()}))}
+                placeholder="DH00001" style={fieldStyle}/>
+            </div>
+            <div>
+              <label style={labelStyle}>Mã đơn riêng của shop (tuỳ chọn)</label>
+              <input value={form.shop_order_id}
+                onChange={e => setForm(f => ({...f, shop_order_id:e.target.value}))}
+                placeholder="VD: LAGB-001" style={fieldStyle}/>
+            </div>
+          </div>
+          <div style={{ fontSize:10, color:T.light, marginTop:6 }}>
+            💡 Nếu điền Mã đơn KV → nhãn GHTK sẽ được gắn vào đơn KV đó trong hệ thống.
+            Nếu để trống → tạo đơn riêng với mã <code>MAN-xxxxx</code>.
+          </div>
+        </div>
+
+        {/* ── FOOTER ACTION ── */}
+        <div style={{ position:'sticky', bottom:0, background:'#fff', padding:'12px 0 4px',
+          borderTop:`1px solid ${T.border}`, display:'flex', gap:10, justifyContent:'flex-end',
+          flexWrap:'wrap' }}>
+          <button onClick={onClose}
+            style={{ padding:'8px 20px', borderRadius:20, border:`1px solid ${T.border}`,
+              background:'transparent', color:T.med, cursor:'pointer',
+              fontSize:12, fontFamily:'inherit' }}>
+            Huỷ
+          </button>
+          <button onClick={handleCreate} disabled={creating}
+            style={{ padding:'9px 24px', borderRadius:20, border:'none',
+              background: creating ? T.med : T.green, color:'#fff',
+              cursor: creating ? 'default' : 'pointer',
+              fontSize:13, fontWeight:700, fontFamily:'inherit' }}>
+            {creating ? '⏳ Đang tạo...' : '🚚 Đăng đơn GHTK'}
+          </button>
+        </div>
+      </div>
+    </Modal>
+  )
 }
 
 
