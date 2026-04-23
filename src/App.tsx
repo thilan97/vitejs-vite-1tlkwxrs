@@ -29287,6 +29287,7 @@ function GhtkFillCustomerModal({ order: o, user, mobile, onClose, onSaved }: any
     is_freeship: existing.is_freeship ?? 0,
     tags:       existing.tags || [3],
     note:       existing.note || '',
+    is_other_receiver: !!existing.is_other_receiver,  // v122: KH nhờ người khác nhận
   })
   const [defaultFreeship, setDefaultFreeship] = useState(0)
   const [saving, setSaving] = useState(false)
@@ -29302,50 +29303,98 @@ function GhtkFillCustomerModal({ order: o, user, mobile, onClose, onSaved }: any
     })()
   }, [])
 
-  // Parse paste
+  // v122: Smart parse — không phụ thuộc thứ tự
   const parsePaste = (text: string) => {
-    const lines = text.split('\n').map(l => l.trim()).filter(Boolean)
-    if (lines.length === 0) return
+    if (!text.trim()) return
 
-    // Dòng 1 = SĐT (chỉ lấy chữ số)
-    const telLine = lines[0] || ''
-    const telMatch = telLine.replace(/[^0-9]/g, '')
+    const norm = (s: string) => (s||'').toLowerCase().normalize('NFD')
+      .replace(/[\u0300-\u036f]/g, '').replace(/đ/g, 'd').trim()
 
-    // Dòng 2 = Tên
-    const nameLine = lines[1] || ''
+    let working = text.trim()
 
-    // Dòng 3+ = địa chỉ (có thể nhiều dòng → join bằng dấu phẩy)
-    const addrLines = lines.slice(2)
-    const fullAddr = addrLines.join(', ')
+    // ── Bước 1: Trích SĐT (regex: 0 hoặc 84 + 9-10 số) ──
+    // Tìm chuỗi số 9-11 chữ số sau khi strip non-digit
+    let tel = ''
+    const telPatterns = [
+      /(?:^|[^0-9])(84\d{9,10})(?:[^0-9]|$)/,
+      /(?:^|[^0-9])(0\d{9,10})(?:[^0-9]|$)/,
+    ]
+    for (const pat of telPatterns) {
+      const m = working.match(pat)
+      if (m) {
+        tel = m[1]
+        if (tel.startsWith('84')) tel = '0' + tel.slice(2)
+        // Remove khỏi working text
+        working = working.replace(m[1], ' ').trim()
+        break
+      }
+    }
 
-    // Split địa chỉ theo dấu phẩy, tách ngược từ phải
+    // ── Bước 2: Tìm tên ──
+    // Chỉ auto-match tên KV nếu toggle "người nhận khác" = OFF
+    let name = ''
+    const lines = working.split(/\n/).map(l => l.trim()).filter(Boolean)
+
+    if (!form.is_other_receiver && ord.customer_name) {
+      // Fuzzy match với customer_name KV
+      const normKv = norm(ord.customer_name)
+      const matchLine = lines.find(l => {
+        const normL = norm(l)
+        if (!normL || normL.length < 2) return false
+        return normL === normKv
+          || (normKv.length >= 4 && normL.includes(normKv))
+          || (normL.length >= 4 && normKv.includes(normL))
+      })
+      if (matchLine) {
+        name = matchLine
+        working = lines.filter(l => l !== matchLine).join('\n').trim()
+      }
+    }
+
+    // Nếu chưa match → guess dòng ngắn không có số (tên người)
+    if (!name) {
+      const remLines = working.split(/\n/).map(l => l.trim()).filter(Boolean)
+      const nameCandidate = remLines.find(l => {
+        // Tên: 2-5 từ, không có số, ít dấu phẩy (<=1)
+        const words = l.split(/\s+/).filter(Boolean)
+        const hasDigit = /\d/.test(l)
+        const commaCount = (l.match(/,/g) || []).length
+        // Skip dòng có "ngõ"/"số"/"đường"/"phường"/"quận"/"xã"/"huyện" (là địa chỉ)
+        const addrKeywords = /\b(ngõ|ngach|số|duong|đường|phuong|phường|quan|quận|xa|xã|huyen|huyện|tp|tinh|tỉnh|thanh pho|thành phố)\b/i
+        if (addrKeywords.test(l)) return false
+        return words.length >= 2 && words.length <= 5 && !hasDigit && commaCount <= 1
+      })
+      if (nameCandidate) {
+        name = nameCandidate
+        working = remLines.filter(l => l !== nameCandidate).join('\n').trim()
+      }
+    }
+
+    // ── Bước 3: Phần còn lại = địa chỉ ──
+    const fullAddr = working.replace(/\n/g, ', ').trim()
     const parts = fullAddr.split(',').map(s => s.trim()).filter(Boolean)
     let address = '', ward = '', district = '', province = ''
 
     if (parts.length >= 4) {
-      // 4 phần: chi tiết, phường, quận, tỉnh
       province = parts[parts.length - 1]
       district = parts[parts.length - 2]
       ward = parts[parts.length - 3]
       address = parts.slice(0, parts.length - 3).join(', ')
     } else if (parts.length === 3) {
-      // 3 phần: chi tiết, phường, tỉnh (bỏ quận sau sáp nhập)
       province = parts[2]
       ward = parts[1]
       address = parts[0]
     } else if (parts.length === 2) {
-      // 2 phần: chi tiết, tỉnh
       province = parts[1]
       address = parts[0]
     } else {
-      // 1 phần: chỉ chi tiết
       address = parts[0] || ''
     }
 
     setForm(f => ({
       ...f,
-      tel:      telMatch || f.tel,
-      name:     nameLine || f.name,
+      tel:      tel || f.tel,
+      name:     name || (f.is_other_receiver ? f.name : (ord.customer_name || f.name)),
       address:  address || f.address,
       ward:     ward || f.ward,
       district: district || f.district,
@@ -29390,6 +29439,7 @@ function GhtkFillCustomerModal({ order: o, user, mobile, onClose, onSaved }: any
         is_freeship: Number(form.is_freeship),
         tags:        form.tags,
         note:        form.note.trim(),
+        is_other_receiver: form.is_other_receiver,  // v122
         filled_by:   user.id,
         filled_at:   new Date().toISOString(),
       }
@@ -29433,20 +29483,41 @@ function GhtkFillCustomerModal({ order: o, user, mobile, onClose, onSaved }: any
       {/* Paste zone */}
       <div style={{ marginBottom:16, padding:12, background:'#EFF6FF',
         border:`1.5px dashed ${T.blue}`, borderRadius:10 }}>
-        <div style={{ fontSize:12, fontWeight:700, color:T.blue, marginBottom:6 }}>
-          📋 Dán thông tin người nhận (Ctrl+V)
+        <div style={{ display:'flex', alignItems:'center', justifyContent:'space-between',
+          marginBottom:8, flexWrap:'wrap', gap:8 }}>
+          <div style={{ fontSize:12, fontWeight:700, color:T.blue }}>
+            📋 Dán thông tin người nhận (Ctrl+V)
+          </div>
+          <label style={{ display:'flex', alignItems:'center', gap:6, fontSize:10,
+            color: form.is_other_receiver ? T.purple : T.med, cursor:'pointer', fontWeight:600 }}>
+            <input type="checkbox" checked={form.is_other_receiver}
+              onChange={e => setForm(f => ({...f, is_other_receiver:e.target.checked}))}
+              style={{ cursor:'pointer' }}/>
+            🔀 KH nhờ người khác nhận
+          </label>
         </div>
-        <div style={{ fontSize:10, color:T.med, marginBottom:8, lineHeight:1.5 }}>
-          Mẫu 3 dòng:<br/>
-          <code style={{ color:T.dark }}>
+
+        <div style={{ fontSize:10, color:T.med, marginBottom:8, lineHeight:1.6 }}>
+          App tự tìm <b>SĐT</b> (theo pattern số) và <b>tên</b>
+          {!form.is_other_receiver && ord.customer_name && (
+            <> (ưu tiên khớp <b style={{ color:T.green }}>"{ord.customer_name}"</b>)</>
+          )}
+          , phần còn lại là địa chỉ. Paste tự do, không cần đúng thứ tự!
+        </div>
+
+        <div style={{ background:'#fff', padding:'8px 10px', borderRadius:6,
+          fontSize:11, color:T.med, marginBottom:8, border:`1px solid ${T.border}` }}>
+          <div style={{ fontWeight:600, color:T.light, marginBottom:4, fontSize:9 }}>VÍ DỤ:</div>
+          <div style={{ color:T.dark, fontFamily:'monospace', fontSize:11, lineHeight:1.5 }}>
             0987654321<br/>
             Nguyễn Văn A<br/>
             35 Hoàng Quốc Việt, Nghĩa Đô, Cầu Giấy, Hà Nội
-          </code>
+          </div>
         </div>
+
         <textarea value={pasteText}
           onChange={e => setPasteText(e.target.value)}
-          placeholder="Dán thông tin ở đây..."
+          placeholder="Dán thông tin ở đây (SĐT/tên/địa chỉ theo thứ tự nào cũng được)..."
           rows={4}
           style={{ width:'100%', padding:'8px 11px', border:`1px solid ${T.border}`, borderRadius:6,
             fontSize:12, fontFamily:'inherit', color:T.dark, background:'#fff', outline:'none',
@@ -29454,7 +29525,7 @@ function GhtkFillCustomerModal({ order: o, user, mobile, onClose, onSaved }: any
         {pasteText && (
           <button onClick={() => setPasteText('')}
             style={{ marginTop:6, padding:'3px 10px', borderRadius:14, fontSize:10,
-              border:`1px solid ${T.border}`, background:'transparent', color:T.med,
+              border:`1px solid ${T.border}`, background:'#fff', color:T.med,
               cursor:'pointer', fontFamily:'inherit' }}>
             🧹 Clear
           </button>
