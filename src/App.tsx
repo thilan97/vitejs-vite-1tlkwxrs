@@ -28900,11 +28900,12 @@ function GhtkSettingsPanel({ user, mobile }: any) {
     }
     setSaving(true)
     try {
-      const { error } = await db.from('ghtk_settings').update({
+      const { error } = await db.from('ghtk_settings').upsert({
+        id: 1,
         ...form,
         updated_at: new Date().toISOString(),
         updated_by: user.id,
-      }).eq('id', 1)
+      }, { onConflict: 'id' })
       if (error) { window.alert('❌ Lỗi: ' + error.message); return }
       window.alert('✅ Đã lưu cấu hình GHTK')
     } finally {
