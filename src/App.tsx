@@ -29853,6 +29853,11 @@ function GhtkManualOrderModal({ user, mobile, onClose, onCreated }: any) {
     }
   }, [form.district, form.province])
 
+  // Reset checkResult khi địa chỉ thay đổi
+  useEffect(() => {
+    if (checkResult) setCheckResult(null)
+  }, [form.address, form.ward, form.district, form.province])
+
   // ── Items helpers ──
   const addItem = () => setItems(prev => [...prev, { id: Date.now(), name:'', weight:0, qty:1 }])
   const removeItem = (id: number) => setItems(prev => prev.filter(i => i.id !== id))
@@ -29878,15 +29883,25 @@ function GhtkManualOrderModal({ user, mobile, onClose, onCreated }: any) {
     if (!form.province) { alert('Chưa có Tỉnh/TP'); return }
     setChecking(true); setCheckResult(null)
     try {
+      const orderValue = Math.min(Number(form.order_value || 0), 3000000)
+      const payload = {
+        customer_info: {
+          name:       form.name.trim(),
+          tel:        form.tel.replace(/[^0-9]/g, ''),
+          address:    form.address.trim(),
+          hamlet:     form.hamlet.trim() || 'Khác',
+          ward:       form.ward.trim(),
+          district:   form.district.trim(),
+          province:   form.province.trim(),
+          is_freeship: Number(form.is_freeship),
+        },
+        weight_gram: Math.max(500, Math.round(totalBoxWeight * 1000)),
+        value: orderValue,
+      }
       const res = await fetch(`${SUPABASE_URL}/functions/v1/ghtk-check-address`, {
         method: 'POST',
         headers: { 'Content-Type':'application/json', 'Authorization':`Bearer ${SUPABASE_ANON}` },
-        body: JSON.stringify({
-          province: form.province,
-          district: form.district || '',
-          ward: form.ward || '',
-          address: form.address || '',
-        }),
+        body: JSON.stringify(payload),
       })
       setCheckResult(await res.json())
     } catch(e: any) {
@@ -30149,15 +30164,49 @@ function GhtkManualOrderModal({ user, mobile, onClose, onCreated }: any) {
                 opacity: (!form.province || checking) ? 0.5 : 1 }}>
               {checking ? '⏳ Đang kiểm tra...' : '🔍 Kiểm tra địa chỉ GHTK'}
             </button>
-            {checkResult && (
-              <div style={{ fontSize:11,
-                color: checkResult.success ? T.green : T.red, fontWeight:600 }}>
-                {checkResult.success
-                  ? `✅ Hợp lệ${checkResult.fee ? ` · Phí ước tính: ${Number(checkResult.fee).toLocaleString('vi-VN')}đ` : ''}${checkResult.deliver_time ? ` · ${checkResult.deliver_time}` : ''}`
-                  : `❌ ${checkResult.error || 'Địa chỉ chưa nhận dạng được'}`}
-              </div>
-            )}
+            <span style={{ fontSize:10, color:T.light, fontStyle:'italic' }}>
+              GHTK sẽ validate địa chỉ + ước tính phí ship
+            </span>
           </div>
+
+          {/* Kết quả check address */}
+          {checkResult?.success && (
+            <div style={{ marginTop:8, padding:'8px 10px', borderRadius:6,
+              background:T.greenBg, border:`1px solid ${T.green}` }}>
+              <div style={{ fontSize:12, fontWeight:700, color:T.green, marginBottom:4 }}>
+                ✅ Địa chỉ hợp lệ — Tạo đơn được!
+              </div>
+              <div style={{ fontSize:11, color:T.dark, display:'flex', gap:14, flexWrap:'wrap' }}>
+                <span>💰 Phí ship dự kiến: <b>{Number(checkResult.fee?.ship_fee || 0).toLocaleString('vi-VN')}đ</b></span>
+                {Number(checkResult.fee?.insurance_fee) > 0 && (
+                  <span>🛡 Bảo hiểm: <b>{Number(checkResult.fee.insurance_fee).toLocaleString('vi-VN')}đ</b></span>
+                )}
+                <span style={{ color:T.med }}>
+                  Tổng: <b style={{ color:T.dark }}>{Number(checkResult.fee?.total || 0).toLocaleString('vi-VN')}đ</b>
+                </span>
+              </div>
+              {checkResult.fee?.estimated_deliver_time && (
+                <div style={{ fontSize:10, color:T.med, marginTop:3 }}>
+                  ⏱ Giao dự kiến: {checkResult.fee.estimated_deliver_time}
+                </div>
+              )}
+            </div>
+          )}
+
+          {checkResult && !checkResult.success && (
+            <div style={{ marginTop:8, padding:'8px 10px', borderRadius:6,
+              background:T.redBg, border:`1px solid ${T.red}` }}>
+              <div style={{ fontSize:12, fontWeight:700, color:T.red, marginBottom:4 }}>
+                ❌ Địa chỉ không hợp lệ
+              </div>
+              <div style={{ fontSize:11, color:T.dark }}>
+                {checkResult.error || 'GHTK không chấp nhận địa chỉ này'}
+              </div>
+              <div style={{ fontSize:10, color:T.light, marginTop:4, fontStyle:'italic' }}>
+                💡 Kiểm tra chính tả tên tỉnh / quận / phường và sửa lại
+              </div>
+            </div>
+          )}
         </div>
 
         {/* ── SẢN PHẨM ── */}
