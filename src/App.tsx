@@ -29524,6 +29524,97 @@ function GhtkEditBoxesModal({ order: o, user, mobile, onClose, onSaved }: any) {
 
 
 // ══════════════════════════════════════════════════════════════════════
+// v122: VN Address Smart Fill Helpers
+// Dataset: provinces.open-api.vn (63 tỉnh × ~700 quận × ~11000 phường)
+// ══════════════════════════════════════════════════════════════════════
+const VN_ADDR_CACHE_KEY = 'vn_addresses_tree_v1'
+const VN_ADDR_CACHE_TTL = 30 * 86400 * 1000 // 30 ngày
+
+async function loadVnAddressTree(): Promise<any[]> {
+  try {
+    const cached = localStorage.getItem(VN_ADDR_CACHE_KEY)
+    if (cached) {
+      const { timestamp, data } = JSON.parse(cached)
+      if (Date.now() - timestamp < VN_ADDR_CACHE_TTL && Array.isArray(data) && data.length > 0) {
+        return data
+      }
+    }
+  } catch {}
+
+  try {
+    const res = await fetch('https://provinces.open-api.vn/api/?depth=3')
+    if (!res.ok) return []
+    const data = await res.json()
+    try {
+      localStorage.setItem(VN_ADDR_CACHE_KEY, JSON.stringify({ timestamp: Date.now(), data }))
+    } catch {}
+    return data || []
+  } catch {
+    return []
+  }
+}
+
+const normAddr = (s: string) => (s||'').toLowerCase().normalize('NFD')
+  .replace(/[\u0300-\u036f]/g,'').replace(/đ/g,'d')
+  // Bỏ prefix thường gặp để match lỏng
+  .replace(/^(phuong|xa|thi tran|quan|huyen|thi xa|thanh pho|tp|tinh)\s+/i, '')
+  .trim()
+
+function findAddrByWard(tree: any[], wardName: string, hints: { province?: string, district?: string } = {}) {
+  const normQ = normAddr(wardName)
+  if (!normQ || normQ.length < 2) return []
+  const results: any[] = []
+  for (const p of tree) {
+    if (hints.province && normAddr(p.name) !== normAddr(hints.province)) continue
+    for (const d of (p.districts || [])) {
+      if (hints.district && normAddr(d.name) !== normAddr(hints.district)) continue
+      for (const w of (d.wards || [])) {
+        const normW = normAddr(w.name)
+        if (normW === normQ) {
+          results.push({ province: p.name, district: d.name, ward: w.name, score: 1.0 })
+        } else if (normW.includes(normQ) || normQ.includes(normW)) {
+          if (normQ.length >= 3) {
+            results.push({ province: p.name, district: d.name, ward: w.name, score: 0.7 })
+          }
+        }
+      }
+    }
+  }
+  // Ưu tiên exact match
+  results.sort((a, b) => b.score - a.score)
+  // Nếu có exact match → chỉ lấy exact match (bỏ fuzzy)
+  if (results.length > 0 && results[0].score === 1.0) {
+    return results.filter(r => r.score === 1.0)
+  }
+  return results
+}
+
+function findAddrByDistrict(tree: any[], districtName: string, hints: { province?: string } = {}) {
+  const normQ = normAddr(districtName)
+  if (!normQ || normQ.length < 2) return []
+  const results: any[] = []
+  for (const p of tree) {
+    if (hints.province && normAddr(p.name) !== normAddr(hints.province)) continue
+    for (const d of (p.districts || [])) {
+      const normD = normAddr(d.name)
+      if (normD === normQ) {
+        results.push({ province: p.name, district: d.name, score: 1.0 })
+      } else if (normD.includes(normQ) || normQ.includes(normD)) {
+        if (normQ.length >= 3) {
+          results.push({ province: p.name, district: d.name, score: 0.7 })
+        }
+      }
+    }
+  }
+  results.sort((a, b) => b.score - a.score)
+  if (results.length > 0 && results[0].score === 1.0) {
+    return results.filter(r => r.score === 1.0)
+  }
+  return results
+}
+
+
+// ══════════════════════════════════════════════════════════════════════
 // v121: GHTK Fill Customer Modal — Sale điền info KH qua paste 3 dòng
 // ══════════════════════════════════════════════════════════════════════
 function GhtkFillCustomerModal({ order: o, user, mobile, onClose, onSaved }: any) {
@@ -29549,6 +29640,57 @@ function GhtkFillCustomerModal({ order: o, user, mobile, onClose, onSaved }: any
   // v122: Check địa chỉ GHTK
   const [checking, setChecking] = useState(false)
   const [checkResult, setCheckResult] = useState<any>(null)
+  // v122: VN Address smart fill
+  const [vnTree, setVnTree] = useState<any[]>([])
+  const [smartFillMsg, setSmartFillMsg] = useState<string>('')
+
+  // Load VN address tree 1 lần khi modal mở
+  useEffect(() => {
+    loadVnAddressTree().then(tree => setVnTree(tree))
+  }, [])
+
+  // Smart fill theo ward
+  useEffect(() => {
+    if (!vnTree.length || !form.ward || form.ward.length < 2) return
+    // Nếu đã đủ district + province → skip
+    if (form.district && form.province) return
+    const t = setTimeout(() => {
+      const matches = findAddrByWard(vnTree, form.ward, {
+        province: form.province || undefined,
+        district: form.district || undefined,
+      })
+      if (matches.length === 1) {
+        const m = matches[0]
+        const updates: any = {}
+        if (!form.district && m.district) updates.district = m.district
+        if (!form.province && m.province) updates.province = m.province
+        if (Object.keys(updates).length > 0) {
+          setForm(f => ({ ...f, ...updates }))
+          setSmartFillMsg(`✨ Auto-fill: ${m.district}${m.district ? ', ' : ''}${m.province}`)
+          setTimeout(() => setSmartFillMsg(''), 3500)
+        }
+      }
+    }, 600)
+    return () => clearTimeout(t)
+  }, [form.ward, vnTree.length])
+
+  // Smart fill theo district
+  useEffect(() => {
+    if (!vnTree.length || !form.district || form.district.length < 2) return
+    if (form.province) return
+    const t = setTimeout(() => {
+      const matches = findAddrByDistrict(vnTree, form.district, {
+        province: form.province || undefined,
+      })
+      if (matches.length === 1) {
+        const m = matches[0]
+        setForm(f => ({ ...f, province: m.province }))
+        setSmartFillMsg(`✨ Auto-fill tỉnh: ${m.province}`)
+        setTimeout(() => setSmartFillMsg(''), 3500)
+      }
+    }, 600)
+    return () => clearTimeout(t)
+  }, [form.district, vnTree.length])
 
   // Load default is_freeship từ ghtk_settings
   useEffect(() => {
@@ -29873,15 +30015,25 @@ function GhtkFillCustomerModal({ order: o, user, mobile, onClose, onSaved }: any
           placeholder="Xóm 12 / Ngõ 234 / Thôn..." style={fieldStyle}/>
       </div>
 
-      <div style={{ display:'grid', gridTemplateColumns: mobile ? '1fr' : '1fr 1fr 1fr', gap:10, marginBottom:16 }}>
+      <div style={{ display:'grid', gridTemplateColumns: mobile ? '1fr' : '1fr 1fr 1fr', gap:10, marginBottom:8 }}>
         <div>
-          <label style={labelStyle}>Phường/Xã</label>
+          <label style={labelStyle}>
+            Phường/Xã
+            {vnTree.length > 0 && (
+              <span style={{ fontSize:9, color:T.blue, marginLeft:5, fontWeight:400 }}>✨ smart</span>
+            )}
+          </label>
           <input value={form.ward}
             onChange={e => setForm(f => ({...f, ward:e.target.value}))}
             placeholder="Nghĩa Đô" style={fieldStyle}/>
         </div>
         <div>
-          <label style={labelStyle}>Quận/Huyện</label>
+          <label style={labelStyle}>
+            Quận/Huyện
+            {vnTree.length > 0 && (
+              <span style={{ fontSize:9, color:T.blue, marginLeft:5, fontWeight:400 }}>✨ smart</span>
+            )}
+          </label>
           <input value={form.district}
             onChange={e => setForm(f => ({...f, district:e.target.value}))}
             placeholder="Cầu Giấy" style={fieldStyle}/>
@@ -29893,6 +30045,19 @@ function GhtkFillCustomerModal({ order: o, user, mobile, onClose, onSaved }: any
             placeholder="Hà Nội" style={fieldStyle}/>
         </div>
       </div>
+
+      {/* v122: Smart fill notification */}
+      {smartFillMsg && (
+        <div style={{ marginBottom:12, padding:'6px 12px', borderRadius:6,
+          background:'#EFF6FF', border:`1px solid ${T.blue}`, fontSize:11, color:T.blue, fontWeight:600 }}>
+          {smartFillMsg}
+        </div>
+      )}
+      {!vnTree.length && (
+        <div style={{ marginBottom:12, fontSize:10, color:T.light, fontStyle:'italic' }}>
+          ⏳ Đang tải dataset địa chỉ VN để hỗ trợ auto-fill...
+        </div>
+      )}
 
       {/* v122: Check địa chỉ GHTK */}
       <div style={{ marginBottom:14, padding:10, borderRadius:8,
