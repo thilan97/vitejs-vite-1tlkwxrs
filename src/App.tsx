@@ -27691,7 +27691,7 @@ function InventorySyncModule({ user, allUsers, mobile }: any) {
   const [summary, setSummary] = useState<any>(null)  // v115 FIX: đổi tên từ 'alert' (tránh shadow window.alert)
   const [loading, setLoading] = useState(true)
   const [syncing, setSyncing] = useState(false)
-  const [filter, setFilter] = useState<'all'|'diff'|'increasing'>('diff')
+  const [filter, setFilter] = useState<'all'|'diff'|'increasing'|'misa_only'>('diff')
   const [searchQ, setSearchQ] = useState('')
 
   const norm2 = (s: string) => (s||'').toLowerCase().normalize('NFD')
@@ -27783,6 +27783,7 @@ function InventorySyncModule({ user, allUsers, mobile }: any) {
     let rows = itemsOnMisa
     if (filter === 'diff') rows = rows.filter(r => Number(r.abs_diff) > 0)
     else if (filter === 'increasing') rows = rows.filter(r => r.is_increasing)
+    else if (filter === 'misa_only') rows = rows.filter(r => r.match_source === 'misa_only')
     if (searchQ.trim()) {
       const tokens = norm2(searchQ).split(/\s+/).filter(Boolean)
       rows = rows.filter(r => {
@@ -27900,9 +27901,10 @@ function InventorySyncModule({ user, allUsers, mobile }: any) {
             boxSizing:'border-box' as any, marginBottom:10 }}/>
         <div style={{ display:'flex', gap:6, flexWrap:'wrap' }}>
           {[
-            { id:'diff', label:'⚠️ Chỉ mã lệch', count: itemsOnMisa.filter(r => Number(r.abs_diff)>0).length },
-            { id:'increasing', label:'🔴 Lệch tăng', count: itemsOnMisa.filter(r => r.is_increasing).length },
-            { id:'all', label:'📋 Tất cả', count: itemsOnMisa.length },
+            { id:'diff',       label:'⚠️ Chỉ mã lệch', count: itemsOnMisa.filter(r => Number(r.abs_diff)>0).length },
+            { id:'increasing', label:'🔴 Lệch tăng',    count: itemsOnMisa.filter(r => r.is_increasing).length },
+            { id:'misa_only',  label:'🔵 Chỉ MISA',     count: itemsOnMisa.filter(r => r.match_source==='misa_only').length },
+            { id:'all',        label:'📋 Tất cả',        count: itemsOnMisa.length },
           ].map(t => (
             <button key={t.id} onClick={() => setFilter(t.id as any)}
               style={{ padding:'5px 12px', borderRadius:20, cursor:'pointer',
@@ -27947,7 +27949,10 @@ function InventorySyncModule({ user, allUsers, mobile }: any) {
                   return (
                     <tr key={r.id || i} style={{
                       borderBottom:`1px solid ${T.border}`,
-                      background: r.is_increasing ? '#FEF2F2' : (absDiff > 0 ? '#FFFBEB' : '#fff'),
+                      background: r.is_increasing ? '#FEF2F2'  // đỏ nhạt: lệch tăng
+                        : diff > 0 && absDiff > 0 ? '#FFFBEB'  // vàng nhạt: KV > MISA
+                        : diff < 0 && absDiff > 0 ? '#EFF6FF'  // xanh nhạt: KV < MISA
+                        : '#fff',                               // trắng: khớp
                     }}>
                       <td style={{ padding:'8px 12px', fontFamily:'monospace', fontWeight:600, color:T.dark }}>
                         {r.is_increasing && <span style={{ color:T.red, marginRight:4 }}>🔴</span>}
@@ -27967,8 +27972,8 @@ function InventorySyncModule({ user, allUsers, mobile }: any) {
                         {fmtNum(r.misa_qty)}
                       </td>
                       <td style={{ padding:'8px 8px', textAlign:'right', fontFamily:'monospace', fontWeight:700,
-                        color: absDiff === 0 ? T.green : (diff > 0 ? T.amber : T.red) }}>
-                        {absDiff === 0 ? '0' : (diff > 0 ? `+${fmtNum(absDiff)}` : `-${fmtNum(absDiff)}`)}
+                        color: absDiff === 0 ? T.green : (diff > 0 ? T.amber : T.blue) }}>
+                        {absDiff === 0 ? '✓' : (diff > 0 ? `+${fmtNum(absDiff)}` : `-${fmtNum(absDiff)}`)}
                       </td>
                       <td style={{ padding:'8px 8px', textAlign:'center', fontSize:10 }}>
                         {prevAbs === null ? (
@@ -27999,12 +28004,13 @@ function InventorySyncModule({ user, allUsers, mobile }: any) {
       {/* Info footer */}
       <div style={{ marginTop:16, padding:12, background:T.bg, borderRadius:8,
         fontSize:10, color:T.light, lineHeight:1.6 }}>
-        💡 <b>Giải thích</b>:
-        <br/>• <b>Lệch (KV - MISA)</b>: Dương = KV nhiều hơn MISA • Âm = MISA nhiều hơn KV
-        <br/>• <b>🔴 Lệch tăng</b>: Mức lệch của SP này đã tăng so với lần đồng bộ trước (cần kiểm tra)
-        <br/>• <b>↓</b>: Lệch đã giảm — tốt! Mục tiêu: tất cả về 0
-        <br/>• <b>Chỉ MISA</b>: SP có trên MISA nhưng KiotViet chưa có — cần kiểm tra
-        <br/>• <b>Lưu ý</b>: Chỉ hiển thị các SP có trên MISA. Các SP chỉ có trên KV (SHIP, VAT, v.v.) đã được loại.
+        💡 <b>Giải thích màu</b>:
+        <span style={{ marginLeft:8, padding:'1px 8px', borderRadius:4, background:'#FEF2F2', color:T.red }}>🔴 Lệch tăng</span>
+        <span style={{ marginLeft:6, padding:'1px 8px', borderRadius:4, background:'#FFFBEB', color:T.amber }}>Vàng = KV nhiều hơn MISA</span>
+        <span style={{ marginLeft:6, padding:'1px 8px', borderRadius:4, background:'#EFF6FF', color:T.blue }}>Xanh = MISA nhiều hơn KV</span>
+        <br/>• <b>Lệch (KV - MISA)</b>: <span style={{ color:T.amber }}>+dương</span> = KV nhiều hơn MISA • <span style={{ color:T.blue }}>-âm</span> = MISA nhiều hơn KV
+        <br/>• <b>🔵 Chỉ MISA</b>: SP có trên MISA nhưng KiotViet chưa có — cần kiểm tra
+        <br/>• <b>Lưu ý</b>: Chỉ hiển thị SP có trên MISA. SP chỉ có trên KV (SHIP, VAT...) đã được loại.
       </div>
     </div>
   )
