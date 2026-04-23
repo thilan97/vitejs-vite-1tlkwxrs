@@ -12,7 +12,7 @@ const db = createClient(SUPABASE_URL, SUPABASE_KEY)
 // APP_VERSION — dùng để invalidate cache localStorage mỗi khi deploy version mới
 // (ngăn bug quyền user bị "reset" do cache position cũ sau deploy)
 // ⚠️ MỖI LẦN DEPLOY FEATURE MỚI CÓ PERMISSION MỚI, BUMP SỐ NÀY:
-const APP_VERSION = '2026.04.23.v117'
+const APP_VERSION = '2026.04.23.v118'
 
 // ════════════════════════════════════════════════════════════════
 // AUDIT LOG — ghi nhận các hành động phá hoại data để trace lại
@@ -6341,6 +6341,7 @@ function ReturnItems({ user, allUsers, products, mobile }: any) {
     entered_kiot_at: rows[0].entered_kiot_at,
     audited_by:      rows[0].audited_by,
     audited_at:      rows[0].audited_at,
+    return_invoice_photos: rows[0].return_invoice_photos || [],  // v118
     total_qty:   rows.reduce((s: number, r: any) => s+(r.quantity||0), 0),
     total_ship:  Number(rows[0].ship_fee)||0,
     lines: rows,
@@ -6506,11 +6507,54 @@ function ReturnItems({ user, allUsers, products, mobile }: any) {
 
   const toggleKiot = async (slip: any) => {
     const newVal = !slip.entered_kiot
+    // v118: Bắt buộc có ít nhất 1 ảnh hóa đơn trả hàng trước khi tích KV
+    if (newVal) {
+      const photos = slip.return_invoice_photos || []
+      if (photos.length === 0) {
+        alert('❌ Cần upload ít nhất 1 ảnh "Hóa đơn trả hàng" trước khi tích KV.\n\nMở phiếu để upload ảnh.')
+        return
+      }
+    }
     const now = newVal ? new Date().toISOString() : ''
     const upd = { entered_kiot:newVal, entered_kiot_by:newVal?user.id:'', entered_kiot_at:now }
     const ids = slip.lines.map((l: any) => l.id)
     setItems(prev => prev.map(i => ids.includes(i.id) ? {...i,...upd} : i))
     for (const id of ids) await db.from('return_items').update(upd).eq('id', id)
+  }
+
+  // v118: Upload ảnh hóa đơn trả hàng cho 1 slip
+  const uploadInvoicePhoto = async (slip: any, file: File) => {
+    try {
+      const blob = await compressImageV2(file, 1920, 0.82)
+      const ts = Date.now()
+      const safeUserId = (user.id || 'unknown')
+        .normalize('NFD').replace(/[\u0300-\u036f]/g, '')
+        .replace(/đ/g, 'd').replace(/Đ/g, 'D').replace(/[^a-zA-Z0-9_-]/g, '_')
+      const path = `return-invoices/${slip.slip_id}/${safeUserId}_${ts}.jpg`
+      const { data, error } = await db.storage.from('packing-photos').upload(path, blob, {
+        contentType: 'image/jpeg', upsert: false,
+      })
+      if (error) { alert('❌ Upload lỗi: ' + error.message); return }
+      const { data: urlData } = db.storage.from('packing-photos').getPublicUrl(data.path)
+      const newPhoto = { url: urlData.publicUrl, at: new Date().toISOString(), by: user.id }
+      const existing = slip.return_invoice_photos || []
+      const updated = [...existing, newPhoto]
+      // Update TẤT CẢ lines cùng slip_id
+      const ids = slip.lines.map((l: any) => l.id)
+      setItems(prev => prev.map(i => ids.includes(i.id) ? {...i, return_invoice_photos: updated} : i))
+      for (const id of ids) await db.from('return_items').update({ return_invoice_photos: updated }).eq('id', id)
+    } catch(e: any) {
+      alert('❌ ' + e.message)
+    }
+  }
+
+  const removeInvoicePhoto = async (slip: any, photoIdx: number) => {
+    if (!confirm('Xoá ảnh hóa đơn này?')) return
+    const existing = slip.return_invoice_photos || []
+    const updated = existing.filter((_: any, i: number) => i !== photoIdx)
+    const ids = slip.lines.map((l: any) => l.id)
+    setItems(prev => prev.map(i => ids.includes(i.id) ? {...i, return_invoice_photos: updated} : i))
+    for (const id of ids) await db.from('return_items').update({ return_invoice_photos: updated }).eq('id', id)
   }
 
   return (
@@ -6784,10 +6828,17 @@ function ReturnItems({ user, allUsers, products, mobile }: any) {
                             fontSize:13,display:'flex',alignItems:'center',justifyContent:'center' }}>✓</button>
                       ) : (
                         <button onClick={() => canKiot&&toggleKiot(slip)}
+                          title={(slip.return_invoice_photos?.length||0) === 0
+                            ? '⚠ Cần upload hóa đơn trả hàng trước khi tích KV'
+                            : 'Tích KV'}
                           style={{ width:26,height:26,borderRadius:'50%',
-                            border:`2px dashed ${T.border}`,background:'transparent',
-                            cursor:canKiot?'pointer':'default',color:T.light,
-                            fontSize:12,display:'flex',alignItems:'center',justifyContent:'center' }}>○</button>
+                            border:`2px dashed ${(slip.return_invoice_photos?.length||0)===0 ? T.amber : T.border}`,
+                            background: (slip.return_invoice_photos?.length||0)===0 ? '#FFFBEB' : 'transparent',
+                            cursor:canKiot?'pointer':'default',
+                            color:(slip.return_invoice_photos?.length||0)===0 ? T.amber : T.light,
+                            fontSize:12,display:'flex',alignItems:'center',justifyContent:'center' }}>
+                          {(slip.return_invoice_photos?.length||0)===0 ? '!' : '○'}
+                        </button>
                       )}
                     </div>
 
@@ -6933,6 +6984,14 @@ function ReturnItems({ user, allUsers, products, mobile }: any) {
                         {slip.sale_note && <span style={{ fontSize:11,color:T.med,fontStyle:'italic' }}>💬 {slip.sale_note}</span>}
                       </div>
                     )}
+
+                    {/* v118: Section Hóa đơn trả hàng */}
+                    <ReturnInvoiceSection
+                      slip={slip}
+                      canUpload={canEditKho}
+                      onUpload={(file: File) => uploadInvoicePhoto(slip, file)}
+                      onRemove={(idx: number) => removeInvoicePhoto(slip, idx)}
+                      mobile={mobile}/>
                   </div>
                 )}
               </div>
@@ -7063,6 +7122,131 @@ function ReturnItems({ user, allUsers, products, mobile }: any) {
             updateSlipAudit(showAudit.slip_id, shipFee, violatorId)}
           onClose={() => setShowAudit(null)}/>}
       </Modal>
+    </div>
+  )
+}
+
+// ── v118: Section upload hóa đơn trả hàng ──
+function ReturnInvoiceSection({ slip, canUpload, onUpload, onRemove, mobile }: any) {
+  const photos = slip.return_invoice_photos || []
+  const [uploading, setUploading] = useState(false)
+  const [previewIdx, setPreviewIdx] = useState<number|null>(null)
+  const fileInputRef = useRef<HTMLInputElement | null>(null)
+
+  // Paste handler (Ctrl+V) — chỉ active khi section này có focus / hover
+  const [pasteEnabled, setPasteEnabled] = useState(false)
+
+  useEffect(() => {
+    if (!pasteEnabled || !canUpload) return
+    const handler = async (e: ClipboardEvent) => {
+      const items = e.clipboardData?.items
+      if (!items) return
+      for (let i = 0; i < items.length; i++) {
+        if (items[i].type.startsWith('image/')) {
+          e.preventDefault()
+          const file = items[i].getAsFile()
+          if (!file) continue
+          setUploading(true)
+          try { await onUpload(file) } finally { setUploading(false) }
+        }
+      }
+    }
+    window.addEventListener('paste', handler)
+    return () => window.removeEventListener('paste', handler)
+  }, [pasteEnabled, canUpload, onUpload])
+
+  const handleFiles = async (files: FileList) => {
+    setUploading(true)
+    try {
+      for (const f of Array.from(files)) {
+        await onUpload(f)
+      }
+    } finally {
+      setUploading(false)
+    }
+  }
+
+  const hasPhotos = photos.length > 0
+  const enteredKiot = slip.entered_kiot
+
+  return (
+    <div
+      onMouseEnter={() => setPasteEnabled(true)}
+      onMouseLeave={() => setPasteEnabled(false)}
+      style={{ padding:'10px 12px 10px 56px', borderTop:`1px solid ${T.border}`, marginTop:6 }}>
+      <div style={{ display:'flex', alignItems:'center', gap:8, marginBottom:8, flexWrap:'wrap' }}>
+        <div style={{ fontSize:11, fontWeight:700, color: hasPhotos ? T.green : T.amber }}>
+          🧾 Hóa đơn trả hàng
+        </div>
+        {hasPhotos && (
+          <span style={{ fontSize:10, padding:'1px 8px', borderRadius:10,
+            background:T.greenBg, color:T.green, fontWeight:600 }}>
+            ✓ {photos.length} ảnh
+          </span>
+        )}
+        {!hasPhotos && (
+          <span style={{ fontSize:10, padding:'1px 8px', borderRadius:10,
+            background:'#FEF3C7', color:T.amber, fontWeight:600 }}>
+            {enteredKiot ? '⚠ Chưa có ảnh' : '⚠ Cần upload trước khi tích KV'}
+          </span>
+        )}
+      </div>
+
+      {/* Grid ảnh + nút thêm */}
+      <div style={{ display:'grid',
+        gridTemplateColumns: mobile ? 'repeat(3, 1fr)' : 'repeat(auto-fill, minmax(90px, 1fr))',
+        gap:6 }}>
+        {photos.map((ph: any, i: number) => (
+          <div key={i} style={{ position:'relative', aspectRatio:'1/1',
+            borderRadius:6, overflow:'hidden', border:`1px solid ${T.border}`,
+            background:'#fff', cursor:'pointer' }}
+            onClick={() => setPreviewIdx(i)}>
+            <img src={ph.url || ph} alt=""
+              style={{ width:'100%', height:'100%', objectFit:'cover' }}/>
+            {canUpload && (
+              <button
+                onClick={e => { e.stopPropagation(); onRemove(i) }}
+                style={{ position:'absolute', top:3, right:3, width:20, height:20,
+                  borderRadius:'50%', background:'rgba(0,0,0,0.6)', color:'#fff',
+                  border:'none', cursor:'pointer', fontSize:11, lineHeight:1,
+                  display:'flex', alignItems:'center', justifyContent:'center' }}>×</button>
+            )}
+          </div>
+        ))}
+
+        {canUpload && (
+          <label style={{ aspectRatio:'1/1', borderRadius:6,
+            border:`2px dashed ${hasPhotos ? T.border : T.amber}`,
+            background: hasPhotos ? T.bg : '#FFFBEB',
+            display:'flex', alignItems:'center', justifyContent:'center',
+            cursor: uploading ? 'wait' : 'pointer', gap:4, flexDirection:'column' }}>
+            {uploading ? (
+              <span style={{ fontSize:10, color:T.light }}>⏳</span>
+            ) : (
+              <>
+                <span style={{ fontSize:20 }}>+</span>
+                <span style={{ fontSize:9, color: hasPhotos ? T.light : T.amber, fontWeight:600, textAlign:'center' }}>
+                  {hasPhotos ? 'Thêm' : 'Upload hóa đơn'}
+                </span>
+              </>
+            )}
+            <input ref={fileInputRef} type="file" accept="image/*" multiple
+              onChange={e => e.target.files && handleFiles(e.target.files)}
+              disabled={uploading} style={{ display:'none' }}/>
+          </label>
+        )}
+      </div>
+
+      {canUpload && pasteEnabled && (
+        <div style={{ fontSize:9, color:T.light, marginTop:4, fontStyle:'italic' }}>
+          💡 Ctrl+V để paste ảnh từ clipboard
+        </div>
+      )}
+
+      {previewIdx !== null && photos.length > 0 && (
+        <PhotoZoomViewer photos={photos} startIdx={previewIdx}
+          mobile={mobile} onClose={() => setPreviewIdx(null)}/>
+      )}
     </div>
   )
 }
@@ -27887,6 +28071,8 @@ function InventorySyncModule({ user, allUsers, mobile }: any) {
   const [loading, setLoading] = useState(true)
   const [syncing, setSyncing] = useState(false)
   const [filter, setFilter] = useState<'all'|'diff'|'increasing'|'misa_only'>('diff')
+  // v118: Sort option
+  const [sortBy, setSortBy] = useState<'increasing'|'misa_more'|'kv_more'|'abs_diff'>('increasing')
   const [searchQ, setSearchQ] = useState('')
 
   const norm2 = (s: string) => (s||'').toLowerCase().normalize('NFD')
@@ -27986,13 +28172,38 @@ function InventorySyncModule({ user, allUsers, mobile }: any) {
         return tokens.every(t => hay.includes(t))
       })
     }
-    // Sort: increasing first, then abs_diff desc, then code asc
+    // v118: Sort linh hoạt theo sortBy
+    // - diff = kv_qty - misa_qty → dương = KV nhiều hơn, âm = MISA nhiều hơn
     return [...rows].sort((a, b) => {
-      if (a.is_increasing !== b.is_increasing) return a.is_increasing ? -1 : 1
-      if (Number(b.abs_diff) !== Number(a.abs_diff)) return Number(b.abs_diff) - Number(a.abs_diff)
+      const diffA = Number(a.diff || 0)
+      const diffB = Number(b.diff || 0)
+      const absA = Number(a.abs_diff || 0)
+      const absB = Number(b.abs_diff || 0)
+
+      if (sortBy === 'increasing') {
+        // Lệch tăng lên đầu, rồi abs_diff desc
+        if (a.is_increasing !== b.is_increasing) return a.is_increasing ? -1 : 1
+        if (absB !== absA) return absB - absA
+      } else if (sortBy === 'misa_more') {
+        // MISA > KV (diff < 0) lên đầu, sort theo |diff| desc
+        // Rồi mới tới KV > MISA (diff > 0), cũng |diff| desc
+        const aIsMisaMore = diffA < 0
+        const bIsMisaMore = diffB < 0
+        if (aIsMisaMore !== bIsMisaMore) return aIsMisaMore ? -1 : 1
+        if (absB !== absA) return absB - absA
+      } else if (sortBy === 'kv_more') {
+        // KV > MISA (diff > 0) lên đầu, |diff| desc
+        const aIsKvMore = diffA > 0
+        const bIsKvMore = diffB > 0
+        if (aIsKvMore !== bIsKvMore) return aIsKvMore ? -1 : 1
+        if (absB !== absA) return absB - absA
+      } else if (sortBy === 'abs_diff') {
+        // |Lệch| lớn nhất — thuần theo abs_diff desc
+        if (absB !== absA) return absB - absA
+      }
       return (a.product_code || '').localeCompare(b.product_code || '')
     })
-  }, [items, filter, searchQ])
+  }, [items, filter, searchQ, sortBy])
 
   // v115 FIX: bỏ alert2 helper, dùng window.alert trực tiếp
   const fmtNum = (n: number) => Number(n || 0).toLocaleString('vi-VN')
@@ -28094,7 +28305,7 @@ function InventorySyncModule({ user, allUsers, mobile }: any) {
           style={{ width:'100%', padding:'9px 12px', border:`1px solid ${T.border}`, borderRadius:8,
             fontSize:12, fontFamily:'inherit', color:T.dark, background:'#fff', outline:'none',
             boxSizing:'border-box' as any, marginBottom:10 }}/>
-        <div style={{ display:'flex', gap:6, flexWrap:'wrap' }}>
+        <div style={{ display:'flex', gap:6, flexWrap:'wrap', alignItems:'center' }}>
           {[
             { id:'diff',       label:'⚠️ Chỉ mã lệch', count: itemsOnMisa.filter(r => Number(r.abs_diff)>0).length },
             { id:'increasing', label:'🔴 Lệch tăng',    count: itemsOnMisa.filter(r => r.is_increasing).length },
@@ -28111,6 +28322,19 @@ function InventorySyncModule({ user, allUsers, mobile }: any) {
               {t.label} {t.count > 0 && `(${t.count})`}
             </button>
           ))}
+          {/* v118: Dropdown Sort */}
+          <div style={{ marginLeft:'auto', display:'flex', alignItems:'center', gap:6 }}>
+            <span style={{ fontSize:11, color:T.med }}>Sắp xếp:</span>
+            <select value={sortBy} onChange={e => setSortBy(e.target.value as any)}
+              style={{ padding:'5px 10px', border:`1px solid ${T.border}`, borderRadius:6,
+                fontSize:11, fontFamily:'inherit', background:'#fff', color:T.dark, outline:'none',
+                cursor:'pointer' }}>
+              <option value="increasing">🔴 Lệch tăng trước</option>
+              <option value="misa_more">🔵 MISA nhiều hơn KV trước</option>
+              <option value="kv_more">🟡 KV nhiều hơn MISA trước</option>
+              <option value="abs_diff">📉 |Lệch| lớn nhất</option>
+            </select>
+          </div>
         </div>
       </Card>
 
