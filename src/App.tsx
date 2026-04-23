@@ -28619,6 +28619,8 @@ function GhtkModule({ user, allUsers, mobile }: any) {
   const [searchQ, setSearchQ] = useState('')
   // v121: Phase 2 - modal điền info KH
   const [fillInfoOrder, setFillInfoOrder] = useState<any>(null)
+  // v122: Modal sửa cân thủ công
+  const [editBoxesOrder, setEditBoxesOrder] = useState<any>(null)
   // v122: Ngày bắt đầu quản lý GHTK
   const [ghtkStartDate, setGhtkStartDate] = useState<string|null>(null)
 
@@ -28775,7 +28777,8 @@ function GhtkModule({ user, allUsers, mobile }: any) {
               {filtered.map((o: any) => (
                 <GhtkOrderRow key={o.order_code} order={o} tab={tab} mobile={mobile}
                   onRefresh={fetchOrders} user={user}
-                  onFillInfo={() => setFillInfoOrder(o)}/>
+                  onFillInfo={() => setFillInfoOrder(o)}
+                  onEditBoxes={() => setEditBoxesOrder(o)}/>
               ))}
             </div>
           )}
@@ -28799,13 +28802,21 @@ function GhtkModule({ user, allUsers, mobile }: any) {
           onClose={() => setFillInfoOrder(null)}
           onSaved={() => { setFillInfoOrder(null); fetchOrders() }}/>
       )}
+
+      {/* v122: Modal sửa cân thủ công */}
+      {editBoxesOrder && (
+        <GhtkEditBoxesModal
+          order={editBoxesOrder} user={user} mobile={mobile}
+          onClose={() => setEditBoxesOrder(null)}
+          onSaved={() => { setEditBoxesOrder(null); fetchOrders() }}/>
+      )}
     </div>
   )
 }
 
 
 // ── GHTK Order Row ──
-function GhtkOrderRow({ order: o, tab, mobile, onRefresh, user, onFillInfo }: any) {
+function GhtkOrderRow({ order: o, tab, mobile, onRefresh, user, onFillInfo, onEditBoxes }: any) {
   const info = o.ghtk_customer_info || {}
   const boxes = o.ghtk_boxes || []
   const labels = o.ghtk_labels || []
@@ -28860,47 +28871,112 @@ function GhtkOrderRow({ order: o, tab, mobile, onRefresh, user, onFillInfo }: an
         </div>
 
         {/* Action area */}
-        <div style={{ display:'flex', gap:8, alignItems:'flex-start' }}>
-          {tab === 'pending_info' && getPerm(user).ghtkFillCustomer && (
-            <button onClick={onFillInfo}
-              style={{ padding:'7px 14px', borderRadius:20, cursor:'pointer',
-                border:`1.5px solid ${T.blue}`, background:T.blueBg, color:T.blue,
-                fontSize:12, fontWeight:700, fontFamily:'inherit', whiteSpace:'nowrap' }}>
-              📝 Điền info KH
-            </button>
-          )}
-          {tab === 'pending_info' && info.name && getPerm(user).ghtkFillCustomer && (
-            <button onClick={onFillInfo}
-              style={{ padding:'5px 12px', borderRadius:20, cursor:'pointer',
-                border:`1px solid ${T.border}`, background:'transparent', color:T.med,
-                fontSize:11, fontFamily:'inherit' }}>
-              ✏️ Sửa
-            </button>
-          )}
-          {tab === 'pending_weight' && (
-            <div style={{ fontSize:10, color:T.light, fontStyle:'italic', padding:'4px 10px',
-              background:T.bg, borderRadius:6 }}>
-              Chờ Kho điền cân trong màn Đóng đơn
-            </div>
-          )}
-          {tab === 'ready' && (
-            <div style={{ fontSize:10, color:T.light, fontStyle:'italic', padding:'4px 10px',
-              background:T.bg, borderRadius:6 }}>
-              Sẵn sàng tạo đơn GHTK
-            </div>
-          )}
-          {tab === 'created' && (
-            <div style={{ fontSize:10, color:T.light, fontStyle:'italic', padding:'4px 10px',
-              background:T.bg, borderRadius:6 }}>
-              Nút "In nhãn" — Phase 4
-            </div>
-          )}
-          {tab === 'delivered' && (
-            <div style={{ fontSize:10, color:T.green, padding:'4px 10px',
-              background:T.greenBg, borderRadius:6 }}>
-              ✓ Đã giao
-            </div>
-          )}
+        <div style={{ display:'flex', gap:6, alignItems:'flex-start', flexWrap:'wrap' }}>
+          {(() => {
+            const p = getPerm(user)
+            const canEditInfo = p.ghtkFillCustomer || p.ghtkWeight
+            const canEditBoxes = p.ghtkWeight
+
+            // Tab pending_info: nút điền/sửa info (Sale)
+            if (tab === 'pending_info') {
+              return (
+                <>
+                  {p.ghtkFillCustomer && !info.name && (
+                    <button onClick={onFillInfo}
+                      style={{ padding:'7px 14px', borderRadius:20, cursor:'pointer',
+                        border:`1.5px solid ${T.blue}`, background:T.blueBg, color:T.blue,
+                        fontSize:12, fontWeight:700, fontFamily:'inherit', whiteSpace:'nowrap' }}>
+                      📝 Điền info KH
+                    </button>
+                  )}
+                  {p.ghtkFillCustomer && info.name && (
+                    <button onClick={onFillInfo}
+                      style={{ padding:'5px 12px', borderRadius:20, cursor:'pointer',
+                        border:`1px solid ${T.border}`, background:'transparent', color:T.med,
+                        fontSize:11, fontFamily:'inherit' }}>
+                      ✏️ Sửa info
+                    </button>
+                  )}
+                </>
+              )
+            }
+
+            // Tab pending_weight: sửa info + sửa cân thủ công
+            if (tab === 'pending_weight') {
+              return (
+                <>
+                  {canEditInfo && (
+                    <button onClick={onFillInfo}
+                      style={{ padding:'5px 12px', borderRadius:16, cursor:'pointer',
+                        border:`1px solid ${T.border}`, background:'#fff', color:T.med,
+                        fontSize:11, fontFamily:'inherit' }}>
+                      ✏️ Sửa info
+                    </button>
+                  )}
+                  {canEditBoxes && (
+                    <button onClick={onEditBoxes}
+                      style={{ padding:'5px 12px', borderRadius:16, cursor:'pointer',
+                        border:`1px solid ${T.gold}`, background:'#FFFBEB', color:T.goldText,
+                        fontSize:11, fontFamily:'inherit', fontWeight:700 }}>
+                      ⚖️ Cân thủ công
+                    </button>
+                  )}
+                  {!canEditInfo && !canEditBoxes && (
+                    <div style={{ fontSize:10, color:T.light, fontStyle:'italic', padding:'4px 10px',
+                      background:T.bg, borderRadius:6 }}>
+                      Chờ Kho điền cân trong màn Đóng đơn
+                    </div>
+                  )}
+                </>
+              )
+            }
+
+            // Tab ready: sửa info (Sale + QM)
+            if (tab === 'ready') {
+              return (
+                <>
+                  {canEditInfo && (
+                    <button onClick={onFillInfo}
+                      style={{ padding:'5px 12px', borderRadius:16, cursor:'pointer',
+                        border:`1px solid ${T.border}`, background:'#fff', color:T.med,
+                        fontSize:11, fontFamily:'inherit' }}>
+                      ✏️ Sửa info
+                    </button>
+                  )}
+                  {canEditBoxes && (
+                    <button onClick={onEditBoxes}
+                      style={{ padding:'5px 12px', borderRadius:16, cursor:'pointer',
+                        border:`1px solid ${T.gold}`, background:'#FFFBEB', color:T.goldText,
+                        fontSize:11, fontFamily:'inherit' }}>
+                      ⚖️ Sửa cân
+                    </button>
+                  )}
+                  <div style={{ fontSize:10, color:T.green, padding:'4px 10px',
+                    background:T.greenBg, borderRadius:6, fontWeight:600 }}>
+                    ✓ Sẵn sàng tạo đơn (Kho tạo trong màn Đóng đơn)
+                  </div>
+                </>
+              )
+            }
+
+            if (tab === 'created') {
+              return (
+                <div style={{ fontSize:10, color:T.light, fontStyle:'italic', padding:'4px 10px',
+                  background:T.bg, borderRadius:6 }}>
+                  Nút "In nhãn" — Phase 4
+                </div>
+              )
+            }
+            if (tab === 'delivered') {
+              return (
+                <div style={{ fontSize:10, color:T.green, padding:'4px 10px',
+                  background:T.greenBg, borderRadius:6 }}>
+                  ✓ Đã giao
+                </div>
+              )
+            }
+            return null
+          })()}
         </div>
       </div>
     </Card>
@@ -28915,11 +28991,16 @@ function GhtkOrderRow({ order: o, tab, mobile, onRefresh, user, onFillInfo }: an
 function GhtkPackingSection({ ord, user, mobile }: any) {
   const perm = getPerm(user)
   const canWeight = perm.ghtkWeight
+  // v122: QM/user có quyền fill customer cũng được sửa info KH từ panel đóng đơn
+  const canEditInfo = perm.ghtkWeight || perm.ghtkFillCustomer
   const info = ord.ghtk_customer_info || {}
   const hasCustInfo = !!(info.name && info.tel && info.address && info.province)
   const existingBoxes = ord.ghtk_boxes || []
   const existingLabels = ord.ghtk_labels || []
   const hasLabels = existingLabels.length > 0
+
+  // v122: Modal sửa info KH
+  const [editInfo, setEditInfo] = useState(false)
 
   // State: boxes = [{ box_no, weight_kg }]
   const [boxes, setBoxes] = useState<any[]>(() => {
@@ -29072,21 +29153,44 @@ function GhtkPackingSection({ ord, user, mobile }: any) {
           <div style={{ fontSize:11, color:T.med, marginTop:3 }}>
             Sale cần vào module 🚚 GHTK → "Chờ điền info" để điền trước khi Kho tạo đơn.
           </div>
+          {canEditInfo && (
+            <button onClick={() => setEditInfo(true)}
+              style={{ marginTop:6, padding:'5px 12px', borderRadius:14, fontSize:11,
+                border:`1px solid ${T.amber}`, background:'#fff', color:T.amber,
+                cursor:'pointer', fontFamily:'inherit', fontWeight:700 }}>
+              📝 Điền info KH thay Sale
+            </button>
+          )}
         </div>
       ) : (
         <div style={{ padding:'8px 12px', borderRadius:6, background:'#fff',
-          border:`1px solid ${T.border}`, marginBottom:10, fontSize:11 }}>
-          <div style={{ color:T.dark }}>
-            👤 <b>{info.name}</b> • 📞 {info.tel}
-            {Number(info.pick_money || 0) > 0 && (
-              <span style={{ marginLeft:8, color:T.red, fontWeight:700 }}>
-                💰 COD: {Number(info.pick_money).toLocaleString('vi-VN')}đ
-              </span>
-            )}
+          border:`1px solid ${T.border}`, marginBottom:10, fontSize:11,
+          display:'flex', justifyContent:'space-between', alignItems:'flex-start', gap:8 }}>
+          <div style={{ flex:1, minWidth:0 }}>
+            <div style={{ color:T.dark }}>
+              👤 <b>{info.name}</b> • 📞 {info.tel}
+              {Number(info.pick_money || 0) > 0 && (
+                <span style={{ marginLeft:8, color:T.red, fontWeight:700 }}>
+                  💰 COD: {Number(info.pick_money).toLocaleString('vi-VN')}đ
+                </span>
+              )}
+            </div>
+            <div style={{ color:T.med, fontSize:10, marginTop:2 }}>
+              📍 {info.address}
+              {info.hamlet && info.hamlet !== 'Khác' && ', ' + info.hamlet}
+              {info.ward && ', ' + info.ward}
+              {info.district && ', ' + info.district}
+              {info.province && ', ' + info.province}
+            </div>
           </div>
-          <div style={{ color:T.med, fontSize:10, marginTop:2 }}>
-            📍 {info.address}, {info.ward && info.ward + ', '}{info.district && info.district + ', '}{info.province}
-          </div>
+          {canEditInfo && !hasLabels && (
+            <button onClick={() => setEditInfo(true)}
+              style={{ padding:'4px 10px', borderRadius:12, fontSize:10,
+                border:`1px solid ${T.blue}`, background:T.blueBg, color:T.blue,
+                cursor:'pointer', fontFamily:'inherit', fontWeight:700, whiteSpace:'nowrap' }}>
+              ✏️ Sửa
+            </button>
+          )}
         </div>
       )}
 
@@ -29264,7 +29368,157 @@ function GhtkPackingSection({ ord, user, mobile }: any) {
       <div style={{ marginTop:10, fontSize:10, color:T.light, fontStyle:'italic' }}>
         💡 Bạn vẫn có thể bấm "Hoàn tất đóng hàng" dù chưa tạo đơn GHTK (soft mode).
       </div>
+
+      {/* v122: Modal sửa info KH (reuse từ module GHTK) */}
+      {editInfo && (
+        <GhtkFillCustomerModal
+          order={ord} user={user} mobile={mobile}
+          onClose={() => setEditInfo(false)}
+          onSaved={() => {
+            setEditInfo(false)
+            // Reload để cập nhật thông tin
+            setTimeout(() => window.location.reload(), 500)
+          }}/>
+      )}
     </div>
+  )
+}
+
+
+// ══════════════════════════════════════════════════════════════════════
+// v122: GHTK Edit Boxes Modal — QM sửa cân thùng thủ công trong module GHTK
+// ══════════════════════════════════════════════════════════════════════
+function GhtkEditBoxesModal({ order: o, user, mobile, onClose, onSaved }: any) {
+  const existingBoxes = o.ghtk_boxes || []
+  const [boxes, setBoxes] = useState<any[]>(() => {
+    if (existingBoxes.length > 0) return existingBoxes.map((b: any) => ({
+      box_no: b.box_no,
+      weight_kg: String(b.weight_kg ?? ''),
+    }))
+    return [{ box_no: 1, weight_kg: '' }]
+  })
+  const [saving, setSaving] = useState(false)
+
+  const addBox = () => setBoxes(prev => [...prev, { box_no: prev.length + 1, weight_kg: '' }])
+  const removeBox = (idx: number) => {
+    if (boxes.length === 1) return
+    setBoxes(prev => prev.filter((_, i) => i !== idx).map((b, i) => ({ ...b, box_no: i + 1 })))
+  }
+  const updateBoxWeight = (idx: number, value: string) => {
+    setBoxes(prev => prev.map((b, i) => i === idx ? { ...b, weight_kg: value } : b))
+  }
+
+  const save = async () => {
+    // Validate
+    const invalidBox = boxes.find((b: any) => !b.weight_kg || Number(b.weight_kg) <= 0)
+    if (invalidBox) {
+      window.alert('❌ Thùng ' + invalidBox.box_no + ' chưa có cân nặng hợp lệ.')
+      return
+    }
+    setSaving(true)
+    try {
+      const cleanBoxes = boxes.map((b: any) => ({
+        box_no: b.box_no,
+        weight_kg: Number(b.weight_kg),
+      }))
+      const { error } = await db.from('packing_workflow')
+        .update({ ghtk_boxes: cleanBoxes, updated_at: new Date().toISOString() })
+        .eq('order_code', o.order_code)
+      if (error) { window.alert('❌ Lỗi: ' + error.message); return }
+      onSaved()
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  const totalWeight = boxes.reduce((s, b) => s + Number(b.weight_kg || 0), 0)
+  const anyBigsize = boxes.some((b: any) => Number(b.weight_kg || 0) >= 20)
+
+  return (
+    <Modal open onClose={onClose} title={`⚖️ Cân thùng thủ công — ${o.order_code}`}>
+      <div style={{ padding:'10px 12px', background:T.bg, borderRadius:8, marginBottom:14, fontSize:11 }}>
+        <div style={{ color:T.dark }}>
+          📦 <b>{o.order_code}</b>
+          {o.customer_name && <span style={{ color:T.med }}> • {o.customer_name}</span>}
+        </div>
+        <div style={{ fontSize:10, color:T.light, marginTop:4 }}>
+          💡 Cân đã điền sẽ dùng khi tạo đơn GHTK. QM có thể sửa bất cứ lúc nào trước khi tạo đơn.
+        </div>
+      </div>
+
+      <div style={{ fontSize:12, fontWeight:700, color:T.dark, marginBottom:8 }}>
+        Cân nặng từng thùng
+        <span style={{ fontSize:10, color:T.light, marginLeft:6, fontWeight:400 }}>
+          (≥20kg sẽ tạo đơn bigsize riêng)
+        </span>
+      </div>
+
+      <div style={{ display:'flex', flexDirection:'column', gap:6, marginBottom:12 }}>
+        {boxes.map((b: any, i: number) => {
+          const isBig = Number(b.weight_kg || 0) >= 20
+          return (
+            <div key={i} style={{ display:'flex', alignItems:'center', gap:8,
+              padding:'8px 10px', borderRadius:6,
+              background: isBig ? '#FFFBEB' : '#fff',
+              border:`1px solid ${isBig ? T.amber : T.border}` }}>
+              <span style={{ minWidth:70, fontSize:12, fontWeight:700, color:T.dark }}>
+                📦 Thùng {b.box_no}
+              </span>
+              <input type="number" min={0.1} step={0.1}
+                value={b.weight_kg}
+                onChange={e => updateBoxWeight(i, e.target.value)}
+                placeholder="Cân (kg)"
+                style={{ flex:1, minWidth:80, padding:'6px 10px', border:`1px solid ${T.border}`,
+                  borderRadius:5, fontSize:12, fontFamily:'inherit', color:T.dark,
+                  background:'#fff', outline:'none' }}/>
+              <span style={{ fontSize:11, color:T.med, minWidth:28 }}>kg</span>
+              {isBig && (
+                <span style={{ fontSize:9, fontWeight:700, padding:'2px 7px', borderRadius:10,
+                  background:T.amberBg, color:T.amber }}>BIGSIZE</span>
+              )}
+              {boxes.length > 1 && (
+                <button onClick={() => removeBox(i)}
+                  style={{ background:'none', border:'none', color:T.red, cursor:'pointer',
+                    fontSize:18, padding:'0 4px' }}>×</button>
+              )}
+            </div>
+          )
+        })}
+      </div>
+
+      <div style={{ display:'flex', gap:8, alignItems:'center', marginBottom:16 }}>
+        <button onClick={addBox}
+          style={{ padding:'5px 12px', borderRadius:14, border:`1px dashed ${T.blue}`,
+            background:'transparent', color:T.blue, cursor:'pointer',
+            fontSize:11, fontFamily:'inherit' }}>
+          + Thêm thùng
+        </button>
+        {totalWeight > 0 && (
+          <span style={{ fontSize:11, color:T.med, marginLeft:'auto' }}>
+            Tổng: <b style={{ color:T.dark }}>{totalWeight.toFixed(1)}kg</b>
+            {anyBigsize && <span style={{ color:T.amber, marginLeft:4 }}>• có bigsize</span>}
+          </span>
+        )}
+      </div>
+
+      <div style={{ display:'flex', gap:10, justifyContent:'flex-end',
+        paddingTop:14, borderTop:`1px solid ${T.border}` }}>
+        <button onClick={onClose} disabled={saving}
+          style={{ padding:'8px 18px', borderRadius:20, border:`1px solid ${T.border}`,
+            background:'transparent', color:T.med, cursor:'pointer',
+            fontSize:12, fontFamily:'inherit' }}>
+          Hủy
+        </button>
+        <button onClick={save} disabled={saving}
+          style={{ padding:'8px 24px', borderRadius:20,
+            border:`1.5px solid ${T.gold}`,
+            background: saving ? T.border : T.gold,
+            color:'#fff', cursor: saving ? 'wait' : 'pointer',
+            fontSize:13, fontFamily:'inherit', fontWeight:700 }}>
+          {saving ? '⏳ Đang lưu...' : '💾 Lưu cân thùng'}
+        </button>
+      </div>
+    </Modal>
   )
 }
 
