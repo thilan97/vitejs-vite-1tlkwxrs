@@ -12,7 +12,7 @@ const db = createClient(SUPABASE_URL, SUPABASE_KEY)
 // APP_VERSION — dùng để invalidate cache localStorage mỗi khi deploy version mới
 // (ngăn bug quyền user bị "reset" do cache position cũ sau deploy)
 // ⚠️ MỖI LẦN DEPLOY FEATURE MỚI CÓ PERMISSION MỚI, BUMP SỐ NÀY:
-const APP_VERSION = '2026.04.23.v123'
+const APP_VERSION = '2026.04.23.v124'
 
 // ════════════════════════════════════════════════════════════════
 // AUDIT LOG — ghi nhận các hành động phá hoại data để trace lại
@@ -29004,18 +29004,20 @@ function GhtkOrderRow({ order: o, tab, mobile, onRefresh, user, onFillInfo, onEd
 
             if (tab === 'created') {
               return (
-                <div style={{ fontSize:10, color:T.light, fontStyle:'italic', padding:'4px 10px',
-                  background:T.bg, borderRadius:6 }}>
-                  Nút "In nhãn" — Phase 4
-                </div>
+                <>
+                  <GhtkPrintLabelButton order={o} user={user} onPrinted={onRefresh}/>
+                </>
               )
             }
             if (tab === 'delivered') {
               return (
-                <div style={{ fontSize:10, color:T.green, padding:'4px 10px',
-                  background:T.greenBg, borderRadius:6 }}>
-                  ✓ Đã giao
-                </div>
+                <>
+                  <GhtkPrintLabelButton order={o} user={user} onPrinted={onRefresh} compact/>
+                  <div style={{ fontSize:10, color:T.green, padding:'4px 10px',
+                    background:T.greenBg, borderRadius:6 }}>
+                    ✓ Đã giao
+                  </div>
+                </>
               )
             }
             return null
@@ -29654,6 +29656,116 @@ function findAddrByDistrict(tree: any[], districtName: string, hints: { province
     return results.filter(r => r.score === 1.0)
   }
   return results
+}
+
+
+// ══════════════════════════════════════════════════════════════════════
+// v124: GHTK Print Label Button — in nhãn PDF A6 (Phase 4.1)
+// ══════════════════════════════════════════════════════════════════════
+function GhtkPrintLabelButton({ order: o, user, onPrinted, compact }: any) {
+  const [printing, setPrinting] = useState(false)
+  const [err, setErr] = useState<string>('')
+  const perm = getPerm(user)
+  const canPrint = perm.ghtkPrintLabel
+
+  const labels = o.ghtk_labels || []
+  const labelIds = labels.map((l: any) => l.label_id).filter(Boolean)
+  const hasLabels = labelIds.length > 0
+  const printedAt = o.ghtk_printed_at ? new Date(o.ghtk_printed_at) : null
+
+  const handlePrint = async () => {
+    if (!hasLabels) { alert('❌ Đơn chưa có nhãn GHTK để in'); return }
+    setPrinting(true); setErr('')
+    try {
+      const res = await fetch(`${SUPABASE_URL}/functions/v1/ghtk-label`, {
+        method: 'POST',
+        headers: { 'Content-Type':'application/json', 'Authorization':`Bearer ${SUPABASE_ANON}` },
+        body: JSON.stringify({ label_ids: labelIds }),
+      })
+      const json = await res.json()
+      if (!json.success) {
+        setErr(json.error || 'Lỗi in nhãn')
+        setTimeout(() => setErr(''), 6000)
+        return
+      }
+
+      // Convert base64 → Blob URL → mở tab mới
+      const byteChars = atob(json.pdf_base64)
+      const bytes = new Uint8Array(byteChars.length)
+      for (let i = 0; i < byteChars.length; i++) bytes[i] = byteChars.charCodeAt(i)
+      const blob = new Blob([bytes], { type: 'application/pdf' })
+      const url = URL.createObjectURL(blob)
+      const w = window.open(url, '_blank')
+      if (!w) {
+        // Popup bị chặn → download fallback
+        const a = document.createElement('a')
+        a.href = url
+        a.download = `ghtk_${o.order_code || 'labels'}.pdf`
+        document.body.appendChild(a); a.click(); a.remove()
+      }
+      // Auto revoke URL sau 60s (để tab kịp load)
+      setTimeout(() => URL.revokeObjectURL(url), 60000)
+
+      // Cập nhật DB printed_at
+      await db.from('packing_workflow').update({
+        ghtk_printed_at: new Date().toISOString(),
+        ghtk_printed_by: user?.id || null,
+      }).eq('order_code', o.order_code)
+
+      if (onPrinted) onPrinted()
+    } catch (e: any) {
+      setErr(e.message || String(e))
+      setTimeout(() => setErr(''), 6000)
+    } finally {
+      setPrinting(false)
+    }
+  }
+
+  if (!hasLabels) {
+    return (
+      <div style={{ fontSize:10, color:T.light, fontStyle:'italic', padding:'4px 10px',
+        background:T.bg, borderRadius:6 }}>
+        Chưa có nhãn GHTK
+      </div>
+    )
+  }
+
+  if (!canPrint) {
+    return printedAt ? (
+      <div style={{ fontSize:10, color:T.green, padding:'4px 10px',
+        background:T.greenBg, borderRadius:6, fontWeight:600 }}>
+        ✓ Đã in {printedAt.toLocaleDateString('vi-VN')}
+      </div>
+    ) : (
+      <div style={{ fontSize:10, color:T.light, fontStyle:'italic', padding:'4px 10px',
+        background:T.bg, borderRadius:6 }}>
+        Chưa có quyền in nhãn
+      </div>
+    )
+  }
+
+  return (
+    <div style={{ display:'flex', flexDirection:'column', gap:4, alignItems:'flex-end' }}>
+      <div style={{ display:'flex', gap:6, alignItems:'center' }}>
+        <button onClick={handlePrint} disabled={printing}
+          style={{ padding: compact ? '5px 12px' : '7px 16px', borderRadius:20, cursor: printing?'default':'pointer',
+            border:`1.5px solid ${T.blue}`, background: printing ? T.border : T.blue, color: printing ? T.light : '#fff',
+            fontSize: compact ? 11 : 12, fontWeight:700, fontFamily:'inherit', whiteSpace:'nowrap' }}>
+          {printing ? '⏳ Đang tải...' : (printedAt ? '🔁 In lại' : `🖨 In nhãn (${labelIds.length})`)}
+        </button>
+      </div>
+      {printedAt && (
+        <div style={{ fontSize:10, color:T.green, fontWeight:600 }}>
+          ✓ Đã in {printedAt.toLocaleDateString('vi-VN')} {printedAt.toTimeString().slice(0,5)}
+        </div>
+      )}
+      {err && (
+        <div style={{ fontSize:10, color:T.red, fontWeight:600, maxWidth:240, textAlign:'right' }}>
+          ❌ {err}
+        </div>
+      )}
+    </div>
+  )
 }
 
 
