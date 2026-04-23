@@ -18896,10 +18896,14 @@ function SupplementaryLinkModal({ child, allOrders, mobile, onCancel, onConfirm 
                     <div style={{ fontSize:13, fontWeight:700, color:T.dark,
                       overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap' }}>
                       {o.order_code} • {o.customer_name || 'KH lẻ'}
+                      {Number(o.total_amount) > 0 && (
+                        <span style={{ color:T.goldText, fontWeight:700, marginLeft:6 }}>
+                          • {Number(o.total_amount).toLocaleString('vi-VN')}đ
+                        </span>
+                      )}
                     </div>
                     <div style={{ fontSize:10, color:T.light, marginTop:2 }}>
                       {itemCount} SP
-                      {Number(o.total_amount) > 0 && <> • {Number(o.total_amount).toLocaleString('vi-VN')}đ</>}
                     </div>
                   </div>
                   <span style={{ fontSize:9, padding:'2px 7px', borderRadius:10,
@@ -23218,6 +23222,11 @@ function OrderLookupTab({ user, allUsers, mobile }: any) {
                     <div style={{ flex:1, minWidth:0 }}>
                       <div style={{ fontSize:13, fontWeight:700, color:T.dark }}>
                         {o.order_code} • {o.customer_name}
+                        {Number(o.total_amount)>0 && (
+                          <span style={{ color:T.goldText, fontWeight:700, marginLeft:6 }}>
+                            • {Number(o.total_amount).toLocaleString('vi-VN')}đ
+                          </span>
+                        )}
                         {custMatched && matchingItems.length === 0 && (
                           <span style={{ marginLeft:6, padding:'2px 6px', borderRadius:4,
                             background:T.goldBg, color:T.goldText, fontSize:9, fontWeight:700 }}>
@@ -25637,6 +25646,11 @@ function SaleOrderTrackingModule({ user, allUsers, mobile }: any) {
                         <span style={{ fontSize:FS.sm, color:T.med }}>
                           {o.customer_name}
                         </span>
+                        {Number(o.total_amount)>0 && (
+                          <span style={{ fontSize:FS.sm, color:T.goldText, fontWeight:700 }}>
+                            • {Number(o.total_amount).toLocaleString('vi-VN')}đ
+                          </span>
+                        )}
                       </div>
                       <div style={{ fontSize:FS.xs, color:T.light, marginTop:3, display:'flex',
                         gap:SP[2], flexWrap:'wrap' }}>
@@ -28160,11 +28174,15 @@ function GalleryPost({ order: o, mobile, allUsers, typeFilter, onOpenViewer }: a
             <div style={{ fontSize:13, fontWeight:700, color:T.dark,
               overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap' }}>
               {o.order_code} • {o.customer_name || 'KH lẻ'}
+              {Number(o.total_amount) > 0 && (
+                <span style={{ color:T.goldText, fontWeight:700, marginLeft:6 }}>
+                  • {Number(o.total_amount).toLocaleString('vi-VN')}đ
+                </span>
+              )}
             </div>
             <div style={{ fontSize:10, color:T.light, marginTop:2,
               overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap' }}>
               {(o.items||[]).length} SP
-              {Number(o.total_amount) > 0 && <> • {Number(o.total_amount).toLocaleString('vi-VN')}đ</>}
             </div>
           </div>
           <span style={{ fontSize:10, padding:'2px 8px', borderRadius:12,
@@ -28828,6 +28846,11 @@ function GhtkOrderRow({ order: o, tab, mobile, onRefresh, user, onFillInfo, onEd
           <div style={{ fontSize:13, fontWeight:700, color:T.dark }}>
             📦 {o.order_code}
             {o.customer_name && <span style={{ marginLeft:8, fontSize:12, color:T.med, fontWeight:500 }}>• {o.customer_name}</span>}
+            {Number(o.total_amount) > 0 && (
+              <span style={{ marginLeft:8, fontSize:12, color:T.goldText, fontWeight:700 }}>
+                • {Number(o.total_amount).toLocaleString('vi-VN')}đ
+              </span>
+            )}
           </div>
           <div style={{ fontSize:10, color:T.light, marginTop:3 }}>
             Ngày tạo: {o.purchase_date ? new Date(o.purchase_date).toLocaleDateString('vi-VN') : '—'}
