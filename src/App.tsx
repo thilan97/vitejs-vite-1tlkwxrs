@@ -28916,7 +28916,7 @@ function GhtkSettingsPanel({ user, mobile }: any) {
   // v119: Tạo đơn test GHTK
   const runTest = async () => {
     if (!form.api_token.trim()) { window.alert('❌ Cần lưu API Token trước'); return }
-    if (!testForm.pick_tel.trim()) { window.alert('❌ Cần nhập SĐT kho'); return }
+    if (!testForm.pick_tel.trim() && !form.pick_tel.trim()) { window.alert('❌ Cần nhập SĐT kho'); return }
     if (!testForm.cust_tel.trim() || !testForm.cust_name.trim()) {
       window.alert('❌ Cần nhập thông tin KH test'); return
     }
