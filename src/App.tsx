@@ -12,7 +12,7 @@ const db = createClient(SUPABASE_URL, SUPABASE_KEY)
 // APP_VERSION — dùng để invalidate cache localStorage mỗi khi deploy version mới
 // (ngăn bug quyền user bị "reset" do cache position cũ sau deploy)
 // ⚠️ MỖI LẦN DEPLOY FEATURE MỚI CÓ PERMISSION MỚI, BUMP SỐ NÀY:
-const APP_VERSION = '2026.04.23.v128'
+const APP_VERSION = '2026.04.24.v129'
 
 // ════════════════════════════════════════════════════════════════
 // AUDIT LOG — ghi nhận các hành động phá hoại data để trace lại
@@ -80,7 +80,7 @@ const T: any = {
   sidebar:'#FDF6E9', sidebarBorder:'#E8D5A3', sidebarText:'#5A4010', sidebarMuted:'#A08040',
   // ═══ NEUTRAL ═══
   bg:'#F4F2EE', card:'#FFFFFF', rowAlt:'#FAFAF8', divider:'#E4DFD7',
-  dark:'#1A1614', med:'#6B5F50', light:'#A09080', border:'#DDD8CF',
+  dark:'#1A1614', med:'#6B5F50', light:'#7A6A58', border:'#DDD8CF',
   // ═══ SEMANTIC ═══
   green:'#15803D', greenBg:'#DCFCE7',
   amber:'#B45309', amberBg:'#FEF3C7',
@@ -476,8 +476,37 @@ const Tag = ({ children, tone='neutral', size='sm', style }: any) => {
   )
 }
 
+// ══════════════════════════════════════════════════════════════════════
+// v128: Button System Documentation
+// ══════════════════════════════════════════════════════════════════════
+//
+// Usage: <Btn variant="primary" size="md">Lưu đơn</Btn>
+//
+// 7 VARIANTS (chọn đúng theo purpose):
+//   primary     — Action chính của màn (gold, solid)      VD: "Lưu", "Tạo đơn"
+//   secondary   — Action phụ (outline gold)               VD: "Huỷ", "Để sau"
+//   ghost       — Action tertiary (text only, no border)  VD: "Xem thêm", "Đổi"
+//   danger      — Destructive nhẹ (outline đỏ)            VD: "Xoá", "Huỷ đơn"
+//   dangerSolid — Destructive nặng (solid đỏ)             VD: "Xoá vĩnh viễn"
+//   success     — Confirm positive (solid xanh)           VD: "Duyệt", "Đồng ý"
+//   outline     — Neutral (outline xám)                   VD: "Đóng", "Quay lại"
+//
+// 3 SIZES (touch target conscious):
+//   sm — 32px (toolbar, filter, inline)
+//   md — 38px (default, form submit)
+//   lg — 44px (hero action, mobile)
+//
+// Extra props:
+//   icon={Ico.save(16)}          — Icon bên trái
+//   loading={saving}             — Disable + spinner
+//   fullWidth={true}             — 100% width (rare)
+//   aria-label="Đồng bộ KiotViet" — Bắt buộc nếu chỉ có icon, không có text
+//
+// Btn + GoldBtn (legacy alias) + IconBtn (new) đều share DNA.
+// ══════════════════════════════════════════════════════════════════════
+
 // ── Btn — unified button (replaces GoldBtn, supports all variants) ──
-const Btn = ({ onClick, children, variant='primary', size='md', disabled, type, style, icon }: any) => {
+const Btn = ({ onClick, children, variant='primary', size='md', disabled, loading, type, style, icon, fullWidth, ...rest }: any) => {
   const variants: any = {
     primary:   { bg: T.gold,    color:'#fff', border: T.gold,
                  hoverBg: '#A07828', shadow: '0 2px 6px rgba(196,151,58,0.3)' },
@@ -486,6 +515,7 @@ const Btn = ({ onClick, children, variant='primary', size='md', disabled, type, 
     danger:    { bg: '#fff',    color: T.red, border: T.red, hoverBg: T.redBg, shadow:'none' },
     dangerSolid:{ bg: T.red,    color: '#fff', border: T.red, hoverBg: '#991B1B', shadow:'0 2px 6px rgba(185,28,28,0.25)' },
     success:   { bg: T.green,   color: '#fff', border: T.green, hoverBg: '#166534', shadow:'0 2px 6px rgba(21,128,61,0.25)' },
+    outline:   { bg: '#fff',    color: T.med, border: T.border, hoverBg: T.bg, shadow:'none' },
   }
   const v = variants[variant] || variants.primary
   const sizes: any = {
@@ -494,24 +524,65 @@ const Btn = ({ onClick, children, variant='primary', size='md', disabled, type, 
     lg: { height:44, padding:'0 20px', fontSize:FS.md },
   }
   const s = sizes[size] || sizes.md
+  const isDisabled = disabled || loading
   return (
-    <button onClick={onClick} type={type} disabled={disabled}
+    <button onClick={onClick} type={type} disabled={isDisabled}
       style={{
         display:'inline-flex', alignItems:'center', justifyContent:'center', gap:6,
         background: v.bg, color: v.color,
         border: `1.5px solid ${v.border}`,
         borderRadius: RD.md,
         fontWeight: 600, fontFamily: 'inherit',
-        cursor: disabled ? 'not-allowed' : 'pointer',
-        opacity: disabled ? 0.5 : 1,
+        cursor: isDisabled ? 'not-allowed' : 'pointer',
+        opacity: isDisabled ? 0.6 : 1,
         transition: 'all .15s',
-        boxShadow: disabled ? 'none' : v.shadow,
+        boxShadow: isDisabled ? 'none' : v.shadow,
         whiteSpace: 'nowrap',
+        width: fullWidth ? '100%' : undefined,
         ...s, ...style
       }}
+      onMouseEnter={e => !isDisabled && ((e.currentTarget as any).style.background = v.hoverBg)}
+      onMouseLeave={e => !isDisabled && ((e.currentTarget as any).style.background = v.bg)}
+      {...rest}>
+      {loading ? (
+        <span style={{
+          width:14, height:14, border:`2px solid ${v.color}`, borderRightColor:'transparent',
+          borderRadius:'50%', display:'inline-block',
+          animation:'la-spin 0.6s linear infinite'
+        }}/>
+      ) : (icon && <span style={{ display:'flex', alignItems:'center' }}>{icon}</span>)}
+      {children}
+    </button>
+  )
+}
+
+// ── IconBtn — nút chỉ có icon (square), phải có aria-label ──
+// Usage: <IconBtn aria-label="Làm mới" onClick={refetch}>{Ico.refresh(16)}</IconBtn>
+const IconBtn = ({ children, size='md', variant='ghost', onClick, disabled, 'aria-label': ariaLabel, style, ...rest }: any) => {
+  const dims: any = { sm: 28, md: 36, lg: 44 }
+  const d = dims[size] || dims.md
+  const variants: any = {
+    ghost:   { bg:'transparent', color:T.med, border:'transparent', hoverBg:T.bg },
+    outline: { bg:'#fff', color:T.med, border:T.border, hoverBg:T.bg },
+    solid:   { bg:T.gold, color:'#fff', border:T.gold, hoverBg:'#A07828' },
+  }
+  const v = variants[variant] || variants.ghost
+  if (!ariaLabel && process.env.NODE_ENV !== 'production') {
+    console.warn('IconBtn requires aria-label for accessibility')
+  }
+  return (
+    <button onClick={onClick} disabled={disabled} aria-label={ariaLabel}
+      style={{
+        width:d, height:d, display:'inline-flex', alignItems:'center', justifyContent:'center',
+        background:v.bg, color:v.color, border:`1.5px solid ${v.border}`,
+        borderRadius: RD.md, cursor: disabled?'not-allowed':'pointer',
+        opacity: disabled?0.5:1, transition:'background .15s',
+        padding:0, fontFamily:'inherit',
+        ...style
+      }}
       onMouseEnter={e => !disabled && ((e.currentTarget as any).style.background = v.hoverBg)}
-      onMouseLeave={e => !disabled && ((e.currentTarget as any).style.background = v.bg)}>
-      {icon && <span style={{ display:'flex', alignItems:'center' }}>{icon}</span>}
+      onMouseLeave={e => !disabled && ((e.currentTarget as any).style.background = v.bg)}
+      {...rest}>
       {children}
     </button>
   )
@@ -543,6 +614,263 @@ const Modal = ({ open, onClose, title, children, wide }: any) => {
           </button>
         </div>
         {children}
+      </div>
+    </div>
+  )
+}
+
+// ══════════════════════════════════════════════════════════════════════
+// v128: TOAST SYSTEM — thay thế alert() với notification gọn nhẹ
+// ══════════════════════════════════════════════════════════════════════
+// Usage anywhere trong app (không cần wrap provider):
+//   toast.success('Đã lưu đơn DH008639')
+//   toast.error('Không kết nối được GHTK', { action: { label: 'Thử lại', onClick: retry } })
+//   toast.warning('Đơn đã quá hạn 2 giờ')
+//   toast.info('Đang đồng bộ với KiotViet...')
+//
+// Options:
+//   duration: 3000 (ms, 0 = không tự đóng)
+//   action:   { label, onClick }  // nút action trong toast
+// ══════════════════════════════════════════════════════════════════════
+
+type ToastItem = {
+  id: number
+  type: 'success' | 'error' | 'warning' | 'info'
+  msg: string
+  duration?: number
+  action?: { label: string; onClick: () => void }
+}
+
+let _toastId = 0
+let _toasts: ToastItem[] = []
+const _toastListeners = new Set<(t: ToastItem[]) => void>()
+
+function _emitToasts() {
+  _toastListeners.forEach(fn => fn([..._toasts]))
+}
+
+function _pushToast(t: Omit<ToastItem, 'id'>): number {
+  const id = ++_toastId
+  const duration = t.duration ?? 3000
+  _toasts = [..._toasts, { ...t, id }]
+  _emitToasts()
+  if (duration > 0) {
+    setTimeout(() => {
+      _toasts = _toasts.filter(x => x.id !== id)
+      _emitToasts()
+    }, duration)
+  }
+  return id
+}
+
+const toast = {
+  success: (msg: string, opts?: Partial<ToastItem>) => _pushToast({ type: 'success', msg, ...opts }),
+  error:   (msg: string, opts?: Partial<ToastItem>) => _pushToast({ type: 'error',   msg, duration: 5000, ...opts }),
+  warning: (msg: string, opts?: Partial<ToastItem>) => _pushToast({ type: 'warning', msg, duration: 4000, ...opts }),
+  info:    (msg: string, opts?: Partial<ToastItem>) => _pushToast({ type: 'info',    msg, ...opts }),
+  dismiss: (id: number) => {
+    _toasts = _toasts.filter(x => x.id !== id)
+    _emitToasts()
+  },
+}
+
+// Render container — mount 1 lần ở top App
+function ToastContainer() {
+  const [items, setItems] = useState<ToastItem[]>([])
+  useEffect(() => {
+    _toastListeners.add(setItems)
+    return () => { _toastListeners.delete(setItems) }
+  }, [])
+  if (items.length === 0) return null
+  return (
+    <div style={{
+      position: 'fixed', bottom: 20, right: 20, zIndex: 10000,
+      display: 'flex', flexDirection: 'column-reverse', gap: 8,
+      maxWidth: 400, pointerEvents: 'none',
+    }}>
+      {items.map(t => <ToastCard key={t.id} item={t}/>)}
+    </div>
+  )
+}
+
+function ToastCard({ item }: { item: ToastItem }) {
+  const [mounted, setMounted] = useState(false)
+  useEffect(() => { setMounted(true) }, [])
+  const cfg: any = {
+    success: { bg: T.green, bgLight: T.greenBg, icon: '✓', border: T.green },
+    error:   { bg: T.red,   bgLight: T.redBg,   icon: '✕', border: T.red },
+    warning: { bg: T.amber, bgLight: T.amberBg, icon: '!', border: T.amber },
+    info:    { bg: T.blue,  bgLight: T.blueBg,  icon: 'i', border: T.blue },
+  }[item.type]
+  return (
+    <div role="status" aria-live="polite" style={{
+      pointerEvents: 'auto',
+      display: 'flex', alignItems: 'flex-start', gap: 10,
+      background: '#fff',
+      border: `1px solid ${cfg.border}`,
+      borderLeft: `4px solid ${cfg.bg}`,
+      borderRadius: RD.md,
+      padding: '10px 12px',
+      boxShadow: '0 6px 20px rgba(0,0,0,0.12)',
+      transform: mounted ? 'translateX(0)' : 'translateX(120%)',
+      opacity: mounted ? 1 : 0,
+      transition: 'transform .25s ease, opacity .25s ease',
+      fontSize: FS.sm,
+      color: T.dark,
+    }}>
+      <span style={{
+        flexShrink: 0, width: 20, height: 20, borderRadius: '50%',
+        background: cfg.bg, color: '#fff', display: 'flex',
+        alignItems: 'center', justifyContent: 'center',
+        fontSize: 12, fontWeight: 700, marginTop: 1,
+      }}>{cfg.icon}</span>
+      <div style={{ flex: 1, lineHeight: 1.45 }}>
+        <div>{item.msg}</div>
+        {item.action && (
+          <button onClick={() => { item.action!.onClick(); toast.dismiss(item.id) }}
+            style={{
+              marginTop: 6, background: 'transparent', border: 'none',
+              color: cfg.bg, fontWeight: 700, fontSize: FS.sm,
+              cursor: 'pointer', padding: 0, fontFamily: 'inherit',
+            }}>
+            {item.action.label} →
+          </button>
+        )}
+      </div>
+      <button onClick={() => toast.dismiss(item.id)} aria-label="Đóng"
+        style={{
+          flexShrink: 0, background: 'transparent', border: 'none',
+          color: T.light, cursor: 'pointer', fontSize: 18, padding: 0,
+          lineHeight: 1, marginTop: -2,
+        }}>×</button>
+    </div>
+  )
+}
+
+// ══════════════════════════════════════════════════════════════════════
+// v128: CONFIRM MODAL — thay thế window.confirm() với UI đẹp hơn
+// ══════════════════════════════════════════════════════════════════════
+// Usage (async):
+//   if (!(await confirmDialog({ title: 'Xoá đơn?', message: '...', confirmText: 'Xoá', tone: 'danger' }))) return
+//   await confirmDialog({ title: 'Đồng ý?' })  // default simple
+//
+// Options:
+//   title:       string (bắt buộc)
+//   message:     string | JSX (mô tả)
+//   confirmText: string = 'Đồng ý'
+//   cancelText:  string = 'Huỷ'
+//   tone:        'default' | 'danger' | 'warning' | 'success'
+// ══════════════════════════════════════════════════════════════════════
+
+type ConfirmOpts = {
+  title: string
+  message?: string | React.ReactNode
+  confirmText?: string
+  cancelText?: string
+  tone?: 'default' | 'danger' | 'warning' | 'success'
+}
+
+let _confirmResolver: ((v: boolean) => void) | null = null
+let _confirmOpts: ConfirmOpts | null = null
+const _confirmListeners = new Set<(c: ConfirmOpts | null) => void>()
+
+function confirmDialog(opts: ConfirmOpts): Promise<boolean> {
+  return new Promise((resolve) => {
+    _confirmResolver = resolve
+    _confirmOpts = opts
+    _confirmListeners.forEach(fn => fn(opts))
+  })
+}
+
+function _resolveConfirm(value: boolean) {
+  if (_confirmResolver) _confirmResolver(value)
+  _confirmResolver = null
+  _confirmOpts = null
+  _confirmListeners.forEach(fn => fn(null))
+}
+
+function ConfirmContainer() {
+  const [opts, setOpts] = useState<ConfirmOpts | null>(null)
+  useEffect(() => {
+    _confirmListeners.add(setOpts)
+    return () => { _confirmListeners.delete(setOpts) }
+  }, [])
+
+  // Escape key huỷ, Enter xác nhận
+  useEffect(() => {
+    if (!opts) return
+    const handler = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') { e.preventDefault(); _resolveConfirm(false) }
+      else if (e.key === 'Enter') { e.preventDefault(); _resolveConfirm(true) }
+    }
+    window.addEventListener('keydown', handler)
+    return () => window.removeEventListener('keydown', handler)
+  }, [opts])
+
+  if (!opts) return null
+
+  const toneCfg: any = {
+    default: { iconBg: T.blueBg, iconColor: T.blue, icon: '?', confirmBg: T.gold, confirmColor: '#fff', confirmBorder: T.gold },
+    danger:  { iconBg: T.redBg, iconColor: T.red, icon: '!', confirmBg: T.red, confirmColor: '#fff', confirmBorder: T.red },
+    warning: { iconBg: T.amberBg, iconColor: T.amber, icon: '!', confirmBg: T.amber, confirmColor: '#fff', confirmBorder: T.amber },
+    success: { iconBg: T.greenBg, iconColor: T.green, icon: '✓', confirmBg: T.green, confirmColor: '#fff', confirmBorder: T.green },
+  }[opts.tone || 'default']
+
+  return (
+    <div role="dialog" aria-modal="true" aria-labelledby="confirm-title"
+      style={{
+        position: 'fixed', inset: 0, zIndex: 10001,
+        background: 'rgba(0,0,0,0.5)',
+        display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 16,
+      }}
+      onClick={() => _resolveConfirm(false)}>
+      <div onClick={e => e.stopPropagation()} style={{
+        background: '#fff', borderRadius: RD.xl, padding: 24,
+        maxWidth: 420, width: '100%',
+        boxShadow: '0 20px 60px rgba(0,0,0,0.3)',
+      }}>
+        <div style={{ display: 'flex', alignItems: 'flex-start', gap: 14, marginBottom: 16 }}>
+          <div style={{
+            flexShrink: 0, width: 40, height: 40, borderRadius: '50%',
+            background: toneCfg.iconBg, color: toneCfg.iconColor,
+            display: 'flex', alignItems: 'center', justifyContent: 'center',
+            fontSize: 18, fontWeight: 700,
+          }}>{toneCfg.icon}</div>
+          <div style={{ flex: 1 }}>
+            <h3 id="confirm-title" style={{
+              margin: 0, fontSize: FS.lg, fontWeight: 700, color: T.dark,
+              lineHeight: 1.3,
+            }}>{opts.title}</h3>
+            {opts.message && (
+              <div style={{
+                marginTop: 8, fontSize: FS.sm, color: T.med,
+                lineHeight: 1.5,
+              }}>{opts.message}</div>
+            )}
+          </div>
+        </div>
+        <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8 }}>
+          <button onClick={() => _resolveConfirm(false)}
+            style={{
+              padding: '9px 18px', borderRadius: RD.md,
+              background: '#fff', color: T.med,
+              border: `1.5px solid ${T.border}`,
+              fontSize: FS.md, fontWeight: 600, fontFamily: 'inherit',
+              cursor: 'pointer',
+            }}>
+            {opts.cancelText || 'Huỷ'}
+          </button>
+          <button onClick={() => _resolveConfirm(true)} autoFocus
+            style={{
+              padding: '9px 18px', borderRadius: RD.md,
+              background: toneCfg.confirmBg, color: toneCfg.confirmColor,
+              border: `1.5px solid ${toneCfg.confirmBorder}`,
+              fontSize: FS.md, fontWeight: 700, fontFamily: 'inherit',
+              cursor: 'pointer',
+            }}>
+            {opts.confirmText || 'Đồng ý'}
+          </button>
+        </div>
       </div>
     </div>
   )
@@ -1911,9 +2239,9 @@ function Dashboard({ user, checklist, tasks, allUsers, attendance, leaveRequests
       const data = await res.json()
       if (!res.ok) throw new Error(data?.error || `HTTP ${res.status}`)
       await fetchKvSales()
-      alert(`✅ Sync xong!\n${data.invoice_count} hóa đơn, ${data.sales_rows_count} dòng dữ liệu.`)
+      toast.success(`Sync xong!\n${data.invoice_count} hóa đơn, ${data.sales_rows_count} dòng dữ liệu.`)
     } catch (e: any) {
-      alert(`❌ Sync lỗi: ${e.message}`)
+      toast.error(`Sync lỗi: ${e.message}`)
     } finally {
       setKvSyncing(false)
     }
@@ -2670,7 +2998,7 @@ function Checklist({ user, checklist, setChecklist, addLog, allUsers, mobile }: 
     const { error } = await db.from('checklist').insert(newItem)
     if (error) {
       setChecklist((prev: any) => prev.filter((c: any) => c.id !== newItem.id))
-      alert('❌ Lỗi: ' + error.message); return
+      toast.error('Lỗi: ' + error.message); return
     }
     setShowAdd(false)
     setAddForm({ title:'', time_start:'', time_end:'', freq:'Hàng ngày', priority:'mid' })
@@ -4115,7 +4443,7 @@ function Overtime({ user, allUsers, mobile }: any) {
     const { error } = await db.from('overtime_requests').insert(req)
     if (error) {
       setRequests(prev => prev.filter((r: any) => r.id !== req.id))
-      alert('❌ Gửi đơn OT thất bại: ' + error.message)
+      toast.error('Gửi đơn OT thất bại: ' + error.message)
       console.error('OT insert error:', error)
       return
     }
@@ -6611,7 +6939,7 @@ function ReturnItems({ user, allUsers, products, mobile }: any) {
     if (newVal) {
       const photos = slip.return_invoice_photos || []
       if (photos.length === 0) {
-        alert('❌ Cần upload ít nhất 1 ảnh "Hóa đơn trả hàng" trước khi tích KV.\n\nMở phiếu để upload ảnh.')
+        toast.error('Cần upload ít nhất 1 ảnh "Hóa đơn trả hàng" trước khi tích KV.\n\nMở phiếu để upload ảnh.')
         return
       }
     }
@@ -6642,7 +6970,7 @@ function ReturnItems({ user, allUsers, products, mobile }: any) {
           contentType: 'image/jpeg', upsert: false,
         }),
       ])
-      if (fullRes.error) { alert('❌ Upload lỗi: ' + fullRes.error.message); return }
+      if (fullRes.error) { toast.error('Upload lỗi: ' + fullRes.error.message); return }
 
       const { data: fullUrl } = db.storage.from('packing-photos').getPublicUrl(fullRes.data!.path)
       const aiPublicUrl = aiRes.data
@@ -6661,7 +6989,7 @@ function ReturnItems({ user, allUsers, products, mobile }: any) {
       setItems(prev => prev.map(i => ids.includes(i.id) ? {...i, return_invoice_photos: updated} : i))
       for (const id of ids) await db.from('return_items').update({ return_invoice_photos: updated }).eq('id', id)
     } catch(e: any) {
-      alert('❌ ' + e.message)
+      toast.error('' + e.message)
     }
   }
 
@@ -7976,7 +8304,7 @@ function PositionsManagement({ user, positions, setPositions, mobile }: any) {
     if (edit) {
       const { error } = await db.from('positions').update(data).eq('id', edit.id)
       if (error) {
-        alert('❌ Lỗi lưu vị trí: ' + error.message + '\n\nCó thể do thiếu column DB. Liên hệ admin để kiểm tra migration.')
+        toast.error('Lỗi lưu vị trí: ' + error.message + '\n\nCó thể do thiếu column DB. Liên hệ admin để kiểm tra migration.')
         return
       }
       const updated = {...edit, ...data}
@@ -7985,7 +8313,7 @@ function PositionsManagement({ user, positions, setPositions, mobile }: any) {
       const newPos = { id:'pos_'+Date.now(), ...data, created_at:fmtNow() }
       const { error } = await db.from('positions').insert(newPos)
       if (error) {
-        alert('❌ Lỗi tạo vị trí: ' + error.message)
+        toast.error('Lỗi tạo vị trí: ' + error.message)
         return
       }
       setPositions((prev: any) => [...prev, newPos])
@@ -10075,6 +10403,28 @@ export default function App() {
       *, *::before, *::after { box-sizing: border-box; }
       html, body { margin: 0; padding: 0; width: 100%; height: 100%; background: #F7F5F2; }
       #root { width: 100%; height: 100%; display: flex; flex-direction: column; }
+
+      /* v128: Focus-visible cho keyboard a11y - chỉ hiện khi Tab (không hiện khi click chuột) */
+      *:focus { outline: none; }
+      *:focus-visible {
+        outline: 2px solid #1D4ED8;
+        outline-offset: 2px;
+        border-radius: 4px;
+      }
+      button:focus-visible, a:focus-visible {
+        outline: 2px solid #1D4ED8;
+        outline-offset: 2px;
+      }
+      input:focus-visible, textarea:focus-visible, select:focus-visible {
+        outline: 2px solid #1D4ED8;
+        outline-offset: 1px;
+      }
+
+      /* v128: Spinner animation cho Btn loading state */
+      @keyframes la-spin {
+        from { transform: rotate(0deg); }
+        to { transform: rotate(360deg); }
+      }
     `
     if (!document.getElementById('la-global')) document.head.appendChild(style)
     return () => { const el = document.getElementById('la-global'); if (el) el.remove() }
@@ -10484,17 +10834,22 @@ export default function App() {
   }, [settings, templates, performReset])
 
   // Login
-  if (!user) return <LoginScreen onLogin={(u: any) => {
+  if (!user) return <><LoginScreen onLogin={(u: any) => {
+    // v128: nếu token không còn → xoá và force reload
     const applied = applyTestOverride(u)
     setUser(applied)
     setPage(getPerm(applied).viewAllDashboard || getPerm(applied).viewDeptChecklist ? 'dashboard' : 'checklist')
-  }}/>
+  }}/><ToastContainer/><ConfirmContainer/></>
 
   if (loading) return (
+    <>
     <div style={{ minHeight:'100vh', background:T.sidebar, display:'flex', alignItems:'center', justifyContent:'center', flexDirection:'column', gap:16 }}>
       <LALogo size={60}/>
       <div style={{ color:T.gold, fontSize:14 }}>Đang tải dữ liệu...</div>
     </div>
+    <ToastContainer/>
+    <ConfirmContainer/>
+    </>
   )
 
   const nav = getNav(getPerm(user), user?.dept_id||'')
@@ -10523,6 +10878,9 @@ export default function App() {
     <div style={{ display:'flex', minHeight:'100vh', flexDirection: mobile?'column':'row',
       fontFamily:"'Segoe UI',system-ui,sans-serif", background:T.bg,
       paddingTop: isTestAccount(user) ? 28 : 0 }}>
+        {/* v128: Toast + Confirm global UI — không cần wrap provider */}
+        <ToastContainer/>
+        <ConfirmContainer/>
         {/* TEST ACCOUNT BANNER — luôn hiện khi login bằng tài khoản test */}
         {isTestAccount(user) && (
           <div style={{ position:'fixed', top:0, left:0, right:0, zIndex:9999,
@@ -11738,8 +12096,8 @@ function InventoryModule({ user, allUsers, products, invSessions, setInvSessions
         setChecks(prev => [...prev.filter((c: any) => c.session_id!==sessId), ...newChecks])
         created += items.length
       }
-      alert(`✅ Import thành công ${created} bản ghi từ ${Object.keys(byDate).length} đợt kiểm kê`)
-    } catch(e: any) { alert('❌ Lỗi import: ' + e.message) }
+      toast.success(`Import thành công ${created} bản ghi từ ${Object.keys(byDate).length} đợt kiểm kê`)
+    } catch(e: any) { toast.error('Lỗi import: ' + e.message) }
     setImporting(false)
   }
 
@@ -11769,7 +12127,7 @@ function InventoryModule({ user, allUsers, products, invSessions, setInvSessions
       ws['!cols'] = [{wch:5},{wch:14},{wch:50},{wch:8},{wch:14},{wch:14},{wch:12},{wch:16},{wch:20}]
       xlsx.utils.book_append_sheet(wb, ws, 'Phieu_KiemKe')
       xlsx.writeFile(wb, `PhieuKiemKe_${new Date().toISOString().split('T')[0]}.xlsx`)
-    } catch(e: any) { alert('❌ Lỗi export: ' + e.message) }
+    } catch(e: any) { toast.error('Lỗi export: ' + e.message) }
   }
 
   // NV kho mặc định vào tab Nhập liệu
@@ -15186,7 +15544,7 @@ function ExpiryModule({ user, mobile, products, batches, setBatches }: any) {
     })
     const { error } = await db.from('product_batches').insert(newBatches)
     if (error) {
-      alert(`❌ Lỗi khi lưu vào DB: ${error.message}\n\nVui lòng thử lại hoặc liên hệ Admin.`)
+      toast.error(`Lỗi khi lưu vào DB: ${error.message}\n\nVui lòng thử lại hoặc liên hệ Admin.`)
       setSaving(false)
       return
     }
@@ -15846,7 +16204,7 @@ function PaymentOrderForm({ suppliers, accounts, onSave, onClose, edit, mobile }
           : null,
       })
     } catch (err: any) {
-      alert('❌ Lỗi khi lưu: ' + (err?.message || 'Không xác định'))
+      toast.error('Lỗi khi lưu: ' + (err?.message || 'Không xác định'))
     } finally {
       setSaving(false)
     }
@@ -16517,7 +16875,7 @@ function PaymentModule({ user, mobile, allUsers }: any) {
       paid_at:'', paid_by:'', kiot_at:'', kiot_by:'', is_history:false,
     }
     const { error } = await db.from('payment_orders').insert(newO)
-    if (error) { alert('❌ Lỗi lưu lệnh: ' + error.message); return }
+    if (error) { toast.error('Lỗi lưu lệnh: ' + error.message); return }
     setOrders(prev => [newO, ...prev])
     if (form.status === 'draft') setFilterStatus('draft')
     setShowForm(false)
@@ -16544,14 +16902,14 @@ function PaymentModule({ user, mobile, allUsers }: any) {
       status:           String(form.status||''),
     }
     const { error } = await db.from('payment_orders').update(upd).eq('id', String(editOrder.id))
-    if (error) { alert('❌ Lỗi cập nhật: ' + error.message); return }
+    if (error) { toast.error('Lỗi cập nhật: ' + error.message); return }
     setOrders(prev => prev.map(o => o.id===editOrder.id ? {...o,...upd} : o))
     // Bug fix: tự chuyển tab lọc sang trạng thái mới nếu có thay đổi status
     // (trước đây chỉ handle draft→pending, các case khác đơn "biến mất" khỏi view)
     if (form.status && form.status !== editOrder.status) {
       setFilterStatus(String(form.status))
     }
-    alert('✅ Đã cập nhật lệnh')
+    toast.success('Đã cập nhật lệnh')
     setEditOrder(null); setShowForm(false)
   }
 
@@ -16559,7 +16917,7 @@ function PaymentModule({ user, mobile, allUsers }: any) {
     const now = new Date().toISOString()
     const upd = { status:'paid', paid_at:now, paid_by:user.id }
     const { error } = await db.from('payment_orders').update(upd).eq('id', o.id)
-    if (error) { alert('❌ Lỗi đánh dấu Đã CK: ' + error.message); return }
+    if (error) { toast.error('Lỗi đánh dấu Đã CK: ' + error.message); return }
     setOrders(prev => prev.map(x => x.id===o.id ? {...x,...upd} : x))
   }
 
@@ -16568,7 +16926,7 @@ function PaymentModule({ user, mobile, allUsers }: any) {
     // Đánh dấu completed + chuyển sang history để không chiếm chỗ list active
     const upd = { status:'completed', kiot_at:now, kiot_by:user.id, is_history:true }
     const { error } = await db.from('payment_orders').update(upd).eq('id', o.id)
-    if (error) { alert('❌ Lỗi: ' + error.message); return }
+    if (error) { toast.error('Lỗi: ' + error.message); return }
     // Xóa khỏi list active vì đã vào lịch sử
     setOrders(prev => prev.filter(x => x.id !== o.id))
   }
@@ -16593,7 +16951,7 @@ function PaymentModule({ user, mobile, allUsers }: any) {
           note: `Xóa lệnh ${label}: ${ord.supplier_name} - ${(ord.amount||0).toLocaleString('vi-VN')}đ`,
         })
         const { error } = await db.from('payment_orders').delete().eq('id', id)
-        if (error) { alert('❌ Lỗi xóa: ' + error.message); setPaymentConfirmDelete(null); return }
+        if (error) { toast.error('Lỗi xóa: ' + error.message); setPaymentConfirmDelete(null); return }
         setOrders(prev => prev.filter(o => o.id !== id))
         setPaymentConfirmDelete(null)
       }
@@ -16603,12 +16961,12 @@ function PaymentModule({ user, mobile, allUsers }: any) {
   const promoteOrder = async (o: any) => {
     // Kiểm tra đủ thông tin trước khi gửi
     if (!o.supplier_name || !o.account_number || !o.amount) {
-      alert('❌ Lệnh chưa đủ thông tin (NCC, STK, Số tiền). Hãy sửa lệnh trước khi gửi.')
+      toast.error('Lệnh chưa đủ thông tin (NCC, STK, Số tiền). Hãy sửa lệnh trước khi gửi.')
       return
     }
     const upd = { status:'pending' }
     const { error } = await db.from('payment_orders').update(upd).eq('id', o.id)
-    if (error) { alert('❌ Lỗi: ' + error.message); return }
+    if (error) { toast.error('Lỗi: ' + error.message); return }
     setOrders(prev => prev.map(x => x.id===o.id ? {...x,...upd} : x))
     setFilterStatus('pending')
   }
@@ -17268,7 +17626,7 @@ async function uploadPhotoDual(
         contentType: 'image/jpeg', upsert: false,
       }),
     ])
-    if (fullRes.error) { alert('❌ Upload lỗi: ' + fullRes.error.message); return null }
+    if (fullRes.error) { toast.error('Upload lỗi: ' + fullRes.error.message); return null }
     if (aiRes.error) { console.warn('AI photo upload fail:', aiRes.error.message) }
 
     const { data: fullUrl } = db.storage.from(bucket).getPublicUrl(fullRes.data!.path)
@@ -17281,7 +17639,7 @@ async function uploadPhotoDual(
       ai_url: aiUrl.publicUrl,
     }
   } catch(e: any) {
-    alert('❌ ' + e.message)
+    toast.error('' + e.message)
     return null
   }
 }
@@ -17388,12 +17746,12 @@ function PickingModule({ user, allUsers, mobile, products }: any) {
         headers: { 'Authorization': `Bearer ${SUPABASE_ANON}` }
       })
       const json = await res.json()
-      if (json.error) alert('❌ Sync lỗi: ' + json.error)
+      if (json.error) toast.error('Sync lỗi: ' + json.error)
       // Đợi 1s để Edge Function ghi DB xong rồi mới fetch
       await new Promise(r => setTimeout(r, 1000))
       await fetchData(true)
     } catch(e: any) {
-      alert('❌ Sync lỗi: ' + e.message)
+      toast.error('Sync lỗi: ' + e.message)
     }
     setSyncing(false)
   }
@@ -17548,10 +17906,10 @@ function PickingModule({ user, allUsers, mobile, products }: any) {
     // Đảm bảo có người nhặt được ghi nhận
     if (!ord.assigned_to) upd.assigned_to = user.id
     const { error } = await db.from('packing_workflow').update(upd).eq('order_code', orderCode)
-    if (error) { alert('❌ Lỗi: ' + error.message); return }
+    if (error) { toast.error('Lỗi: ' + error.message); return }
     setOrders(prev => prev.map((o: any) => o.order_code === orderCode ? {...o, ...upd} : o))
     setSelectedCode(null)
-    alert('✅ Đã hoàn tất nhặt, đơn chuyển sang bước Đóng hàng')
+    toast.success('Đã hoàn tất nhặt, đơn chuyển sang bước Đóng hàng')
   }
 
   if (loading) return <div style={{ padding:p, textAlign:'center', color:T.light, paddingTop:40 }}>⏳ Đang tải...</div>
@@ -17776,7 +18134,7 @@ function PickingModule({ user, allUsers, mobile, products }: any) {
               picking_start_date: newDate,
               picking_start_note: newDate ? `Set bởi ${user.name || user.ini} lúc ${new Date().toLocaleString('vi-VN')}` : '',
             }).eq('id', 'main')
-            if (error) { alert('❌ Lỗi: ' + error.message); return }
+            if (error) { toast.error('Lỗi: ' + error.message); return }
             setCutoffDate(newDate)
             setShowCutoffModal(false)
             alert(newDate
@@ -17807,7 +18165,7 @@ function PickingModule({ user, allUsers, mobile, products }: any) {
               return true
             })
             if (toDelete.length === 0) {
-              alert('✅ Không có đơn nào cần dọn dẹp.\n\nLưu ý: đơn nào đang được Kho xử lý (đã có ảnh/items đã nhặt/updated gần đây) sẽ được BẢO VỆ không xoá, dù purchase_date cũ.')
+              toast.success('Không có đơn nào cần dọn dẹp.\n\nLưu ý: đơn nào đang được Kho xử lý (đã có ảnh/items đã nhặt/updated gần đây) sẽ được BẢO VỆ không xoá, dù purchase_date cũ.')
               return
             }
             if (!confirm(`Xoá ${toDelete.length} đơn cũ (trước ngày ${cutoffDate.split('-').reverse().join('/')}) đang ở trạng thái picking/packing?\n\n⚠️ Đã loại trừ các đơn đang xử lý (có ảnh, có items đã nhặt, hoặc updated gần đây).\n\nHành động này không thể hoàn tác.`)) return
@@ -17821,7 +18179,7 @@ function PickingModule({ user, allUsers, mobile, products }: any) {
             }
             await db.from('packing_workflow').delete().in('order_code', codes)
             setOrders(prev => prev.filter(o => !codes.includes(o.order_code)))
-            alert(`✅ Đã xoá ${codes.length} đơn cũ. Đã ghi vào audit log.`)
+            toast.success(`Đã xoá ${codes.length} đơn cũ. Đã ghi vào audit log.`)
           }}
           onClose={() => setShowCutoffModal(false)}
         />
@@ -18466,11 +18824,11 @@ function PackingModule({ user, allUsers, mobile, products }: any) {
         headers: { 'Authorization': `Bearer ${SUPABASE_ANON}` }
       })
       const json = await res.json()
-      if (json.error) alert('❌ Sync lỗi: ' + json.error)
+      if (json.error) toast.error('Sync lỗi: ' + json.error)
       await new Promise(r => setTimeout(r, 1000))
       await fetchData()
     } catch (e: any) {
-      alert('❌ Sync lỗi: ' + e.message)
+      toast.error('Sync lỗi: ' + e.message)
     }
     setSyncing(false)
   }
@@ -18524,12 +18882,12 @@ function PackingModule({ user, allUsers, mobile, products }: any) {
     const packed = (ord.photos_packed||[]).length
     // Bắt buộc min (giờ là 1) cho photos_picked
     if (picked < min) {
-      alert(`❌ Cần tối thiểu ${min} ảnh hàng đã nhặt (hiện có ${picked}).`)
+      toast.error(`Cần tối thiểu ${min} ảnh hàng đã nhặt (hiện có ${picked}).`)
       return
     }
     // Bắt buộc min cho photos_packed nếu không phải bookship
     if (!ord.no_box && packed < min) {
-      alert(`❌ Cần tối thiểu ${min} ảnh thùng hàng (hiện có ${packed}).\nNếu đơn bookship không đóng thùng, hãy tick vào ô "Đơn bookship — không đóng thùng".`)
+      toast.error(`Cần tối thiểu ${min} ảnh thùng hàng (hiện có ${packed}).\nNếu đơn bookship không đóng thùng, hãy tick vào ô "Đơn bookship — không đóng thùng".`)
       return
     }
     // Soft popup: nếu đơn >=3 SP mà ảnh hàng đã nhặt < suggest
@@ -18594,7 +18952,7 @@ function PackingModule({ user, allUsers, mobile, products }: any) {
       updated_at: new Date().toISOString(),
     }
     const { error } = await db.from('packing_workflow').update(upd).eq('order_code', orderCode)
-    if (error) { alert('❌ Lỗi: ' + error.message); return false }
+    if (error) { toast.error('Lỗi: ' + error.message); return false }
     setOrders(prev => prev.map((o: any) => o.order_code === orderCode ? {...o, ...upd} : o))
     setSelectedCode(null)
     alert(`✅ Đã hoàn tất đóng hàng${finalPackerIds.length>1?` (${finalPackerIds.length} người cùng đóng)`:''}`)
@@ -18646,12 +19004,12 @@ function PackingModule({ user, allUsers, mobile, products }: any) {
 
   // ── Supplementary orders: link DH0002 (con) vào DH0001 (gốc) ──
   const linkSupplementary = async (childCode: string, parentCode: string) => {
-    if (childCode === parentCode) { alert('❌ Không thể link đơn với chính nó'); return }
+    if (childCode === parentCode) { toast.error('Không thể link đơn với chính nó'); return }
     const child = orders.find((o: any) => o.order_code === childCode)
     const parent = orders.find((o: any) => o.order_code === parentCode)
-    if (!child || !parent) { alert('❌ Không tìm thấy đơn'); return }
+    if (!child || !parent) { toast.error('Không tìm thấy đơn'); return }
     if (child.linked_to_order_code) {
-      alert(`❌ Đơn ${childCode} đã link với ${child.linked_to_order_code}. Bỏ link trước khi đổi.`)
+      toast.error(`Đơn ${childCode} đã link với ${child.linked_to_order_code}. Bỏ link trước khi đổi.`)
       return
     }
     // Update DB: child.linked_to_order_code, child.is_supplementary + parent.supplementary_orders array
@@ -18670,12 +19028,12 @@ function PackingModule({ user, allUsers, mobile, products }: any) {
       is_supplementary: true,
       updated_at: nowIso,
     }).eq('order_code', childCode)
-    if (e1) { alert('❌ Lỗi link: ' + e1.message); return }
+    if (e1) { toast.error('Lỗi link: ' + e1.message); return }
     const { error: e2 } = await db.from('packing_workflow').update({
       supplementary_orders: newParentSupps,
       updated_at: nowIso,
     }).eq('order_code', parentCode)
-    if (e2) { alert('❌ Lỗi link đơn gốc: ' + e2.message); return }
+    if (e2) { toast.error('Lỗi link đơn gốc: ' + e2.message); return }
 
     // Update state
     setOrders(prev => prev.map((o: any) => {
@@ -18684,7 +19042,7 @@ function PackingModule({ user, allUsers, mobile, products }: any) {
       return o
     }))
     setLinkSuppOrder(null)
-    alert(`✅ Đã link ${childCode} → ${parentCode}. NV sẽ thấy 2 đơn gộp khi đóng.`)
+    toast.success(`Đã link ${childCode} → ${parentCode}. NV sẽ thấy 2 đơn gộp khi đóng.`)
   }
 
   const unlinkSupplementary = async (childCode: string) => {
@@ -18700,7 +19058,7 @@ function PackingModule({ user, allUsers, mobile, products }: any) {
       is_supplementary: false,
       updated_at: nowIso,
     }).eq('order_code', childCode)
-    if (e1) { alert('❌ Lỗi bỏ link: ' + e1.message); return }
+    if (e1) { toast.error('Lỗi bỏ link: ' + e1.message); return }
 
     if (parent) {
       const parentSupps = Array.isArray(parent.supplementary_orders) ? parent.supplementary_orders : []
@@ -18726,7 +19084,7 @@ function PackingModule({ user, allUsers, mobile, products }: any) {
     const ord = orders.find((o: any) => o.order_code === orderCode)
     if (!ord) return
     if ((ord.photos_packed || []).length === 0) {
-      alert('❌ Đơn chưa có ảnh đã đóng — không thể chạy AI check')
+      toast.error('Đơn chưa có ảnh đã đóng — không thể chạy AI check')
       return
     }
     // Optimistic: set pending để user thấy ngay
@@ -18755,7 +19113,7 @@ function PackingModule({ user, allUsers, mobile, products }: any) {
     } catch (e: any) {
       setOrders(prev => prev.map((o: any) => o.order_code === orderCode
         ? {...o, ai_check_status: 'error'} : o))
-      alert(`❌ Không gọi được AI check: ${e?.message || e}`)
+      toast.error(`Không gọi được AI check: ${e?.message || e}`)
     }
   }
 
@@ -18767,7 +19125,7 @@ function PackingModule({ user, allUsers, mobile, products }: any) {
       updated_at: new Date().toISOString(),
     }
     const { error } = await db.from('packing_workflow').update(upd).eq('order_code', orderCode)
-    if (error) { alert('❌ Lỗi: ' + error.message); return }
+    if (error) { toast.error('Lỗi: ' + error.message); return }
     setOrders(prev => prev.map((o: any) => o.order_code === orderCode ? {...o, ...upd} : o))
   }
 
@@ -18813,7 +19171,7 @@ function PackingModule({ user, allUsers, mobile, products }: any) {
   // v114: Ghi chú giải thích đã xử lý gì (bắt buộc điền trước khi gọi hàm này)
   const completeEditOrder = async (orderCode: string, note: string) => {
     if (!note || !note.trim()) {
-      alert('⚠️ Vui lòng điền ghi chú giải thích đã xử lý gì trước khi hoàn tất sửa')
+      toast.warning('Vui lòng điền ghi chú giải thích đã xử lý gì trước khi hoàn tất sửa')
       return false
     }
     const upd: any = {
@@ -19744,7 +20102,7 @@ function PackingDetailPanel({ ord, mobile, user, allUsers, products, allOrders, 
               {isMyOrder && onCompleteEdit && (
                 <button onClick={async () => {
                   if (!editNoteInput.trim()) {
-                    alert('⚠️ Vui lòng điền ghi chú trước khi hoàn tất sửa')
+                    toast.warning('Vui lòng điền ghi chú trước khi hoàn tất sửa')
                     return
                   }
                   if (confirm('Bạn đã sửa xong đơn này? Sau khi bấm Hoàn tất sẽ khoá lại không sửa được nữa.')) {
@@ -20397,7 +20755,7 @@ function PhotoSection({ title, subtitle, photos, min, max, readOnly, orderCode, 
   const handleFiles = async (files: FileList) => {
     if (!files || files.length === 0) return
     if (photos.length + files.length > max) {
-      alert(`❌ Đã vượt số ảnh tối đa (${max}).`)
+      toast.error(`Đã vượt số ảnh tối đa (${max}).`)
       return
     }
     setUploading(true)
@@ -20421,7 +20779,7 @@ function PhotoSection({ title, subtitle, photos, min, max, readOnly, orderCode, 
             contentType: 'image/jpeg', upsert: false,
           }),
         ])
-        if (fullRes.error) { alert('❌ Upload lỗi: ' + fullRes.error.message); continue }
+        if (fullRes.error) { toast.error('Upload lỗi: ' + fullRes.error.message); continue }
         if (aiRes.error) { console.warn('AI photo upload fail:', aiRes.error.message) }
 
         const { data: fullUrl } = db.storage.from('packing-photos').getPublicUrl(fullRes.data!.path)
@@ -20439,7 +20797,7 @@ function PhotoSection({ title, subtitle, photos, min, max, readOnly, orderCode, 
       const updated = [...photos, ...newEntries]
       await onUpdate(updated)
     } catch(e: any) {
-      alert('❌ Lỗi: ' + e.message)
+      toast.error('Lỗi: ' + e.message)
     } finally {
       setUploading(false)
       if (fileInputCameraRef.current)  fileInputCameraRef.current.value = ''
@@ -20776,7 +21134,7 @@ function PersonalNotesModule({ user, mobile }: any) {
       updated_at:new Date().toISOString(),
     }
     const { error } = await db.from('personal_notes').insert(newNote)
-    if (error) { alert('❌ Lỗi: ' + error.message); return }
+    if (error) { toast.error('Lỗi: ' + error.message); return }
     setNotes([newNote, ...notes])
     setEditingId(id)
     setShowNew(false)
@@ -20786,7 +21144,7 @@ function PersonalNotesModule({ user, mobile }: any) {
   const saveNote = async (id: string, updates: any) => {
     const upd = { ...updates, updated_at:new Date().toISOString() }
     const { error } = await db.from('personal_notes').update(upd).eq('id', id).eq('user_id', user.id)
-    if (error) { alert('❌ Lỗi: ' + error.message); return }
+    if (error) { toast.error('Lỗi: ' + error.message); return }
     setNotes(notes.map(n => n.id === id ? { ...n, ...upd } : n))
   }
 
@@ -20794,7 +21152,7 @@ function PersonalNotesModule({ user, mobile }: any) {
   const deleteNote = async (id: string) => {
     if (!confirm('Xoá ghi chú này?')) return
     const { error } = await db.from('personal_notes').delete().eq('id', id).eq('user_id', user.id)
-    if (error) { alert('❌ Lỗi: ' + error.message); return }
+    if (error) { toast.error('Lỗi: ' + error.message); return }
     setNotes(notes.filter(n => n.id !== id))
     if (editingId === id) setEditingId(null)
   }
@@ -21621,7 +21979,7 @@ function PayrollImportModule({ user, allUsers, mobile, attendance, setAttendance
       const { data: freshAtt } = await db.from('attendance').select('*').order('date', { ascending: false }).limit(5000)
       if (freshAtt && setAttendance) setAttendance(freshAtt)
 
-      alert(`✅ Đã import thành công ${previewComputed.length} records cho ${Object.keys(userFps).length} NV trong tháng ${month}/${year}.\n⚠️ Có ${previewComputed.filter(r => r.needs_qm_review).length} ngày cần QM/Admin xác nhận.`)
+      toast.success(`Đã import thành công ${previewComputed.length} records cho ${Object.keys(userFps).length} NV trong tháng ${month}/${year}.\n⚠️ Có ${previewComputed.filter(r => r.needs_qm_review).length} ngày cần QM/Admin xác nhận.`)
 
       // Reset wizard
       setStep(1)
@@ -22988,7 +23346,7 @@ function AuditLogModule({ user, allUsers, mobile }: any) {
           recordId: snap.session.id, snapshot: snap,
           note: `Restore phiên KK ${snap.session.date} từ audit log ${log.id}`,
         })
-        alert(`✅ Đã restore phiên KK ngày ${snap.session.date} với ${snap.checks.length} bản ghi`)
+        toast.success(`Đã restore phiên KK ngày ${snap.session.date} với ${snap.checks.length} bản ghi`)
       } else if (log.table_name && log.record_id) {
         // Generic restore 1 record
         await db.from(log.table_name).upsert(snap)
@@ -22996,12 +23354,12 @@ function AuditLogModule({ user, allUsers, mobile }: any) {
           user, action: 'restore', table: log.table_name,
           recordId: log.record_id, note: `Restore từ audit log ${log.id}`,
         })
-        alert('✅ Đã restore record')
+        toast.success('Đã restore record')
       }
       setShowRestoreModal(null)
       fetchLogs()
     } catch (e: any) {
-      alert('❌ Lỗi restore: ' + e.message)
+      toast.error('Lỗi restore: ' + e.message)
     }
   }
 
@@ -23285,7 +23643,7 @@ function PriorityAckModal({ user, onClose }: any) {
     }
     const { error } = await db.from('priority_requests').update(upd).eq('id', req.id)
     setAckingId(null)
-    if (error) { alert('❌ Lỗi: ' + error.message); return }
+    if (error) { toast.error('Lỗi: ' + error.message); return }
     setPending(prev => prev.filter(p => p.id !== req.id))
   }
 
@@ -23370,8 +23728,8 @@ function PrioritySubmitModal({ user, onClose, onSubmitted }: any) {
     }
     const { error } = await db.from('priority_requests').insert(req)
     setSubmitting(false)
-    if (error) { alert('❌ Lỗi: ' + error.message); return }
-    alert('✅ Đã gửi phiếu ưu tiên! Kho sẽ nhận thông báo ngay.')
+    if (error) { toast.error('Lỗi: ' + error.message); return }
+    toast.success('Đã gửi phiếu ưu tiên! Kho sẽ nhận thông báo ngay.')
     setContent('')
     onSubmitted && onSubmitted(req)
     onClose()
@@ -23486,7 +23844,7 @@ function PriorityRequestModule({ user, allUsers, mobile }: any) {
       acknowledged_at: new Date().toISOString(),
     }
     const { error } = await db.from('priority_requests').update(upd).eq('id', req.id)
-    if (error) { alert('❌ Lỗi: ' + error.message); return }
+    if (error) { toast.error('Lỗi: ' + error.message); return }
     fetchData()
   }
 
@@ -24065,7 +24423,7 @@ function PhotoGallery({ title, photos, allUsers, orderCode, kind }: any) {
         }
       }
 
-      if (files.length === 0) { alert('❌ Không tải được ảnh nào'); return }
+      if (files.length === 0) { toast.error('Không tải được ảnh nào'); return }
 
       // Chỉ share files, không kèm title/text/url
       const shareData: any = { files }
@@ -24083,10 +24441,10 @@ function PhotoGallery({ title, photos, allUsers, orderCode, kind }: any) {
           URL.revokeObjectURL(url)
           await new Promise(r => setTimeout(r, 100))
         }
-        alert(`✅ Đã tải ${files.length} ảnh về máy.\nBạn có thể mở Zalo và kéo thả/chọn từ thư mục Downloads để gửi cho KH.`)
+        toast.success(`Đã tải ${files.length} ảnh về máy.\nBạn có thể mở Zalo và kéo thả/chọn từ thư mục Downloads để gửi cho KH.`)
       }
     } catch (e: any) {
-      if (e.name !== 'AbortError') alert('❌ Lỗi chia sẻ: ' + e.message)
+      if (e.name !== 'AbortError') toast.error('Lỗi chia sẻ: ' + e.message)
     }
     setSharing(false)
   }
@@ -24108,10 +24466,10 @@ function PhotoGallery({ title, photos, allUsers, orderCode, kind }: any) {
       } else {
         // Fallback: copy link
         await navigator.clipboard.writeText(url)
-        alert('✅ Đã copy link ảnh vào clipboard.\nPaste vào Zalo để gửi cho KH.')
+        toast.success('Đã copy link ảnh vào clipboard.\nPaste vào Zalo để gửi cho KH.')
       }
     } catch (e: any) {
-      if (e.name !== 'AbortError') alert('❌ Lỗi: ' + e.message)
+      if (e.name !== 'AbortError') toast.error('Lỗi: ' + e.message)
     }
   }
 
@@ -24119,9 +24477,9 @@ function PhotoGallery({ title, photos, allUsers, orderCode, kind }: any) {
     try {
       const urls = photos.map((p: any) => getUrl(p)).filter(Boolean).join('\n')
       await navigator.clipboard.writeText(urls)
-      alert(`✅ Đã copy ${photos.length} link ảnh vào clipboard.\nPaste vào Zalo để gửi cho KH.`)
+      toast.success(`Đã copy ${photos.length} link ảnh vào clipboard.\nPaste vào Zalo để gửi cho KH.`)
     } catch (e: any) {
-      alert('❌ Lỗi copy: ' + e.message)
+      toast.error('Lỗi copy: ' + e.message)
     }
   }
 
@@ -24148,7 +24506,7 @@ function PhotoGallery({ title, photos, allUsers, orderCode, kind }: any) {
       } catch {}
     }
     setDownloading(false)
-    alert(`✅ Đã tải ${ok}/${photos.length} ảnh về máy.\nMở Zalo → đính kèm ảnh từ thư mục Downloads để gửi KH.`)
+    toast.success(`Đã tải ${ok}/${photos.length} ảnh về máy.\nMở Zalo → đính kèm ảnh từ thư mục Downloads để gửi KH.`)
   }
 
   return (
@@ -25752,7 +26110,7 @@ function WarehouseScheduleModule({ user, allUsers, leaveRequests, attendance, mo
             if (recordsToInsert.length > 0) {
               const { error: insErr } = await db.from('warehouse_schedule')
                 .upsert(recordsToInsert, { onConflict: 'id' })
-              if (insErr) { alert('❌ Lỗi tạo lịch: ' + insErr.message); return }
+              if (insErr) { toast.error('Lỗi tạo lịch: ' + insErr.message); return }
             }
             // Update tuần tự (ít records nên OK)
             for (const r of recordsToUpdate) {
@@ -25762,7 +26120,7 @@ function WarehouseScheduleModule({ user, allUsers, leaveRequests, attendance, mo
             }
             setShowRotation(false)
             await fetchAll()
-            alert(`✅ Đã tạo/cập nhật ${entries.length} ô lịch cho cả tháng.`)
+            toast.success(`Đã tạo/cập nhật ${entries.length} ô lịch cho cả tháng.`)
           }}
           onClose={() => setShowRotation(false)}
         />
@@ -25779,7 +26137,7 @@ function WarehouseScheduleModule({ user, allUsers, leaveRequests, attendance, mo
             const { data } = await db.from('warehouse_schedule').select('*')
               .gte('date', fromDate).lte('date', toDate)
             if (!data || data.length === 0) {
-              alert('❌ Tháng trước không có lịch nào để copy.')
+              toast.error('Tháng trước không có lịch nào để copy.')
               return
             }
             const prevFirstDow = new Date(prevYear, prevMonth, 1).getDay()
@@ -25792,7 +26150,7 @@ function WarehouseScheduleModule({ user, allUsers, leaveRequests, attendance, mo
               const newDate = `${year}-${String(month+1).padStart(2,'0')}-${String(oldDay).padStart(2,'0')}`
               await saveCell(newDate, rec.role_id, rec.user_ids || [])
             }
-            alert('✅ Đã copy lịch từ tháng trước')
+            toast.success('Đã copy lịch từ tháng trước')
             setShowCopyPrev(false)
             fetchAll()
           }}
@@ -25913,7 +26271,7 @@ function RotationWizard({ roles, year, month, khoUsers, existingSchedules, onApp
       })
     }
     if (entries.length === 0) {
-      alert('❌ Chưa nhập NV nào vào chu kỳ. Hãy tick ít nhất 1 NV ở 1 ngày.')
+      toast.error('Chưa nhập NV nào vào chu kỳ. Hãy tick ít nhất 1 NV ở 1 ngày.')
       return
     }
     if (!confirm(`Sẽ tạo/cập nhật ${entries.length} ô lịch cho cả tháng. Tiếp tục?`)) return
@@ -26746,7 +27104,7 @@ function TrackingOrderPhotos({ photosPicked, photosPacked, orderCode }: any) {
       document.body.removeChild(a)
       URL.revokeObjectURL(downloadUrl)
     } catch (err: any) {
-      alert('❌ Lỗi tải ảnh: ' + (err?.message || String(err)))
+      toast.error('Lỗi tải ảnh: ' + (err?.message || String(err)))
     } finally {
       setDownloading(false)
     }
@@ -26948,10 +27306,10 @@ function ErrorReportModule({ user, allUsers, mobile }: any) {
       const { data, error } = await db.storage.from('packing-photos').upload(path, blob, {
         contentType: 'image/jpeg', upsert: false,
       })
-      if (error) { alert('❌ Upload lỗi: ' + error.message); return }
+      if (error) { toast.error('Upload lỗi: ' + error.message); return }
       const { data: urlData } = db.storage.from('packing-photos').getPublicUrl(data.path)
       setPhotos(prev => [...prev, { url: urlData.publicUrl, at: new Date().toISOString() }])
-    } catch(e: any) { alert('❌ ' + e.message)
+    } catch(e: any) { toast.error('' + e.message)
     } finally { setUploading(false) }
   }
 
@@ -26984,8 +27342,8 @@ function ErrorReportModule({ user, allUsers, mobile }: any) {
       if (error) throw error
       await loadReports()
       resetForm()
-      alert('✅ Đã gửi báo cáo lỗi!')
-    } catch(e: any) { alert('❌ ' + e.message)
+      toast.success('Đã gửi báo cáo lỗi!')
+    } catch(e: any) { toast.error('' + e.message)
     } finally { setFSubmitting(false) }
   }
 
@@ -27013,11 +27371,11 @@ function ErrorReportModule({ user, allUsers, mobile }: any) {
       viewed_by: Array.from(new Set([...(selected.viewed_by||[]), user.id])),
     }
     const { error } = await db.from('error_reports').update(upd).eq('id', selected.id)
-    if (error) { alert('❌ ' + error.message); setResolving(false); return }
+    if (error) { toast.error('' + error.message); setResolving(false); return }
     setReports(prev => prev.map(r => r.id === selected.id ? {...r, ...upd} : r))
     setSelected((prev: any) => ({...prev, ...upd}))
     setResolveText(''); setResolvePhotos([]); setResolving(false)
-    alert('✅ Đã đánh dấu đã xử lý!')
+    toast.success('Đã đánh dấu đã xử lý!')
   }
 
   // Admin push người bị báo cáo xử lý
@@ -27036,7 +27394,7 @@ function ErrorReportModule({ user, allUsers, mobile }: any) {
       ),
     }
     const { error } = await db.from('error_reports').update(upd).eq('id', selected.id)
-    if (error) { alert('❌ ' + error.message); setPushing(false); return }
+    if (error) { toast.error('' + error.message); setPushing(false); return }
     setReports(prev => prev.map(r => r.id === selected.id ? {...r, ...upd} : r))
     setSelected((prev: any) => ({...prev, ...upd}))
     setPushing(false)
@@ -27706,13 +28064,13 @@ function SlowMovingModule({ user, allUsers, mobile }: any) {
       })
       const json = await res.json()
       if (json.error) {
-        alert('❌ Scan lỗi: ' + json.error)
+        toast.error('Scan lỗi: ' + json.error)
       } else {
-        alert(`✅ Scan xong!\n• Đã scan: ${json.total_products_scanned} SP\n• Bán chậm: ${json.slow_count}\n• Chưa bán (dead): ${json.dead_count}\n• Mới: ${json.new_count}\n• Đã bán lại: ${json.resolved_count}\n• Tiền "chết": ${(json.total_dead_stock_value||0).toLocaleString('vi-VN')}đ\n• Thời gian: ${Math.round((json.duration_ms||0)/1000)}s`)
+        toast.success(`Scan xong!\n• Đã scan: ${json.total_products_scanned} SP\n• Bán chậm: ${json.slow_count}\n• Chưa bán (dead): ${json.dead_count}\n• Mới: ${json.new_count}\n• Đã bán lại: ${json.resolved_count}\n• Tiền "chết": ${(json.total_dead_stock_value||0).toLocaleString('vi-VN')}đ\n• Thời gian: ${Math.round((json.duration_ms||0)/1000)}s`)
         await fetchAll()
       }
     } catch (e: any) {
-      alert('❌ Scan lỗi: ' + e.message)
+      toast.error('Scan lỗi: ' + e.message)
     }
     setScanning(false)
   }
@@ -28249,7 +28607,7 @@ function SlowMovingSettings({ settings, onUpdate }: any) {
       updated_at: new Date().toISOString(),
     })
     setSaving(false)
-    alert('✅ Đã lưu thiết lập. Lần scan tiếp theo sẽ dùng cấu hình mới.')
+    toast.success('Đã lưu thiết lập. Lần scan tiếp theo sẽ dùng cấu hình mới.')
   }
 
   return (
@@ -28504,7 +28862,7 @@ function GalleryModule({ user, allUsers, mobile }: any) {
       }
     } catch (err: any) {
       console.error('Gallery fetch error:', err)
-      alert('❌ Lỗi tải ảnh: ' + (err.message || err))
+      toast.error('Lỗi tải ảnh: ' + (err.message || err))
     } finally {
       setLoading(false)
       setLoadingMore(false)
@@ -29186,13 +29544,13 @@ function InventorySyncModule({ user, allUsers, mobile }: any) {
       })
       const data = await res.json()
       if (!data.success) {
-        window.alert(`❌ Lỗi sync: ${data.error || 'Unknown'}`)
+        window.toast.error(`Lỗi sync: ${data.error || 'Unknown'}`)
       } else {
-        window.alert(`✅ Đồng bộ xong!\n\n• Tổng SP: ${data.total_products}\n• Mã lệch: ${data.items_with_diff}\n• Lệch tăng: ${data.items_increasing}\n• Thời gian: ${Math.round(data.duration_ms/1000)}s`)
+        window.toast.success(`Đồng bộ xong!\n\n• Tổng SP: ${data.total_products}\n• Mã lệch: ${data.items_with_diff}\n• Lệch tăng: ${data.items_increasing}\n• Thời gian: ${Math.round(data.duration_ms/1000)}s`)
       }
       await loadData()
     } catch (e: any) {
-      window.alert('❌ Lỗi: ' + (e.message || String(e)))
+      window.toast.error('Lỗi: ' + (e.message || String(e)))
     } finally {
       setSyncing(false)
     }
@@ -30081,7 +30439,7 @@ function GhtkPackingSection({ ord, user, mobile }: any) {
   const handleSaveBoxesOnly = async () => {
     const invalidBox = boxes.find((b: any) => !b.weight_kg || Number(b.weight_kg) <= 0)
     if (invalidBox) {
-      alert('❌ Thùng ' + invalidBox.box_no + ' chưa có cân nặng hợp lệ.')
+      toast.error('Thùng ' + invalidBox.box_no + ' chưa có cân nặng hợp lệ.')
       return
     }
     setSavingBoxes(true)
@@ -30090,7 +30448,7 @@ function GhtkPackingSection({ ord, user, mobile }: any) {
       setSavedJustNow(true)
       setTimeout(() => setSavedJustNow(false), 2500)
     } catch(e: any) {
-      alert('❌ Lỗi lưu: ' + e.message)
+      toast.error('Lỗi lưu: ' + e.message)
     } finally {
       setSavingBoxes(false)
     }
@@ -30099,13 +30457,13 @@ function GhtkPackingSection({ ord, user, mobile }: any) {
   // Create GHTK order (call Edge Function)
   const createGhtkOrder = async () => {
     if (!hasCustInfo) {
-      alert('❌ Sale chưa điền info KH. Báo Sale vào module GHTK điền info trước.')
+      toast.error('Sale chưa điền info KH. Báo Sale vào module GHTK điền info trước.')
       return
     }
     // Validate cân
     const invalidBox = boxes.find((b: any) => !b.weight_kg || Number(b.weight_kg) <= 0)
     if (invalidBox) {
-      alert('❌ Thùng ' + invalidBox.box_no + ' chưa có cân nặng hợp lệ.')
+      toast.error('Thùng ' + invalidBox.box_no + ' chưa có cân nặng hợp lệ.')
       return
     }
 
@@ -30446,7 +30804,7 @@ function GhtkEditBoxesModal({ order: o, user, mobile, onClose, onSaved }: any) {
     // Validate
     const invalidBox = boxes.find((b: any) => !b.weight_kg || Number(b.weight_kg) <= 0)
     if (invalidBox) {
-      window.alert('❌ Thùng ' + invalidBox.box_no + ' chưa có cân nặng hợp lệ.')
+      window.toast.error('Thùng ' + invalidBox.box_no + ' chưa có cân nặng hợp lệ.')
       return
     }
     setSaving(true)
@@ -30458,7 +30816,7 @@ function GhtkEditBoxesModal({ order: o, user, mobile, onClose, onSaved }: any) {
       const { error } = await db.from('packing_workflow')
         .update({ ghtk_boxes: cleanBoxes, updated_at: new Date().toISOString() })
         .eq('order_code', o.order_code)
-      if (error) { window.alert('❌ Lỗi: ' + error.message); return }
+      if (error) { window.toast.error('Lỗi: ' + error.message); return }
       onSaved()
     } finally {
       setSaving(false)
@@ -30667,7 +31025,7 @@ function GhtkPrintLabelButton({ order: o, user, onPrinted, compact }: any) {
   const printedAt = o.ghtk_printed_at ? new Date(o.ghtk_printed_at) : null
 
   const handlePrint = async () => {
-    if (!hasLabels) { alert('❌ Đơn chưa có nhãn GHTK để in'); return }
+    if (!hasLabels) { toast.error('Đơn chưa có nhãn GHTK để in'); return }
     setPrinting(true); setErr('')
     try {
       const res = await fetch(`${SUPABASE_URL}/functions/v1/ghtk-label`, {
@@ -31120,10 +31478,10 @@ function GhtkBusShipPrintPanel({ user, mobile }: any) {
   }
 
   const handlePrint = () => {
-    if (!valid) { alert('❌ Vui lòng nhập nội dung in'); return }
+    if (!valid) { toast.error('Vui lòng nhập nội dung in'); return }
     const html = buildPrintHtml()
     const w = window.open('', '_blank', 'width=700,height=500')
-    if (!w) { alert('❌ Trình duyệt chặn popup. Hãy cho phép popup.'); return }
+    if (!w) { toast.error('Trình duyệt chặn popup. Hãy cho phép popup.'); return }
     w.document.write(html)
     w.document.close()
 
@@ -31328,12 +31686,12 @@ function GhtkDropshipPrintPanel({ user, mobile, dropshipGhtk, dropshipVtp, onRef
     : cleaned.length >= 10 && cleaned.length <= 15
 
   const handlePrint = async () => {
-    if (!valid) { alert('❌ Mã không hợp lệ'); return }
+    if (!valid) { toast.error('Mã không hợp lệ'); return }
     setPrinting(true)
     try {
       // Tạo HTML in
       const printWindow = window.open('', '_blank', 'width=600,height=400')
-      if (!printWindow) { alert('❌ Trình duyệt chặn popup. Hãy cho phép popup.'); return }
+      if (!printWindow) { toast.error('Trình duyệt chặn popup. Hãy cho phép popup.'); return }
 
       let body = ''
       if (carrier === 'ghtk') {
@@ -31408,7 +31766,7 @@ ${body}
       setLinkedOrderCode('')
       fetchHistory()
     } catch(e: any) {
-      alert('❌ Lỗi: ' + e.message)
+      toast.error('Lỗi: ' + e.message)
     } finally {
       setPrinting(false)
     }
@@ -31932,10 +32290,10 @@ function GhtkManualOrderModal({ user, mobile, onClose, onCreated }: any) {
   // Create order
   const handleCreate = async () => {
     if (!form.tel || !form.name || !form.province) {
-      alert('❌ Cần điền: SĐT, Tên người nhận, Tỉnh/TP'); return
+      toast.error('Cần điền: SĐT, Tên người nhận, Tỉnh/TP'); return
     }
     if (boxes.some(b => !b.weight_kg || Number(b.weight_kg) <= 0)) {
-      alert('❌ Cần điền cân nặng cho tất cả thùng'); return
+      toast.error('Cần điền cân nặng cho tất cả thùng'); return
     }
 
     setCreating(true); setCreateResult(null)
@@ -32701,7 +33059,7 @@ function GhtkFillCustomerModal({ order: o, user, mobile, onClose, onSaved }: any
   // v122: Check địa chỉ GHTK
   const checkAddress = async () => {
     const err = validate()
-    if (err) { window.alert('❌ ' + err); return }
+    if (err) { window.toast.error('' + err); return }
     setChecking(true)
     setCheckResult(null)
     try {
@@ -32739,7 +33097,7 @@ function GhtkFillCustomerModal({ order: o, user, mobile, onClose, onSaved }: any
 
   const save = async () => {
     const err = validate()
-    if (err) { window.alert('❌ ' + err); return }
+    if (err) { window.toast.error('' + err); return }
     setSaving(true)
     try {
       // v122: Auto-sanitize district để không gửi sai lên GHTK
@@ -32773,7 +33131,7 @@ function GhtkFillCustomerModal({ order: o, user, mobile, onClose, onSaved }: any
       const { error } = await db.from('packing_workflow')
         .update({ ghtk_customer_info: info, updated_at: new Date().toISOString() })
         .eq('order_code', o.order_code)
-      if (error) { window.alert('❌ Lỗi lưu: ' + error.message); return }
+      if (error) { window.toast.error('Lỗi lưu: ' + error.message); return }
       onSaved()
     } finally {
       setSaving(false)
@@ -33180,9 +33538,9 @@ function GhtkSettingsPanel({ user, mobile }: any) {
   }, [])
 
   const save = async () => {
-    if (!form.api_token.trim()) { window.alert('❌ Cần API Token'); return }
+    if (!form.api_token.trim()) { window.toast.error('Cần API Token'); return }
     if (!form.pick_name.trim() || !form.pick_tel.trim() || !form.pick_address.trim()) {
-      window.alert('❌ Cần đầy đủ thông tin kho lấy hàng'); return
+      window.toast.error('Cần đầy đủ thông tin kho lấy hàng'); return
     }
     setSaving(true)
     try {
@@ -33193,8 +33551,8 @@ function GhtkSettingsPanel({ user, mobile }: any) {
         updated_at: new Date().toISOString(),
         updated_by: user.id,
       }, { onConflict: 'id' })
-      if (error) { window.alert('❌ Lỗi: ' + error.message); return }
-      window.alert('✅ Đã lưu cấu hình GHTK')
+      if (error) { window.toast.error('Lỗi: ' + error.message); return }
+      window.toast.success('Đã lưu cấu hình GHTK')
     } finally {
       setSaving(false)
     }
@@ -33202,10 +33560,10 @@ function GhtkSettingsPanel({ user, mobile }: any) {
 
   // v119: Tạo đơn test GHTK
   const runTest = async () => {
-    if (!form.api_token.trim()) { window.alert('❌ Cần lưu API Token trước'); return }
-    if (!testForm.pick_tel.trim() && !form.pick_tel.trim()) { window.alert('❌ Cần nhập SĐT kho'); return }
+    if (!form.api_token.trim()) { window.toast.error('Cần lưu API Token trước'); return }
+    if (!testForm.pick_tel.trim() && !form.pick_tel.trim()) { window.toast.error('Cần nhập SĐT kho'); return }
     if (!testForm.cust_tel.trim() || !testForm.cust_name.trim()) {
-      window.alert('❌ Cần nhập thông tin KH test'); return
+      window.toast.error('Cần nhập thông tin KH test'); return
     }
     setTesting(true)
     setTestResult(null)
