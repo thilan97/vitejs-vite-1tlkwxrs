@@ -26157,6 +26157,96 @@ function SaleOrderTrackingModule({ user, allUsers, mobile }: any) {
 
   const fmtMoney = (n: number) => Number(n||0).toLocaleString('vi-VN')
 
+  // v128: Timeline động theo đơn — hiện thêm steps GHTK / Dropship nếu có
+  const getOrderSteps = (o: any): any[] => {
+    const steps: any[] = [
+      { key: 'purchase_date', ts: o.purchase_date, label: 'Tạo đơn KV', icon: '📋',
+        meta: o.sold_by_name ? `Sale: ${o.sold_by_name}` : null },
+      { key: 'detected_at', ts: o.detected_at, label: 'Kho nhận đơn', icon: '📥' },
+    ]
+
+    // GHTK flow: Sale điền info
+    if ((o.is_ghtk_order || o.ghtk_customer_info) && o.ghtk_customer_info?.filled_at) {
+      const info = o.ghtk_customer_info
+      steps.push({
+        key: 'ghtk_info_filled',
+        ts: info.filled_at,
+        label: 'Sale điền info GHTK',
+        icon: '📝',
+        meta: [
+          info.filled_by_name ? `Bởi: ${info.filled_by_name}` : null,
+          info.name ? `KH: ${info.name}` : null,
+          info.tel ? `SĐT: ${info.tel}` : null,
+        ].filter(Boolean).join(' · ') || null,
+      })
+    }
+
+    steps.push(
+      { key: 'picked_at', ts: o.picked_at, label: 'Nhặt xong', icon: '✅',
+        meta: o.picker_name ? `Picker: ${o.picker_name}` : null },
+      { key: 'packed_at', ts: o.packed_at, label: 'Đóng xong', icon: '📦',
+        meta: o.packer_name ? `Packer: ${o.packer_name}` : null }
+    )
+
+    // GHTK label creation
+    if (o.ghtk_created_at) {
+      const labels = o.ghtk_labels || []
+      const labelIds = labels.map((l: any) =>
+        l.label_id || l.tracking_id || l.trackingId || l.package_id
+      ).filter(Boolean).join(', ')
+      const totalFee = labels.reduce((s: number, l: any) => s + Number(l.fee || 0), 0)
+      steps.push({
+        key: 'ghtk_created_at',
+        ts: o.ghtk_created_at,
+        label: 'Tạo nhãn GHTK',
+        icon: '🏷',
+        meta: [
+          labelIds ? `Mã: ${labelIds}` : null,
+          totalFee > 0 ? `Phí: ${totalFee.toLocaleString('vi-VN')}đ` : null,
+        ].filter(Boolean).join(' · ') || null,
+      })
+    }
+
+    // GHTK printed
+    if (o.ghtk_printed_at) {
+      steps.push({
+        key: 'ghtk_printed_at',
+        ts: o.ghtk_printed_at,
+        label: 'In nhãn GHTK',
+        icon: '🖨',
+        meta: null,
+      })
+    }
+
+    // Dropship printed
+    if (o.dropship_printed_at) {
+      const carrierName = o.dropship_carrier === 'viettel_post' ? 'Viettel Post' : 'GHTK Dropship'
+      steps.push({
+        key: 'dropship_printed_at',
+        ts: o.dropship_printed_at,
+        label: `In mã ${carrierName}`,
+        icon: '📮',
+        meta: o.dropship_code ? `Mã: ${o.dropship_code}` : null,
+      })
+    }
+
+    // Phase B (v129+): GHTK shipment history
+    const ghtkHistory = Array.isArray(o.ghtk_status_history) ? o.ghtk_status_history : []
+    for (const h of ghtkHistory) {
+      steps.push({
+        key: `ghtk_h_${h.time}`,
+        ts: h.time,
+        label: h.action || h.status_text || 'Cập nhật GHTK',
+        icon: '🚚',
+        meta: h.reason || h.note || h.location || null,
+        isFromGhtk: true,
+      })
+    }
+
+    return steps
+  }
+
+  // STEPS cũ (fallback — không còn dùng trực tiếp, giữ để không break nếu chỗ khác ref)
   const STEPS = [
     { key: 'purchase_date', label: 'Tạo đơn KV',    icon: '📋' },
     { key: 'detected_at',   label: 'Kho nhận đơn',   icon: '📥' },
@@ -26354,11 +26444,14 @@ function SaleOrderTrackingModule({ user, allUsers, mobile }: any) {
                         <div style={{ position:'absolute', left:7, top:8, bottom:8,
                           width:2, background:T.border }}/>
 
-                        {STEPS.map((step, idx) => {
-                          const ts = o[step.key]
+                        {(() => {
+                          const STEPS_DYN = getOrderSteps(o)
+                          return STEPS_DYN.map((step, idx) => {
+                          const ts = step.ts
                           const isDone = !!ts
-                          const isCurrentPending = !isDone && idx > 0 && !!o[STEPS[idx-1].key]
-                          const nextTs = STEPS[idx+1] ? o[STEPS[idx+1].key] : null
+                          const prevTs = STEPS_DYN[idx-1]?.ts
+                          const isCurrentPending = !isDone && idx > 0 && !!prevTs
+                          const nextTs = STEPS_DYN[idx+1]?.ts
                           const duration = ts ? pendingDuration(ts, nextTs) : null
 
                           return (
@@ -26367,8 +26460,8 @@ function SaleOrderTrackingModule({ user, allUsers, mobile }: any) {
                               {/* Dot */}
                               <div style={{ width:16, height:16, borderRadius:8, flexShrink:0,
                                 marginTop:1, zIndex:1,
-                                background: isDone ? T.green : (isCurrentPending ? T.amber : T.border),
-                                border:`2px solid ${isDone ? T.green : (isCurrentPending ? T.amber : T.border)}`,
+                                background: isDone ? (step.isFromGhtk ? T.blue : T.green) : (isCurrentPending ? T.amber : T.border),
+                                border:`2px solid ${isDone ? (step.isFromGhtk ? T.blue : T.green) : (isCurrentPending ? T.amber : T.border)}`,
                                 display:'flex', alignItems:'center', justifyContent:'center',
                                 fontSize:8, color:'#fff', fontWeight:800 }}>
                                 {isDone ? '✓' : (isCurrentPending ? '!' : '')}
@@ -26377,30 +26470,44 @@ function SaleOrderTrackingModule({ user, allUsers, mobile }: any) {
                                 <div style={{ fontSize:11, fontWeight:600,
                                   color: isDone ? T.dark : (isCurrentPending ? T.amber : T.light) }}>
                                   {step.icon} {step.label}
+                                  {step.isFromGhtk && (
+                                    <span style={{ marginLeft:6, fontSize:9, color:T.blue,
+                                      background:T.blueBg, padding:'1px 6px', borderRadius:8, fontWeight:700 }}>
+                                      GHTK
+                                    </span>
+                                  )}
                                 </div>
                                 {isDone ? (
-                                  <div style={{ fontSize:10, color:T.light, marginTop:1 }}>
-                                    {fmtTime(ts)}
-                                    {duration && nextTs && (
-                                      <span style={{ color:T.med }}> → mất {duration}</span>
+                                  <>
+                                    <div style={{ fontSize:10, color:T.light, marginTop:1 }}>
+                                      {fmtTime(ts)}
+                                      {duration && nextTs && (
+                                        <span style={{ color:T.med }}> → mất {duration}</span>
+                                      )}
+                                      {duration && !nextTs && o.status !== 'done' && (
+                                        <span style={{ color:T.amber, fontWeight:600 }}>
+                                          {' '}→ ⏳ đang chờ bước tiếp {duration}
+                                        </span>
+                                      )}
+                                    </div>
+                                    {step.meta && (
+                                      <div style={{ fontSize:10, color:T.med, marginTop:2, fontStyle:'italic' }}>
+                                        {step.meta}
+                                      </div>
                                     )}
-                                    {duration && !nextTs && o.status !== 'done' && (
-                                      <span style={{ color:T.amber, fontWeight:600 }}>
-                                        {' '}→ ⏳ đang chờ bước tiếp {duration}
-                                      </span>
-                                    )}
-                                  </div>
+                                  </>
                                 ) : (
                                   isCurrentPending && (
                                     <div style={{ fontSize:10, color:T.amber, fontWeight:600, marginTop:1 }}>
-                                      ⏳ Đang chờ — {pendingDuration(o[STEPS[idx-1].key], null)} kể từ bước trước
+                                      ⏳ Đang chờ — {pendingDuration(prevTs, null)} kể từ bước trước
                                     </div>
                                   )
                                 )}
                               </div>
                             </div>
                           )
-                        })}
+                          })
+                        })()}
                       </div>
                     </div>
 
