@@ -30704,25 +30704,39 @@ function usePrintAdjust(storageKey: string): [PrintAdjust, (a: PrintAdjust) => v
 
 // Build CSS @page + transform từ adjust config (dùng trong print window)
 function buildPrintCss(adjust: PrintAdjust, pageSize: string): string {
+  const hasOffset = adjust.offset_x_mm !== 0 || adjust.offset_y_mm !== 0
+  const hasScale  = adjust.scale_pct !== 100
+  const needsTransform = hasOffset || hasScale
+
+  const transformStyle = needsTransform
+    ? `transform: translate(${adjust.offset_x_mm}mm, ${adjust.offset_y_mm}mm) scale(${adjust.scale_pct / 100}); transform-origin: top left;`
+    : ''
+
   return `
     @page {
       size: ${pageSize};
       margin: ${adjust.margin_top_mm}mm ${adjust.margin_right_mm}mm ${adjust.margin_bottom_mm}mm ${adjust.margin_left_mm}mm;
     }
+    * { box-sizing: border-box; }
+    html, body {
+      margin: 0 !important;
+      padding: 0 !important;
+      width: 100%;
+    }
     body {
-      margin: 0; padding: 0;
       font-family: Arial, sans-serif;
       font-size: ${adjust.font_size_pct}%;
       line-height: ${adjust.line_height};
     }
     .print-content {
-      transform: translate(${adjust.offset_x_mm}mm, ${adjust.offset_y_mm}mm) scale(${adjust.scale_pct / 100});
-      transform-origin: top left;
       width: 100%;
+      max-width: 100%;
       box-sizing: border-box;
+      margin: 0;
+      ${transformStyle}
     }
     @media print {
-      body { margin: 0; }
+      html, body { margin: 0 !important; padding: 0 !important; }
     }
   `
 }
@@ -30879,7 +30893,8 @@ function GhtkBusShipPrintPanel({ user, mobile }: any) {
 
   // Build HTML bản in
   const buildPrintHtml = (): string => {
-    const pageSize = paperSize === 'A6' ? 'A6' : 'A7'
+    // v127: Dùng explicit mm dimensions để browser không mơ hồ orientation
+    const pageSize = paperSize === 'A6' ? '105mm 148mm' : '74mm 105mm'
     const tpl = templates.find((t: any) => t.id === templateId)
     const tplName = tpl?.name || ''
     const scaleBadgeFont = paperSize === 'A6' ? 11 : 9
@@ -30896,7 +30911,6 @@ function GhtkBusShipPrintPanel({ user, mobile }: any) {
   .print-content {
     font-family: Arial, sans-serif;
     color: #000;
-    padding: 2mm;
   }
   .header {
     text-align: center;
@@ -31334,7 +31348,8 @@ function GhtkDropshipPrintPanel({ user, mobile, dropshipGhtk, dropshipVtp, onRef
         `
       }
 
-      const pageSize = carrier === 'ghtk' ? '100mm 60mm' : 'A7 landscape'
+      // v127: Dùng explicit mm dimensions cho cả 2 carrier
+      const pageSize = carrier === 'ghtk' ? '100mm 60mm' : '105mm 74mm'
       printWindow.document.write(`<!DOCTYPE html>
 <html>
 <head>
