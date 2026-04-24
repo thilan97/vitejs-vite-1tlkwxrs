@@ -19652,6 +19652,7 @@ function PackingDetailPanel({ ord, mobile, user, allUsers, products, allOrders, 
             photos={ord.photos_picked || []}
             min={min} max={999}
             readOnly={readOnly}
+            canEditNoteOnly={canAllowEdit}
             orderCode={ord.order_code}
             photoType="picked"
             userId={user?.id}
@@ -19794,26 +19795,43 @@ function PackingDetailPanel({ ord, mobile, user, allUsers, products, allOrders, 
               <div style={{ display:'grid', gridTemplateColumns:'repeat(auto-fill, minmax(80px, 1fr))',
                 gap:6, marginBottom:8 }}>
                 {(ord.photos_picked || []).map((ph: any, i: number) => {
-                  const url = typeof ph === 'string' ? ph : (ph?.url || '')
-                  const at  = typeof ph === 'string' ? '' : (ph?.at || '')
-                  const rot = (typeof ph === 'object' && typeof ph?.rot === 'number') ? ph.rot : 0
+                  const url  = typeof ph === 'string' ? ph : (ph?.url || '')
+                  const at   = typeof ph === 'string' ? '' : (ph?.at || '')
+                  const note = typeof ph === 'string' ? '' : (ph?.note || '')
+                  const rot  = (typeof ph === 'object' && typeof ph?.rot === 'number') ? ph.rot : 0
                   if (!url) return null
                   return (
-                    <div key={i} style={{ position:'relative', borderRadius:6, overflow:'hidden',
-                      border:`1px solid ${T.border}`, cursor:'pointer', background:'#fff' }}
-                      onClick={() => setPreviewPickedIdx(i)}>
-                      <div style={{ aspectRatio:'1/1', overflow:'hidden' }}>
-                        <img src={url} alt={`Ảnh nhặt ${i+1}`}
-                          style={{ width:'100%', height:'100%', objectFit:'cover', display:'block',
-                            transform: rot ? `rotate(${rot}deg)` : undefined,
-                            transition: 'transform 0.2s ease' }}/>
+                    <div key={i} style={{ display:'flex', flexDirection:'column', gap:3 }}>
+                      <div style={{ position:'relative', borderRadius:6, overflow:'hidden',
+                        border:`1px solid ${note ? T.gold : T.border}`, cursor:'pointer', background:'#fff',
+                        boxShadow: note ? `0 0 0 1px ${T.gold}55` : 'none' }}
+                        onClick={() => setPreviewPickedIdx(i)}>
+                        <div style={{ aspectRatio:'1/1', overflow:'hidden' }}>
+                          <img src={url} alt={`Ảnh nhặt ${i+1}`}
+                            style={{ width:'100%', height:'100%', objectFit:'cover', display:'block',
+                              transform: rot ? `rotate(${rot}deg)` : undefined,
+                              transition: 'transform 0.2s ease' }}/>
+                        </div>
+                        {note && (
+                          <div style={{ position:'absolute', top:2, left:2, padding:'1px 5px',
+                            borderRadius:8, background:T.gold, color:'#fff',
+                            fontSize:9, fontWeight:700, lineHeight:1.4 }}
+                            title={note}>💬</div>
+                        )}
+                        {at && (
+                          <div style={{ fontSize:8, color:T.light, padding:'2px 4px', background:T.bg,
+                            textAlign:'center', lineHeight:1.2 }}>
+                            {new Date(at).toLocaleTimeString('vi-VN', {hour:'2-digit', minute:'2-digit'})}
+                            {' '}
+                            {new Date(at).toLocaleDateString('vi-VN', {day:'2-digit', month:'2-digit'})}
+                          </div>
+                        )}
                       </div>
-                      {at && (
-                        <div style={{ fontSize:8, color:T.light, padding:'2px 4px', background:T.bg,
-                          textAlign:'center', lineHeight:1.2 }}>
-                          {new Date(at).toLocaleTimeString('vi-VN', {hour:'2-digit', minute:'2-digit'})}
-                          {' '}
-                          {new Date(at).toLocaleDateString('vi-VN', {day:'2-digit', month:'2-digit'})}
+                      {note && (
+                        <div style={{ fontSize:9, color:T.dark, padding:'3px 5px',
+                          background:T.goldBg, border:`1px solid ${T.gold}55`, borderRadius:4,
+                          lineHeight:1.35, wordBreak:'break-word' }}>
+                          💬 {note}
                         </div>
                       )}
                     </div>
@@ -19825,8 +19843,17 @@ function PackingDetailPanel({ ord, mobile, user, allUsers, products, allOrders, 
               <button onClick={() => { setPhase('gate'); setHasPassedGate(false) }}
                 style={{ padding:'3px 10px', borderRadius:12, border:`1px solid ${T.green}`,
                   background:'#fff', color:T.green, cursor:'pointer', fontFamily:'inherit',
-                  fontSize:10, fontWeight:600 }}>
+                  fontSize:10, fontWeight:600, marginRight:6 }}>
                 📷 Chụp thêm ảnh hàng đã nhặt
+              </button>
+            )}
+            {/* v124: Nút sửa ghi chú ảnh (cho NV đang đóng HOẶC QM có quyền) */}
+            {(!readOnly || canAllowEdit) && pickedCount > 0 && (
+              <button onClick={() => setPhase('gate')}
+                style={{ padding:'3px 10px', borderRadius:12, border:`1px solid ${T.gold}`,
+                  background:T.goldBg, color:T.goldText, cursor:'pointer', fontFamily:'inherit',
+                  fontSize:10, fontWeight:600 }}>
+                💬 Sửa ghi chú ảnh nhặt
               </button>
             )}
           </div>
@@ -19868,6 +19895,7 @@ function PackingDetailPanel({ ord, mobile, user, allUsers, products, allOrders, 
                 photos={ord.photos_packed || []}
                 min={min} max={max}
                 readOnly={readOnly}
+                canEditNoteOnly={canAllowEdit}
                 orderCode={ord.order_code}
                 photoType="packed"
                 userId={user?.id}
@@ -19939,15 +19967,18 @@ function PackingDetailPanel({ ord, mobile, user, allUsers, products, allOrders, 
   )
 }
 
-function PhotoSection({ title, subtitle, photos, min, max, readOnly, orderCode, photoType, onUpdate, userId, mobile }: any) {
+function PhotoSection({ title, subtitle, photos, min, max, readOnly, orderCode, photoType, onUpdate, userId, mobile, canEditNoteOnly }: any) {
   const [uploading, setUploading] = useState(false)
   const [previewIdx, setPreviewIdx] = useState<number|null>(null)
+  const [editingNoteIdx, setEditingNoteIdx] = useState<number|null>(null) // v124: note editor
+  const [noteDraft, setNoteDraft] = useState('')
   const fileInputCameraRef = useRef<HTMLInputElement>(null)
   const fileInputGalleryRef = useRef<HTMLInputElement>(null)
 
-  // Helper: normalize photo entry (string URL hoặc object {url, at, by})
-  const getUrl = (p: any): string => typeof p === 'string' ? p : (p?.url || '')
-  const getAt  = (p: any): string => typeof p === 'string' ? '' : (p?.at || '')
+  // Helper: normalize photo entry (string URL hoặc object {url, at, by, note})
+  const getUrl  = (p: any): string => typeof p === 'string' ? p : (p?.url || '')
+  const getAt   = (p: any): string => typeof p === 'string' ? '' : (p?.at || '')
+  const getNote = (p: any): string => typeof p === 'string' ? '' : (p?.note || '')
 
   const canAddMore = !readOnly && photos.length < max
 
@@ -20023,6 +20054,36 @@ function PhotoSection({ title, subtitle, photos, min, max, readOnly, orderCode, 
     await onUpdate(updated)
   }
 
+  // v124: Lưu note cho ảnh — normalize string → object khi cần
+  const saveNote = async (idx: number, note: string) => {
+    const canEdit = !readOnly || canEditNoteOnly
+    if (!canEdit) return
+    const trimmed = note.trim()
+    const updated = photos.map((p: any, i: number) => {
+      if (i !== idx) return p
+      const base = typeof p === 'string' ? { url: p } : { ...p }
+      if (trimmed) {
+        base.note = trimmed
+        base.note_at = new Date().toISOString()
+        base.note_by = userId || ''
+      } else {
+        // Xoá note
+        delete base.note
+        delete base.note_at
+        delete base.note_by
+      }
+      return base
+    })
+    await onUpdate(updated)
+    setEditingNoteIdx(null)
+    setNoteDraft('')
+  }
+
+  const openNoteEditor = (idx: number) => {
+    setEditingNoteIdx(idx)
+    setNoteDraft(getNote(photos[idx]))
+  }
+
   const enough = photos.length >= min
 
   return (
@@ -20038,33 +20099,68 @@ function PhotoSection({ title, subtitle, photos, min, max, readOnly, orderCode, 
       <div style={{ display:'grid', gridTemplateColumns:'repeat(auto-fill, minmax(90px, 1fr))',
         gap:8 }}>
         {photos.map((ph: any, i: number) => {
-          const url = getUrl(ph)
-          const at  = getAt(ph)
-          const rot = (typeof ph === 'object' && typeof ph?.rot === 'number') ? ph.rot : 0
+          const url  = getUrl(ph)
+          const at   = getAt(ph)
+          const note = getNote(ph)
+          const rot  = (typeof ph === 'object' && typeof ph?.rot === 'number') ? ph.rot : 0
+          const canEditNote = !readOnly || canEditNoteOnly
           return (
-            <div key={i} style={{ position:'relative', borderRadius:6, overflow:'hidden',
-              border:`1px solid ${T.border}`, cursor:'pointer' }}
-              onClick={() => setPreviewIdx(i)}>
-              <div style={{ aspectRatio:'1/1', overflow:'hidden' }}>
-                <img src={url} alt={`Photo ${i+1}`}
-                  style={{ width:'100%', height:'100%', objectFit:'cover', display:'block',
-                    transform: rot ? `rotate(${rot}deg)` : undefined,
-                    transition: 'transform 0.2s ease' }}/>
+            <div key={i} style={{ display:'flex', flexDirection:'column', gap:4 }}>
+              <div style={{ position:'relative', borderRadius:6, overflow:'hidden',
+                border:`1px solid ${note ? T.gold : T.border}`, cursor:'pointer',
+                boxShadow: note ? `0 0 0 1px ${T.gold}55` : 'none' }}
+                onClick={() => setPreviewIdx(i)}>
+                <div style={{ aspectRatio:'1/1', overflow:'hidden' }}>
+                  <img src={url} alt={`Photo ${i+1}`}
+                    style={{ width:'100%', height:'100%', objectFit:'cover', display:'block',
+                      transform: rot ? `rotate(${rot}deg)` : undefined,
+                      transition: 'transform 0.2s ease' }}/>
+                </div>
+                {/* Badge note */}
+                {note && (
+                  <div style={{ position:'absolute', top:2, left:2, padding:'1px 5px',
+                    borderRadius:8, background:T.gold, color:'#fff',
+                    fontSize:9, fontWeight:700, lineHeight:1.4,
+                    boxShadow:'0 1px 2px rgba(0,0,0,0.2)' }}
+                    title={note}>
+                    💬
+                  </div>
+                )}
+                {at && (
+                  <div style={{ fontSize:8, color:T.light, padding:'3px 4px', background:T.bg,
+                    textAlign:'center', lineHeight:1.2 }}>
+                    {new Date(at).toLocaleTimeString('vi-VN', {hour:'2-digit', minute:'2-digit'})}
+                    {' '}
+                    {new Date(at).toLocaleDateString('vi-VN', {day:'2-digit', month:'2-digit'})}
+                  </div>
+                )}
+                {!readOnly && (
+                  <button onClick={e => { e.stopPropagation(); deletePhoto(i) }}
+                    style={{ position:'absolute', top:2, right:2, width:20, height:20,
+                      borderRadius:10, border:'none', background:'rgba(185,28,28,0.9)', color:'#fff',
+                      cursor:'pointer', fontSize:10, fontFamily:'inherit', padding:0, lineHeight:'20px' }}>
+                    ×
+                  </button>
+                )}
               </div>
-              {at && (
-                <div style={{ fontSize:8, color:T.light, padding:'3px 4px', background:T.bg,
-                  textAlign:'center', lineHeight:1.2 }}>
-                  {new Date(at).toLocaleTimeString('vi-VN', {hour:'2-digit', minute:'2-digit'})}
-                  {' '}
-                  {new Date(at).toLocaleDateString('vi-VN', {day:'2-digit', month:'2-digit'})}
+
+              {/* v124: Note hiển thị + nút edit */}
+              {note && (
+                <div style={{ fontSize:10, color:T.dark, padding:'4px 6px',
+                  background:T.goldBg, border:`1px solid ${T.gold}55`, borderRadius:5,
+                  lineHeight:1.4, wordBreak:'break-word' }}>
+                  💬 {note}
                 </div>
               )}
-              {!readOnly && (
-                <button onClick={e => { e.stopPropagation(); deletePhoto(i) }}
-                  style={{ position:'absolute', top:2, right:2, width:20, height:20,
-                    borderRadius:10, border:'none', background:'rgba(185,28,28,0.9)', color:'#fff',
-                    cursor:'pointer', fontSize:10, fontFamily:'inherit', padding:0, lineHeight:'20px' }}>
-                  ×
+              {canEditNote && (
+                <button onClick={() => openNoteEditor(i)}
+                  style={{ padding:'2px 6px', borderRadius:10, cursor:'pointer',
+                    border:`1px dashed ${note ? T.gold : T.border}`,
+                    background: note ? T.goldBg : 'transparent',
+                    color: note ? T.goldText : T.light,
+                    fontSize:9, fontFamily:'inherit', whiteSpace:'nowrap',
+                    alignSelf:'flex-start' }}>
+                  {note ? '✏️ Sửa ghi chú' : '+ Ghi chú'}
                 </button>
               )}
             </div>
@@ -20127,6 +20223,83 @@ function PhotoSection({ title, subtitle, photos, min, max, readOnly, orderCode, 
             if (onUpdate) onUpdate(updated)
           }}
         />
+      )}
+
+      {/* v124: Note Editor Modal */}
+      {editingNoteIdx !== null && (
+        <div style={{ position:'fixed', inset:0, background:'rgba(0,0,0,0.55)', zIndex:10000,
+          display:'flex', alignItems:'center', justifyContent:'center', padding:16 }}
+          onClick={() => { setEditingNoteIdx(null); setNoteDraft('') }}>
+          <div onClick={e => e.stopPropagation()}
+            style={{ background:'#fff', borderRadius:12, padding:20, maxWidth:480, width:'100%',
+              boxShadow:'0 10px 40px rgba(0,0,0,0.3)' }}>
+            <div style={{ fontSize:14, fontWeight:700, color:T.dark, marginBottom:4,
+              display:'flex', alignItems:'center', gap:8 }}>
+              💬 Ghi chú cho ảnh #{editingNoteIdx + 1}
+            </div>
+            <div style={{ fontSize:11, color:T.light, marginBottom:12, lineHeight:1.5 }}>
+              VD: "SP X hết hàng", "Thiếu 1 hộp serum", "Thay bằng SP tương đương theo ý KH"...
+            </div>
+
+            {/* Preview ảnh nhỏ */}
+            <div style={{ display:'flex', gap:10, marginBottom:12, padding:8,
+              background:T.bg, borderRadius:6 }}>
+              <img src={getUrl(photos[editingNoteIdx])} alt="preview"
+                style={{ width:60, height:60, objectFit:'cover', borderRadius:4,
+                  border:`1px solid ${T.border}` }}/>
+              <div style={{ flex:1, fontSize:10, color:T.med, lineHeight:1.4 }}>
+                <div>📅 Chụp: {getAt(photos[editingNoteIdx])
+                  ? new Date(getAt(photos[editingNoteIdx])).toLocaleString('vi-VN')
+                  : '—'}</div>
+                {typeof photos[editingNoteIdx] === 'object' && photos[editingNoteIdx]?.note_at && (
+                  <div style={{ marginTop:3, color:T.light }}>
+                    💬 Note lần cuối: {new Date(photos[editingNoteIdx].note_at).toLocaleString('vi-VN')}
+                  </div>
+                )}
+              </div>
+            </div>
+
+            <textarea value={noteDraft}
+              onChange={e => setNoteDraft(e.target.value)}
+              placeholder="Nhập ghi chú cho ảnh này..."
+              rows={4}
+              autoFocus
+              maxLength={500}
+              style={{ width:'100%', padding:'10px 12px', border:`1px solid ${T.border}`,
+                borderRadius:6, fontSize:13, fontFamily:'inherit', color:T.dark,
+                background:'#fff', outline:'none', resize:'vertical',
+                boxSizing:'border-box' }}/>
+            <div style={{ fontSize:10, color:T.light, textAlign:'right', marginTop:3 }}>
+              {noteDraft.length}/500
+            </div>
+
+            <div style={{ display:'flex', gap:8, justifyContent:'flex-end', marginTop:12,
+              paddingTop:12, borderTop:`1px solid ${T.border}` }}>
+              {getNote(photos[editingNoteIdx]) && (
+                <button onClick={() => {
+                  if (confirm('Xoá ghi chú này?')) saveNote(editingNoteIdx, '')
+                }}
+                  style={{ padding:'7px 14px', borderRadius:6, cursor:'pointer',
+                    border:`1px solid ${T.red}`, background:'#fff', color:T.red,
+                    fontFamily:'inherit', fontSize:12 }}>
+                  🗑 Xoá ghi chú
+                </button>
+              )}
+              <button onClick={() => { setEditingNoteIdx(null); setNoteDraft('') }}
+                style={{ padding:'7px 14px', borderRadius:6, cursor:'pointer',
+                  border:`1px solid ${T.border}`, background:'#fff', color:T.med,
+                  fontFamily:'inherit', fontSize:12 }}>
+                Huỷ
+              </button>
+              <button onClick={() => saveNote(editingNoteIdx, noteDraft)}
+                style={{ padding:'7px 18px', borderRadius:6, cursor:'pointer',
+                  border:'none', background:T.gold, color:'#fff',
+                  fontFamily:'inherit', fontSize:12, fontWeight:700 }}>
+                💾 Lưu ghi chú
+              </button>
+            </div>
+          </div>
+        </div>
       )}
     </div>
   )
