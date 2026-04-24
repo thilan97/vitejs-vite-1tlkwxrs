@@ -12,7 +12,7 @@ const db = createClient(SUPABASE_URL, SUPABASE_KEY)
 // APP_VERSION — dùng để invalidate cache localStorage mỗi khi deploy version mới
 // (ngăn bug quyền user bị "reset" do cache position cũ sau deploy)
 // ⚠️ MỖI LẦN DEPLOY FEATURE MỚI CÓ PERMISSION MỚI, BUMP SỐ NÀY:
-const APP_VERSION = '2026.04.23.v125'
+const APP_VERSION = '2026.04.23.v127'
 
 // ════════════════════════════════════════════════════════════════
 // AUDIT LOG — ghi nhận các hành động phá hoại data để trace lại
@@ -1213,6 +1213,10 @@ const PAGE_TO_NOTIF_GROUPS: Record<string, string[]> = {
   payment:    ['pay', 'kiot'],
   slowmoving: ['slowmoving'],
   errreport:  ['errreport'],
+  // v126: GHTK page tổng hợp các notif GHTK
+  ghtk:       ['ghtk-choose', 'ghtk-info', 'ghtk-weight', 'ghtk-noprint', 'ghtk-drop'],
+  // v126: Attendance/Schedule check — chỉ hiển thị cho QM/Admin
+  attendance: ['schedule-missing'],
   // overdue → ko có page riêng, hiển thị ở sales/dashboard
 }
 
@@ -8812,11 +8816,13 @@ function NavCustomizer({ user, setUser, mobile }: any) {
 // ══════════════════════════════════════════════════════════════════════
 // ══ NOTIFICATION CENTER — Hook + Page Component ══════════════════════
 // ══════════════════════════════════════════════════════════════════════
-function useNotifications({ user, wrongOrders, returnSlips, shortageItems, batches, paymentOrders, overdueOrders, slowMovingNew, reads, settings }: any) {
+function useNotifications({ user, wrongOrders, returnSlips, shortageItems, batches, paymentOrders, overdueOrders, slowMovingNew, reads, settings, ghtkOrders, todaySchedule, todayAttendance, allUsers }: any) {
   const perm         = getPerm(user)
   const isSale       = user?.dept_id === 'sale'
+  const isKho        = user?.dept_id === 'kho'
   const isAdmin      = perm.viewAllDashboard
   const isMgrSale    = isSale && perm.approveLeave
+  const isMgrKho     = isKho && perm.approveLeave
   const canManageExp = perm.manageExpiry || perm.manageInventory || isAdmin
   const canPay       = perm.managePayment || isAdmin
   const threshold    = settings?.overdue_days_threshold ?? 7
@@ -9018,6 +9024,169 @@ function useNotifications({ user, wrongOrders, returnSlips, shortageItems, batch
         targetPage: 'errreport',
       }))
       groups.push({ id:'errreport', title:'🚨 Báo cáo lỗi chưa xem', items, role:'all' })
+    }
+  }
+
+  // ─ v126: GHTK & Dropship Notifications ─
+  // Categorize tất cả đơn GHTK pending 1 lần
+  if (Array.isArray(ghtkOrders) && ghtkOrders.length > 0) {
+    const buckets = {
+      pending_info: [] as any[],
+      pending_choose: [] as any[],
+      pending_weight: [] as any[],
+      ready: [] as any[],
+      dropship_ghtk: [] as any[],
+      dropship_vtp: [] as any[],
+      not_printed: [] as any[],   // đã có labels nhưng chưa in > 2h
+    }
+    const nowMs = Date.now()
+    for (const o of ghtkOrders) {
+      const cat = categorizeGhtkOrder(o)
+      if (cat.bucket === 'skip' || cat.bucket === 'delivered') continue
+      ;(buckets as any)[cat.bucket]?.push({ ...o, _intent: cat.intent })
+
+      // Đã tạo nhãn nhưng chưa in > 2h
+      if (cat.bucket === 'created' && o.ghtk_labels?.length > 0 && !o.ghtk_printed_at) {
+        const createdMs = o.ghtk_created_at ? new Date(o.ghtk_created_at).getTime() : 0
+        if (createdMs && nowMs - createdMs > 2 * 3600 * 1000) {
+          buckets.not_printed.push(o)
+        }
+      }
+    }
+
+    // 1. GHTK ambiguous — Sale cần chọn loại (Gap 2) — urgency high
+    if ((isSale || isAdmin) && perm.ghtkFillCustomer && buckets.pending_choose.length > 0) {
+      const items = buckets.pending_choose.map((o: any) => ({
+        key: `ghtk-choose:${o.order_code}`, icon:'❓',
+        title: `Cần chọn loại: ${o.order_code}`,
+        meta: `${o.customer_name || ''} — note: "${(o.description_kv||'').slice(0, 40)}..."`,
+        timestamp: o.purchase_date, urgency:'high',
+        targetPage: 'ghtk',
+        role: 'sale',
+      }))
+      groups.push({ id:'ghtk-choose', title:'❓ Đơn GHTK cần Sale chọn loại', items, role:'sale' })
+    }
+
+    // 2. GHTK chờ điền info — Sale (Gap 8)
+    if ((isSale || isAdmin) && perm.ghtkFillCustomer && buckets.pending_info.length > 0) {
+      const items = buckets.pending_info.slice(0, 20).map((o: any) => ({
+        key: `ghtk-info:${o.order_code}`, icon:'📝',
+        title: `Chờ điền info: ${o.order_code}`,
+        meta: o.customer_name || 'Khách',
+        timestamp: o.purchase_date, urgency:'med',
+        targetPage: 'ghtk',
+        role: 'sale',
+      }))
+      groups.push({ id:'ghtk-info', title:`📝 Đơn GHTK chờ điền info KH (${buckets.pending_info.length})`, items, role:'sale' })
+    }
+
+    // 3. GHTK chờ cân thùng — Kho (Gap 8)
+    if ((isKho || isAdmin) && perm.ghtkWeight && buckets.pending_weight.length > 0) {
+      const items = buckets.pending_weight.slice(0, 20).map((o: any) => ({
+        key: `ghtk-weight:${o.order_code}`, icon:'⚖️',
+        title: `Chờ cân thùng: ${o.order_code}`,
+        meta: `${o.customer_name || ''} — ${o.ghtk_customer_info?.tel || ''}`,
+        timestamp: o.purchase_date, urgency:'med',
+        targetPage: 'ghtk',
+        role: 'kho',
+      }))
+      groups.push({ id:'ghtk-weight', title:`⚖️ Đơn GHTK chờ cân thùng (${buckets.pending_weight.length})`, items, role:'kho' })
+    }
+
+    // 4. GHTK đã tạo nhãn >2h chưa in — QM Kho (Gap 8)
+    if ((isKho || isAdmin) && perm.ghtkPrintLabel && buckets.not_printed.length > 0) {
+      const items = buckets.not_printed.map((o: any) => ({
+        key: `ghtk-noprint:${o.order_code}`, icon:'🖨',
+        title: `Chưa in nhãn: ${o.order_code}`,
+        meta: `${o.ghtk_labels?.length || 0} nhãn — tạo ${Math.round((Date.now() - new Date(o.ghtk_created_at).getTime()) / 3600000)}h trước`,
+        timestamp: o.ghtk_created_at, urgency:'high',
+        targetPage: 'ghtk',
+        role: 'kho',
+      }))
+      groups.push({ id:'ghtk-noprint', title:'🖨 Nhãn GHTK quá 2h chưa in', items, role:'kho' })
+    }
+
+    // 5. Dropship GHTK + VTP chờ in — QM Kho (Gap 8)
+    const dropAll = [...buckets.dropship_ghtk, ...buckets.dropship_vtp]
+    if ((isKho || isAdmin) && (perm.ghtkPrintLabel || perm.ghtkSettings) && dropAll.length > 0) {
+      const items = dropAll.slice(0, 20).map((o: any) => ({
+        key: `ghtk-drop:${o.order_code}`, icon: o._intent?.type === 'vtp_dropship' ? '📮' : '🏷',
+        title: `${o._intent?.type === 'vtp_dropship' ? 'VTP' : 'GHTK'} dropship: ${o.order_code}`,
+        meta: `${o.customer_name || ''} — mã: ${o._intent?.code || '(chưa có)'}`,
+        timestamp: o.purchase_date, urgency:'med',
+        targetPage: 'ghtk',
+        role: 'kho',
+      }))
+      groups.push({ id:'ghtk-drop', title:`🏷 Đơn dropship chờ in (${dropAll.length})`, items, role:'kho' })
+    }
+  }
+
+  // ─ v126: Warehouse Schedule Attendance Check (Gap 9) ─
+  // QM/Admin là người chấm công cho NV. Nếu QM chưa chấm công cho NV có lịch trực
+  // → coi như NV đó "mặc định present" → có thể miss trường hợp NV thực sự không đi.
+  // Logic: sau 10h sáng (lead time 2h từ 8h), alert QM/Admin "có N NV có lịch nhưng chưa được chấm công".
+  if (Array.isArray(todaySchedule) && todaySchedule.length > 0) {
+    const now = new Date()
+    const hour = now.getHours()
+    const isAfter10 = hour >= 10
+
+    // Chỉ xử lý nếu user hiện tại là QM/Admin (người có quyền chấm công)
+    const canMarkAttendance =
+      perm.viewAllAttendance || perm.markAttendance ||
+      isAdmin || isMgrKho
+
+    if (isAfter10 && canMarkAttendance) {
+      // Flatten tất cả user_ids được xếp lịch hôm nay
+      const scheduledUsers = new Map<string, any>()  // userId → { roleIds: Set, user }
+      for (const sched of todaySchedule) {
+        const userIds: string[] = sched.user_ids || []
+        for (const uid of userIds) {
+          if (!scheduledUsers.has(uid)) {
+            const userInfo = (allUsers || []).find((u: any) => u.id === uid)
+            scheduledUsers.set(uid, {
+              userId: uid,
+              userName: userInfo?.name || userInfo?.ini || uid,
+              user: userInfo,
+              roles: new Set<string>(),
+            })
+          }
+          scheduledUsers.get(uid)!.roles.add(sched.role_id)
+        }
+      }
+
+      // Set user đã có record attendance hôm nay
+      const checkedIn = new Set((todayAttendance || []).map((a: any) => a.user_id))
+
+      // Lọc ra users có lịch nhưng chưa được chấm công
+      const missing: any[] = []
+      scheduledUsers.forEach((entry) => {
+        if (!checkedIn.has(entry.userId)) {
+          // Filter theo dept_id nếu là QM Kho (chỉ chấm cho phòng mình)
+          if (!isAdmin && !perm.viewAllAttendance && perm.markAttendance) {
+            if (entry.user?.dept_id !== user?.dept_id) return
+          }
+          missing.push(entry)
+        }
+      })
+
+      if (missing.length > 0) {
+        const items = missing.map(m => ({
+          key: `sched-missing:${m.userId}:${new Date().toISOString().slice(0,10)}`,
+          icon: '⏰',
+          title: `${m.userName} chưa được chấm công`,
+          meta: `Có lịch trực ${Array.from(m.roles).join(', ')}`,
+          timestamp: new Date().toISOString(),
+          urgency: 'high',
+          targetPage: 'attendance',
+          role: isAdmin ? 'admin' : 'kho',
+        }))
+        groups.push({
+          id: 'schedule-missing',
+          title: `⏰ ${missing.length} NV có lịch trực chưa chấm công`,
+          items,
+          role: isAdmin ? 'admin' : 'kho',
+        })
+      }
     }
   }
 
@@ -9862,6 +10031,10 @@ export default function App() {
   const [overdueLoading, setOverdueLoading] = useState(false)
   const [slowMovingNew, setSlowMovingNew] = useState<any[]>([])  // SP vừa thành bán chậm trong 3 ngày qua (cho notif)
   const [errorReports, setErrorReports] = useState<any[]>([])   // Báo cáo lỗi sai
+  // v126: Cross-module notification data
+  const [ghtkOrdersNotif, setGhtkOrdersNotif] = useState<any[]>([]) // Đơn GHTK pending (tất cả buckets trừ delivered)
+  const [todaySchedule, setTodaySchedule] = useState<any[]>([])    // Lịch trực warehouse hôm nay
+  const [todayAttendance, setTodayAttendance] = useState<any[]>([]) // Chấm công hôm nay
 
   const fetchOverdueOrders = async (threshold = 7, forceRefresh = false) => {
     setOverdueLoading(true)
@@ -10122,6 +10295,35 @@ export default function App() {
           .then(({ data }: any) => { if (data) setErrorReports(data) })
           .catch(() => {})
       }
+
+      // v126: Fetch đơn GHTK pending (để build notification + cross-check)
+      if (perm.ghtkFillCustomer || perm.ghtkWeight || perm.ghtkPrintLabel || perm.ghtkSettings) {
+        const sevenDaysAgo = new Date(Date.now() - 7*86400000).toISOString()
+        db.from('packing_workflow')
+          .select('order_code, customer_name, description_kv, ghtk_customer_info, ghtk_boxes, ghtk_labels, ghtk_created_at, ghtk_printed_at, dropship_printed_at, dropship_carrier, dropship_code, purchase_date, status')
+          .or('ghtk_labels.not.is.null,description_kv.ilike.%ghtk%,description_kv.ilike.%vtp%,description_kv.ilike.%viettel%')
+          .gte('purchase_date', sevenDaysAgo)
+          .order('purchase_date', { ascending: false })
+          .limit(500)
+          .then(({ data }: any) => { if (data) setGhtkOrdersNotif(data) })
+          .catch(() => {})
+      }
+
+      // v126: Fetch lịch trực hôm nay (Warehouse Schedule) + chấm công hôm nay
+      // Dùng cho cross-check "QM chưa chấm công cho NV có lịch trực"
+      const todayLocal = new Date()
+      const todayYmd = `${todayLocal.getFullYear()}-${String(todayLocal.getMonth()+1).padStart(2,'0')}-${String(todayLocal.getDate()).padStart(2,'0')}`
+      db.from('warehouse_schedule')
+        .select('*')
+        .eq('date', todayYmd)
+        .then(({ data }: any) => { if (data) setTodaySchedule(data) })
+        .catch(() => {})
+
+      db.from('attendance')
+        .select('user_id,date,status')
+        .eq('date', todayYmd)
+        .then(({ data }: any) => { if (data) setTodayAttendance(data) })
+        .catch(() => {})
       // Fetch return slips for notifications (last 30 days)
       const thirtyAgo = new Date(Date.now()-30*86400000).toISOString().split('T')[0]
       db.from('return_items').select('id,slip_id,sale_id,created_at,created_by,date')
@@ -10223,7 +10425,8 @@ export default function App() {
   const userWithReports = { ...user, _errorReports: errorReports }
   const { groups: notifGroups, totalUnread: notifUnread, totalItems: notifTotal } = useNotifications({
     user: userWithReports, wrongOrders, returnSlips, shortageItems: shortageNoti, batches,
-    paymentOrders, overdueOrders, slowMovingNew, reads: notificationReads, settings
+    paymentOrders, overdueOrders, slowMovingNew, reads: notificationReads, settings,
+    ghtkOrders: ghtkOrdersNotif, todaySchedule, todayAttendance, allUsers
   })
 
   return (
@@ -29069,6 +29272,63 @@ function InventorySyncModule({ user, allUsers, mobile }: any) {
 
 
 // ══════════════════════════════════════════════════════════════════════
+// v126: Shared helpers cho GHTK — dùng chung giữa GhtkModule + useNotifications
+// ══════════════════════════════════════════════════════════════════════
+function parseShipIntentGlobal(note: string): {
+  type: 'ghtk_create'|'ghtk_dropship'|'vtp_dropship'|'ambiguous'|'none',
+  code?: string,
+  tel?: string,
+} {
+  if (!note) return { type: 'none' }
+  const hasGhtk = /\bghtk\b/i.test(note)
+  const hasVtp  = /\b(vtp|viettel\s*post|viettelpost|viettel)\b/i.test(note)
+  if (!hasGhtk && !hasVtp) return { type: 'none' }
+
+  const ghtkDropMatch = note.match(/(?:^|\D)(1\d{9})(?:\D|$)/)
+  const telMatch = note.match(/(?:^|\D)(0\d{9,10})(?:\D|$)/)
+  const vtpMatch = note.match(/(?:^|\D)([1-9]\d{10,14})(?:\D|$)/)
+
+  if (hasVtp) {
+    if (vtpMatch) return { type: 'vtp_dropship', code: vtpMatch[1] }
+    return { type: 'ambiguous' }
+  }
+  if (hasGhtk) {
+    if (ghtkDropMatch) return { type: 'ghtk_dropship', code: ghtkDropMatch[1] }
+    if (telMatch) return { type: 'ghtk_create', tel: telMatch[1] }
+    return { type: 'ambiguous' }
+  }
+  return { type: 'ambiguous' }
+}
+
+// v126: Categorize 1 order GHTK giống GhtkModule — dùng cho notification + stats
+function categorizeGhtkOrder(o: any): {
+  bucket: 'pending_info'|'pending_choose'|'dropship_ghtk'|'dropship_vtp'|'pending_weight'|'ready'|'created'|'delivered'|'skip',
+  intent?: any,
+} {
+  const hasInfo = !!(o.ghtk_customer_info?.name && o.ghtk_customer_info?.tel)
+  const boxes = o.ghtk_boxes || []
+  const labels = o.ghtk_labels || []
+  const hasCreatedLabels = labels.length > 0
+
+  if (hasCreatedLabels) {
+    const allDone = labels.every((l: any) =>
+      l.status === '5' || l.status === '6' || l.status === '-1' || l.status === 5 || l.status === 6)
+    return { bucket: allDone ? 'delivered' : 'created' }
+  }
+  if (!hasInfo) {
+    if (o.dropship_printed_at) return { bucket: 'skip' }
+    const intent = parseShipIntentGlobal(o.description_kv || '')
+    if (intent.type === 'ghtk_dropship') return { bucket: 'dropship_ghtk', intent }
+    if (intent.type === 'vtp_dropship')  return { bucket: 'dropship_vtp', intent }
+    if (intent.type === 'ambiguous')     return { bucket: 'pending_choose', intent }
+    return { bucket: 'pending_info', intent }
+  }
+  if (boxes.length === 0) return { bucket: 'pending_weight' }
+  return { bucket: 'ready' }
+}
+
+
+// ══════════════════════════════════════════════════════════════════════
 // ══ GHTK MODULE — Giao Hàng Tiết Kiệm integration (Phase 1 skeleton) ═
 // ══════════════════════════════════════════════════════════════════════
 function GhtkModule({ user, allUsers, mobile }: any) {
@@ -29076,7 +29336,7 @@ function GhtkModule({ user, allUsers, mobile }: any) {
   const perm = getPerm(user)
 
   // Tabs mặc định theo quyền: Sale vào Chờ điền, Kho vào Chờ cân
-  const [tab, setTab] = useState<'pending_info'|'pending_choose'|'pending_weight'|'ready'|'created'|'delivered'|'dropship'|'settings'>(
+  const [tab, setTab] = useState<'pending_info'|'pending_choose'|'pending_weight'|'ready'|'created'|'delivered'|'dropship'|'busship'|'settings'>(
     perm.ghtkFillCustomer && !perm.ghtkWeight ? 'pending_info' : 'pending_weight'
   )
 
@@ -29131,34 +29391,7 @@ function GhtkModule({ user, allUsers, mobile }: any) {
 
   // Categorize orders theo tab
   // v125: Parse ghi chú đơn KV để detect intent dropship
-  const parseShipIntent = (note: string): {
-    type: 'ghtk_create'|'ghtk_dropship'|'vtp_dropship'|'ambiguous'|'none',
-    code?: string,
-    tel?: string,
-  } => {
-    if (!note) return { type: 'none' }
-    const hasGhtk = /\bghtk\b/i.test(note)
-    const hasVtp  = /\b(vtp|viettel\s*post|viettelpost|viettel)\b/i.test(note)
-    if (!hasGhtk && !hasVtp) return { type: 'none' }
-
-    // Mã GHTK dropship: 10 số bắt đầu bằng 1 (VD: 1987997655)
-    const ghtkDropMatch = note.match(/(?:^|\D)(1\d{9})(?:\D|$)/)
-    // SĐT VN: 10-11 số bắt đầu 0
-    const telMatch = note.match(/(?:^|\D)(0\d{9,10})(?:\D|$)/)
-    // Mã VTP: 11-15 số (không bắt đầu 0)
-    const vtpMatch = note.match(/(?:^|\D)([1-9]\d{10,14})(?:\D|$)/)
-
-    if (hasVtp) {
-      if (vtpMatch) return { type: 'vtp_dropship', code: vtpMatch[1] }
-      return { type: 'ambiguous' }
-    }
-    if (hasGhtk) {
-      if (ghtkDropMatch) return { type: 'ghtk_dropship', code: ghtkDropMatch[1] }
-      if (telMatch) return { type: 'ghtk_create', tel: telMatch[1] }
-      return { type: 'ambiguous' }
-    }
-    return { type: 'ambiguous' }
-  }
+  const parseShipIntent = parseShipIntentGlobal
 
   const categorized = useMemo(() => {
     const result = {
@@ -29210,7 +29443,7 @@ function GhtkModule({ user, allUsers, mobile }: any) {
   }, [orders])
 
   const filtered = useMemo(() => {
-    if (tab === 'settings' || tab === 'dropship') return []
+    if (tab === 'settings' || tab === 'dropship' || tab === 'busship') return []
     let list = (categorized as any)[tab] || []
     if (searchQ.trim()) {
       const tokens = norm2(searchQ).split(/\s+/).filter(Boolean)
@@ -29230,6 +29463,7 @@ function GhtkModule({ user, allUsers, mobile }: any) {
     { id:'created',        label:'🖨 Đã tạo đơn',      count: categorized.created.length,        show: true },
     { id:'delivered',      label:'📦 Đã giao',         count: categorized.delivered.length,      show: true },
     { id:'dropship',       label:'🏷 In mã dropship',  count: categorized.dropship_ghtk.length + categorized.dropship_vtp.length, show: perm.ghtkPrintLabel || perm.ghtkSettings },
+    { id:'busship',        label:'📄 In thông tin đơn', count: 0,                                  show: perm.ghtkPrintLabel || perm.ghtkSettings },
     { id:'settings',       label:'⚙️ Cấu hình',        count: 0,                                  show: perm.ghtkSettings },
   ].filter(t => t.show)
 
@@ -29280,6 +29514,8 @@ function GhtkModule({ user, allUsers, mobile }: any) {
           dropshipGhtk={categorized.dropship_ghtk}
           dropshipVtp={categorized.dropship_vtp}
           onRefresh={fetchOrders}/>
+      ) : tab === 'busship' ? (
+        <GhtkBusShipPrintPanel user={user} mobile={mobile}/>
       ) : (
         <>
           {/* Search */}
@@ -30424,6 +30660,614 @@ function renderCode128Svg(text: string, widthPx: number, heightPx: number): stri
   return svg
 }
 
+// ══════════════════════════════════════════════════════════════════════
+// v127: Shared Print Adjustment — dùng chung cho in dropship + bus ship
+// ══════════════════════════════════════════════════════════════════════
+interface PrintAdjust {
+  margin_top_mm:    number
+  margin_right_mm:  number
+  margin_bottom_mm: number
+  margin_left_mm:   number
+  offset_x_mm:      number
+  offset_y_mm:      number
+  scale_pct:        number
+  font_size_pct:    number  // nhân với font-size gốc
+  line_height:      number  // 1.0 - 2.0
+}
+
+const DEFAULT_ADJUST: PrintAdjust = {
+  margin_top_mm: 2, margin_right_mm: 2, margin_bottom_mm: 2, margin_left_mm: 2,
+  offset_x_mm: 0, offset_y_mm: 0, scale_pct: 100, font_size_pct: 100, line_height: 1.3,
+}
+
+function usePrintAdjust(storageKey: string): [PrintAdjust, (a: PrintAdjust) => void, () => void] {
+  const [adjust, setAdjust] = useState<PrintAdjust>(() => {
+    try {
+      const raw = localStorage.getItem(storageKey)
+      if (raw) return { ...DEFAULT_ADJUST, ...JSON.parse(raw) }
+    } catch {}
+    return DEFAULT_ADJUST
+  })
+
+  const saveAdjust = (a: PrintAdjust) => {
+    setAdjust(a)
+    try { localStorage.setItem(storageKey, JSON.stringify(a)) } catch {}
+  }
+
+  const resetAdjust = () => {
+    setAdjust(DEFAULT_ADJUST)
+    try { localStorage.removeItem(storageKey) } catch {}
+  }
+
+  return [adjust, saveAdjust, resetAdjust]
+}
+
+// Build CSS @page + transform từ adjust config (dùng trong print window)
+function buildPrintCss(adjust: PrintAdjust, pageSize: string): string {
+  return `
+    @page {
+      size: ${pageSize};
+      margin: ${adjust.margin_top_mm}mm ${adjust.margin_right_mm}mm ${adjust.margin_bottom_mm}mm ${adjust.margin_left_mm}mm;
+    }
+    body {
+      margin: 0; padding: 0;
+      font-family: Arial, sans-serif;
+      font-size: ${adjust.font_size_pct}%;
+      line-height: ${adjust.line_height};
+    }
+    .print-content {
+      transform: translate(${adjust.offset_x_mm}mm, ${adjust.offset_y_mm}mm) scale(${adjust.scale_pct / 100});
+      transform-origin: top left;
+      width: 100%;
+      box-sizing: border-box;
+    }
+    @media print {
+      body { margin: 0; }
+    }
+  `
+}
+
+function PrintAdjustPanel({ adjust, onChange, onReset, mobile }: any) {
+  const [expanded, setExpanded] = useState(false)
+  const row = (label: string, key: keyof PrintAdjust, min: number, max: number, step: number, unit: string) => (
+    <div style={{ display:'flex', gap:8, alignItems:'center', marginBottom:6 }}>
+      <label style={{ fontSize:11, color:T.med, minWidth: mobile ? 90 : 110, fontWeight:600 }}>
+        {label}
+      </label>
+      <input type="range" min={min} max={max} step={step}
+        value={adjust[key] as number}
+        onChange={e => onChange({ ...adjust, [key]: parseFloat(e.target.value) })}
+        style={{ flex:1 }}/>
+      <input type="number" min={min} max={max} step={step}
+        value={adjust[key] as number}
+        onChange={e => onChange({ ...adjust, [key]: parseFloat(e.target.value) || 0 })}
+        style={{ width:60, padding:'4px 6px', border:`1px solid ${T.border}`, borderRadius:4,
+          fontSize:11, textAlign:'right', boxSizing:'border-box' as any }}/>
+      <span style={{ fontSize:10, color:T.light, minWidth:22 }}>{unit}</span>
+    </div>
+  )
+
+  return (
+    <div style={{ padding:10, background:T.bg, borderRadius:8, border:`1px solid ${T.border}`,
+      marginBottom:14 }}>
+      <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center',
+        cursor:'pointer' }}
+        onClick={() => setExpanded(!expanded)}>
+        <div style={{ fontSize:12, fontWeight:700, color:T.dark }}>
+          ⚙️ Căn chỉnh bản in {expanded ? '▼' : '▶'}
+        </div>
+        <div style={{ fontSize:10, color:T.light }}>
+          Margin: {adjust.margin_top_mm}/{adjust.margin_left_mm}mm · Scale: {adjust.scale_pct}% · Font: {adjust.font_size_pct}%
+        </div>
+      </div>
+      {expanded && (
+        <div style={{ marginTop:10, paddingTop:10, borderTop:`1px solid ${T.border}` }}>
+          <div style={{ fontSize:10, color:T.med, marginBottom:8, fontWeight:600 }}>📏 Lề trang (mm)</div>
+          {row('Lề trên',  'margin_top_mm',    0, 20, 0.5, 'mm')}
+          {row('Lề phải',  'margin_right_mm',  0, 20, 0.5, 'mm')}
+          {row('Lề dưới',  'margin_bottom_mm', 0, 20, 0.5, 'mm')}
+          {row('Lề trái',  'margin_left_mm',   0, 20, 0.5, 'mm')}
+
+          <div style={{ fontSize:10, color:T.med, marginBottom:8, marginTop:10, fontWeight:600 }}>🎯 Dịch chuyển + Tỷ lệ</div>
+          {row('Offset X', 'offset_x_mm',      -20, 20, 0.5, 'mm')}
+          {row('Offset Y', 'offset_y_mm',      -20, 20, 0.5, 'mm')}
+          {row('Tỷ lệ',    'scale_pct',        50, 150, 1, '%')}
+
+          <div style={{ fontSize:10, color:T.med, marginBottom:8, marginTop:10, fontWeight:600 }}>🔤 Font</div>
+          {row('Kích thước', 'font_size_pct',  50, 200, 5, '%')}
+          {row('Cao dòng',   'line_height',    1.0, 2.0, 0.05, '×')}
+
+          <div style={{ display:'flex', gap:8, marginTop:12 }}>
+            <button onClick={onReset}
+              style={{ padding:'6px 14px', borderRadius:14, cursor:'pointer',
+                border:`1px solid ${T.red}`, background:'#fff', color:T.red,
+                fontSize:11, fontFamily:'inherit' }}>
+              🔄 Đặt lại mặc định
+            </button>
+            <div style={{ fontSize:10, color:T.light, alignSelf:'center', flex:1 }}>
+              💡 Thay đổi sẽ tự lưu vào máy tính này (localStorage)
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  )
+}
+
+// Templates hãng xe mặc định
+const DEFAULT_BUS_TEMPLATES = [
+  { id: 'generic', name: 'Xe khách (chung)', note: '' },
+  { id: 'phuongtrang', name: 'Phương Trang', note: 'Giao tại bến xe' },
+  { id: 'sbus', name: 'S-Bus', note: 'Giao tại văn phòng S-Bus' },
+  { id: 'hoanglong', name: 'Hoàng Long', note: 'Giao tại bến xe Hoàng Long' },
+  { id: 'camping', name: 'Camping', note: 'Giao tại văn phòng Camping' },
+]
+
+
+// ══════════════════════════════════════════════════════════════════════
+// v127: GHTK Bus Ship Print Panel — In thông tin đơn gửi xe khách
+// ══════════════════════════════════════════════════════════════════════
+function GhtkBusShipPrintPanel({ user, mobile }: any) {
+  const [paperSize, setPaperSize] = useState<'A6'|'A7'>('A6')
+  const [adjust, setAdjust, resetAdjust] = usePrintAdjust(`la_print_adjust_busship_${paperSize}`)
+
+  // Form người gửi (load từ localStorage)
+  const [sender, setSender] = useState(() => {
+    try {
+      const raw = localStorage.getItem('la_print_sender')
+      if (raw) return JSON.parse(raw)
+    } catch {}
+    return {
+      name: 'LA Global Beauty',
+      tel: '',
+      address: '',
+    }
+  })
+
+  // Form người nhận
+  const [receiver, setReceiver] = useState({
+    name: '', tel: '', address: '',
+  })
+
+  // Đơn + ghi chú
+  const [orderCode, setOrderCode] = useState('')
+  const [boxCount, setBoxCount] = useState('1')
+  const [busNote, setBusNote] = useState('')
+  const [templateId, setTemplateId] = useState<string>('generic')
+
+  // Templates (có thể custom)
+  const [templates, setTemplates] = useState(() => {
+    try {
+      const raw = localStorage.getItem('la_bus_templates')
+      if (raw) return JSON.parse(raw)
+    } catch {}
+    return DEFAULT_BUS_TEMPLATES
+  })
+
+  // Print history
+  const [history, setHistory] = useState<string[]>(() => {
+    try {
+      const raw = localStorage.getItem('la_busship_history')
+      if (raw) return JSON.parse(raw)
+    } catch {}
+    return []
+  })
+
+  // Save sender khi thay đổi
+  useEffect(() => {
+    try { localStorage.setItem('la_print_sender', JSON.stringify(sender)) } catch {}
+  }, [sender])
+
+  useEffect(() => {
+    try { localStorage.setItem('la_bus_templates', JSON.stringify(templates)) } catch {}
+  }, [templates])
+
+  // Khi đổi template, auto-fill note
+  useEffect(() => {
+    const tpl = templates.find((t: any) => t.id === templateId)
+    if (tpl && tpl.note) setBusNote(tpl.note)
+  }, [templateId])
+
+  const fieldStyle: any = {
+    width:'100%', padding:'8px 12px', border:`1px solid ${T.border}`, borderRadius:6,
+    fontSize:12, fontFamily:'inherit', color:T.dark, background:'#fff', outline:'none',
+    boxSizing:'border-box',
+  }
+  const labelStyle: any = { display:'block', fontSize:11, color:T.med, marginBottom:4, fontWeight:600 }
+
+  const valid = sender.name && sender.tel && receiver.name && receiver.tel && receiver.address
+
+  // Build HTML bản in
+  const buildPrintHtml = (): string => {
+    const pageSize = paperSize === 'A6' ? 'A6' : 'A7'
+    const tpl = templates.find((t: any) => t.id === templateId)
+    const tplName = tpl?.name || ''
+    const scaleBadgeFont = paperSize === 'A6' ? 11 : 9
+    const titleFont = paperSize === 'A6' ? 14 : 11
+    const bodyFont = paperSize === 'A6' ? 12 : 10
+
+    return `<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>${orderCode || 'Thông tin đơn hàng'} — ${tplName}</title>
+<style>
+  ${buildPrintCss(adjust, pageSize)}
+  .print-content {
+    font-family: Arial, sans-serif;
+    color: #000;
+    padding: 2mm;
+  }
+  .header {
+    text-align: center;
+    font-size: ${titleFont}pt;
+    font-weight: 900;
+    margin-bottom: 3mm;
+    border-bottom: 2px solid #000;
+    padding-bottom: 2mm;
+  }
+  .section {
+    margin-bottom: 3mm;
+    padding: 2mm;
+    border: 1.5px solid #000;
+    border-radius: 2mm;
+  }
+  .section-label {
+    font-size: ${scaleBadgeFont}pt;
+    font-weight: bold;
+    background: #000;
+    color: #fff;
+    padding: 1mm 2mm;
+    border-radius: 1mm;
+    display: inline-block;
+    margin-bottom: 1.5mm;
+    letter-spacing: 0.5mm;
+  }
+  .line {
+    font-size: ${bodyFont}pt;
+    margin: 0.8mm 0;
+    word-wrap: break-word;
+  }
+  .line b { font-weight: 800; }
+  .footer {
+    margin-top: 3mm;
+    padding-top: 2mm;
+    border-top: 1px dashed #000;
+    text-align: center;
+    font-size: ${scaleBadgeFont}pt;
+  }
+  .bus-badge {
+    display: inline-block;
+    background: #000;
+    color: #fff;
+    padding: 1mm 3mm;
+    border-radius: 1mm;
+    font-size: ${titleFont}pt;
+    font-weight: 900;
+    letter-spacing: 0.5mm;
+  }
+</style>
+</head>
+<body>
+<div class="print-content">
+  <div class="header">
+    ${tplName ? `<span class="bus-badge">${tplName.toUpperCase()}</span>` : ''}
+    ${orderCode ? `<div style="font-size: ${bodyFont}pt; margin-top: 2mm; font-weight: 700;">Mã đơn: ${orderCode}</div>` : ''}
+  </div>
+
+  <div class="section">
+    <div class="section-label">📤 NGƯỜI GỬI</div>
+    <div class="line"><b>${sender.name}</b></div>
+    ${sender.tel     ? `<div class="line">📞 ${sender.tel}</div>` : ''}
+    ${sender.address ? `<div class="line">📍 ${sender.address}</div>` : ''}
+  </div>
+
+  <div class="section">
+    <div class="section-label">📥 NGƯỜI NHẬN</div>
+    <div class="line"><b>${receiver.name}</b></div>
+    <div class="line">📞 <b>${receiver.tel}</b></div>
+    <div class="line">📍 ${receiver.address}</div>
+  </div>
+
+  ${Number(boxCount) > 0 || busNote ? `
+  <div class="footer">
+    ${Number(boxCount) > 0 ? `<div>📦 Số thùng: <b>${boxCount}</b></div>` : ''}
+    ${busNote ? `<div>💬 ${busNote}</div>` : ''}
+  </div>
+  ` : ''}
+</div>
+<script>
+  window.onload = function() {
+    setTimeout(function() {
+      window.print();
+      setTimeout(function() { window.close(); }, 500);
+    }, 200);
+  };
+</script>
+</body>
+</html>`
+  }
+
+  const handlePrint = () => {
+    if (!valid) { alert('❌ Vui lòng điền đủ: Người gửi (tên + SĐT) và Người nhận (tên + SĐT + địa chỉ)'); return }
+    const html = buildPrintHtml()
+    const w = window.open('', '_blank', 'width=600,height=500')
+    if (!w) { alert('❌ Trình duyệt chặn popup. Hãy cho phép popup.'); return }
+    w.document.write(html)
+    w.document.close()
+
+    // Lưu history (10 gần nhất)
+    if (orderCode || receiver.name) {
+      const entry = `${new Date().toLocaleString('vi-VN')} · ${orderCode || '—'} · ${receiver.name} · ${receiver.tel}`
+      const updated = [entry, ...history].slice(0, 10)
+      setHistory(updated)
+      try { localStorage.setItem('la_busship_history', JSON.stringify(updated)) } catch {}
+    }
+  }
+
+  const clearForm = () => {
+    if (!confirm('Xóa toàn bộ thông tin người nhận?')) return
+    setReceiver({ name: '', tel: '', address: '' })
+    setOrderCode('')
+    setBoxCount('1')
+    setBusNote('')
+  }
+
+  const gr2 = { display:'grid', gridTemplateColumns: mobile ? '1fr' : '1fr 1fr', gap:12 } as any
+
+  return (
+    <>
+      <Card style={{ padding:mobile?14:20, marginBottom:16 }}>
+        <div style={{ fontSize:14, fontWeight:700, color:T.dark, marginBottom:12,
+          paddingBottom:10, borderBottom:`1px solid ${T.border}` }}>
+          📄 In thông tin đơn (xe khách / đường bộ)
+        </div>
+
+        {/* Chọn khổ giấy */}
+        <div style={{ marginBottom:14 }}>
+          <label style={labelStyle}>Khổ giấy</label>
+          <div style={{ display:'flex', gap:8 }}>
+            <button onClick={() => setPaperSize('A6')}
+              style={{ flex:1, padding:'10px 0', borderRadius:8, cursor:'pointer',
+                fontFamily:'inherit', fontSize:13, fontWeight:700,
+                border:`2px solid ${paperSize==='A6' ? T.blue : T.border}`,
+                background: paperSize==='A6' ? T.blueBg : '#fff',
+                color: paperSize==='A6' ? T.blue : T.med }}>
+              📄 A6 (105×148mm — to)
+            </button>
+            <button onClick={() => setPaperSize('A7')}
+              style={{ flex:1, padding:'10px 0', borderRadius:8, cursor:'pointer',
+                fontFamily:'inherit', fontSize:13, fontWeight:700,
+                border:`2px solid ${paperSize==='A7' ? T.purple : T.border}`,
+                background: paperSize==='A7' ? T.purpleBg : '#fff',
+                color: paperSize==='A7' ? T.purple : T.med }}>
+              📃 A7 (74×105mm — nhỏ)
+            </button>
+          </div>
+        </div>
+
+        {/* Template hãng xe */}
+        <div style={{ marginBottom:14 }}>
+          <label style={labelStyle}>Hãng xe / Template</label>
+          <div style={{ display:'flex', gap:6, flexWrap:'wrap' }}>
+            {templates.map((t: any) => (
+              <button key={t.id} onClick={() => setTemplateId(t.id)}
+                style={{ padding:'6px 12px', borderRadius:14, cursor:'pointer',
+                  fontFamily:'inherit', fontSize:11, fontWeight:600,
+                  border:`1.5px solid ${templateId===t.id ? T.gold : T.border}`,
+                  background: templateId===t.id ? T.goldBg : '#fff',
+                  color: templateId===t.id ? T.goldText : T.med }}>
+                {templateId===t.id ? '✓ ' : ''}{t.name}
+              </button>
+            ))}
+            <button onClick={() => {
+              const name = prompt('Tên hãng xe mới?')
+              if (!name) return
+              const note = prompt('Ghi chú mặc định? (bỏ trống nếu không có)') || ''
+              const newTpl = { id: `custom_${Date.now()}`, name, note }
+              setTemplates([...templates, newTpl])
+              setTemplateId(newTpl.id)
+            }}
+              style={{ padding:'6px 12px', borderRadius:14, cursor:'pointer',
+                fontFamily:'inherit', fontSize:11, fontWeight:600,
+                border:`1px dashed ${T.border}`,
+                background:'transparent', color:T.med }}>
+              + Thêm hãng
+            </button>
+            {templateId.startsWith('custom_') && (
+              <button onClick={() => {
+                if (!confirm('Xoá template này?')) return
+                setTemplates(templates.filter((t: any) => t.id !== templateId))
+                setTemplateId('generic')
+              }}
+                style={{ padding:'6px 12px', borderRadius:14, cursor:'pointer',
+                  fontFamily:'inherit', fontSize:11, fontWeight:600,
+                  border:`1px solid ${T.red}`, background:'#fff', color:T.red }}>
+                🗑 Xoá hãng này
+              </button>
+            )}
+          </div>
+        </div>
+
+        {/* Người gửi */}
+        <div style={{ marginBottom:14, padding:12, background:T.greenBg, borderRadius:8,
+          border:`1px solid ${T.green}33` }}>
+          <div style={{ fontSize:12, fontWeight:700, color:T.green, marginBottom:8 }}>
+            📤 Người gửi (lưu tự động vào máy)
+          </div>
+          <div style={{ marginBottom:10 }}>
+            <label style={labelStyle}>Tên công ty / Shop *</label>
+            <input value={sender.name} onChange={e => setSender((s: any) => ({...s, name:e.target.value}))}
+              placeholder="LA Global Beauty" style={fieldStyle}/>
+          </div>
+          <div style={gr2}>
+            <div>
+              <label style={labelStyle}>SĐT *</label>
+              <input value={sender.tel} onChange={e => setSender((s: any) => ({...s, tel:e.target.value}))}
+                placeholder="0xxxxxxxxx" style={fieldStyle}/>
+            </div>
+            <div>
+              <label style={labelStyle}>Địa chỉ</label>
+              <input value={sender.address} onChange={e => setSender((s: any) => ({...s, address:e.target.value}))}
+                placeholder="55 Lộc Vừng Quán, Cầu Giấy..." style={fieldStyle}/>
+            </div>
+          </div>
+        </div>
+
+        {/* Người nhận */}
+        <div style={{ marginBottom:14, padding:12, background:T.blueBg, borderRadius:8,
+          border:`1px solid ${T.blue}33` }}>
+          <div style={{ fontSize:12, fontWeight:700, color:T.blue, marginBottom:8,
+            display:'flex', justifyContent:'space-between', alignItems:'center' }}>
+            <span>📥 Người nhận *</span>
+            <button onClick={clearForm}
+              style={{ padding:'3px 10px', borderRadius:12, cursor:'pointer',
+                border:`1px solid ${T.red}`, background:'#fff', color:T.red,
+                fontFamily:'inherit', fontSize:10 }}>
+              🧹 Xoá form
+            </button>
+          </div>
+          <div style={gr2}>
+            <div>
+              <label style={labelStyle}>Tên người nhận *</label>
+              <input value={receiver.name} onChange={e => setReceiver((r: any) => ({...r, name:e.target.value}))}
+                placeholder="Nguyễn Văn A" style={fieldStyle}/>
+            </div>
+            <div>
+              <label style={labelStyle}>SĐT *</label>
+              <input value={receiver.tel} onChange={e => setReceiver((r: any) => ({...r, tel:e.target.value}))}
+                placeholder="0xxxxxxxxx" style={fieldStyle}/>
+            </div>
+          </div>
+          <div style={{ marginTop:10 }}>
+            <label style={labelStyle}>Địa chỉ *</label>
+            <textarea value={receiver.address}
+              onChange={e => setReceiver((r: any) => ({...r, address:e.target.value}))}
+              placeholder="Số nhà, đường, phường, quận, tỉnh..."
+              rows={2}
+              style={{ ...fieldStyle, resize:'vertical' }}/>
+          </div>
+        </div>
+
+        {/* Meta đơn */}
+        <div style={gr2}>
+          <div>
+            <label style={labelStyle}>Mã đơn (tuỳ chọn)</label>
+            <input value={orderCode} onChange={e => setOrderCode(e.target.value.toUpperCase())}
+              placeholder="VD: DH00123" style={fieldStyle}/>
+          </div>
+          <div>
+            <label style={labelStyle}>Số thùng</label>
+            <input type="number" min="1" value={boxCount}
+              onChange={e => setBoxCount(e.target.value)}
+              style={fieldStyle}/>
+          </div>
+        </div>
+        <div style={{ marginTop:12, marginBottom:14 }}>
+          <label style={labelStyle}>Ghi chú thêm (tuỳ chọn)</label>
+          <input value={busNote} onChange={e => setBusNote(e.target.value)}
+            placeholder="VD: Hàng dễ vỡ, gọi trước khi giao..."
+            maxLength={200} style={fieldStyle}/>
+        </div>
+
+        {/* Print Adjustment */}
+        <PrintAdjustPanel adjust={adjust} onChange={setAdjust} onReset={resetAdjust} mobile={mobile}/>
+
+        {/* Preview */}
+        <div style={{ padding:14, background:T.bg, borderRadius:8, marginBottom:14,
+          border:`1px dashed ${T.border}` }}>
+          <div style={{ fontSize:10, color:T.light, marginBottom:10, fontWeight:600,
+            textTransform:'uppercase', letterSpacing:1, textAlign:'center' }}>
+            🔍 Preview bản in
+          </div>
+          <div style={{ background:'#fff', padding:'12px 16px', borderRadius:4,
+            border:`1px solid ${T.border}`, maxWidth: paperSize === 'A6' ? 400 : 280, margin:'0 auto',
+            fontFamily:'Arial, sans-serif', color:'#000',
+            fontSize: paperSize === 'A6' ? 12 : 10,
+            lineHeight: adjust.line_height }}>
+            <div style={{ textAlign:'center', fontWeight:900,
+              fontSize: paperSize === 'A6' ? 15 : 11,
+              borderBottom:'2px solid #000', paddingBottom:6, marginBottom:8 }}>
+              {templates.find((t: any) => t.id === templateId) && (
+                <span style={{ background:'#000', color:'#fff', padding:'2px 10px',
+                  borderRadius:3, letterSpacing:1 }}>
+                  {(templates.find((t: any) => t.id === templateId)?.name || '').toUpperCase()}
+                </span>
+              )}
+              {orderCode && <div style={{ marginTop:5, fontSize: paperSize==='A6'?12:9 }}>Mã đơn: {orderCode}</div>}
+            </div>
+            <div style={{ border:'1.5px solid #000', borderRadius:4, padding:8, marginBottom:8 }}>
+              <div style={{ background:'#000', color:'#fff', padding:'2px 6px',
+                borderRadius:2, display:'inline-block', fontSize: paperSize==='A6'?10:8,
+                fontWeight:700, marginBottom:4, letterSpacing:0.8 }}>
+                📤 NGƯỜI GỬI
+              </div>
+              <div style={{ fontWeight:800 }}>{sender.name || '(chưa điền)'}</div>
+              {sender.tel && <div>📞 {sender.tel}</div>}
+              {sender.address && <div>📍 {sender.address}</div>}
+            </div>
+            <div style={{ border:'1.5px solid #000', borderRadius:4, padding:8, marginBottom:8 }}>
+              <div style={{ background:'#000', color:'#fff', padding:'2px 6px',
+                borderRadius:2, display:'inline-block', fontSize: paperSize==='A6'?10:8,
+                fontWeight:700, marginBottom:4, letterSpacing:0.8 }}>
+                📥 NGƯỜI NHẬN
+              </div>
+              <div style={{ fontWeight:800 }}>{receiver.name || '(chưa điền)'}</div>
+              <div>📞 <b>{receiver.tel || '(chưa điền)'}</b></div>
+              <div>📍 {receiver.address || '(chưa điền)'}</div>
+            </div>
+            {(Number(boxCount) > 0 || busNote) && (
+              <div style={{ borderTop:'1px dashed #000', paddingTop:6, textAlign:'center',
+                fontSize: paperSize==='A6'?10:8 }}>
+                {Number(boxCount) > 0 && <div>📦 Số thùng: <b>{boxCount}</b></div>}
+                {busNote && <div>💬 {busNote}</div>}
+              </div>
+            )}
+          </div>
+        </div>
+
+        {/* Action */}
+        <button onClick={handlePrint} disabled={!valid}
+          style={{ width:'100%', padding:'14px', borderRadius:8, cursor: valid?'pointer':'default',
+            border:'none', background: valid ? T.blue : T.border,
+            color: valid ? '#fff' : T.light,
+            fontFamily:'inherit', fontSize:15, fontWeight:700 }}>
+          🖨 In thông tin đơn ({paperSize})
+        </button>
+      </Card>
+
+      {/* Lịch sử in */}
+      {history.length > 0 && (
+        <Card style={{ padding:mobile?14:20 }}>
+          <div style={{ fontSize:13, fontWeight:700, color:T.dark, marginBottom:10,
+            paddingBottom:8, borderBottom:`1px solid ${T.border}`, display:'flex',
+            justifyContent:'space-between', alignItems:'center' }}>
+            <span>📋 Lịch sử in gần đây (tối đa 10)</span>
+            <button onClick={() => {
+              if (!confirm('Xoá lịch sử in?')) return
+              setHistory([])
+              try { localStorage.removeItem('la_busship_history') } catch {}
+            }}
+              style={{ padding:'3px 10px', borderRadius:12, border:`1px solid ${T.border}`,
+                background:'transparent', cursor:'pointer', fontFamily:'inherit', fontSize:10, color:T.med }}>
+              🧹 Xoá
+            </button>
+          </div>
+          <div style={{ display:'flex', flexDirection:'column', gap:4 }}>
+            {history.map((h, i) => (
+              <div key={i} style={{ fontSize:11, color:T.dark, padding:'6px 10px',
+                borderRadius:4, background:T.bg }}>
+                {h}
+              </div>
+            ))}
+          </div>
+        </Card>
+      )}
+    </>
+  )
+}
+
+
 function GhtkDropshipPrintPanel({ user, mobile, dropshipGhtk, dropshipVtp, onRefresh }: any) {
   const [carrier, setCarrier] = useState<'ghtk'|'viettel_post'>('ghtk')
   const [code, setCode] = useState('')
@@ -30433,6 +31277,8 @@ function GhtkDropshipPrintPanel({ user, mobile, dropshipGhtk, dropshipVtp, onRef
   const [printing, setPrinting] = useState(false)
   // v125: Đơn KV đang chọn để in (link mã với order_code)
   const [linkedOrderCode, setLinkedOrderCode] = useState<string>('')
+  // v127: Print adjustment theo carrier
+  const [adjust, setAdjust, resetAdjust] = usePrintAdjust(`la_print_adjust_dropship_${carrier}`)
 
   const pendingKvOrders = useMemo(() => {
     const list: any[] = [
@@ -30470,7 +31316,7 @@ function GhtkDropshipPrintPanel({ user, mobile, dropshipGhtk, dropshipVtp, onRef
       if (carrier === 'ghtk') {
         const svgInner = renderCode128Svg(cleaned, 400, 120)
         body = `
-          <div style="text-align:center; padding:20px;">
+          <div class="print-content" style="text-align:center; padding:20px;">
             <svg width="400" height="120" xmlns="http://www.w3.org/2000/svg" style="display:block; margin:0 auto;">
               ${svgInner}
             </svg>
@@ -30481,26 +31327,20 @@ function GhtkDropshipPrintPanel({ user, mobile, dropshipGhtk, dropshipVtp, onRef
       } else {
         // Viettel Post: text to giữa A7 (74mm × 105mm landscape)
         body = `
-          <div style="width:100%; height:100vh; display:flex; align-items:center; justify-content:center;
+          <div class="print-content" style="width:100%; height:100vh; display:flex; align-items:center; justify-content:center;
             font-family:'Arial Black',Arial,sans-serif; font-size:42px; font-weight:900; letter-spacing:3px;">
             ${cleaned}
           </div>
         `
       }
 
+      const pageSize = carrier === 'ghtk' ? '100mm 60mm' : 'A7 landscape'
       printWindow.document.write(`<!DOCTYPE html>
 <html>
 <head>
 <title>In mã ${carrier === 'ghtk' ? 'GHTK' : 'Viettel Post'} ${cleaned}</title>
 <style>
-  @page {
-    size: ${carrier === 'ghtk' ? '100mm 60mm' : 'A7 landscape'};
-    margin: ${carrier === 'ghtk' ? '4mm' : '2mm'};
-  }
-  body { margin:0; padding:0; font-family:Arial,sans-serif; }
-  @media print {
-    body { margin:0; }
-  }
+  ${buildPrintCss(adjust, pageSize)}
 </style>
 </head>
 <body>
@@ -30712,6 +31552,9 @@ ${body}
               borderRadius:6, fontSize:12, fontFamily:'inherit', color:T.dark,
               background:'#fff', outline:'none', boxSizing:'border-box' as any }}/>
         </div>
+
+        {/* v127: Print Adjustment */}
+        <PrintAdjustPanel adjust={adjust} onChange={setAdjust} onReset={resetAdjust} mobile={mobile}/>
 
         {/* Preview */}
         {valid && (
