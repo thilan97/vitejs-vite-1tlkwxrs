@@ -30703,14 +30703,20 @@ function usePrintAdjust(storageKey: string): [PrintAdjust, (a: PrintAdjust) => v
 }
 
 // Build CSS @page + transform từ adjust config (dùng trong print window)
-function buildPrintCss(adjust: PrintAdjust, pageSize: string): string {
+function buildPrintCss(adjust: PrintAdjust, pageSize: string, centerContent = false): string {
   const hasOffset = adjust.offset_x_mm !== 0 || adjust.offset_y_mm !== 0
   const hasScale  = adjust.scale_pct !== 100
   const needsTransform = hasOffset || hasScale
 
   const transformStyle = needsTransform
-    ? `transform: translate(${adjust.offset_x_mm}mm, ${adjust.offset_y_mm}mm) scale(${adjust.scale_pct / 100}); transform-origin: top left;`
+    ? `transform: translate(${adjust.offset_x_mm}mm, ${adjust.offset_y_mm}mm) scale(${adjust.scale_pct / 100}); transform-origin: center center;`
     : ''
+
+  const bodyCenter = centerContent ? `
+    display: flex;
+    align-items: center;
+    justify-content: center;
+  ` : ''
 
   return `
     @page {
@@ -30722,15 +30728,16 @@ function buildPrintCss(adjust: PrintAdjust, pageSize: string): string {
       margin: 0 !important;
       padding: 0 !important;
       width: 100%;
+      height: 100%;
     }
     body {
       font-family: Arial, sans-serif;
       font-size: ${adjust.font_size_pct}%;
       line-height: ${adjust.line_height};
+      ${bodyCenter}
     }
     .print-content {
-      width: 100%;
-      max-width: 100%;
+      ${centerContent ? 'text-align: center; max-width: 100%;' : 'width: 100%; max-width: 100%;'}
       box-sizing: border-box;
       margin: 0;
       ${transformStyle}
@@ -30819,44 +30826,20 @@ const DEFAULT_BUS_TEMPLATES = [
 
 
 // ══════════════════════════════════════════════════════════════════════
-// v127: GHTK Bus Ship Print Panel — In thông tin đơn gửi xe khách
+// v127: GHTK Bus Ship Print Panel — In thông tin đơn (tối giản, 1 textarea)
 // ══════════════════════════════════════════════════════════════════════
 function GhtkBusShipPrintPanel({ user, mobile }: any) {
   const [paperSize, setPaperSize] = useState<'A6'|'A7'>('A6')
   const [orientation, setOrientation] = useState<'landscape'|'portrait'>('landscape')
   const [adjust, setAdjust, resetAdjust] = usePrintAdjust(`la_print_adjust_busship_${paperSize}_${orientation}`)
 
-  // Form người gửi (load từ localStorage)
-  const [sender, setSender] = useState(() => {
+  // Nội dung in — textarea duy nhất
+  const [content, setContent] = useState(() => {
     try {
-      const raw = localStorage.getItem('la_print_sender')
-      if (raw) return JSON.parse(raw)
+      const raw = localStorage.getItem('la_busship_last_content')
+      if (raw) return raw
     } catch {}
-    return {
-      name: 'LA Global Beauty',
-      tel: '',
-      address: '',
-    }
-  })
-
-  // Form người nhận
-  const [receiver, setReceiver] = useState({
-    name: '', tel: '', address: '',
-  })
-
-  // Đơn + ghi chú
-  const [orderCode, setOrderCode] = useState('')
-  const [boxCount, setBoxCount] = useState('1')
-  const [busNote, setBusNote] = useState('')
-  const [templateId, setTemplateId] = useState<string>('generic')
-
-  // Templates (có thể custom)
-  const [templates, setTemplates] = useState(() => {
-    try {
-      const raw = localStorage.getItem('la_bus_templates')
-      if (raw) return JSON.parse(raw)
-    } catch {}
-    return DEFAULT_BUS_TEMPLATES
+    return ''
   })
 
   // Print history
@@ -30868,21 +30851,6 @@ function GhtkBusShipPrintPanel({ user, mobile }: any) {
     return []
   })
 
-  // Save sender khi thay đổi
-  useEffect(() => {
-    try { localStorage.setItem('la_print_sender', JSON.stringify(sender)) } catch {}
-  }, [sender])
-
-  useEffect(() => {
-    try { localStorage.setItem('la_bus_templates', JSON.stringify(templates)) } catch {}
-  }, [templates])
-
-  // Khi đổi template, auto-fill note
-  useEffect(() => {
-    const tpl = templates.find((t: any) => t.id === templateId)
-    if (tpl && tpl.note) setBusNote(tpl.note)
-  }, [templateId])
-
   const fieldStyle: any = {
     width:'100%', padding:'8px 12px', border:`1px solid ${T.border}`, borderRadius:6,
     fontSize:12, fontFamily:'inherit', color:T.dark, background:'#fff', outline:'none',
@@ -30890,134 +30858,48 @@ function GhtkBusShipPrintPanel({ user, mobile }: any) {
   }
   const labelStyle: any = { display:'block', fontSize:11, color:T.med, marginBottom:4, fontWeight:600 }
 
-  const valid = sender.name && sender.tel && receiver.name && receiver.tel && receiver.address
+  const valid = content.trim().length > 0
 
-  // Build HTML bản in
+  // Escape HTML để tránh XSS
+  const escapeHtml = (s: string) => s
+    .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;').replace(/'/g, '&#39;')
+
+  // Build HTML bản in — tối giản, text centered cả 2 trục
   const buildPrintHtml = (): string => {
-    // v127: Landscape/portrait + khổ giấy → explicit mm dimensions
-    // A6 landscape: 148 × 105mm  |  A6 portrait: 105 × 148mm
-    // A7 landscape: 105 × 74mm   |  A7 portrait: 74  × 105mm
     const dims = {
       A6: { landscape: '148mm 105mm', portrait: '105mm 148mm' },
       A7: { landscape: '105mm 74mm',  portrait: '74mm 105mm'  },
     }
     const pageSize = dims[paperSize][orientation]
-    const isLandscape = orientation === 'landscape'
 
-    const tpl = templates.find((t: any) => t.id === templateId)
-    const tplName = tpl?.name || ''
-
-    // Font sizes theo paper + orientation
-    const labelFont  = paperSize === 'A6' ? 11 : (isLandscape ? 9 : 8)
-    const titleFont  = paperSize === 'A6' ? (isLandscape ? 14 : 14) : (isLandscape ? 11 : 10)
-    const bodyFont   = paperSize === 'A6' ? (isLandscape ? 11 : 12) : (isLandscape ? 9 : 9)
-    const footerFont = paperSize === 'A6' ? 10 : 8
-
-    // Grid layout CSS cho landscape (2-col người gửi | người nhận)
-    const gridCss = isLandscape ? `
-      .body-grid {
-        display: grid;
-        grid-template-columns: 1fr 1fr;
-        gap: 3mm;
-        margin-bottom: 3mm;
-      }
-      .section { margin-bottom: 0; }
-    ` : `
-      .section { margin-bottom: 3mm; }
-    `
+    // Font size responsive theo paper + orientation (user chỉnh thêm qua adjust)
+    const baseFontPt = paperSize === 'A6'
+      ? (orientation === 'landscape' ? 16 : 18)
+      : (orientation === 'landscape' ? 12 : 13)
 
     return `<!DOCTYPE html>
 <html>
 <head>
 <meta charset="utf-8">
-<title>${orderCode || 'Thông tin đơn hàng'} — ${tplName}</title>
+<title>In thông tin đơn</title>
 <style>
-  ${buildPrintCss(adjust, pageSize)}
+  ${buildPrintCss(adjust, pageSize, true /* centerContent */)}
   .print-content {
     font-family: Arial, sans-serif;
     color: #000;
-  }
-  .header {
-    text-align: center;
-    font-size: ${titleFont}pt;
-    font-weight: 900;
-    margin-bottom: 3mm;
-    border-bottom: 2px solid #000;
-    padding-bottom: 2mm;
-  }
-  ${gridCss}
-  .section {
-    padding: 2mm;
-    border: 1.5px solid #000;
-    border-radius: 2mm;
-  }
-  .section-label {
-    font-size: ${labelFont}pt;
-    font-weight: bold;
-    background: #000;
-    color: #fff;
-    padding: 1mm 2mm;
-    border-radius: 1mm;
-    display: inline-block;
-    margin-bottom: 1.5mm;
-    letter-spacing: 0.5mm;
-  }
-  .line {
-    font-size: ${bodyFont}pt;
-    margin: 0.8mm 0;
+    font-size: ${baseFontPt}pt;
+    font-weight: 600;
+    white-space: pre-wrap;
     word-wrap: break-word;
     word-break: break-word;
-  }
-  .line b { font-weight: 800; }
-  .footer {
-    margin-top: 3mm;
-    padding-top: 2mm;
-    border-top: 1px dashed #000;
-    text-align: center;
-    font-size: ${footerFont}pt;
-  }
-  .bus-badge {
-    display: inline-block;
-    background: #000;
-    color: #fff;
-    padding: 1mm 3mm;
-    border-radius: 1mm;
-    font-size: ${titleFont}pt;
-    font-weight: 900;
-    letter-spacing: 0.5mm;
+    line-height: 1.5;
+    padding: 4mm;
   }
 </style>
 </head>
 <body>
-<div class="print-content">
-  <div class="header">
-    ${tplName ? `<span class="bus-badge">${tplName.toUpperCase()}</span>` : ''}
-    ${orderCode ? `<div style="font-size: ${bodyFont}pt; margin-top: 2mm; font-weight: 700;">Mã đơn: ${orderCode}</div>` : ''}
-  </div>
-
-  <div class="${isLandscape ? 'body-grid' : ''}">
-    <div class="section">
-      <div class="section-label">📤 NGƯỜI GỬI</div>
-      <div class="line"><b>${sender.name}</b></div>
-      ${sender.tel     ? `<div class="line">📞 ${sender.tel}</div>` : ''}
-      ${sender.address ? `<div class="line">📍 ${sender.address}</div>` : ''}
-    </div>
-
-    <div class="section">
-      <div class="section-label">📥 NGƯỜI NHẬN</div>
-      <div class="line"><b>${receiver.name}</b></div>
-      <div class="line">📞 <b>${receiver.tel}</b></div>
-      <div class="line">📍 ${receiver.address}</div>
-    </div>
-  </div>
-
-  ${Number(boxCount) > 0 || busNote ? `
-  <div class="footer">
-    ${Number(boxCount) > 0 ? `<div>📦 Số thùng: <b>${boxCount}</b></div>` : ''}
-    ${busNote ? `<div>💬 ${busNote}</div>` : ''}
-  </div>
-  ` : ''}
-</div>
+<div class="print-content">${escapeHtml(content)}</div>
 <script>
   window.onload = function() {
     setTimeout(function() {
@@ -31031,31 +30913,21 @@ function GhtkBusShipPrintPanel({ user, mobile }: any) {
   }
 
   const handlePrint = () => {
-    if (!valid) { alert('❌ Vui lòng điền đủ: Người gửi (tên + SĐT) và Người nhận (tên + SĐT + địa chỉ)'); return }
+    if (!valid) { alert('❌ Vui lòng nhập nội dung in'); return }
     const html = buildPrintHtml()
-    const w = window.open('', '_blank', 'width=600,height=500')
+    const w = window.open('', '_blank', 'width=700,height=500')
     if (!w) { alert('❌ Trình duyệt chặn popup. Hãy cho phép popup.'); return }
     w.document.write(html)
     w.document.close()
 
-    // Lưu history (10 gần nhất)
-    if (orderCode || receiver.name) {
-      const entry = `${new Date().toLocaleString('vi-VN')} · ${orderCode || '—'} · ${receiver.name} · ${receiver.tel}`
-      const updated = [entry, ...history].slice(0, 10)
-      setHistory(updated)
-      try { localStorage.setItem('la_busship_history', JSON.stringify(updated)) } catch {}
-    }
+    // Lưu history
+    try { localStorage.setItem('la_busship_last_content', content) } catch {}
+    const firstLine = content.split('\n')[0].slice(0, 60)
+    const entry = `${new Date().toLocaleString('vi-VN')} · ${paperSize} ${orientation==='landscape'?'ngang':'dọc'} · ${firstLine}`
+    const updated = [entry, ...history].slice(0, 10)
+    setHistory(updated)
+    try { localStorage.setItem('la_busship_history', JSON.stringify(updated)) } catch {}
   }
-
-  const clearForm = () => {
-    if (!confirm('Xóa toàn bộ thông tin người nhận?')) return
-    setReceiver({ name: '', tel: '', address: '' })
-    setOrderCode('')
-    setBoxCount('1')
-    setBusNote('')
-  }
-
-  const gr2 = { display:'grid', gridTemplateColumns: mobile ? '1fr' : '1fr 1fr', gap:12 } as any
 
   return (
     <>
@@ -31088,7 +30960,7 @@ function GhtkBusShipPrintPanel({ user, mobile }: any) {
           </div>
         </div>
 
-        {/* v127: Chọn hướng in */}
+        {/* Chọn hướng in */}
         <div style={{ marginBottom:14 }}>
           <label style={labelStyle}>Hướng in</label>
           <div style={{ display:'flex', gap:8 }}>
@@ -31098,7 +30970,7 @@ function GhtkBusShipPrintPanel({ user, mobile }: any) {
                 border:`1.5px solid ${orientation==='landscape' ? T.green : T.border}`,
                 background: orientation==='landscape' ? T.greenBg : '#fff',
                 color: orientation==='landscape' ? T.green : T.med }}>
-              ↔️ Ngang (landscape) {paperSize==='A6' ? '148×105mm' : '105×74mm'}
+              ↔️ Ngang {paperSize==='A6' ? '148×105mm' : '105×74mm'}
             </button>
             <button onClick={() => setOrientation('portrait')}
               style={{ flex:1, padding:'8px 0', borderRadius:6, cursor:'pointer',
@@ -31106,133 +30978,24 @@ function GhtkBusShipPrintPanel({ user, mobile }: any) {
                 border:`1.5px solid ${orientation==='portrait' ? T.blue : T.border}`,
                 background: orientation==='portrait' ? T.blueBg : '#fff',
                 color: orientation==='portrait' ? T.blue : T.med }}>
-              ↕️ Dọc (portrait) {paperSize==='A6' ? '105×148mm' : '74×105mm'}
+              ↕️ Dọc {paperSize==='A6' ? '105×148mm' : '74×105mm'}
             </button>
           </div>
         </div>
 
-        {/* Template hãng xe */}
+        {/* Textarea nội dung */}
         <div style={{ marginBottom:14 }}>
-          <label style={labelStyle}>Hãng xe / Template</label>
-          <div style={{ display:'flex', gap:6, flexWrap:'wrap' }}>
-            {templates.map((t: any) => (
-              <button key={t.id} onClick={() => setTemplateId(t.id)}
-                style={{ padding:'6px 12px', borderRadius:14, cursor:'pointer',
-                  fontFamily:'inherit', fontSize:11, fontWeight:600,
-                  border:`1.5px solid ${templateId===t.id ? T.gold : T.border}`,
-                  background: templateId===t.id ? T.goldBg : '#fff',
-                  color: templateId===t.id ? T.goldText : T.med }}>
-                {templateId===t.id ? '✓ ' : ''}{t.name}
-              </button>
-            ))}
-            <button onClick={() => {
-              const name = prompt('Tên hãng xe mới?')
-              if (!name) return
-              const note = prompt('Ghi chú mặc định? (bỏ trống nếu không có)') || ''
-              const newTpl = { id: `custom_${Date.now()}`, name, note }
-              setTemplates([...templates, newTpl])
-              setTemplateId(newTpl.id)
-            }}
-              style={{ padding:'6px 12px', borderRadius:14, cursor:'pointer',
-                fontFamily:'inherit', fontSize:11, fontWeight:600,
-                border:`1px dashed ${T.border}`,
-                background:'transparent', color:T.med }}>
-              + Thêm hãng
-            </button>
-            {templateId.startsWith('custom_') && (
-              <button onClick={() => {
-                if (!confirm('Xoá template này?')) return
-                setTemplates(templates.filter((t: any) => t.id !== templateId))
-                setTemplateId('generic')
-              }}
-                style={{ padding:'6px 12px', borderRadius:14, cursor:'pointer',
-                  fontFamily:'inherit', fontSize:11, fontWeight:600,
-                  border:`1px solid ${T.red}`, background:'#fff', color:T.red }}>
-                🗑 Xoá hãng này
-              </button>
-            )}
+          <label style={labelStyle}>Nội dung in *</label>
+          <textarea value={content}
+            onChange={e => setContent(e.target.value)}
+            placeholder={`VD:\nNguyễn Văn A\n0987654321\n123 Hoàng Quốc Việt, Cầu Giấy, Hà Nội\nSĐT: 0123456789 (người gửi)`}
+            rows={8}
+            autoFocus
+            style={{ ...fieldStyle, resize:'vertical', fontFamily:'inherit',
+              fontSize:13, lineHeight:1.5, padding:'12px 14px' }}/>
+          <div style={{ fontSize:10, color:T.light, marginTop:4 }}>
+            💡 Gõ tự do, xuống dòng tuỳ ý. Nội dung sẽ được căn giữa trang khi in.
           </div>
-        </div>
-
-        {/* Người gửi */}
-        <div style={{ marginBottom:14, padding:12, background:T.greenBg, borderRadius:8,
-          border:`1px solid ${T.green}33` }}>
-          <div style={{ fontSize:12, fontWeight:700, color:T.green, marginBottom:8 }}>
-            📤 Người gửi (lưu tự động vào máy)
-          </div>
-          <div style={{ marginBottom:10 }}>
-            <label style={labelStyle}>Tên công ty / Shop *</label>
-            <input value={sender.name} onChange={e => setSender((s: any) => ({...s, name:e.target.value}))}
-              placeholder="LA Global Beauty" style={fieldStyle}/>
-          </div>
-          <div style={gr2}>
-            <div>
-              <label style={labelStyle}>SĐT *</label>
-              <input value={sender.tel} onChange={e => setSender((s: any) => ({...s, tel:e.target.value}))}
-                placeholder="0xxxxxxxxx" style={fieldStyle}/>
-            </div>
-            <div>
-              <label style={labelStyle}>Địa chỉ</label>
-              <input value={sender.address} onChange={e => setSender((s: any) => ({...s, address:e.target.value}))}
-                placeholder="55 Lộc Vừng Quán, Cầu Giấy..." style={fieldStyle}/>
-            </div>
-          </div>
-        </div>
-
-        {/* Người nhận */}
-        <div style={{ marginBottom:14, padding:12, background:T.blueBg, borderRadius:8,
-          border:`1px solid ${T.blue}33` }}>
-          <div style={{ fontSize:12, fontWeight:700, color:T.blue, marginBottom:8,
-            display:'flex', justifyContent:'space-between', alignItems:'center' }}>
-            <span>📥 Người nhận *</span>
-            <button onClick={clearForm}
-              style={{ padding:'3px 10px', borderRadius:12, cursor:'pointer',
-                border:`1px solid ${T.red}`, background:'#fff', color:T.red,
-                fontFamily:'inherit', fontSize:10 }}>
-              🧹 Xoá form
-            </button>
-          </div>
-          <div style={gr2}>
-            <div>
-              <label style={labelStyle}>Tên người nhận *</label>
-              <input value={receiver.name} onChange={e => setReceiver((r: any) => ({...r, name:e.target.value}))}
-                placeholder="Nguyễn Văn A" style={fieldStyle}/>
-            </div>
-            <div>
-              <label style={labelStyle}>SĐT *</label>
-              <input value={receiver.tel} onChange={e => setReceiver((r: any) => ({...r, tel:e.target.value}))}
-                placeholder="0xxxxxxxxx" style={fieldStyle}/>
-            </div>
-          </div>
-          <div style={{ marginTop:10 }}>
-            <label style={labelStyle}>Địa chỉ *</label>
-            <textarea value={receiver.address}
-              onChange={e => setReceiver((r: any) => ({...r, address:e.target.value}))}
-              placeholder="Số nhà, đường, phường, quận, tỉnh..."
-              rows={2}
-              style={{ ...fieldStyle, resize:'vertical' }}/>
-          </div>
-        </div>
-
-        {/* Meta đơn */}
-        <div style={gr2}>
-          <div>
-            <label style={labelStyle}>Mã đơn (tuỳ chọn)</label>
-            <input value={orderCode} onChange={e => setOrderCode(e.target.value.toUpperCase())}
-              placeholder="VD: DH00123" style={fieldStyle}/>
-          </div>
-          <div>
-            <label style={labelStyle}>Số thùng</label>
-            <input type="number" min="1" value={boxCount}
-              onChange={e => setBoxCount(e.target.value)}
-              style={fieldStyle}/>
-          </div>
-        </div>
-        <div style={{ marginTop:12, marginBottom:14 }}>
-          <label style={labelStyle}>Ghi chú thêm (tuỳ chọn)</label>
-          <input value={busNote} onChange={e => setBusNote(e.target.value)}
-            placeholder="VD: Hàng dễ vỡ, gọi trước khi giao..."
-            maxLength={200} style={fieldStyle}/>
         </div>
 
         {/* Print Adjustment */}
@@ -31243,63 +31006,34 @@ function GhtkBusShipPrintPanel({ user, mobile }: any) {
           border:`1px dashed ${T.border}` }}>
           <div style={{ fontSize:10, color:T.light, marginBottom:10, fontWeight:600,
             textTransform:'uppercase', letterSpacing:1, textAlign:'center' }}>
-            🔍 Preview bản in — {paperSize} {orientation==='landscape'?'ngang':'dọc'}
+            🔍 Preview — {paperSize} {orientation==='landscape'?'ngang':'dọc'}
           </div>
-          <div style={{ background:'#fff', padding:'12px 16px', borderRadius:4,
+          <div style={{
+            background:'#fff',
             border:`1px solid ${T.border}`,
-            maxWidth: orientation==='landscape'
-              ? (paperSize === 'A6' ? 560 : 400)
-              : (paperSize === 'A6' ? 400 : 280),
             margin:'0 auto',
-            fontFamily:'Arial, sans-serif', color:'#000',
-            fontSize: paperSize === 'A6' ? 12 : 10,
-            lineHeight: adjust.line_height }}>
-            <div style={{ textAlign:'center', fontWeight:900,
-              fontSize: paperSize === 'A6' ? 15 : 11,
-              borderBottom:'2px solid #000', paddingBottom:6, marginBottom:8 }}>
-              {templates.find((t: any) => t.id === templateId) && (
-                <span style={{ background:'#000', color:'#fff', padding:'2px 10px',
-                  borderRadius:3, letterSpacing:1 }}>
-                  {(templates.find((t: any) => t.id === templateId)?.name || '').toUpperCase()}
-                </span>
-              )}
-              {orderCode && <div style={{ marginTop:5, fontSize: paperSize==='A6'?12:9 }}>Mã đơn: {orderCode}</div>}
-            </div>
-            <div style={{
-              display: orientation==='landscape' ? 'grid' : 'block',
-              gridTemplateColumns: orientation==='landscape' ? '1fr 1fr' : undefined,
-              gap: orientation==='landscape' ? 8 : 0,
-            }}>
-              <div style={{ border:'1.5px solid #000', borderRadius:4, padding:8,
-                marginBottom: orientation==='landscape' ? 0 : 8 }}>
-                <div style={{ background:'#000', color:'#fff', padding:'2px 6px',
-                  borderRadius:2, display:'inline-block', fontSize: paperSize==='A6'?10:8,
-                  fontWeight:700, marginBottom:4, letterSpacing:0.8 }}>
-                  📤 NGƯỜI GỬI
-                </div>
-                <div style={{ fontWeight:800 }}>{sender.name || '(chưa điền)'}</div>
-                {sender.tel && <div>📞 {sender.tel}</div>}
-                {sender.address && <div>📍 {sender.address}</div>}
-              </div>
-              <div style={{ border:'1.5px solid #000', borderRadius:4, padding:8,
-                marginBottom: orientation==='landscape' ? 0 : 8 }}>
-                <div style={{ background:'#000', color:'#fff', padding:'2px 6px',
-                  borderRadius:2, display:'inline-block', fontSize: paperSize==='A6'?10:8,
-                  fontWeight:700, marginBottom:4, letterSpacing:0.8 }}>
-                  📥 NGƯỜI NHẬN
-                </div>
-                <div style={{ fontWeight:800 }}>{receiver.name || '(chưa điền)'}</div>
-                <div>📞 <b>{receiver.tel || '(chưa điền)'}</b></div>
-                <div>📍 {receiver.address || '(chưa điền)'}</div>
-              </div>
-            </div>
-            {(Number(boxCount) > 0 || busNote) && (
-              <div style={{ borderTop:'1px dashed #000', paddingTop:6, textAlign:'center',
-                marginTop:8, fontSize: paperSize==='A6'?10:8 }}>
-                {Number(boxCount) > 0 && <div>📦 Số thùng: <b>{boxCount}</b></div>}
-                {busNote && <div>💬 {busNote}</div>}
-              </div>
-            )}
+            // Preview aspect ratio theo orientation
+            width: orientation==='landscape'
+              ? (paperSize === 'A6' ? 420 : 320)
+              : (paperSize === 'A6' ? 290 : 220),
+            height: orientation==='landscape'
+              ? (paperSize === 'A6' ? 298 : 226)
+              : (paperSize === 'A6' ? 410 : 310),
+            display:'flex',
+            alignItems:'center',
+            justifyContent:'center',
+            padding:12,
+            fontFamily:'Arial, sans-serif',
+            color:'#000',
+            fontSize: paperSize === 'A6' ? 14 : 11,
+            fontWeight:600,
+            textAlign:'center',
+            whiteSpace:'pre-wrap',
+            wordBreak:'break-word',
+            lineHeight:1.5,
+            overflow:'hidden',
+          }}>
+            {content.trim() || <span style={{ color:T.light, fontWeight:400 }}>(Nội dung sẽ hiển thị ở đây)</span>}
           </div>
         </div>
 
@@ -31309,7 +31043,7 @@ function GhtkBusShipPrintPanel({ user, mobile }: any) {
             border:'none', background: valid ? T.blue : T.border,
             color: valid ? '#fff' : T.light,
             fontFamily:'inherit', fontSize:15, fontWeight:700 }}>
-          🖨 In thông tin đơn ({paperSize} {orientation==='landscape'?'ngang':'dọc'})
+          🖨 In ({paperSize} {orientation==='landscape'?'ngang':'dọc'})
         </button>
       </Card>
 
@@ -31343,6 +31077,8 @@ function GhtkBusShipPrintPanel({ user, mobile }: any) {
     </>
   )
 }
+
+
 
 
 function GhtkDropshipPrintPanel({ user, mobile, dropshipGhtk, dropshipVtp, onRefresh }: any) {
@@ -31402,10 +31138,10 @@ function GhtkDropshipPrintPanel({ user, mobile, dropshipGhtk, dropshipVtp, onRef
           </div>
         `
       } else {
-        // v127: Viettel Post landscape A7 — center bằng mm explicit thay vì vh (vh không hoạt động trong @page)
+        // v127: Viettel Post — body tự center nhờ centerContent flag trong buildPrintCss
         body = `
-          <div class="print-content" style="width:100%; min-height:70mm; display:flex; align-items:center; justify-content:center;
-            font-family:'Arial Black',Arial,sans-serif; font-size:42px; font-weight:900; letter-spacing:3px; text-align:center;">
+          <div class="print-content" style="font-family:'Arial Black',Arial,sans-serif;
+            font-size:42px; font-weight:900; letter-spacing:3px;">
             ${cleaned}
           </div>
         `
@@ -31418,7 +31154,7 @@ function GhtkDropshipPrintPanel({ user, mobile, dropshipGhtk, dropshipVtp, onRef
 <head>
 <title>In mã ${carrier === 'ghtk' ? 'GHTK' : 'Viettel Post'} ${cleaned}</title>
 <style>
-  ${buildPrintCss(adjust, pageSize)}
+  ${buildPrintCss(adjust, pageSize, true /* centerContent */)}
 </style>
 </head>
 <body>
