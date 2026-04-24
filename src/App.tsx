@@ -1135,6 +1135,61 @@ const EmptyState = ({ icon, title, description, action, hint }: any) => (
   </div>
 )
 
+// ══════════════════════════════════════════════════════════════════════
+// v130: ErrorBoundary — bắt lỗi React crash trong module, show ErrorState
+// ══════════════════════════════════════════════════════════════════════
+// Usage: <ErrorBoundary module="GHTK"><GhtkModule/></ErrorBoundary>
+// Nếu GhtkModule crash (React error), hiển thị ErrorState thay vì trắng màn.
+// ══════════════════════════════════════════════════════════════════════
+
+class ErrorBoundary extends React.Component<
+  { children: any; module?: string; onReset?: () => void },
+  { hasError: boolean; error: Error | null }
+> {
+  constructor(props: any) {
+    super(props)
+    this.state = { hasError: false, error: null }
+  }
+
+  static getDerivedStateFromError(error: Error) {
+    return { hasError: true, error }
+  }
+
+  componentDidCatch(error: Error, errorInfo: any) {
+    console.error(`[ErrorBoundary:${this.props.module || 'unknown'}]`, error, errorInfo)
+  }
+
+  handleReset = () => {
+    this.setState({ hasError: false, error: null })
+    if (this.props.onReset) this.props.onReset()
+  }
+
+  render() {
+    if (this.state.hasError) {
+      return (
+        <div style={{ padding: 24 }}>
+          <ErrorState
+            title="Có lỗi xảy ra"
+            description={
+              <>
+                Module <b>{this.props.module || 'này'}</b> gặp lỗi không mong muốn.
+                <br/>Bạn có thể thử lại, nếu vẫn lỗi — báo admin.
+                <br/>
+                <span style={{ fontSize:11, color:T.light, fontStyle:'italic' }}>
+                  {this.state.error?.message}
+                </span>
+              </>
+            }
+            onRetry={this.handleReset}
+            retryLabel="Thử lại"
+          />
+        </div>
+      )
+    }
+    return this.props.children
+  }
+}
+
 const Topbar = ({ title, subtitle, action, mobile, noPad }: any) => (
   <div style={{ padding: noPad ? 0 : (mobile?'16px 16px 0':'20px 0 0'),
     display:'flex', alignItems:'flex-start', justifyContent:'space-between',
@@ -9151,7 +9206,12 @@ function NavCustomizer({ user, setUser, mobile }: any) {
   }
 
   const resetDefaults = async () => {
-    if (!confirm('Khôi phục thanh điều hướng về mặc định? Cấu hình cá nhân sẽ bị xóa.')) return
+    if (!(await confirmDialog({
+      title: 'Khôi phục thanh điều hướng?',
+      message: 'Cấu hình cá nhân của bạn sẽ bị xoá về mặc định.',
+      confirmText: 'Khôi phục',
+      tone: 'warning',
+    }))) return
     setSaving(true)
     try {
       const ui_prefs = { ...(user.ui_prefs || {}) }
@@ -12196,7 +12256,12 @@ function InventoryModule({ user, allUsers, products, invSessions, setInvSessions
   }
 
   const closeSession = async (sid: string) => {
-    if (!confirm('Chốt phiên kiểm kê này? Sau khi chốt sẽ không thể nhập liệu thêm.')) return
+    if (!(await confirmDialog({
+      title: 'Chốt phiên kiểm kê này?',
+      message: 'Sau khi chốt sẽ không thể nhập liệu thêm.',
+      confirmText: 'Chốt phiên',
+      tone: 'warning',
+    }))) return
     const upd = { status:'closed', closed_by:user.id, closed_at:new Date().toISOString() }
     setInvSessions(prev => prev.map((s: any) => s.id===sid ? {...s,...upd} : s))
     await db.from('inventory_sessions').update(upd).eq('id', sid)
@@ -15566,7 +15631,12 @@ function ExpiryModule({ user, mobile, products, batches, setBatches }: any) {
   }
 
   const deleteBatch = async (id: string) => {
-    if (!confirm('Xóa lô hàng này? Thao tác không thể hoàn tác.')) return
+    if (!(await confirmDialog({
+      title: 'Xoá lô hàng này?',
+      message: 'Thao tác không thể hoàn tác.',
+      confirmText: 'Xoá',
+      tone: 'danger',
+    }))) return
     await db.from('product_batches').delete().eq('id', id)
     setBatches((prev: any[]) => prev.filter((b: any) => b.id !== id))
   }
@@ -18455,8 +18525,8 @@ function CutoffDateModal({ user, currentDate, orderCount, onSave, onCleanupOld, 
             Hủy
           </button>
           {currentDate && (
-            <button onClick={() => {
-              if (!confirm('Xoá ngày bắt đầu? Tất cả đơn "Đã đóng" sẽ được sync lại.')) return
+            <button onClick={async () => {
+              if (!(await confirmDialog({ title: 'Xoá ngày bắt đầu?', message: 'Tất cả đơn "Đã đóng" sẽ được sync lại.', confirmText: 'Xoá', tone: 'warning' }))) return
               onSave(null)
             }}
               style={{ padding:'9px 12px', borderRadius:6, border:`1px solid ${T.border}`,
@@ -18817,15 +18887,14 @@ function ProductImageModalV2({ code, onClose }: any) {
           </button>
         </div>
 
-        {loading && <div style={{ padding:30, textAlign:'center', color:T.light, fontSize:13 }}>
-          ⏳ Đang tải ảnh từ KiotViet...
-        </div>}
+        {loading && <SkeletonList rows={3}/>}
 
         {error && (
-          <div style={{ padding:20, textAlign:'center', color:T.red, fontSize:13,
-            background:T.redBg, borderRadius:8 }}>
-            ❌ Lỗi: {error}
-          </div>
+          <ErrorState
+            title="Không tải được ảnh từ KiotViet"
+            description={error}
+            tone="error"
+          />
         )}
 
         {!loading && !error && imgs.length === 0 && (
@@ -19219,7 +19288,7 @@ function PackingModule({ user, allUsers, mobile, products }: any) {
   }
 
   const unlinkSupplementary = async (childCode: string) => {
-    if (!confirm(`Bỏ link đơn bổ sung ${childCode}?\nSau khi bỏ, đơn sẽ trở lại list chính.`)) return
+    if (!(await confirmDialog({ title: `Bỏ link đơn bổ sung ${childCode}?`, message: 'Sau khi bỏ, đơn sẽ trở lại list chính.', confirmText: 'Bỏ link', tone: 'warning' }))) return
     const child = orders.find((o: any) => o.order_code === childCode)
     if (!child || !child.linked_to_order_code) return
     const parentCode = child.linked_to_order_code
@@ -21394,9 +21463,7 @@ function PersonalNotesModule({ user, mobile }: any) {
 
       {/* Notes grid */}
       {loading ? (
-        <div style={{ textAlign:'center', padding:40, color:T.light, fontSize:FS.md }}>
-          ⏳ Đang tải...
-        </div>
+        <SkeletonList rows={3}/>
       ) : filtered.length === 0 ? (
         <div style={{ textAlign:'center', padding:'60px 20px', color:T.light }}>
           <div style={{ display:'inline-flex', marginBottom:12, color:T.light }}>
@@ -22970,7 +23037,7 @@ function PayrollModule({ user, allUsers, mobile }: any) {
 
   // Tính hàng loạt
   const computeAll = async () => {
-    if (!confirm(`Tính/cập nhật lương cho ${usersWithSalary.length} NV tháng ${month}/${year}? Các record đã DUYỆT sẽ bị bỏ qua.`)) return
+    if (!(await confirmDialog({ title: `Tính/cập nhật lương cho ${usersWithSalary.length} NV?`, message: `Tháng ${month}/${year}. Các record đã DUYỆT sẽ bị bỏ qua.`, confirmText: 'Tính lương' }))) return
     setLoading(true)
     try {
       for (const u of usersWithSalary) {
@@ -22988,7 +23055,7 @@ function PayrollModule({ user, allUsers, mobile }: any) {
     const existing = getPayroll(u.id)
     if (!existing) { alert('Chưa tính lương NV này'); return }
     if (existing.status === 'approved') { alert('Đã duyệt rồi'); return }
-    if (!confirm(`Duyệt lương ${u.name} tháng ${month}/${year}? Sau khi duyệt sẽ không tự động tính lại.`)) return
+    if (!(await confirmDialog({ title: `Duyệt lương ${u.name}?`, message: `Tháng ${month}/${year}. Sau khi duyệt sẽ không tự động tính lại.`, confirmText: 'Duyệt', tone: 'success' }))) return
     const upd: any = { status: 'approved', approved_by: user.id, approved_at: new Date().toISOString() }
     await db.from('monthly_payroll').update(upd).eq('id', existing.id)
     setPayrolls(prev => prev.map(p => p.id === existing.id ? { ...p, ...upd } : p))
@@ -23002,7 +23069,7 @@ function PayrollModule({ user, allUsers, mobile }: any) {
   const unlockOne = async (u: any) => {
     const existing = getPayroll(u.id)
     if (!existing) return
-    if (!confirm(`Mở khoá lương ${u.name} tháng ${month}/${year} về DRAFT?`)) return
+    if (!(await confirmDialog({ title: `Mở khoá lương ${u.name}?`, message: `Tháng ${month}/${year} — sẽ quay về trạng thái DRAFT.`, confirmText: 'Mở khoá', tone: 'warning' }))) return
     const upd: any = { status: 'draft', approved_by: null, approved_at: null }
     await db.from('monthly_payroll').update(upd).eq('id', existing.id)
     setPayrolls(prev => prev.map(p => p.id === existing.id ? { ...p, ...upd } : p))
@@ -25306,9 +25373,10 @@ function WarehouseStatsModule({ user, allUsers, mobile }: any) {
   const maxValue = Math.max(1, ...stats.map((s: any) => s.total_value))
 
   if (loading) return (
-    <div style={{ padding:p, textAlign:'center', color:T.light, paddingTop:40 }}>
-      ⏳ Đang tải thống kê...
-    </div>
+    <PageContainer mobile={mobile}>
+      <Topbar mobile={mobile} title="📊 Hiệu suất kho" subtitle="Đang tải..."/>
+      <SkeletonList rows={5} mobile={mobile}/>
+    </PageContainer>
   )
 
   return (
@@ -26087,9 +26155,10 @@ function WarehouseScheduleModule({ user, allUsers, leaveRequests, attendance, mo
   const todayStr = new Date().toISOString().split('T')[0]
 
   if (loading) return (
-    <div style={{ padding:p, textAlign:'center', color:T.light, paddingTop:40 }}>
-      ⏳ Đang tải lịch kho...
-    </div>
+    <PageContainer mobile={mobile}>
+      <Topbar mobile={mobile} title="📅 Lịch Kho" subtitle="Đang tải..."/>
+      <SkeletonList rows={4} mobile={mobile}/>
+    </PageContainer>
   )
 
   return (
@@ -26447,7 +26516,7 @@ function RotationWizard({ roles, year, month, khoUsers, existingSchedules, onApp
       toast.error('Chưa nhập NV nào vào chu kỳ. Hãy tick ít nhất 1 NV ở 1 ngày.')
       return
     }
-    if (!confirm(`Sẽ tạo/cập nhật ${entries.length} ô lịch cho cả tháng. Tiếp tục?`)) return
+    if (!(await confirmDialog({ title: 'Tạo lịch cả tháng?', message: `Sẽ tạo/cập nhật ${entries.length} ô lịch.`, confirmText: 'Tạo lịch' }))) return
     onApply(entries)
   }
 
@@ -26974,9 +27043,7 @@ function SaleOrderTrackingModule({ user, allUsers, mobile }: any) {
       </div>
 
       {loading ? (
-        <div style={{ padding:'40px 20px', textAlign:'center', color:T.light }}>
-          ⏳ Đang tải...
-        </div>
+        <SkeletonList rows={5} mobile={mobile}/>
       ) : filtered.length === 0 ? (
         <EmptyState icon={Ico.truck}
           title={searchQ ? `Không có đơn nào khớp "${searchQ}"` : 'Không có đơn nào'}
