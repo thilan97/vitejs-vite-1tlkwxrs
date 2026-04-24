@@ -26511,7 +26511,7 @@ function RotationWizard({ roles, year, month, khoUsers, existingSchedules, onApp
     setPattern(next)
   }
 
-  const apply = () => {
+  const apply = async () => {
     const daysInMonth = new Date(year, month+1, 0).getDate()
     const entries: any[] = []
     for (let day = 1; day <= daysInMonth; day++) {
