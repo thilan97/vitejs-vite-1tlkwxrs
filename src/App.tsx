@@ -29047,7 +29047,7 @@ function GhtkModule({ user, allUsers, mobile }: any) {
   const perm = getPerm(user)
 
   // Tabs mặc định theo quyền: Sale vào Chờ điền, Kho vào Chờ cân
-  const [tab, setTab] = useState<'pending_info'|'pending_weight'|'ready'|'created'|'delivered'|'dropship'|'settings'>(
+  const [tab, setTab] = useState<'pending_info'|'pending_choose'|'pending_weight'|'ready'|'created'|'delivered'|'dropship'|'settings'>(
     perm.ghtkFillCustomer && !perm.ghtkWeight ? 'pending_info' : 'pending_weight'
   )
 
@@ -29101,13 +29101,46 @@ function GhtkModule({ user, allUsers, mobile }: any) {
   useEffect(() => { fetchOrders() }, [])
 
   // Categorize orders theo tab
+  // v125: Parse ghi chú đơn KV để detect intent dropship
+  const parseShipIntent = (note: string): {
+    type: 'ghtk_create'|'ghtk_dropship'|'vtp_dropship'|'ambiguous'|'none',
+    code?: string,
+    tel?: string,
+  } => {
+    if (!note) return { type: 'none' }
+    const hasGhtk = /\bghtk\b/i.test(note)
+    const hasVtp  = /\b(vtp|viettel\s*post|viettelpost|viettel)\b/i.test(note)
+    if (!hasGhtk && !hasVtp) return { type: 'none' }
+
+    // Mã GHTK dropship: 10 số bắt đầu bằng 1 (VD: 1987997655)
+    const ghtkDropMatch = note.match(/(?:^|\D)(1\d{9})(?:\D|$)/)
+    // SĐT VN: 10-11 số bắt đầu 0
+    const telMatch = note.match(/(?:^|\D)(0\d{9,10})(?:\D|$)/)
+    // Mã VTP: 11-15 số (không bắt đầu 0)
+    const vtpMatch = note.match(/(?:^|\D)([1-9]\d{10,14})(?:\D|$)/)
+
+    if (hasVtp) {
+      if (vtpMatch) return { type: 'vtp_dropship', code: vtpMatch[1] }
+      return { type: 'ambiguous' }
+    }
+    if (hasGhtk) {
+      if (ghtkDropMatch) return { type: 'ghtk_dropship', code: ghtkDropMatch[1] }
+      if (telMatch) return { type: 'ghtk_create', tel: telMatch[1] }
+      return { type: 'ambiguous' }
+    }
+    return { type: 'ambiguous' }
+  }
+
   const categorized = useMemo(() => {
     const result = {
-      pending_info: [] as any[],     // chưa điền customer_info
-      pending_weight: [] as any[],   // đã có customer_info, chưa đủ cân thùng
-      ready: [] as any[],            // đủ cân, chưa tạo đơn GHTK
-      created: [] as any[],          // đã tạo đơn, chưa giao xong
-      delivered: [] as any[],        // tất cả label đã delivered (status=5) hoặc cancelled
+      pending_info: [] as any[],       // cần điền info để tạo đơn GHTK
+      pending_choose: [] as any[],     // v125: sale cần chọn loại (ambiguous)
+      dropship_ghtk: [] as any[],      // v125: đã có mã GHTK dropship, chờ in barcode
+      dropship_vtp: [] as any[],       // v125: đã có mã VTP dropship, chờ in text A7
+      pending_weight: [] as any[],     // đã có customer_info, chưa đủ cân thùng
+      ready: [] as any[],              // đủ cân, chưa tạo đơn GHTK
+      created: [] as any[],            // đã tạo đơn, chưa giao xong
+      delivered: [] as any[],          // tất cả label đã delivered/cancelled
     }
     for (const o of orders) {
       const hasInfo = !!(o.ghtk_customer_info?.name && o.ghtk_customer_info?.tel)
@@ -29116,13 +29149,28 @@ function GhtkModule({ user, allUsers, mobile }: any) {
       const hasCreatedLabels = labels.length > 0
 
       if (hasCreatedLabels) {
-        // Check tất cả labels đã delivered
         const allDone = labels.every((l: any) =>
           l.status === '5' || l.status === '6' || l.status === '-1' || l.status === 5 || l.status === 6)
         if (allDone) result.delivered.push(o)
         else result.created.push(o)
       } else if (!hasInfo) {
-        result.pending_info.push(o)
+        // v125: Chưa có info → phân loại theo intent của note
+        // Skip nếu đã in dropship rồi
+        if (o.dropship_printed_at) continue
+
+        const intent = parseShipIntent(o.description_kv || '')
+        const enriched = { ...o, _intent: intent }
+
+        if (intent.type === 'ghtk_dropship') {
+          result.dropship_ghtk.push(enriched)
+        } else if (intent.type === 'vtp_dropship') {
+          result.dropship_vtp.push(enriched)
+        } else if (intent.type === 'ambiguous') {
+          result.pending_choose.push(enriched)
+        } else {
+          // ghtk_create + none → đi theo flow cũ
+          result.pending_info.push(enriched)
+        }
       } else if (boxes.length === 0) {
         result.pending_weight.push(o)
       } else {
@@ -29133,12 +29181,12 @@ function GhtkModule({ user, allUsers, mobile }: any) {
   }, [orders])
 
   const filtered = useMemo(() => {
-    if (tab === 'settings') return []
-    let list = categorized[tab as keyof typeof categorized] || []
+    if (tab === 'settings' || tab === 'dropship') return []
+    let list = (categorized as any)[tab] || []
     if (searchQ.trim()) {
       const tokens = norm2(searchQ).split(/\s+/).filter(Boolean)
       list = list.filter((o: any) => {
-        const hay = norm2(`${o.order_code} ${o.customer_name || ''} ${o.ghtk_customer_info?.name || ''} ${o.ghtk_customer_info?.tel || ''}`)
+        const hay = norm2(`${o.order_code} ${o.customer_name || ''} ${o.ghtk_customer_info?.name || ''} ${o.ghtk_customer_info?.tel || ''} ${o.description_kv || ''}`)
         return tokens.every(t => hay.includes(t))
       })
     }
@@ -29147,11 +29195,12 @@ function GhtkModule({ user, allUsers, mobile }: any) {
 
   const TABS = [
     { id:'pending_info',   label:'📝 Chờ điền info',  count: categorized.pending_info.length,   show: perm.ghtkFillCustomer },
+    { id:'pending_choose', label:'❓ Sale chọn loại',  count: categorized.pending_choose.length, show: perm.ghtkFillCustomer },
     { id:'pending_weight', label:'⚖️ Chờ cân thùng',   count: categorized.pending_weight.length, show: perm.ghtkWeight },
     { id:'ready',          label:'🚚 Sẵn sàng tạo',    count: categorized.ready.length,          show: perm.ghtkPrintLabel || perm.ghtkWeight },
     { id:'created',        label:'🖨 Đã tạo đơn',      count: categorized.created.length,        show: true },
     { id:'delivered',      label:'📦 Đã giao',         count: categorized.delivered.length,      show: true },
-    { id:'dropship',       label:'🏷 In mã dropship',  count: 0,                                  show: perm.ghtkPrintLabel || perm.ghtkSettings },
+    { id:'dropship',       label:'🏷 In mã dropship',  count: categorized.dropship_ghtk.length + categorized.dropship_vtp.length, show: perm.ghtkPrintLabel || perm.ghtkSettings },
     { id:'settings',       label:'⚙️ Cấu hình',        count: 0,                                  show: perm.ghtkSettings },
   ].filter(t => t.show)
 
@@ -29198,7 +29247,10 @@ function GhtkModule({ user, allUsers, mobile }: any) {
       {tab === 'settings' ? (
         <GhtkSettingsPanel user={user} mobile={mobile}/>
       ) : tab === 'dropship' ? (
-        <GhtkDropshipPrintPanel user={user} mobile={mobile}/>
+        <GhtkDropshipPrintPanel user={user} mobile={mobile}
+          dropshipGhtk={categorized.dropship_ghtk}
+          dropshipVtp={categorized.dropship_vtp}
+          onRefresh={fetchOrders}/>
       ) : (
         <>
           {/* Search */}
@@ -29216,12 +29268,14 @@ function GhtkModule({ user, allUsers, mobile }: any) {
             <EmptyState icon={Ico.truck}
               title={searchQ ? 'Không tìm thấy đơn' : (
                 tab === 'pending_info' ? 'Không có đơn chờ điền info' :
+                tab === 'pending_choose' ? 'Không có đơn cần chọn loại' :
                 tab === 'pending_weight' ? 'Không có đơn chờ cân thùng' :
                 tab === 'ready' ? 'Không có đơn sẵn sàng tạo' :
                 tab === 'created' ? 'Không có đơn đã tạo' :
                 'Không có đơn đã giao'
               )}
-              description={tab === 'pending_info' ? 'Đơn KV có ghi chú "GHTK" sẽ tự xuất hiện ở đây để Sale điền info.' :
+              description={tab === 'pending_info' ? 'Đơn KV có SĐT trong ghi chú "ghtk" sẽ tự xuất hiện ở đây để Sale điền info.' :
+                tab === 'pending_choose' ? 'Đơn có ghi chú "ghtk" nhưng không đủ thông tin (VD: "ghtk bổ sung") sẽ vào đây. Sale cần chọn loại để xử lý.' :
                 tab === 'pending_weight' ? 'Các đơn đã điền info KH, chờ Kho cân và đóng thùng.' :
                 'Phase tiếp theo sẽ hoàn thiện các chức năng này.'}/>
           ) : (
@@ -29230,7 +29284,20 @@ function GhtkModule({ user, allUsers, mobile }: any) {
                 <GhtkOrderRow key={o.order_code} order={o} tab={tab} mobile={mobile}
                   onRefresh={fetchOrders} user={user}
                   onFillInfo={() => setFillInfoOrder(o)}
-                  onEditBoxes={() => setEditBoxesOrder(o)}/>
+                  onEditBoxes={() => setEditBoxesOrder(o)}
+                  onChooseShipType={async (choice: 'ghtk_create'|'ghtk_dropship'|'vtp_dropship') => {
+                    if (choice === 'ghtk_create') {
+                      setFillInfoOrder(o)
+                    } else {
+                      // Gán carrier để đơn xuất hiện trong tab dropship
+                      await db.from('packing_workflow').update({
+                        dropship_carrier: choice === 'ghtk_dropship' ? 'ghtk' : 'viettel_post',
+                        dropship_code: '', // Chưa có code → sale nhập sau trong tab dropship
+                      }).eq('order_code', o.order_code)
+                      setTab('dropship')
+                      fetchOrders()
+                    }
+                  }}/>
               ))}
             </div>
           )}
@@ -29276,7 +29343,7 @@ function GhtkModule({ user, allUsers, mobile }: any) {
 
 
 // ── GHTK Order Row ──
-function GhtkOrderRow({ order: o, tab, mobile, onRefresh, user, onFillInfo, onEditBoxes }: any) {
+function GhtkOrderRow({ order: o, tab, mobile, onRefresh, user, onFillInfo, onEditBoxes, onChooseShipType }: any) {
   const info = o.ghtk_customer_info || {}
   const boxes = o.ghtk_boxes || []
   const labels = o.ghtk_labels || []
@@ -29363,6 +29430,32 @@ function GhtkOrderRow({ order: o, tab, mobile, onRefresh, user, onFillInfo, onEd
                     </button>
                   )}
                 </>
+              )
+            }
+
+            // v125: Tab pending_choose — sale chọn loại
+            if (tab === 'pending_choose') {
+              return (
+                <div style={{ display:'flex', gap:6, flexWrap:'wrap' }}>
+                  <button onClick={() => onChooseShipType && onChooseShipType('ghtk_create')}
+                    style={{ padding:'6px 10px', borderRadius:14, cursor:'pointer',
+                      border:`1.5px solid ${T.blue}`, background:T.blueBg, color:T.blue,
+                      fontSize:11, fontWeight:700, fontFamily:'inherit', whiteSpace:'nowrap' }}>
+                    📝 Tạo đơn GHTK
+                  </button>
+                  <button onClick={() => onChooseShipType && onChooseShipType('ghtk_dropship')}
+                    style={{ padding:'6px 10px', borderRadius:14, cursor:'pointer',
+                      border:`1.5px solid ${T.green}`, background:T.greenBg, color:T.green,
+                      fontSize:11, fontWeight:700, fontFamily:'inherit', whiteSpace:'nowrap' }}>
+                    🏷 Mã GHTK (dropship)
+                  </button>
+                  <button onClick={() => onChooseShipType && onChooseShipType('vtp_dropship')}
+                    style={{ padding:'6px 10px', borderRadius:14, cursor:'pointer',
+                      border:`1.5px solid ${T.red}`, background:T.redBg, color:T.red,
+                      fontSize:11, fontWeight:700, fontFamily:'inherit', whiteSpace:'nowrap' }}>
+                    📮 Mã VTP (dropship)
+                  </button>
+                </div>
               )
             }
 
@@ -30286,13 +30379,23 @@ function renderCode128Svg(text: string, widthPx: number, heightPx: number): stri
   return svg
 }
 
-function GhtkDropshipPrintPanel({ user, mobile }: any) {
+function GhtkDropshipPrintPanel({ user, mobile, dropshipGhtk, dropshipVtp, onRefresh }: any) {
   const [carrier, setCarrier] = useState<'ghtk'|'viettel_post'>('ghtk')
   const [code, setCode] = useState('')
   const [note, setNote] = useState('')
   const [history, setHistory] = useState<any[]>([])
   const [loading, setLoading] = useState(true)
   const [printing, setPrinting] = useState(false)
+  // v125: Đơn KV đang chọn để in (link mã với order_code)
+  const [linkedOrderCode, setLinkedOrderCode] = useState<string>('')
+
+  const pendingKvOrders = useMemo(() => {
+    const list: any[] = [
+      ...(dropshipGhtk || []).map((o: any) => ({...o, _kind: 'ghtk'})),
+      ...(dropshipVtp || []).map((o: any) => ({...o, _kind: 'vtp'})),
+    ]
+    return list
+  }, [dropshipGhtk, dropshipVtp])
 
   const fetchHistory = async () => {
     setLoading(true)
@@ -30376,11 +30479,24 @@ ${body}
         printed_by: user?.id || null,
         printed_by_name: user?.name || null,
         note: note.trim() || null,
+        kv_order_code: linkedOrderCode || null,
       })
+
+      // v125: Nếu có linked order → mark đã in vào packing_workflow
+      if (linkedOrderCode) {
+        await db.from('packing_workflow').update({
+          dropship_printed_at: new Date().toISOString(),
+          dropship_printed_by: user?.id || null,
+          dropship_carrier: carrier,
+          dropship_code: cleaned,
+        }).eq('order_code', linkedOrderCode)
+        if (onRefresh) onRefresh()
+      }
 
       // Clear form + refresh
       setCode('')
       setNote('')
+      setLinkedOrderCode('')
       fetchHistory()
     } catch(e: any) {
       alert('❌ Lỗi: ' + e.message)
@@ -30394,11 +30510,99 @@ ${body}
 
   return (
     <>
+      {/* v125: Section đơn KV chờ in mã dropship */}
+      {pendingKvOrders.length > 0 && (
+        <Card style={{ padding:mobile?14:20, marginBottom:16, background:T.goldBg,
+          border:`2px solid ${T.gold}55` }}>
+          <div style={{ fontSize:14, fontWeight:700, color:T.goldText, marginBottom:4,
+            display:'flex', alignItems:'center', gap:8 }}>
+            🔖 Đơn KV chờ in mã dropship ({pendingKvOrders.length})
+          </div>
+          <div style={{ fontSize:11, color:T.med, marginBottom:12, lineHeight:1.5 }}>
+            Các đơn dưới đây đã được Sale chốt với mã vận đơn trong ghi chú.
+            Click 1 đơn → mã sẽ tự điền vào form bên dưới → bấm In là xong.
+          </div>
+          <div style={{ display:'flex', flexDirection:'column', gap:6 }}>
+            {pendingKvOrders.map((o: any) => {
+              const intent = o._intent || {}
+              const isGhtk = o._kind === 'ghtk' || o.dropship_carrier === 'ghtk'
+              const detectedCode = intent.code || o.dropship_code || ''
+              const isSelected = linkedOrderCode === o.order_code
+              return (
+                <div key={o.order_code}
+                  onClick={() => {
+                    setCarrier(isGhtk ? 'ghtk' : 'viettel_post')
+                    setCode(detectedCode)
+                    setLinkedOrderCode(o.order_code)
+                    setNote(`Đơn ${o.order_code} — ${o.customer_name || ''}`.trim())
+                  }}
+                  style={{ padding:'10px 12px', borderRadius:8, cursor:'pointer',
+                    background:'#fff',
+                    border:`2px solid ${isSelected ? (isGhtk ? T.green : T.red) : T.border}`,
+                    display:'flex', gap:10, alignItems:'center', flexWrap:'wrap',
+                    transition:'all 0.15s' }}>
+                  <span style={{ fontSize:10, padding:'2px 8px', borderRadius:10,
+                    background: isGhtk ? T.green : T.red, color:'#fff', fontWeight:700,
+                    whiteSpace:'nowrap' }}>
+                    {isGhtk ? 'GHTK' : 'VTP'}
+                  </span>
+                  <div style={{ flex:1, minWidth:180 }}>
+                    <div style={{ display:'flex', gap:8, alignItems:'center', flexWrap:'wrap' }}>
+                      <span style={{ fontWeight:700, color:T.dark, fontSize:13 }}>{o.order_code}</span>
+                      <span style={{ color:T.med, fontSize:11 }}>{o.customer_name}</span>
+                    </div>
+                    <div style={{ fontSize:10, color:T.light, marginTop:2,
+                      fontStyle:'italic', lineHeight:1.4,
+                      maxHeight:32, overflow:'hidden', textOverflow:'ellipsis' }}>
+                      💬 {o.description_kv || '—'}
+                    </div>
+                  </div>
+                  {detectedCode && (
+                    <span style={{ fontFamily:'Courier New, monospace', fontSize:13,
+                      fontWeight:700, color: isGhtk ? T.green : T.red, letterSpacing:1,
+                      padding:'4px 8px', background: (isGhtk ? T.greenBg : T.redBg),
+                      borderRadius:4, whiteSpace:'nowrap' }}>
+                      {detectedCode}
+                    </span>
+                  )}
+                  {!detectedCode && (
+                    <span style={{ fontSize:10, color:T.amber, fontWeight:600,
+                      padding:'3px 8px', background:T.amberBg, borderRadius:10 }}>
+                      ⚠️ Chưa có mã — nhập tay
+                    </span>
+                  )}
+                  {isSelected && (
+                    <span style={{ fontSize:10, color: isGhtk ? T.green : T.red,
+                      fontWeight:700, marginLeft:4 }}>
+                      ✓ Đã chọn
+                    </span>
+                  )}
+                </div>
+              )
+            })}
+          </div>
+        </Card>
+      )}
+
       {/* Form in */}
       <Card style={{ padding:mobile?14:20, marginBottom:16 }}>
         <div style={{ fontSize:14, fontWeight:700, color:T.dark, marginBottom:12,
-          paddingBottom:10, borderBottom:`1px solid ${T.border}` }}>
-          🏷 In mã đơn dropshipping
+          paddingBottom:10, borderBottom:`1px solid ${T.border}`,
+          display:'flex', justifyContent:'space-between', alignItems:'center', flexWrap:'wrap', gap:8 }}>
+          <span>🏷 In mã đơn dropshipping</span>
+          {linkedOrderCode && (
+            <span style={{ fontSize:11, color:T.gold, background:T.goldBg,
+              padding:'3px 10px', borderRadius:12, fontWeight:600 }}>
+              🔗 Gắn với đơn KV: <b>{linkedOrderCode}</b>
+              <button onClick={() => {
+                setLinkedOrderCode(''); setCode(''); setNote('')
+              }}
+                style={{ marginLeft:6, border:'none', background:'transparent', color:T.red,
+                  cursor:'pointer', fontSize:11, fontFamily:'inherit', padding:0 }}>
+                ✕ Bỏ gắn
+              </button>
+            </span>
+          )}
         </div>
 
         {/* Chọn loại */}
