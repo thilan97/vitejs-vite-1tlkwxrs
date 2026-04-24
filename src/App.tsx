@@ -12,7 +12,7 @@ const db = createClient(SUPABASE_URL, SUPABASE_KEY)
 // APP_VERSION — dùng để invalidate cache localStorage mỗi khi deploy version mới
 // (ngăn bug quyền user bị "reset" do cache position cũ sau deploy)
 // ⚠️ MỖI LẦN DEPLOY FEATURE MỚI CÓ PERMISSION MỚI, BUMP SỐ NÀY:
-const APP_VERSION = '2026.04.23.v124'
+const APP_VERSION = '2026.04.23.v125'
 
 // ════════════════════════════════════════════════════════════════
 // AUDIT LOG — ghi nhận các hành động phá hoại data để trace lại
@@ -29047,7 +29047,7 @@ function GhtkModule({ user, allUsers, mobile }: any) {
   const perm = getPerm(user)
 
   // Tabs mặc định theo quyền: Sale vào Chờ điền, Kho vào Chờ cân
-  const [tab, setTab] = useState<'pending_info'|'pending_weight'|'ready'|'created'|'delivered'|'settings'>(
+  const [tab, setTab] = useState<'pending_info'|'pending_weight'|'ready'|'created'|'delivered'|'dropship'|'settings'>(
     perm.ghtkFillCustomer && !perm.ghtkWeight ? 'pending_info' : 'pending_weight'
   )
 
@@ -29151,6 +29151,7 @@ function GhtkModule({ user, allUsers, mobile }: any) {
     { id:'ready',          label:'🚚 Sẵn sàng tạo',    count: categorized.ready.length,          show: perm.ghtkPrintLabel || perm.ghtkWeight },
     { id:'created',        label:'🖨 Đã tạo đơn',      count: categorized.created.length,        show: true },
     { id:'delivered',      label:'📦 Đã giao',         count: categorized.delivered.length,      show: true },
+    { id:'dropship',       label:'🏷 In mã dropship',  count: 0,                                  show: perm.ghtkPrintLabel || perm.ghtkSettings },
     { id:'settings',       label:'⚙️ Cấu hình',        count: 0,                                  show: perm.ghtkSettings },
   ].filter(t => t.show)
 
@@ -29196,6 +29197,8 @@ function GhtkModule({ user, allUsers, mobile }: any) {
       {/* Content */}
       {tab === 'settings' ? (
         <GhtkSettingsPanel user={user} mobile={mobile}/>
+      ) : tab === 'dropship' ? (
+        <GhtkDropshipPrintPanel user={user} mobile={mobile}/>
       ) : (
         <>
           {/* Search */}
@@ -30183,6 +30186,393 @@ function GhtkPrintLabelButton({ order: o, user, onPrinted, compact }: any) {
         </div>
       )}
     </div>
+  )
+}
+
+
+// ══════════════════════════════════════════════════════════════════════
+// v125: GHTK Dropship Print Panel — In mã đơn dropshipping (barcode / text)
+// ══════════════════════════════════════════════════════════════════════
+
+// ─── Code128 encoder (subset B/C auto) ───────────────────────────────
+// Trả về mảng số (widths) đại diện bar/space pattern
+const CODE128_PATTERNS: number[][] = [
+  [2,1,2,2,2,2],[2,2,2,1,2,2],[2,2,2,2,2,1],[1,2,1,2,2,3],[1,2,1,3,2,2],
+  [1,3,1,2,2,2],[1,2,2,2,1,3],[1,2,2,3,1,2],[1,3,2,2,1,2],[2,2,1,2,1,3],
+  [2,2,1,3,1,2],[2,3,1,2,1,2],[1,1,2,2,3,2],[1,2,2,1,3,2],[1,2,2,2,3,1],
+  [1,1,3,2,2,2],[1,2,3,1,2,2],[1,2,3,2,2,1],[2,2,3,2,1,1],[2,2,1,1,3,2],
+  [2,2,1,2,3,1],[2,1,3,2,1,2],[2,2,3,1,1,2],[3,1,2,1,3,1],[3,1,1,2,2,2],
+  [3,2,1,1,2,2],[3,2,1,2,2,1],[3,1,2,2,1,2],[3,2,2,1,1,2],[3,2,2,2,1,1],
+  [2,1,2,1,2,3],[2,1,2,3,2,1],[2,3,2,1,2,1],[1,1,1,3,2,3],[1,3,1,1,2,3],
+  [1,3,1,3,2,1],[1,1,2,3,1,3],[1,3,2,1,1,3],[1,3,2,3,1,1],[2,1,1,3,1,3],
+  [2,3,1,1,1,3],[2,3,1,3,1,1],[1,1,2,1,3,3],[1,1,2,3,3,1],[1,3,2,1,3,1],
+  [1,1,3,1,2,3],[1,1,3,3,2,1],[1,3,3,1,2,1],[3,1,3,1,2,1],[2,1,1,3,3,1],
+  [2,3,1,1,3,1],[2,1,3,1,1,3],[2,1,3,3,1,1],[2,1,3,1,3,1],[3,1,1,1,2,3],
+  [3,1,1,3,2,1],[3,3,1,1,2,1],[3,1,2,1,1,3],[3,1,2,3,1,1],[3,3,2,1,1,1],
+  [3,1,4,1,1,1],[2,2,1,4,1,1],[4,3,1,1,1,1],[1,1,1,2,2,4],[1,1,1,4,2,2],
+  [1,2,1,1,2,4],[1,2,1,4,2,1],[1,4,1,1,2,2],[1,4,1,2,2,1],[1,1,2,2,1,4],
+  [1,1,2,4,1,2],[1,2,2,1,1,4],[1,2,2,4,1,1],[1,4,2,1,1,2],[1,4,2,2,1,1],
+  [2,4,1,2,1,1],[2,2,1,1,1,4],[4,1,3,1,1,1],[2,4,1,1,1,2],[1,3,4,1,1,1],
+  [1,1,1,2,4,2],[1,2,1,1,4,2],[1,2,1,2,4,1],[1,1,4,2,1,2],[1,2,4,1,1,2],
+  [1,2,4,2,1,1],[4,1,1,2,1,2],[4,2,1,1,1,2],[4,2,1,2,1,1],[2,1,2,1,4,1],
+  [2,1,4,1,2,1],[4,1,2,1,2,1],[1,1,1,1,4,3],[1,1,1,3,4,1],[1,3,1,1,4,1],
+  [1,1,4,1,1,3],[1,1,4,3,1,1],[4,1,1,1,1,3],[4,1,1,3,1,1],[1,1,3,1,4,1],
+  [1,1,4,1,3,1],[3,1,1,1,4,1],[4,1,1,1,3,1],[2,1,1,4,1,2],[2,1,1,2,1,4],
+  [2,1,1,2,3,2],[2,3,3,1,1,1,2],
+]
+
+// Encode dãy số (Code128-C = ghép cặp 2 số → 1 char)
+function encodeCode128Numeric(text: string): number[] {
+  // Chỉ nhận số; nếu lẻ → dùng Code128-B cho chữ số cuối
+  const digits = text.replace(/\D/g, '')
+  if (!digits) return []
+
+  const codes: number[] = []
+  codes.push(105) // Start C
+  let i = 0
+  const isEvenLen = digits.length % 2 === 0
+
+  if (isEvenLen) {
+    while (i < digits.length) {
+      codes.push(parseInt(digits.slice(i, i+2), 10))
+      i += 2
+    }
+  } else {
+    // Nếu lẻ: dùng Set C cho (n-1) số đầu, shift sang B cho số cuối
+    while (i < digits.length - 1) {
+      codes.push(parseInt(digits.slice(i, i+2), 10))
+      i += 2
+    }
+    codes.push(100) // Code B
+    codes.push(digits.charCodeAt(digits.length - 1) - 32) // Encode số cuối theo Set B
+  }
+
+  // Checksum
+  let sum = codes[0]
+  for (let k = 1; k < codes.length; k++) {
+    sum += codes[k] * k
+  }
+  codes.push(sum % 103)
+  codes.push(106) // Stop
+
+  return codes
+}
+
+// Render SVG barcode từ dãy số
+function renderCode128Svg(text: string, widthPx: number, heightPx: number): string {
+  const codes = encodeCode128Numeric(text)
+  if (codes.length === 0) return ''
+
+  // Build pattern: mỗi code = 6 bar/space widths (trừ stop = 7)
+  const widths: number[] = []
+  for (const c of codes) {
+    const pat = CODE128_PATTERNS[c] || CODE128_PATTERNS[0]
+    widths.push(...pat)
+  }
+
+  const totalUnits = widths.reduce((s, w) => s + w, 0)
+  const unit = widthPx / totalUnits
+
+  let x = 0
+  let svg = ''
+  for (let k = 0; k < widths.length; k++) {
+    const w = widths[k] * unit
+    if (k % 2 === 0) {
+      // Bar
+      svg += `<rect x="${x.toFixed(2)}" y="0" width="${w.toFixed(2)}" height="${heightPx}" fill="#000"/>`
+    }
+    x += w
+  }
+  return svg
+}
+
+function GhtkDropshipPrintPanel({ user, mobile }: any) {
+  const [carrier, setCarrier] = useState<'ghtk'|'viettel_post'>('ghtk')
+  const [code, setCode] = useState('')
+  const [note, setNote] = useState('')
+  const [history, setHistory] = useState<any[]>([])
+  const [loading, setLoading] = useState(true)
+  const [printing, setPrinting] = useState(false)
+
+  const fetchHistory = async () => {
+    setLoading(true)
+    const { data } = await db.from('dropship_prints')
+      .select('*').order('printed_at', { ascending: false }).limit(50)
+    setHistory(data || [])
+    setLoading(false)
+  }
+
+  useEffect(() => { fetchHistory() }, [])
+
+  // Validation
+  const cleaned = code.replace(/\D/g, '')
+  const valid = carrier === 'ghtk'
+    ? cleaned.length >= 9 && cleaned.length <= 15
+    : cleaned.length >= 10 && cleaned.length <= 15
+
+  const handlePrint = async () => {
+    if (!valid) { alert('❌ Mã không hợp lệ'); return }
+    setPrinting(true)
+    try {
+      // Tạo HTML in
+      const printWindow = window.open('', '_blank', 'width=600,height=400')
+      if (!printWindow) { alert('❌ Trình duyệt chặn popup. Hãy cho phép popup.'); return }
+
+      let body = ''
+      if (carrier === 'ghtk') {
+        const svgInner = renderCode128Svg(cleaned, 400, 120)
+        body = `
+          <div style="text-align:center; padding:20px;">
+            <svg width="400" height="120" xmlns="http://www.w3.org/2000/svg" style="display:block; margin:0 auto;">
+              ${svgInner}
+            </svg>
+            <div style="font-family:'Courier New',monospace; font-size:24px; font-weight:bold;
+              letter-spacing:4px; margin-top:8px;">${cleaned}</div>
+          </div>
+        `
+      } else {
+        // Viettel Post: text to giữa A7 (74mm × 105mm landscape)
+        body = `
+          <div style="width:100%; height:100vh; display:flex; align-items:center; justify-content:center;
+            font-family:'Arial Black',Arial,sans-serif; font-size:42px; font-weight:900; letter-spacing:3px;">
+            ${cleaned}
+          </div>
+        `
+      }
+
+      printWindow.document.write(`<!DOCTYPE html>
+<html>
+<head>
+<title>In mã ${carrier === 'ghtk' ? 'GHTK' : 'Viettel Post'} ${cleaned}</title>
+<style>
+  @page {
+    size: ${carrier === 'ghtk' ? '100mm 60mm' : 'A7 landscape'};
+    margin: ${carrier === 'ghtk' ? '4mm' : '2mm'};
+  }
+  body { margin:0; padding:0; font-family:Arial,sans-serif; }
+  @media print {
+    body { margin:0; }
+  }
+</style>
+</head>
+<body>
+${body}
+<script>
+  window.onload = function() {
+    setTimeout(function() {
+      window.print();
+      setTimeout(function() { window.close(); }, 500);
+    }, 200);
+  };
+</script>
+</body>
+</html>`)
+      printWindow.document.close()
+
+      // Log vào DB
+      await db.from('dropship_prints').insert({
+        carrier,
+        code: cleaned,
+        printed_by: user?.id || null,
+        printed_by_name: user?.name || null,
+        note: note.trim() || null,
+      })
+
+      // Clear form + refresh
+      setCode('')
+      setNote('')
+      fetchHistory()
+    } catch(e: any) {
+      alert('❌ Lỗi: ' + e.message)
+    } finally {
+      setPrinting(false)
+    }
+  }
+
+  // Preview
+  const previewSvg = (carrier === 'ghtk' && valid) ? renderCode128Svg(cleaned, mobile ? 300 : 400, 100) : ''
+
+  return (
+    <>
+      {/* Form in */}
+      <Card style={{ padding:mobile?14:20, marginBottom:16 }}>
+        <div style={{ fontSize:14, fontWeight:700, color:T.dark, marginBottom:12,
+          paddingBottom:10, borderBottom:`1px solid ${T.border}` }}>
+          🏷 In mã đơn dropshipping
+        </div>
+
+        {/* Chọn loại */}
+        <div style={{ marginBottom:14 }}>
+          <div style={{ fontSize:11, color:T.med, marginBottom:6, fontWeight:600 }}>Hãng vận chuyển</div>
+          <div style={{ display:'flex', gap:8 }}>
+            <button onClick={() => setCarrier('ghtk')}
+              style={{ flex:1, padding:'10px 0', borderRadius:8, cursor:'pointer',
+                fontFamily:'inherit', fontSize:13, fontWeight:700,
+                border:`2px solid ${carrier==='ghtk' ? T.green : T.border}`,
+                background: carrier==='ghtk' ? T.greenBg : '#fff',
+                color: carrier==='ghtk' ? T.green : T.med }}>
+              📦 GHTK (in barcode)
+            </button>
+            <button onClick={() => setCarrier('viettel_post')}
+              style={{ flex:1, padding:'10px 0', borderRadius:8, cursor:'pointer',
+                fontFamily:'inherit', fontSize:13, fontWeight:700,
+                border:`2px solid ${carrier==='viettel_post' ? T.red : T.border}`,
+                background: carrier==='viettel_post' ? T.redBg : '#fff',
+                color: carrier==='viettel_post' ? T.red : T.med }}>
+              📮 Viettel Post (in text A7)
+            </button>
+          </div>
+          <div style={{ fontSize:10, color:T.light, marginTop:6, lineHeight:1.4 }}>
+            {carrier === 'ghtk'
+              ? '💡 Sẽ in khổ 100×60mm với barcode Code128 + dãy số bên dưới.'
+              : '💡 Sẽ in khổ A7 ngang (105×74mm) với dãy số to ở giữa, không có barcode.'}
+          </div>
+        </div>
+
+        {/* Nhập mã */}
+        <div style={{ marginBottom:14 }}>
+          <div style={{ fontSize:11, color:T.med, marginBottom:6, fontWeight:600 }}>
+            Mã vận đơn <span style={{ color:T.red }}>*</span>
+          </div>
+          <input value={code}
+            onChange={e => setCode(e.target.value)}
+            placeholder={carrier === 'ghtk' ? 'VD: 1987997655 (9-15 số)' : 'VD: 123456789012 (10-15 số)'}
+            autoFocus
+            style={{ width:'100%', padding:'12px 14px', border:`2px solid ${valid ? T.green : (code ? T.amber : T.border)}`,
+              borderRadius:8, fontSize:18, fontFamily:'Courier New, monospace', fontWeight:700,
+              letterSpacing:2, color:T.dark, background:'#fff', outline:'none',
+              boxSizing:'border-box' as any }}/>
+          <div style={{ fontSize:10, color: valid ? T.green : (code ? T.amber : T.light),
+            marginTop:4, fontWeight:600 }}>
+            {!code ? `Cần ${carrier === 'ghtk' ? '9-15' : '10-15'} số`
+              : valid ? `✓ Mã hợp lệ (${cleaned.length} số)`
+              : `⚠️ Mã có ${cleaned.length} số — cần ${carrier === 'ghtk' ? '9-15' : '10-15'}`}
+          </div>
+        </div>
+
+        {/* Ghi chú (optional) */}
+        <div style={{ marginBottom:14 }}>
+          <div style={{ fontSize:11, color:T.med, marginBottom:6, fontWeight:600 }}>
+            Ghi chú (tuỳ chọn)
+          </div>
+          <input value={note}
+            onChange={e => setNote(e.target.value)}
+            placeholder="VD: Đơn shop ABC, KH đã cọc..."
+            maxLength={200}
+            style={{ width:'100%', padding:'8px 12px', border:`1px solid ${T.border}`,
+              borderRadius:6, fontSize:12, fontFamily:'inherit', color:T.dark,
+              background:'#fff', outline:'none', boxSizing:'border-box' as any }}/>
+        </div>
+
+        {/* Preview */}
+        {valid && (
+          <div style={{ padding:20, background:T.bg, borderRadius:8, marginBottom:14,
+            border:`1px dashed ${T.border}`, textAlign:'center' }}>
+            <div style={{ fontSize:10, color:T.light, marginBottom:10, fontWeight:600,
+              textTransform:'uppercase', letterSpacing:1 }}>
+              🔍 Preview (sẽ in thành)
+            </div>
+            {carrier === 'ghtk' ? (
+              <div style={{ background:'#fff', padding:16, borderRadius:4, display:'inline-block',
+                border:`1px solid ${T.border}` }}>
+                <svg width={mobile ? 300 : 400} height="100" xmlns="http://www.w3.org/2000/svg"
+                  dangerouslySetInnerHTML={{ __html: previewSvg }}/>
+                <div style={{ fontFamily:'Courier New, monospace', fontSize:20, fontWeight:700,
+                  letterSpacing:4, marginTop:6, color:'#000' }}>{cleaned}</div>
+              </div>
+            ) : (
+              <div style={{ background:'#fff', padding:'40px 20px', borderRadius:4, display:'inline-block',
+                border:`1px solid ${T.border}`, minWidth: mobile ? 280 : 380 }}>
+                <div style={{ fontFamily:'Arial Black, Arial, sans-serif',
+                  fontSize: mobile ? 28 : 40, fontWeight:900, letterSpacing:3, color:'#000' }}>
+                  {cleaned}
+                </div>
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* Action */}
+        <button onClick={handlePrint} disabled={!valid || printing}
+          style={{ width:'100%', padding:'14px', borderRadius:8, cursor: (!valid || printing)?'default':'pointer',
+            border:'none', background: valid ? T.gold : T.border,
+            color: valid ? '#fff' : T.light,
+            fontFamily:'inherit', fontSize:15, fontWeight:700 }}>
+          {printing ? '⏳ Đang in...' : `🖨 In ${carrier === 'ghtk' ? 'barcode GHTK' : 'mã Viettel Post'}`}
+        </button>
+      </Card>
+
+      {/* Lịch sử in */}
+      <Card style={{ padding:mobile?14:20 }}>
+        <div style={{ fontSize:13, fontWeight:700, color:T.dark, marginBottom:12,
+          paddingBottom:8, borderBottom:`1px solid ${T.border}`, display:'flex',
+          justifyContent:'space-between', alignItems:'center' }}>
+          <span>📋 Lịch sử in mã (50 gần nhất)</span>
+          <button onClick={fetchHistory}
+            style={{ padding:'3px 10px', borderRadius:12, border:`1px solid ${T.border}`,
+              background:'transparent', cursor:'pointer', fontFamily:'inherit', fontSize:10, color:T.med }}>
+            🔄
+          </button>
+        </div>
+
+        {loading ? (
+          <div style={{ padding:'20px', textAlign:'center', color:T.light, fontSize:12 }}>⏳ Đang tải...</div>
+        ) : history.length === 0 ? (
+          <div style={{ padding:'30px', textAlign:'center', color:T.light, fontSize:12 }}>
+            Chưa có lần in nào. In mã ở trên để bắt đầu.
+          </div>
+        ) : (
+          <div style={{ display:'flex', flexDirection:'column', gap:6 }}>
+            {history.map(h => {
+              const isGhtk = h.carrier === 'ghtk'
+              return (
+                <div key={h.id} style={{ padding:'8px 12px', borderRadius:6,
+                  background: isGhtk ? T.greenBg : T.redBg,
+                  border:`1px solid ${isGhtk ? T.green : T.red}33`,
+                  display:'flex', justifyContent:'space-between', alignItems:'center',
+                  gap:10, flexWrap:'wrap' }}>
+                  <div style={{ flex:1, minWidth:200 }}>
+                    <div style={{ display:'flex', gap:8, alignItems:'center' }}>
+                      <span style={{ fontSize:10, padding:'2px 6px', borderRadius:10,
+                        background: isGhtk ? T.green : T.red, color:'#fff', fontWeight:700 }}>
+                        {isGhtk ? 'GHTK' : 'VTP'}
+                      </span>
+                      <span style={{ fontFamily:'Courier New, monospace', fontSize:13,
+                        fontWeight:700, color:T.dark, letterSpacing:1 }}>
+                        {h.code}
+                      </span>
+                    </div>
+                    {h.note && (
+                      <div style={{ fontSize:10, color:T.med, marginTop:3, fontStyle:'italic' }}>
+                        💬 {h.note}
+                      </div>
+                    )}
+                  </div>
+                  <div style={{ fontSize:10, color:T.light, textAlign:'right' }}>
+                    <div>{h.printed_by_name || '—'}</div>
+                    <div>{new Date(h.printed_at).toLocaleString('vi-VN', {
+                      day:'2-digit', month:'2-digit', hour:'2-digit', minute:'2-digit'
+                    })}</div>
+                  </div>
+                  <button onClick={() => {
+                    setCarrier(h.carrier)
+                    setCode(h.code)
+                    setNote(h.note || '')
+                    window.scrollTo({ top:0, behavior:'smooth' })
+                  }}
+                    style={{ padding:'4px 10px', borderRadius:12, cursor:'pointer',
+                      border:`1px solid ${isGhtk ? T.green : T.red}`,
+                      background:'#fff', color: isGhtk ? T.green : T.red,
+                      fontFamily:'inherit', fontSize:10, fontWeight:600 }}>
+                    🔁 In lại
+                  </button>
+                </div>
+              )
+            })}
+          </div>
+        )}
+      </Card>
+    </>
   )
 }
 
