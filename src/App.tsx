@@ -2200,7 +2200,7 @@ function Dashboard({ user, checklist, tasks, allUsers, attendance, leaveRequests
   const myKvRank = myKvEntry ? kvSalesRanking.findIndex((r: any) => r === myKvEntry) + 1 : 0
 
   return (
-    <div style={{ padding:`0 ${p} ${p}` }}>
+    <PageContainer mobile={mobile}>
       <AlertBanner user={user} checklist={checklist} leaveRequests={leaveRequests} otRequests={otRequests||[]} allUsers={allUsers}/>
       <Topbar mobile={mobile}
         title={perm.viewAllDashboard?'Dashboard':perm.viewDeptChecklist?`Dashboard — ${user.dept_name}`:'Tổng quan'}
@@ -2608,7 +2608,7 @@ function Dashboard({ user, checklist, tasks, allUsers, attendance, leaveRequests
           )}
         </Card>
       )}
-    </div>
+    </PageContainer>
   )
 }
 
@@ -17564,7 +17564,7 @@ function PickingModule({ user, allUsers, mobile, products }: any) {
   const showList = !mobile || !showDetail
 
   return (
-    <div style={{ padding:`0 ${p} ${mobile?'80px':p}` }}>
+    <PageContainer mobile={mobile}>
       <Topbar mobile={mobile} title="📥 Nhặt hàng"
         subtitle={`${todoOrders.length} đơn chờ nhặt • ${doneTodayOrders.length} đã xong hôm nay`}
         action={
@@ -18316,7 +18316,7 @@ function ProductImageModalV2({ code, onClose }: any) {
           </div>
         )}
       </div>
-    </div>
+    </PageContainer>
   )
 }
 
@@ -18857,7 +18857,7 @@ function PackingModule({ user, allUsers, mobile, products }: any) {
   const displayOrders = tab === 'pending' ? pendingOrds : doneTodayOrds
 
   return (
-    <div style={{ padding:`0 ${p} ${mobile?'80px':p}` }}>
+    <PageContainer mobile={mobile}>
       <Topbar mobile={mobile} title="📸 Đóng đơn"
         subtitle={`${pendingOrds.length} chờ đóng • ${doneTodayOrds.length} đã xong hôm nay`}
         action={
@@ -20375,7 +20375,7 @@ function PackingDetailPanel({ ord, mobile, user, allUsers, products, allOrders, 
           </div>
         </div>
       )}
-    </div>
+    </PageContainer>
   )
 }
 
@@ -28676,7 +28676,7 @@ function GalleryModule({ user, allUsers, mobile }: any) {
   }
 
   return (
-    <div style={{ padding:`0 ${p} ${mobile?'80px':p}` }}>
+    <PageContainer mobile={mobile}>
       <Topbar mobile={mobile} title="🖼️ Gallery ảnh hàng đi"
         subtitle={`${stats.totalOrders} đơn • ${stats.totalPhotos} ảnh`}/>
 
@@ -28916,7 +28916,7 @@ function GalleryModule({ user, allUsers, mobile }: any) {
               i === photoIdx ? { ...p, rot: newRot } : p))
           }}/>
       )}
-    </div>
+    </PageContainer>
   )
 }
 
