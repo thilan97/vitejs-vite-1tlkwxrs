@@ -2364,7 +2364,7 @@ function Dashboard({ user, checklist, tasks, allUsers, attendance, leaveRequests
   const handleSyncKv = async () => {
     if (kvSyncing) return
     if (!perm.viewAllDashboard) { alert('Chỉ admin/GĐ mới sync được'); return }
-    if (!confirm('Sync doanh số KiotViet cho tháng này (đến 0h hôm nay)?')) return
+    if (!(await confirmDialog({ title: 'Sync doanh số KiotViet cho tháng này (đến 0h hôm nay)?' }))) return
     setKvSyncing(true)
     try {
       const res = await fetch(`${SUPABASE_URL}/functions/v1/kiotviet-sales-revenue`, {
@@ -3736,7 +3736,7 @@ function Templates({ templates, setTemplates, allUsers, mobile }: any) {
   }
 
   const remove = async (id: string) => {
-    if (!confirm('Xóa template này?')) return
+    if (!(await confirmDialog({ title: 'Xoá template này?', confirmText: 'Xoá', tone: 'danger' }))) return
     setTemplates((prev: any) => prev.filter((t: any) => t.id !== id))
     await db.from('checklist_templates').delete().eq('id', id)
   }
@@ -4615,7 +4615,7 @@ function Overtime({ user, allUsers, mobile }: any) {
   }
 
   const remove = async (id: string) => {
-    if (!confirm('Xóa đơn OT này?')) return
+    if (!(await confirmDialog({ title: 'Xoá đơn OT này?', confirmText: 'Xoá', tone: 'danger' }))) return
     setRequests(prev => prev.filter((r: any) => r.id!==id))
     await db.from('overtime_requests').delete().eq('id', id)
   }
@@ -4659,7 +4659,10 @@ function Overtime({ user, allUsers, mobile }: any) {
               style={{ padding:'7px 11px', border:`1px solid ${T.border}`, borderRadius:8, fontSize:13, fontFamily:'inherit', color:T.dark, background:'#fff',colorScheme:'light', cursor:'pointer' }}/>
           </div>
           {otByUser.length===0 ? (
-            <EmptyState icon={Ico.clock} title={`Không có OT trong tháng ${mmo}/${myr}`}/>
+            <EmptyState icon={Ico.clock}
+              title={`Không có OT trong tháng ${mmo}/${myr}`}
+              description="Tháng này chưa có ai đăng ký làm thêm giờ."
+              hint="💡 OT được tính vào bảng lương cuối tháng"/>
           ) : (
             <Card style={{ padding:0, overflow:'hidden' }}>
               <div style={{ overflowX:'auto' }}>
@@ -4986,7 +4989,7 @@ function Leave({ user, allUsers, leaveRequests, setLeaveRequests, mobile }: any)
   }
 
   const remove = async (id: string) => {
-    if (!confirm('Xóa đơn nghỉ phép này?')) return
+    if (!(await confirmDialog({ title: 'Xoá đơn nghỉ phép này?', confirmText: 'Xoá', tone: 'danger' }))) return
     setLeaveRequests((prev: any) => prev.filter((r: any) => r.id !== id))
     await db.from('leave_requests').delete().eq('id', id)
     // Xóa khỏi localStorage backup
@@ -5287,7 +5290,7 @@ function Announcements({ user, allUsers, mobile }: any) {
   }
 
   const remove = async (id: string) => {
-    if (!confirm('Xóa thông báo này?')) return
+    if (!(await confirmDialog({ title: 'Xoá thông báo này?', confirmText: 'Xoá', tone: 'danger' }))) return
     setItems(prev => prev.filter(a => a.id!==id))
     await db.from('announcements').delete().eq('id', id)
   }
@@ -5420,7 +5423,7 @@ function MgrShortageRow({ item, idx, total, products, norm, setItems, mobile: is
     await db.from('shortage_items').update(upd).eq('id', item.id)
   }
   const remove = async () => {
-    if (!confirm('Xóa mã này?')) return
+    if (!(await confirmDialog({ title: 'Xoá mã này?', confirmText: 'Xoá', tone: 'danger' }))) return
     setItems((prev: any) => prev.filter((i: any) => i.id!==item.id))
     await db.from('shortage_items').delete().eq('id', item.id)
   }
@@ -6086,7 +6089,7 @@ function ShortageItems({ user, allUsers, mobile, products, setProducts }: any) {
                       {item.status !== 'arrived' && item.status !== 'burned' && (
                         <button onClick={async e => {
                           e.stopPropagation()
-                          if (!confirm('Xác nhận hàng đã về kho?')) return
+                          if (!(await confirmDialog({ title: 'Xác nhận hàng đã về kho?' }))) return
                           await updateItem(item.id, { status:'arrived', arrived_at:new Date().toISOString() })
                         }}
                           style={{ padding:'4px 12px', borderRadius:7, border:`1.5px solid ${T.green}`,
@@ -6105,7 +6108,7 @@ function ShortageItems({ user, allUsers, mobile, products, setProducts }: any) {
                             </span>
                             <button onClick={async e => {
                               e.stopPropagation()
-                              if (!confirm('Xóa mã này khỏi danh sách?')) return
+                              if (!(await confirmDialog({ title: 'Xoá mã này khỏi danh sách?', confirmText: 'Xoá', tone: 'danger' }))) return
                               setItems(prev => prev.filter(i => i.id !== item.id))
                               await db.from('shortage_items').delete().eq('id', item.id)
                             }}
@@ -6124,7 +6127,7 @@ function ShortageItems({ user, allUsers, mobile, products, setProducts }: any) {
                         return (
                           <button onClick={async e => {
                             e.stopPropagation()
-                            if (!confirm('Xóa mã này khỏi danh sách?')) return
+                            if (!(await confirmDialog({ title: 'Xoá mã này khỏi danh sách?', confirmText: 'Xoá', tone: 'danger' }))) return
                             const reporters = (item.reporters||[]).filter((r: any) => r.user_id !== user.id)
                             if (reporters.length === 0 || getPerm(user).viewAllDashboard) {
                               setItems(prev => prev.filter(i => i.id !== item.id))
@@ -7084,7 +7087,7 @@ function ReturnItems({ user, allUsers, products, mobile }: any) {
   }
 
   const delSlip = async (slip_id: string) => {
-    if (!confirm('Xóa toàn bộ phiếu hoàn này?')) return
+    if (!(await confirmDialog({ title: 'Xoá toàn bộ phiếu hoàn này?', confirmText: 'Xoá', tone: 'danger' }))) return
     const ids = items.filter((i: any) => (i.slip_id||i.id)===slip_id).map((i: any) => i.id)
     setItems(prev => prev.filter(i => !ids.includes(i.id)))
     for (const id of ids) await db.from('return_items').delete().eq('id', id)
@@ -7151,7 +7154,7 @@ function ReturnItems({ user, allUsers, products, mobile }: any) {
   }
 
   const removeInvoicePhoto = async (slip: any, photoIdx: number) => {
-    if (!confirm('Xoá ảnh hóa đơn này?')) return
+    if (!(await confirmDialog({ title: 'Xoá ảnh hóa đơn này?', confirmText: 'Xoá', tone: 'danger' }))) return
     const existing = slip.return_invoice_photos || []
     const updated = existing.filter((_: any, i: number) => i !== photoIdx)
     const ids = slip.lines.map((l: any) => l.id)
@@ -9006,7 +9009,7 @@ function Settings({ user, setUser, settings, setSettings, onManualReset, mobile,
               {saved && <span style={{ color:T.green, fontSize:12 }}>✅ Đã lưu!</span>}
               <div style={{ flex:1 }}/>
               <GoldBtn outline small disabled={resetting}
-                onClick={async () => { if (!confirm('Reset checklist ngay?')) return; setResetting(true); await onManualReset(); setResetting(false) }}>
+                onClick={async () => { if (!(await confirmDialog({ title: 'Reset checklist ngay?' }))) return; setResetting(true); await onManualReset(); setResetting(false) }}>
                 {resetting ? 'Đang reset...' : '🔄 Reset ngay'}
               </GoldBtn>
             </div>
@@ -11272,14 +11275,14 @@ function WrongOrders({ user, allUsers, wrongOrders, setWrongOrders, mobile }: an
   }
 
   const resolve = async (id: string) => {
-    if (!confirm('Xác nhận đơn này đã được xử lý xong?')) return
+    if (!(await confirmDialog({ title: 'Xác nhận đơn này đã được xử lý xong?' }))) return
     const upd = { status:'resolved', resolved_by:user.id, resolved_at:new Date().toISOString() }
     setWrongOrders((prev: any) => prev.map((r: any) => r.id===id ? {...r,...upd} : r))
     await db.from('wrong_orders').update(upd).eq('id', id)
   }
 
   const del = async (id: string) => {
-    if (!confirm('Xóa đơn sai này?')) return
+    if (!(await confirmDialog({ title: 'Xoá đơn sai này?', confirmText: 'Xoá', tone: 'danger' }))) return
     setWrongOrders((prev: any) => prev.filter((r: any) => r.id!==id))
     await db.from('wrong_orders').delete().eq('id', id)
   }
@@ -12305,7 +12308,7 @@ function InventoryModule({ user, allUsers, products, invSessions, setInvSessions
     if (!canManage && tab === 'overview') setTab('check')
   }, [canManage])
 
-  if (loading) return <div style={{padding:p,textAlign:'center',color:T.light,paddingTop:40}}>⏳ Đang tải dữ liệu...</div>
+  if (loading) return <div style={{ padding:p }}><SkeletonList rows={5} mobile={mobile}/></div>
 
   // Mobile check mode
   if (mobileCheck && openSession && myChecks.length > 0) return (
@@ -15031,7 +15034,7 @@ function BrandProgramsTab({ user, mobile, products, allUsers,
   }
 
   const deleteProg = async (id: string) => {
-    if (!confirm('Xóa chương trình này?')) return
+    if (!(await confirmDialog({ title: 'Xoá chương trình này?', confirmText: 'Xoá', tone: 'danger' }))) return
     await db.from('brand_programs').delete().eq('id', id)
     setBrandPrograms((prev: any[]) => prev.filter((p: any) => p.id!==id))
   }
@@ -16737,7 +16740,7 @@ function SupplierManagerTab({ suppliers, setSuppliers, accounts, setAccounts, us
   }
 
   const deleteAcc = async (accId: string) => {
-    if (!confirm('Xóa tài khoản này?')) return
+    if (!(await confirmDialog({ title: 'Xoá tài khoản này?', confirmText: 'Xoá', tone: 'danger' }))) return
     await db.from('supplier_accounts').update({ active:false }).eq('id', accId)
     setAccounts((prev: any[]) => prev.map((a: any) => a.id===accId ? {...a,active:false} : a))
   }
@@ -18066,7 +18069,7 @@ function PickingModule({ user, allUsers, mobile, products }: any) {
     if (!ord) return
     const allPicked = (ord.items||[]).every((it: any) => (it.picked_qty||0) + (it.short_qty||0) >= it.qty)
     if (!allPicked) {
-      if (!confirm('Còn SP chưa nhặt đủ. Xác nhận hoàn tất nhặt?')) return
+      if (!(await confirmDialog({ title: 'Còn SP chưa nhặt đủ. Xác nhận hoàn tất nhặt?' }))) return
     }
     const upd: any = {
       status: 'packing',
@@ -18082,7 +18085,7 @@ function PickingModule({ user, allUsers, mobile, products }: any) {
     toast.success('Đã hoàn tất nhặt, đơn chuyển sang bước Đóng hàng')
   }
 
-  if (loading) return <div style={{ padding:p, textAlign:'center', color:T.light, paddingTop:40 }}>⏳ Đang tải...</div>
+  if (loading) return <div style={{ padding:p }}><SkeletonList rows={5} mobile={mobile}/></div>
 
   const selected = selectedCode ? orders.find((o: any) => o.order_code === selectedCode) : null
 
@@ -19356,7 +19359,7 @@ function PackingModule({ user, allUsers, mobile, products }: any) {
     return true
   }
 
-  if (loading) return <div style={{ padding:p, textAlign:'center', color:T.light, paddingTop:40 }}>⏳ Đang tải...</div>
+  if (loading) return <div style={{ padding:p }}><SkeletonList rows={5} mobile={mobile}/></div>
 
   const tryOpenOrder = (orderCode: string) => {
     const ord = orders.find((o: any) => o.order_code === orderCode)
@@ -20851,8 +20854,8 @@ function PackingDetailPanel({ ord, mobile, user, allUsers, products, allOrders, 
                   <div style={{ display:'flex', gap:8, justifyContent:'flex-end', marginTop:12,
                     paddingTop:12, borderTop:`1px solid ${T.border}` }}>
                     {curNote && (
-                      <button onClick={() => {
-                        if (!confirm('Xoá ghi chú này?')) return
+                      <button onClick={async () => {
+                        if (!(await confirmDialog({ title: 'Xoá ghi chú này?', confirmText: 'Xoá', tone: 'danger' }))) return
                         const updated = (ord.photos_picked || []).map((p: any, i: number) => {
                           if (i !== editingPickedNoteIdx) return p
                           const base = typeof p === 'string' ? { url: p } : { ...p }
@@ -20977,7 +20980,7 @@ function PhotoSection({ title, subtitle, photos, min, max, readOnly, orderCode, 
 
   const deletePhoto = async (idx: number) => {
     if (readOnly) return
-    if (!confirm('Xóa ảnh này?')) return
+    if (!(await confirmDialog({ title: 'Xoá ảnh này?', confirmText: 'Xoá', tone: 'danger' }))) return
     const photo = photos[idx]
     const url = getUrl(photo)
     const aiUrl = typeof photo === 'object' ? (photo?.ai_url || '') : ''
@@ -21320,7 +21323,7 @@ function PersonalNotesModule({ user, mobile }: any) {
 
   // Delete note
   const deleteNote = async (id: string) => {
-    if (!confirm('Xoá ghi chú này?')) return
+    if (!(await confirmDialog({ title: 'Xoá ghi chú này?', confirmText: 'Xoá', tone: 'danger' }))) return
     const { error } = await db.from('personal_notes').delete().eq('id', id).eq('user_id', user.id)
     if (error) { toast.error('Lỗi: ' + error.message); return }
     setNotes(notes.filter(n => n.id !== id))
@@ -23498,7 +23501,7 @@ function AuditLogModule({ user, allUsers, mobile }: any) {
         // Restore session + checks
         const sessExists = await db.from('inventory_sessions').select('id').eq('id', snap.session.id).maybeSingle()
         if (sessExists.data) {
-          if (!confirm('Phiên KK này đã tồn tại lại. Overwrite không?')) return
+          if (!(await confirmDialog({ title: 'Phiên KK này đã tồn tại lại. Overwrite không?' }))) return
         }
         await db.from('inventory_sessions').upsert(snap.session)
         if (snap.checks.length > 0) {
@@ -23550,7 +23553,7 @@ function AuditLogModule({ user, allUsers, mobile }: any) {
     'packing_workflow': 'Đơn nhặt/đóng',
   } as any)[t] || t
 
-  if (loading) return <div style={{ padding:p, textAlign:'center', color:T.light, paddingTop:40 }}>⏳ Đang tải...</div>
+  if (loading) return <div style={{ padding:p }}><SkeletonList rows={5} mobile={mobile}/></div>
 
   return (
     <PageContainer mobile={mobile}>
@@ -23833,7 +23836,7 @@ function PriorityAckModal({ user, onClose }: any) {
         </div>
 
         <div style={{ padding:20 }}>
-          {loading && <div style={{ textAlign:'center', color:T.light }}>⏳ Đang tải...</div>}
+          {loading && <SkeletonList rows={3}/>}
           {!loading && pending.length === 0 && (
             <div style={{ textAlign:'center', padding:30, color:T.green, fontWeight:600, fontSize:14 }}>
               ✅ Không còn phiếu ưu tiên nào chờ xử lý!
@@ -24018,7 +24021,7 @@ function PriorityRequestModule({ user, allUsers, mobile }: any) {
     fetchData()
   }
 
-  if (loading) return <div style={{ padding:p, textAlign:'center', color:T.light, paddingTop:40 }}>⏳ Đang tải...</div>
+  if (loading) return <div style={{ padding:p }}><SkeletonList rows={5} mobile={mobile}/></div>
 
   return (
     <PageContainer mobile={mobile}>
@@ -27531,7 +27534,7 @@ function ErrorReportModule({ user, allUsers, mobile }: any) {
       alert('Vui lòng mô tả cách xử lý lỗi'); return
     }
     if (resolvePhotos.length === 0) {
-      if (!confirm('⚠️ Bạn chưa chụp ảnh phần đã xử lý. Tiếp tục?')) return
+      if (!(await confirmDialog({ title: '⚠️ Bạn chưa chụp ảnh phần đã xử lý. Tiếp tục?' }))) return
     }
     setResolving(true)
     const upd = {
@@ -27551,7 +27554,7 @@ function ErrorReportModule({ user, allUsers, mobile }: any) {
   // Admin push người bị báo cáo xử lý
   const pushReport = async () => {
     if (!selected) return
-    if (!confirm('🔔 Nhắc nhở người bị báo cáo xử lý phiếu này?')) return
+    if (!(await confirmDialog({ title: '🔔 Nhắc nhở người bị báo cáo xử lý phiếu này?' }))) return
     setPushing(true)
     const newCount = (selected.push_count || 0) + 1
     const upd = {
@@ -28099,7 +28102,7 @@ function ErrorReportModule({ user, allUsers, mobile }: any) {
 
       {/* List */}
       {loading ? (
-        <div style={{ textAlign:'center', color:T.light, padding:40 }}>⏳ Đang tải...</div>
+        <SkeletonList rows={3}/>
       ) : visibleReports.length === 0 ? (
         <div style={{ textAlign:'center', color:T.light, padding:40, fontSize:13 }}>
           <div style={{ fontSize:32, marginBottom:8 }}>📋</div>
@@ -28225,7 +28228,7 @@ function SlowMovingModule({ user, allUsers, mobile }: any) {
   // ── Manual scan ──
   const scanNow = async () => {
     if (scanning) return
-    if (!confirm('Scan ngay sẽ mất 2-5 phút, quét 5000+ SP và invoices 60 ngày. Tiếp tục?')) return
+    if (!(await confirmDialog({ title: 'Scan ngay sẽ mất 2-5 phút, quét 5000+ SP và invoices 60 ngày. Tiếp tục?' }))) return
     setScanning(true)
     try {
       const res = await fetch(`${SUPABASE_URL}/functions/v1/kiotviet-slow-moving`, {
@@ -31798,8 +31801,8 @@ function GhtkBusShipPrintPanel({ user, mobile }: any) {
             paddingBottom:8, borderBottom:`1px solid ${T.border}`, display:'flex',
             justifyContent:'space-between', alignItems:'center' }}>
             <span>📋 Lịch sử in gần đây (tối đa 10)</span>
-            <button onClick={() => {
-              if (!confirm('Xoá lịch sử in?')) return
+            <button onClick={async () => {
+              if (!(await confirmDialog({ title: 'Xoá lịch sử in?', confirmText: 'Xoá', tone: 'danger' }))) return
               setHistory([])
               try { localStorage.removeItem('la_busship_history') } catch {}
             }}
