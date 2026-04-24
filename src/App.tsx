@@ -12,7 +12,7 @@ const db = createClient(SUPABASE_URL, SUPABASE_KEY)
 // APP_VERSION — dùng để invalidate cache localStorage mỗi khi deploy version mới
 // (ngăn bug quyền user bị "reset" do cache position cũ sau deploy)
 // ⚠️ MỖI LẦN DEPLOY FEATURE MỚI CÓ PERMISSION MỚI, BUMP SỐ NÀY:
-const APP_VERSION = '2026.04.24.v129'
+const APP_VERSION = '2026.04.24.v130'
 
 // ════════════════════════════════════════════════════════════════
 // AUDIT LOG — ghi nhận các hành động phá hoại data để trace lại
@@ -982,7 +982,145 @@ const Tabs = ({ value, onChange, items, style }: any) => (
 )
 
 // ── EmptyState — consistent empty-content placeholder ──
-const EmptyState = ({ icon, title, description, action }: any) => (
+// ══════════════════════════════════════════════════════════════════════
+// v130: Skeleton loader — thay cho ⏳ Đang tải...
+// ══════════════════════════════════════════════════════════════════════
+// Usage:
+//   {loading ? <SkeletonCard/> : <RealCard/>}
+//   {loading ? <SkeletonList rows={5}/> : rows.map(...)}
+//   {loading ? <SkeletonText width="60%"/> : <span>{name}</span>}
+//
+// Skeleton nên match layout thật → cảm giác nhanh hơn spinner.
+// ══════════════════════════════════════════════════════════════════════
+
+// Base skeleton element với shimmer animation
+const Skeleton = ({ width, height = 14, rounded = 4, style }: any) => (
+  <span style={{
+    display: 'inline-block',
+    width: width || '100%',
+    height,
+    borderRadius: rounded,
+    background: `linear-gradient(90deg, ${T.border} 0%, ${T.bg} 50%, ${T.border} 100%)`,
+    backgroundSize: '200% 100%',
+    animation: 'la-shimmer 1.5s ease-in-out infinite',
+    ...style,
+  }}/>
+)
+
+// Skeleton text line (nhiều kích thước)
+const SkeletonText = ({ width = '100%', size = 14 }: any) => (
+  <Skeleton width={width} height={size} rounded={3}/>
+)
+
+// Skeleton cả 1 Card (cho list items)
+const SkeletonCard = ({ mobile }: any) => (
+  <div style={{
+    background: T.card,
+    borderRadius: RD.md,
+    border: `1px solid ${T.border}`,
+    padding: mobile ? 12 : 14,
+    marginBottom: 10,
+    display: 'flex',
+    gap: 12,
+    alignItems: 'flex-start',
+  }}>
+    <Skeleton width={44} height={44} rounded={8} style={{ flexShrink: 0 }}/>
+    <div style={{ flex: 1, display: 'flex', flexDirection: 'column', gap: 6 }}>
+      <Skeleton width="70%" height={15}/>
+      <Skeleton width="45%" height={11}/>
+      <Skeleton width="60%" height={11}/>
+    </div>
+    <Skeleton width={60} height={24} rounded={12} style={{ flexShrink: 0 }}/>
+  </div>
+)
+
+// Skeleton list (N cards)
+const SkeletonList = ({ rows = 3, mobile }: any) => (
+  <div>
+    {Array.from({ length: rows }).map((_, i) => <SkeletonCard key={i} mobile={mobile}/>)}
+  </div>
+)
+
+// Skeleton cho 1 table row
+const SkeletonRow = ({ cols = 4 }: any) => (
+  <div style={{
+    display: 'grid',
+    gridTemplateColumns: `repeat(${cols}, 1fr)`,
+    gap: 12, padding: '10px 12px',
+    borderBottom: `1px solid ${T.border}`,
+  }}>
+    {Array.from({ length: cols }).map((_, i) => (
+      <SkeletonText key={i} width={i === 0 ? '80%' : '60%'}/>
+    ))}
+  </div>
+)
+
+// ══════════════════════════════════════════════════════════════════════
+// v130: ErrorState — lỗi có hướng dẫn + retry (không chỉ "❌ Lỗi: ...")
+// ══════════════════════════════════════════════════════════════════════
+// Usage:
+//   <ErrorState title="Không kết nối được GHTK"
+//     description="Kiểm tra mạng, hoặc thử lại sau 1 phút."
+//     onRetry={refetch}/>
+// ══════════════════════════════════════════════════════════════════════
+
+const ErrorState = ({ title, description, onRetry, retryLabel = 'Thử lại', tone = 'error' }: any) => {
+  const cfg: any = {
+    error:   { bg: T.redBg, color: T.red, icon: '⚠', border: T.red },
+    warning: { bg: T.amberBg, color: T.amber, icon: '!', border: T.amber },
+    info:    { bg: T.blueBg, color: T.blue, icon: 'i', border: T.blue },
+  }[tone] || { bg: T.redBg, color: T.red, icon: '⚠', border: T.red }
+
+  return (
+    <div style={{
+      textAlign: 'center',
+      padding: `${SP[6]}px ${SP[5]}px`,
+      background: T.card,
+      borderRadius: RD.lg,
+      border: `1px solid ${T.border}`,
+      maxWidth: 480,
+      margin: '0 auto',
+    }}>
+      <div style={{
+        display: 'inline-flex',
+        width: 48, height: 48, borderRadius: '50%',
+        background: cfg.bg, color: cfg.color,
+        alignItems: 'center', justifyContent: 'center',
+        fontSize: 22, fontWeight: 700,
+        marginBottom: SP[3],
+        border: `1.5px solid ${cfg.border}33`,
+      }}>
+        {cfg.icon}
+      </div>
+      <div style={{ fontSize: FS.md, fontWeight: 700, color: T.dark, marginBottom: SP[1] }}>
+        {title || 'Đã xảy ra lỗi'}
+      </div>
+      {description && (
+        <div style={{ fontSize: FS.sm, color: T.med, marginBottom: onRetry ? SP[4] : 0, lineHeight: 1.5 }}>
+          {description}
+        </div>
+      )}
+      {onRetry && (
+        <button onClick={onRetry}
+          style={{
+            padding: '9px 20px', borderRadius: RD.md,
+            background: T.gold, color: '#fff',
+            border: `1.5px solid ${T.gold}`,
+            fontSize: FS.md, fontWeight: 600, fontFamily: 'inherit',
+            cursor: 'pointer',
+            boxShadow: '0 2px 6px rgba(196,151,58,0.3)',
+          }}>
+          🔄 {retryLabel}
+        </button>
+      )}
+    </div>
+  )
+}
+
+// ══════════════════════════════════════════════════════════════════════
+// v130: EmptyState nâng cấp — hỗ trợ primary action + hint
+// ══════════════════════════════════════════════════════════════════════
+const EmptyState = ({ icon, title, description, action, hint }: any) => (
   <div style={{ textAlign:'center', padding:`${SP[8]}px ${SP[5]}px`,
     color:T.light }}>
     {icon && (
@@ -991,8 +1129,9 @@ const EmptyState = ({ icon, title, description, action }: any) => (
       </div>
     )}
     {title && <div style={{ fontSize:FS.md, color:T.med, marginBottom: description?SP[1]:0, fontWeight:600 }}>{title}</div>}
-    {description && <div style={{ fontSize:FS.sm, color:T.light, marginBottom:action?SP[3]:0 }}>{description}</div>}
-    {action}
+    {description && <div style={{ fontSize:FS.sm, color:T.light, marginBottom:action?SP[3]:0, lineHeight:1.5, maxWidth:360, margin:'0 auto' }}>{description}</div>}
+    {action && <div style={{ marginTop:SP[3] }}>{action}</div>}
+    {hint && <div style={{ fontSize:FS.xs, color:T.light, marginTop:SP[3], opacity:0.7, fontStyle:'italic' }}>{hint}</div>}
   </div>
 )
 
@@ -2978,7 +3117,12 @@ function Checklist({ user, checklist, setChecklist, addLog, allUsers, mobile }: 
   }
 
   const deleteItem = async (id: string) => {
-    if (!confirm('Xóa công việc này?')) return
+    if (!(await confirmDialog({
+      title: 'Xoá công việc này?',
+      message: 'Công việc sẽ bị xoá vĩnh viễn.',
+      confirmText: 'Xoá',
+      tone: 'danger',
+    }))) return
     setChecklist((prev: any) => prev.filter((c: any) => c.id !== id))
     await db.from('checklist').delete().eq('id', id)
   }
@@ -3102,7 +3246,10 @@ function Checklist({ user, checklist, setChecklist, addLog, allUsers, mobile }: 
 
       {/* ── Groups theo người ── */}
       {groups.length === 0 ? (
-        <EmptyState icon={Ico.checkBox} title="Không có checklist nào"/>
+        <EmptyState icon={Ico.checkBox}
+          title="Không có checklist nào"
+          description="Checklist sẽ xuất hiện khi được tạo từ Template (Cài đặt → Templates)."
+          hint="💡 Tạo checklist hàng ngày/tuần để đảm bảo công việc không bị bỏ sót"/>
       ) : (
         <div style={{ display:'flex', flexDirection:'column', gap:14 }}>
           {groups.map((g: any) => {
@@ -3321,7 +3468,12 @@ function Tasks({ user, tasks, setTasks, addLog, allUsers, mobile }: any) {
   }
 
   const del = async (id: string) => {
-    if (!confirm('Xóa task này?')) return
+    if (!(await confirmDialog({
+      title: 'Xoá task này?',
+      message: 'Task sẽ bị xoá vĩnh viễn và không thể khôi phục.',
+      confirmText: 'Xoá',
+      tone: 'danger',
+    }))) return
     setTasks((prev: any) => prev.filter((t: any) => t.id !== id))
     await db.from('tasks').delete().eq('id', id)
   }
@@ -3397,7 +3549,10 @@ function Tasks({ user, tasks, setTasks, addLog, allUsers, mobile }: any) {
       <FilterBar/>
 
       {mine.length === 0 ? (
-        <EmptyState icon={Ico.pin} title="Không có task nào"/>
+        <EmptyState icon={Ico.pin}
+          title="Không có task nào"
+          description="Tasks xuất hiện khi có người giao việc cho bạn, hoặc bạn tạo task mới."
+          hint="💡 Dùng Tasks để ghi nhớ công việc cần làm trong ngày"/>
       ) : mobile ? (
         <div style={{ display:'flex', flexDirection:'column', gap:10 }}>
           {mine.map((t: any) => {
@@ -5144,7 +5299,9 @@ function Announcements({ user, allUsers, mobile }: any) {
         action={canCreate && <GoldBtn small onClick={() => setShow(true)}>+ Tạo thông báo</GoldBtn>}/>
 
       {myItems.length===0 ? (
-        <EmptyState icon={Ico.megaphone} title="Chưa có thông báo nào"/>
+        <EmptyState icon={Ico.megaphone}
+          title="Chưa có thông báo nào"
+          description="Thông báo nội bộ từ ban quản lý sẽ xuất hiện tại đây."/>
       ) : (
         <div style={{ display:'flex', flexDirection:'column', gap:10 }}>
           {myItems.map(a => {
@@ -10425,6 +10582,19 @@ export default function App() {
         from { transform: rotate(0deg); }
         to { transform: rotate(360deg); }
       }
+
+      /* v130: Shimmer animation cho Skeleton loader */
+      @keyframes la-shimmer {
+        0%   { background-position: 200% 0; }
+        100% { background-position: -200% 0; }
+      }
+
+      /* v130: Fade-in cho content khi load xong */
+      @keyframes la-fade-in {
+        from { opacity: 0; transform: translateY(4px); }
+        to   { opacity: 1; transform: translateY(0); }
+      }
+      .la-fade-in { animation: la-fade-in 0.25s ease-out; }
     `
     if (!document.getElementById('la-global')) document.head.appendChild(style)
     return () => { const el = document.getElementById('la-global'); if (el) el.remove() }
@@ -29740,7 +29910,13 @@ function InventorySyncModule({ user, allUsers, mobile }: any) {
 
       {/* Table */}
       {loading ? (
-        <div style={{ padding:'40px 20px', textAlign:'center', color:T.light }}>⏳ Đang tải...</div>
+        <Card style={{ padding:0, overflow:'hidden' }}>
+          <SkeletonRow cols={6}/>
+          <SkeletonRow cols={6}/>
+          <SkeletonRow cols={6}/>
+          <SkeletonRow cols={6}/>
+          <SkeletonRow cols={6}/>
+        </Card>
       ) : displayed.length === 0 ? (
         <EmptyState icon={Ico.barChart}
           title={summary ? 'Không có mã lệch' : 'Chưa có dữ liệu sync'}
@@ -30093,7 +30269,7 @@ function GhtkModule({ user, allUsers, mobile }: any) {
           </Card>
 
           {loading ? (
-            <div style={{ padding:'40px 20px', textAlign:'center', color:T.light }}>⏳ Đang tải...</div>
+            <SkeletonList rows={4}/>
           ) : filtered.length === 0 ? (
             <EmptyState icon={Ico.truck}
               title={searchQ ? 'Không tìm thấy đơn' : (
@@ -31994,7 +32170,7 @@ ${body}
         </div>
 
         {loading ? (
-          <div style={{ padding:'20px', textAlign:'center', color:T.light, fontSize:12 }}>⏳ Đang tải...</div>
+          <SkeletonList rows={3}/>
         ) : history.length === 0 ? (
           <div style={{ padding:'30px', textAlign:'center', color:T.light, fontSize:12 }}>
             Chưa có lần in nào. In mã ở trên để bắt đầu.
