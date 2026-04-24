@@ -23748,6 +23748,7 @@ function PhotoGallery({ title, photos, allUsers, orderCode, kind }: any) {
   const getUrl = (p: any): string => typeof p === 'string' ? p : (p?.url || '')
   const getAt  = (p: any): string => typeof p === 'string' ? '' : (p?.at || '')
   const getBy  = (p: any): string => typeof p === 'string' ? '' : (p?.by || '')
+  const getNote = (p: any): string => typeof p === 'string' ? '' : (p?.note || '')
   const getName = (id: string) => allUsers.find((u: any) => u.id === id)?.name || ''
 
   // ── SHARE: tải ảnh về dạng blob → gắn vào navigator.share (native)
@@ -23887,21 +23888,40 @@ function PhotoGallery({ title, photos, allUsers, orderCode, kind }: any) {
       </div>
       <div style={{ display:'grid', gridTemplateColumns:'repeat(auto-fill, minmax(85px, 1fr))', gap:6 }}>
         {photos.map((p: any, i: number) => {
-          const url = getUrl(p)
-          const at  = getAt(p)
+          const url  = getUrl(p)
+          const at   = getAt(p)
+          const note = getNote(p)
           return (
-            <div key={i} style={{ position:'relative', borderRadius:6, overflow:'hidden',
-              border:`1px solid ${T.border}`, cursor:'pointer' }}
-              onClick={() => setPreviewIdx(i)}>
-              <div style={{ aspectRatio:'1/1', overflow:'hidden' }}>
-                <img src={url} alt="" style={{ width:'100%', height:'100%', objectFit:'cover', display:'block' }}/>
+            <div key={i} style={{ display:'flex', flexDirection:'column', gap:3 }}>
+              <div style={{ position:'relative', borderRadius:6, overflow:'hidden',
+                border:`1px solid ${note ? T.gold : T.border}`, cursor:'pointer',
+                boxShadow: note ? `0 0 0 1px ${T.gold}55` : 'none' }}
+                onClick={() => setPreviewIdx(i)}>
+                <div style={{ aspectRatio:'1/1', overflow:'hidden' }}>
+                  <img src={url} alt="" style={{ width:'100%', height:'100%', objectFit:'cover', display:'block' }}/>
+                </div>
+                {note && (
+                  <div style={{ position:'absolute', top:2, left:2, padding:'1px 5px',
+                    borderRadius:8, background:T.gold, color:'#fff',
+                    fontSize:9, fontWeight:700, lineHeight:1.4,
+                    boxShadow:'0 1px 2px rgba(0,0,0,0.2)' }}
+                    title={note}>💬</div>
+                )}
+                {at && (
+                  <div style={{ fontSize:8, color:T.light, padding:'2px 3px', background:T.bg,
+                    textAlign:'center', lineHeight:1.2 }}>
+                    {new Date(at).toLocaleTimeString('vi-VN', {hour:'2-digit', minute:'2-digit'})}
+                    {' '}
+                    {new Date(at).toLocaleDateString('vi-VN', {day:'2-digit', month:'2-digit'})}
+                  </div>
+                )}
               </div>
-              {at && (
-                <div style={{ fontSize:8, color:T.light, padding:'2px 3px', background:T.bg,
-                  textAlign:'center', lineHeight:1.2 }}>
-                  {new Date(at).toLocaleTimeString('vi-VN', {hour:'2-digit', minute:'2-digit'})}
-                  {' '}
-                  {new Date(at).toLocaleDateString('vi-VN', {day:'2-digit', month:'2-digit'})}
+              {note && (
+                <div style={{ fontSize:9, color:T.dark, padding:'3px 5px',
+                  background:T.goldBg, border:`1px solid ${T.gold}55`, borderRadius:4,
+                  lineHeight:1.35, wordBreak:'break-word' }}
+                  title={note}>
+                  💬 {note}
                 </div>
               )}
             </div>
@@ -23921,6 +23941,15 @@ function PhotoGallery({ title, photos, allUsers, orderCode, kind }: any) {
                 cursor:'pointer', fontSize:18, fontFamily:'inherit' }}>×</button>
             <img src={getUrl(photos[previewIdx])} alt=""
               style={{ maxWidth:'90vw', maxHeight:'85vh', borderRadius:8, display:'block' }}/>
+            {getNote(photos[previewIdx]) && (
+              <div style={{ position:'absolute', top:10, left:10, right:60,
+                background:'rgba(217,119,6,0.95)', color:'#fff', padding:'8px 12px',
+                borderRadius:8, fontSize:12, lineHeight:1.4, fontWeight:600,
+                maxHeight:'30vh', overflowY:'auto',
+                boxShadow:'0 2px 8px rgba(0,0,0,0.3)' }}>
+                💬 {getNote(photos[previewIdx])}
+              </div>
+            )}
             <div style={{ position:'absolute', bottom:10, left:'50%', transform:'translateX(-50%)',
               display:'flex', gap:8 }}>
               {getAt(photos[previewIdx]) && (
@@ -29397,7 +29426,9 @@ function GhtkOrderRow({ order: o, tab, mobile, onRefresh, user, onFillInfo, onEd
           {/* Labels */}
           {labels.length > 0 && (
             <div style={{ fontSize:11, color:T.green, marginTop:4 }}>
-              🏷 {labels.length} nhãn GHTK: {labels.map((l: any) => l.label_id).join(', ')}
+              🏷 {labels.length} nhãn GHTK: {labels.map((l: any) =>
+                l.label_id || l.tracking_id || l.trackingId || l.package_id || '(thiếu mã)'
+              ).join(', ')}
             </div>
           )}
         </div>
@@ -30184,8 +30215,12 @@ function GhtkPrintLabelButton({ order: o, user, onPrinted, compact }: any) {
   const canPrint = perm.ghtkPrintLabel
 
   const labels = o.ghtk_labels || []
-  const labelIds = labels.map((l: any) => l.label_id).filter(Boolean)
+  // v125: Fallback nhiều key name để tương thích đơn cũ
+  const labelIds = labels.map((l: any) =>
+    l.label_id || l.tracking_id || l.trackingId || l.package_id || l.order_code || ''
+  ).filter(Boolean)
   const hasLabels = labelIds.length > 0
+  const hasLabelsButNoId = labels.length > 0 && !hasLabels
   const printedAt = o.ghtk_printed_at ? new Date(o.ghtk_printed_at) : null
 
   const handlePrint = async () => {
@@ -30236,6 +30271,16 @@ function GhtkPrintLabelButton({ order: o, user, onPrinted, compact }: any) {
   }
 
   if (!hasLabels) {
+    if (hasLabelsButNoId) {
+      return (
+        <div style={{ fontSize:10, color:T.amber, fontStyle:'italic', padding:'4px 10px',
+          background:T.amberBg, borderRadius:6, border:`1px solid ${T.amber}55`,
+          maxWidth:200, lineHeight:1.4 }}
+          title={JSON.stringify(labels)}>
+          ⚠️ Có nhãn nhưng thiếu mã ID — cần sync GHTK
+        </div>
+      )
+    }
     return (
       <div style={{ fontSize:10, color:T.light, fontStyle:'italic', padding:'4px 10px',
         background:T.bg, borderRadius:6 }}>
