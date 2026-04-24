@@ -17826,7 +17826,7 @@ function PickingModule({ user, allUsers, mobile, products }: any) {
           onClose={() => setShowCutoffModal(false)}
         />
       )}
-    </div>
+    </PageContainer>
   )
 }
 
@@ -18316,7 +18316,7 @@ function ProductImageModalV2({ code, onClose }: any) {
           </div>
         )}
       </div>
-    </PageContainer>
+    </div>
   )
 }
 
@@ -19185,7 +19185,7 @@ function PackingModule({ user, allUsers, mobile, products }: any) {
             linkSupplementary(linkSuppOrder.order_code, parentCode)}
         />
       )}
-    </div>
+    </PageContainer>
   )
 }
 
@@ -20375,7 +20375,7 @@ function PackingDetailPanel({ ord, mobile, user, allUsers, products, allOrders, 
           </div>
         </div>
       )}
-    </PageContainer>
+    </div>
   )
 }
 
