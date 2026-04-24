@@ -30823,7 +30823,8 @@ const DEFAULT_BUS_TEMPLATES = [
 // ══════════════════════════════════════════════════════════════════════
 function GhtkBusShipPrintPanel({ user, mobile }: any) {
   const [paperSize, setPaperSize] = useState<'A6'|'A7'>('A6')
-  const [adjust, setAdjust, resetAdjust] = usePrintAdjust(`la_print_adjust_busship_${paperSize}`)
+  const [orientation, setOrientation] = useState<'landscape'|'portrait'>('landscape')
+  const [adjust, setAdjust, resetAdjust] = usePrintAdjust(`la_print_adjust_busship_${paperSize}_${orientation}`)
 
   // Form người gửi (load từ localStorage)
   const [sender, setSender] = useState(() => {
@@ -30893,13 +30894,37 @@ function GhtkBusShipPrintPanel({ user, mobile }: any) {
 
   // Build HTML bản in
   const buildPrintHtml = (): string => {
-    // v127: Dùng explicit mm dimensions để browser không mơ hồ orientation
-    const pageSize = paperSize === 'A6' ? '105mm 148mm' : '74mm 105mm'
+    // v127: Landscape/portrait + khổ giấy → explicit mm dimensions
+    // A6 landscape: 148 × 105mm  |  A6 portrait: 105 × 148mm
+    // A7 landscape: 105 × 74mm   |  A7 portrait: 74  × 105mm
+    const dims = {
+      A6: { landscape: '148mm 105mm', portrait: '105mm 148mm' },
+      A7: { landscape: '105mm 74mm',  portrait: '74mm 105mm'  },
+    }
+    const pageSize = dims[paperSize][orientation]
+    const isLandscape = orientation === 'landscape'
+
     const tpl = templates.find((t: any) => t.id === templateId)
     const tplName = tpl?.name || ''
-    const scaleBadgeFont = paperSize === 'A6' ? 11 : 9
-    const titleFont = paperSize === 'A6' ? 14 : 11
-    const bodyFont = paperSize === 'A6' ? 12 : 10
+
+    // Font sizes theo paper + orientation
+    const labelFont  = paperSize === 'A6' ? 11 : (isLandscape ? 9 : 8)
+    const titleFont  = paperSize === 'A6' ? (isLandscape ? 14 : 14) : (isLandscape ? 11 : 10)
+    const bodyFont   = paperSize === 'A6' ? (isLandscape ? 11 : 12) : (isLandscape ? 9 : 9)
+    const footerFont = paperSize === 'A6' ? 10 : 8
+
+    // Grid layout CSS cho landscape (2-col người gửi | người nhận)
+    const gridCss = isLandscape ? `
+      .body-grid {
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        gap: 3mm;
+        margin-bottom: 3mm;
+      }
+      .section { margin-bottom: 0; }
+    ` : `
+      .section { margin-bottom: 3mm; }
+    `
 
     return `<!DOCTYPE html>
 <html>
@@ -30920,14 +30945,14 @@ function GhtkBusShipPrintPanel({ user, mobile }: any) {
     border-bottom: 2px solid #000;
     padding-bottom: 2mm;
   }
+  ${gridCss}
   .section {
-    margin-bottom: 3mm;
     padding: 2mm;
     border: 1.5px solid #000;
     border-radius: 2mm;
   }
   .section-label {
-    font-size: ${scaleBadgeFont}pt;
+    font-size: ${labelFont}pt;
     font-weight: bold;
     background: #000;
     color: #fff;
@@ -30941,6 +30966,7 @@ function GhtkBusShipPrintPanel({ user, mobile }: any) {
     font-size: ${bodyFont}pt;
     margin: 0.8mm 0;
     word-wrap: break-word;
+    word-break: break-word;
   }
   .line b { font-weight: 800; }
   .footer {
@@ -30948,7 +30974,7 @@ function GhtkBusShipPrintPanel({ user, mobile }: any) {
     padding-top: 2mm;
     border-top: 1px dashed #000;
     text-align: center;
-    font-size: ${scaleBadgeFont}pt;
+    font-size: ${footerFont}pt;
   }
   .bus-badge {
     display: inline-block;
@@ -30969,18 +30995,20 @@ function GhtkBusShipPrintPanel({ user, mobile }: any) {
     ${orderCode ? `<div style="font-size: ${bodyFont}pt; margin-top: 2mm; font-weight: 700;">Mã đơn: ${orderCode}</div>` : ''}
   </div>
 
-  <div class="section">
-    <div class="section-label">📤 NGƯỜI GỬI</div>
-    <div class="line"><b>${sender.name}</b></div>
-    ${sender.tel     ? `<div class="line">📞 ${sender.tel}</div>` : ''}
-    ${sender.address ? `<div class="line">📍 ${sender.address}</div>` : ''}
-  </div>
+  <div class="${isLandscape ? 'body-grid' : ''}">
+    <div class="section">
+      <div class="section-label">📤 NGƯỜI GỬI</div>
+      <div class="line"><b>${sender.name}</b></div>
+      ${sender.tel     ? `<div class="line">📞 ${sender.tel}</div>` : ''}
+      ${sender.address ? `<div class="line">📍 ${sender.address}</div>` : ''}
+    </div>
 
-  <div class="section">
-    <div class="section-label">📥 NGƯỜI NHẬN</div>
-    <div class="line"><b>${receiver.name}</b></div>
-    <div class="line">📞 <b>${receiver.tel}</b></div>
-    <div class="line">📍 ${receiver.address}</div>
+    <div class="section">
+      <div class="section-label">📥 NGƯỜI NHẬN</div>
+      <div class="line"><b>${receiver.name}</b></div>
+      <div class="line">📞 <b>${receiver.tel}</b></div>
+      <div class="line">📍 ${receiver.address}</div>
+    </div>
   </div>
 
   ${Number(boxCount) > 0 || busNote ? `
@@ -31038,7 +31066,7 @@ function GhtkBusShipPrintPanel({ user, mobile }: any) {
         </div>
 
         {/* Chọn khổ giấy */}
-        <div style={{ marginBottom:14 }}>
+        <div style={{ marginBottom:12 }}>
           <label style={labelStyle}>Khổ giấy</label>
           <div style={{ display:'flex', gap:8 }}>
             <button onClick={() => setPaperSize('A6')}
@@ -31047,7 +31075,7 @@ function GhtkBusShipPrintPanel({ user, mobile }: any) {
                 border:`2px solid ${paperSize==='A6' ? T.blue : T.border}`,
                 background: paperSize==='A6' ? T.blueBg : '#fff',
                 color: paperSize==='A6' ? T.blue : T.med }}>
-              📄 A6 (105×148mm — to)
+              📄 A6 (to)
             </button>
             <button onClick={() => setPaperSize('A7')}
               style={{ flex:1, padding:'10px 0', borderRadius:8, cursor:'pointer',
@@ -31055,7 +31083,30 @@ function GhtkBusShipPrintPanel({ user, mobile }: any) {
                 border:`2px solid ${paperSize==='A7' ? T.purple : T.border}`,
                 background: paperSize==='A7' ? T.purpleBg : '#fff',
                 color: paperSize==='A7' ? T.purple : T.med }}>
-              📃 A7 (74×105mm — nhỏ)
+              📃 A7 (nhỏ)
+            </button>
+          </div>
+        </div>
+
+        {/* v127: Chọn hướng in */}
+        <div style={{ marginBottom:14 }}>
+          <label style={labelStyle}>Hướng in</label>
+          <div style={{ display:'flex', gap:8 }}>
+            <button onClick={() => setOrientation('landscape')}
+              style={{ flex:1, padding:'8px 0', borderRadius:6, cursor:'pointer',
+                fontFamily:'inherit', fontSize:12, fontWeight:600,
+                border:`1.5px solid ${orientation==='landscape' ? T.green : T.border}`,
+                background: orientation==='landscape' ? T.greenBg : '#fff',
+                color: orientation==='landscape' ? T.green : T.med }}>
+              ↔️ Ngang (landscape) {paperSize==='A6' ? '148×105mm' : '105×74mm'}
+            </button>
+            <button onClick={() => setOrientation('portrait')}
+              style={{ flex:1, padding:'8px 0', borderRadius:6, cursor:'pointer',
+                fontFamily:'inherit', fontSize:12, fontWeight:600,
+                border:`1.5px solid ${orientation==='portrait' ? T.blue : T.border}`,
+                background: orientation==='portrait' ? T.blueBg : '#fff',
+                color: orientation==='portrait' ? T.blue : T.med }}>
+              ↕️ Dọc (portrait) {paperSize==='A6' ? '105×148mm' : '74×105mm'}
             </button>
           </div>
         </div>
@@ -31192,10 +31243,14 @@ function GhtkBusShipPrintPanel({ user, mobile }: any) {
           border:`1px dashed ${T.border}` }}>
           <div style={{ fontSize:10, color:T.light, marginBottom:10, fontWeight:600,
             textTransform:'uppercase', letterSpacing:1, textAlign:'center' }}>
-            🔍 Preview bản in
+            🔍 Preview bản in — {paperSize} {orientation==='landscape'?'ngang':'dọc'}
           </div>
           <div style={{ background:'#fff', padding:'12px 16px', borderRadius:4,
-            border:`1px solid ${T.border}`, maxWidth: paperSize === 'A6' ? 400 : 280, margin:'0 auto',
+            border:`1px solid ${T.border}`,
+            maxWidth: orientation==='landscape'
+              ? (paperSize === 'A6' ? 560 : 400)
+              : (paperSize === 'A6' ? 400 : 280),
+            margin:'0 auto',
             fontFamily:'Arial, sans-serif', color:'#000',
             fontSize: paperSize === 'A6' ? 12 : 10,
             lineHeight: adjust.line_height }}>
@@ -31210,29 +31265,37 @@ function GhtkBusShipPrintPanel({ user, mobile }: any) {
               )}
               {orderCode && <div style={{ marginTop:5, fontSize: paperSize==='A6'?12:9 }}>Mã đơn: {orderCode}</div>}
             </div>
-            <div style={{ border:'1.5px solid #000', borderRadius:4, padding:8, marginBottom:8 }}>
-              <div style={{ background:'#000', color:'#fff', padding:'2px 6px',
-                borderRadius:2, display:'inline-block', fontSize: paperSize==='A6'?10:8,
-                fontWeight:700, marginBottom:4, letterSpacing:0.8 }}>
-                📤 NGƯỜI GỬI
+            <div style={{
+              display: orientation==='landscape' ? 'grid' : 'block',
+              gridTemplateColumns: orientation==='landscape' ? '1fr 1fr' : undefined,
+              gap: orientation==='landscape' ? 8 : 0,
+            }}>
+              <div style={{ border:'1.5px solid #000', borderRadius:4, padding:8,
+                marginBottom: orientation==='landscape' ? 0 : 8 }}>
+                <div style={{ background:'#000', color:'#fff', padding:'2px 6px',
+                  borderRadius:2, display:'inline-block', fontSize: paperSize==='A6'?10:8,
+                  fontWeight:700, marginBottom:4, letterSpacing:0.8 }}>
+                  📤 NGƯỜI GỬI
+                </div>
+                <div style={{ fontWeight:800 }}>{sender.name || '(chưa điền)'}</div>
+                {sender.tel && <div>📞 {sender.tel}</div>}
+                {sender.address && <div>📍 {sender.address}</div>}
               </div>
-              <div style={{ fontWeight:800 }}>{sender.name || '(chưa điền)'}</div>
-              {sender.tel && <div>📞 {sender.tel}</div>}
-              {sender.address && <div>📍 {sender.address}</div>}
-            </div>
-            <div style={{ border:'1.5px solid #000', borderRadius:4, padding:8, marginBottom:8 }}>
-              <div style={{ background:'#000', color:'#fff', padding:'2px 6px',
-                borderRadius:2, display:'inline-block', fontSize: paperSize==='A6'?10:8,
-                fontWeight:700, marginBottom:4, letterSpacing:0.8 }}>
-                📥 NGƯỜI NHẬN
+              <div style={{ border:'1.5px solid #000', borderRadius:4, padding:8,
+                marginBottom: orientation==='landscape' ? 0 : 8 }}>
+                <div style={{ background:'#000', color:'#fff', padding:'2px 6px',
+                  borderRadius:2, display:'inline-block', fontSize: paperSize==='A6'?10:8,
+                  fontWeight:700, marginBottom:4, letterSpacing:0.8 }}>
+                  📥 NGƯỜI NHẬN
+                </div>
+                <div style={{ fontWeight:800 }}>{receiver.name || '(chưa điền)'}</div>
+                <div>📞 <b>{receiver.tel || '(chưa điền)'}</b></div>
+                <div>📍 {receiver.address || '(chưa điền)'}</div>
               </div>
-              <div style={{ fontWeight:800 }}>{receiver.name || '(chưa điền)'}</div>
-              <div>📞 <b>{receiver.tel || '(chưa điền)'}</b></div>
-              <div>📍 {receiver.address || '(chưa điền)'}</div>
             </div>
             {(Number(boxCount) > 0 || busNote) && (
               <div style={{ borderTop:'1px dashed #000', paddingTop:6, textAlign:'center',
-                fontSize: paperSize==='A6'?10:8 }}>
+                marginTop:8, fontSize: paperSize==='A6'?10:8 }}>
                 {Number(boxCount) > 0 && <div>📦 Số thùng: <b>{boxCount}</b></div>}
                 {busNote && <div>💬 {busNote}</div>}
               </div>
@@ -31246,7 +31309,7 @@ function GhtkBusShipPrintPanel({ user, mobile }: any) {
             border:'none', background: valid ? T.blue : T.border,
             color: valid ? '#fff' : T.light,
             fontFamily:'inherit', fontSize:15, fontWeight:700 }}>
-          🖨 In thông tin đơn ({paperSize})
+          🖨 In thông tin đơn ({paperSize} {orientation==='landscape'?'ngang':'dọc'})
         </button>
       </Card>
 
@@ -31330,7 +31393,7 @@ function GhtkDropshipPrintPanel({ user, mobile, dropshipGhtk, dropshipVtp, onRef
       if (carrier === 'ghtk') {
         const svgInner = renderCode128Svg(cleaned, 400, 120)
         body = `
-          <div class="print-content" style="text-align:center; padding:20px;">
+          <div class="print-content" style="text-align:center;">
             <svg width="400" height="120" xmlns="http://www.w3.org/2000/svg" style="display:block; margin:0 auto;">
               ${svgInner}
             </svg>
@@ -31339,10 +31402,10 @@ function GhtkDropshipPrintPanel({ user, mobile, dropshipGhtk, dropshipVtp, onRef
           </div>
         `
       } else {
-        // Viettel Post: text to giữa A7 (74mm × 105mm landscape)
+        // v127: Viettel Post landscape A7 — center bằng mm explicit thay vì vh (vh không hoạt động trong @page)
         body = `
-          <div class="print-content" style="width:100%; height:100vh; display:flex; align-items:center; justify-content:center;
-            font-family:'Arial Black',Arial,sans-serif; font-size:42px; font-weight:900; letter-spacing:3px;">
+          <div class="print-content" style="width:100%; min-height:70mm; display:flex; align-items:center; justify-content:center;
+            font-family:'Arial Black',Arial,sans-serif; font-size:42px; font-weight:900; letter-spacing:3px; text-align:center;">
             ${cleaned}
           </div>
         `
