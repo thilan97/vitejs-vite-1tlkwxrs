@@ -19298,6 +19298,9 @@ function PackingDetailPanel({ ord, mobile, user, allUsers, products, allOrders, 
   const [hasPassedGate, setHasPassedGate] = useState(initialPhase === 'detail')
   // v114: Input ghi chú khi hoàn tất sửa đơn (bắt buộc)
   const [editNoteInput, setEditNoteInput] = useState('')
+  // v124: Inline note editor cho ảnh nhặt readonly (Phase 2)
+  const [editingPickedNoteIdx, setEditingPickedNoteIdx] = useState<number|null>(null)
+  const [pickedNoteDraft, setPickedNoteDraft] = useState('')
 
   // Auto join group khi vào phase DETAIL (chỉ nếu chưa trong group + đơn chưa done + !readOnly)
   // QUAN TRỌNG: KHÔNG auto-join nếu đơn đã từng được đóng (có packed_at hoặc had_mod_after_done)
@@ -19800,6 +19803,7 @@ function PackingDetailPanel({ ord, mobile, user, allUsers, products, allOrders, 
                   const note = typeof ph === 'string' ? '' : (ph?.note || '')
                   const rot  = (typeof ph === 'object' && typeof ph?.rot === 'number') ? ph.rot : 0
                   if (!url) return null
+                  const canEditNote = !readOnly || canAllowEdit
                   return (
                     <div key={i} style={{ display:'flex', flexDirection:'column', gap:3 }}>
                       <div style={{ position:'relative', borderRadius:6, overflow:'hidden',
@@ -19834,6 +19838,21 @@ function PackingDetailPanel({ ord, mobile, user, allUsers, products, allOrders, 
                           💬 {note}
                         </div>
                       )}
+                      {/* v124: Nút sửa note inline — KHÔNG điều hướng Gate */}
+                      {canEditNote && (
+                        <button onClick={() => {
+                          setEditingPickedNoteIdx(i)
+                          setPickedNoteDraft(note)
+                        }}
+                          style={{ padding:'2px 6px', borderRadius:10, cursor:'pointer',
+                            border:`1px dashed ${note ? T.gold : T.border}`,
+                            background: note ? T.goldBg : 'transparent',
+                            color: note ? T.goldText : T.light,
+                            fontSize:9, fontFamily:'inherit', whiteSpace:'nowrap',
+                            alignSelf:'flex-start' }}>
+                          {note ? '✏️ Sửa ghi chú' : '+ Ghi chú'}
+                        </button>
+                      )}
                     </div>
                   )
                 })}
@@ -19843,17 +19862,8 @@ function PackingDetailPanel({ ord, mobile, user, allUsers, products, allOrders, 
               <button onClick={() => { setPhase('gate'); setHasPassedGate(false) }}
                 style={{ padding:'3px 10px', borderRadius:12, border:`1px solid ${T.green}`,
                   background:'#fff', color:T.green, cursor:'pointer', fontFamily:'inherit',
-                  fontSize:10, fontWeight:600, marginRight:6 }}>
-                📷 Chụp thêm ảnh hàng đã nhặt
-              </button>
-            )}
-            {/* v124: Nút sửa ghi chú ảnh (cho NV đang đóng HOẶC QM có quyền) */}
-            {(!readOnly || canAllowEdit) && pickedCount > 0 && (
-              <button onClick={() => setPhase('gate')}
-                style={{ padding:'3px 10px', borderRadius:12, border:`1px solid ${T.gold}`,
-                  background:T.goldBg, color:T.goldText, cursor:'pointer', fontFamily:'inherit',
                   fontSize:10, fontWeight:600 }}>
-                💬 Sửa ghi chú ảnh nhặt
+                📷 Chụp thêm ảnh hàng đã nhặt
               </button>
             )}
           </div>
@@ -19962,6 +19972,115 @@ function PackingDetailPanel({ ord, mobile, user, allUsers, products, allOrders, 
             onUpdatePhotos('picked', updated)
           }}
         />
+      )}
+
+      {/* v124: Note Editor Modal cho ảnh nhặt (Phase 2 readonly) */}
+      {editingPickedNoteIdx !== null && (ord.photos_picked || [])[editingPickedNoteIdx] && (
+        <div style={{ position:'fixed', inset:0, background:'rgba(0,0,0,0.55)', zIndex:10000,
+          display:'flex', alignItems:'center', justifyContent:'center', padding:16 }}
+          onClick={() => { setEditingPickedNoteIdx(null); setPickedNoteDraft('') }}>
+          <div onClick={e => e.stopPropagation()}
+            style={{ background:'#fff', borderRadius:12, padding:20, maxWidth:480, width:'100%',
+              boxShadow:'0 10px 40px rgba(0,0,0,0.3)' }}>
+            <div style={{ fontSize:14, fontWeight:700, color:T.dark, marginBottom:4,
+              display:'flex', alignItems:'center', gap:8 }}>
+              💬 Ghi chú cho ảnh nhặt #{editingPickedNoteIdx + 1}
+            </div>
+            <div style={{ fontSize:11, color:T.light, marginBottom:12, lineHeight:1.5 }}>
+              VD: "SP X hết hàng", "Thiếu 1 hộp serum", "Thay bằng SP tương đương theo ý KH"...
+            </div>
+
+            {(() => {
+              const p: any = (ord.photos_picked || [])[editingPickedNoteIdx]
+              const url  = typeof p === 'string' ? p : (p?.url || '')
+              const at   = typeof p === 'string' ? '' : (p?.at || '')
+              const curNote = typeof p === 'string' ? '' : (p?.note || '')
+              const noteAt  = typeof p === 'string' ? '' : (p?.note_at || '')
+              return (
+                <>
+                  <div style={{ display:'flex', gap:10, marginBottom:12, padding:8,
+                    background:T.bg, borderRadius:6 }}>
+                    <img src={url} alt="preview"
+                      style={{ width:60, height:60, objectFit:'cover', borderRadius:4,
+                        border:`1px solid ${T.border}` }}/>
+                    <div style={{ flex:1, fontSize:10, color:T.med, lineHeight:1.4 }}>
+                      <div>📅 Chụp: {at ? new Date(at).toLocaleString('vi-VN') : '—'}</div>
+                      {noteAt && (
+                        <div style={{ marginTop:3, color:T.light }}>
+                          💬 Note lần cuối: {new Date(noteAt).toLocaleString('vi-VN')}
+                        </div>
+                      )}
+                    </div>
+                  </div>
+
+                  <textarea value={pickedNoteDraft}
+                    onChange={e => setPickedNoteDraft(e.target.value)}
+                    placeholder="Nhập ghi chú cho ảnh này..."
+                    rows={4}
+                    autoFocus
+                    maxLength={500}
+                    style={{ width:'100%', padding:'10px 12px', border:`1px solid ${T.border}`,
+                      borderRadius:6, fontSize:13, fontFamily:'inherit', color:T.dark,
+                      background:'#fff', outline:'none', resize:'vertical',
+                      boxSizing:'border-box' }}/>
+                  <div style={{ fontSize:10, color:T.light, textAlign:'right', marginTop:3 }}>
+                    {pickedNoteDraft.length}/500
+                  </div>
+
+                  <div style={{ display:'flex', gap:8, justifyContent:'flex-end', marginTop:12,
+                    paddingTop:12, borderTop:`1px solid ${T.border}` }}>
+                    {curNote && (
+                      <button onClick={() => {
+                        if (!confirm('Xoá ghi chú này?')) return
+                        const updated = (ord.photos_picked || []).map((p: any, i: number) => {
+                          if (i !== editingPickedNoteIdx) return p
+                          const base = typeof p === 'string' ? { url: p } : { ...p }
+                          delete base.note; delete base.note_at; delete base.note_by
+                          return base
+                        })
+                        onUpdatePhotos('picked', updated)
+                        setEditingPickedNoteIdx(null); setPickedNoteDraft('')
+                      }}
+                        style={{ padding:'7px 14px', borderRadius:6, cursor:'pointer',
+                          border:`1px solid ${T.red}`, background:'#fff', color:T.red,
+                          fontFamily:'inherit', fontSize:12 }}>
+                        🗑 Xoá ghi chú
+                      </button>
+                    )}
+                    <button onClick={() => { setEditingPickedNoteIdx(null); setPickedNoteDraft('') }}
+                      style={{ padding:'7px 14px', borderRadius:6, cursor:'pointer',
+                        border:`1px solid ${T.border}`, background:'#fff', color:T.med,
+                        fontFamily:'inherit', fontSize:12 }}>
+                      Huỷ
+                    </button>
+                    <button onClick={() => {
+                      const trimmed = pickedNoteDraft.trim()
+                      const updated = (ord.photos_picked || []).map((p: any, i: number) => {
+                        if (i !== editingPickedNoteIdx) return p
+                        const base = typeof p === 'string' ? { url: p } : { ...p }
+                        if (trimmed) {
+                          base.note = trimmed
+                          base.note_at = new Date().toISOString()
+                          base.note_by = user?.id || ''
+                        } else {
+                          delete base.note; delete base.note_at; delete base.note_by
+                        }
+                        return base
+                      })
+                      onUpdatePhotos('picked', updated)
+                      setEditingPickedNoteIdx(null); setPickedNoteDraft('')
+                    }}
+                      style={{ padding:'7px 18px', borderRadius:6, cursor:'pointer',
+                        border:'none', background:T.gold, color:'#fff',
+                        fontFamily:'inherit', fontSize:12, fontWeight:700 }}>
+                      💾 Lưu ghi chú
+                    </button>
+                  </div>
+                </>
+              )
+            })()}
+          </div>
+        </div>
       )}
     </div>
   )
