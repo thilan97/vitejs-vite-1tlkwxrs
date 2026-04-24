@@ -6675,7 +6675,7 @@ function ReturnItems({ user, allUsers, products, mobile }: any) {
   }
 
   return (
-    <PageContainer mobile={mobile}>
+    <div style={{ padding:`0 ${p} ${mobile?'80px':p}` }}>
       <Topbar mobile={mobile} title="🔄 Báo cáo hàng hoàn"
         subtitle={`Tháng ${fm}/${fy} — ${slips.length} phiếu · ${filteredItems.length} sản phẩm`}
         action={canAdd ? <GoldBtn small onClick={openAdd}>+ Nhập phiếu hoàn</GoldBtn> : undefined}/>
@@ -7247,7 +7247,7 @@ function ReturnItems({ user, allUsers, products, mobile }: any) {
             updateSlipAudit(showAudit.slip_id, shipFee, violatorId)}
           onClose={() => setShowAudit(null)}/>}
       </Modal>
-    </PageContainer>
+    </div>
   )
 }
 
@@ -10761,7 +10761,7 @@ function WrongOrders({ user, allUsers, wrongOrders, setWrongOrders, mobile }: an
   ).length
 
   return (
-    <PageContainer mobile={mobile}>
+    <div style={{ padding:`0 ${p} ${mobile?'80px':p}` }}>
       <Topbar mobile={mobile} title="⚠️ Báo cáo đơn sai"
         subtitle={`Tháng ${fm}/${fy} — ${filtered.length} đơn`}
         action={
@@ -11071,7 +11071,7 @@ function WrongOrders({ user, allUsers, wrongOrders, setWrongOrders, mobile }: an
 
       {/* Modal sale điền tình trạng */}
       {showEdit && <SaleFillModal item={showEdit} onSave={saleFill} onClose={() => setShowEdit(null)}/>}
-    </PageContainer>
+    </div>
   )
 }
 
