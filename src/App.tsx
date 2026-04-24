@@ -12,7 +12,7 @@ const db = createClient(SUPABASE_URL, SUPABASE_KEY)
 // APP_VERSION — dùng để invalidate cache localStorage mỗi khi deploy version mới
 // (ngăn bug quyền user bị "reset" do cache position cũ sau deploy)
 // ⚠️ MỖI LẦN DEPLOY FEATURE MỚI CÓ PERMISSION MỚI, BUMP SỐ NÀY:
-const APP_VERSION = '2026.04.23.v127'
+const APP_VERSION = '2026.04.23.v128'
 
 // ════════════════════════════════════════════════════════════════
 // AUDIT LOG — ghi nhận các hành động phá hoại data để trace lại
@@ -668,8 +668,8 @@ const EmptyState = ({ icon, title, description, action }: any) => (
   </div>
 )
 
-const Topbar = ({ title, subtitle, action, mobile }: any) => (
-  <div style={{ padding:mobile?'16px 16px 0':'20px 24px 0',
+const Topbar = ({ title, subtitle, action, mobile, noPad }: any) => (
+  <div style={{ padding: noPad ? 0 : (mobile?'16px 16px 0':'20px 0 0'),
     display:'flex', alignItems:'flex-start', justifyContent:'space-between',
     marginBottom:18, flexWrap:'wrap', gap:10 }}>
     <div>
@@ -680,6 +680,96 @@ const Topbar = ({ title, subtitle, action, mobile }: any) => (
     {action}
   </div>
 )
+
+// ══════════════════════════════════════════════════════════════════════
+// v128: PageContainer — compact desktop layout chuẩn (960px)
+// Chuẩn max-width: 960px cho page thường, 640px cho form narrow
+// ══════════════════════════════════════════════════════════════════════
+const LAYOUT = {
+  pageMax:   960,   // Tối đa cho content chính
+  formMax:   640,   // Form nhập liệu
+  narrowMax: 480,   // Input code, search, v.v.
+  tightMax:  320,   // Button group, toggle
+} as const
+
+function PageContainer({ children, mobile, width = 'page', noPad }: {
+  children: any,
+  mobile?: boolean,
+  width?: 'page' | 'form' | 'narrow' | 'full',
+  noPad?: boolean,
+}) {
+  const maxW = mobile
+    ? '100%'
+    : width === 'full'   ? 'none'
+    : width === 'form'   ? LAYOUT.formMax
+    : width === 'narrow' ? LAYOUT.narrowMax
+    : LAYOUT.pageMax
+  return (
+    <div style={{
+      maxWidth: maxW,
+      margin: '0 auto',
+      width: '100%',
+      padding: noPad ? 0 : (mobile ? '0 16px 80px' : '0 24px 24px'),
+      boxSizing: 'border-box',
+    }}>
+      {children}
+    </div>
+  )
+}
+
+// FitButton — button compact, fit-content, không full width
+function FitButton({ children, onClick, variant = 'primary', disabled, style, size = 'md' }: any) {
+  const variants: any = {
+    primary:   { bg: T.blue,  color: '#fff',    border: T.blue },
+    success:   { bg: T.green, color: '#fff',    border: T.green },
+    danger:    { bg: '#fff',  color: T.red,     border: T.red },
+    ghost:     { bg: 'transparent', color: T.med, border: T.border },
+    gold:      { bg: T.gold,  color: '#fff',    border: T.gold },
+  }
+  const v = variants[variant] || variants.primary
+  const sizes: any = {
+    sm: { padX: 10, padY: 6, font: 11 },
+    md: { padX: 14, padY: 8, font: 12 },
+    lg: { padX: 18, padY: 10, font: 13 },
+  }
+  const s = sizes[size] || sizes.md
+  return (
+    <button onClick={onClick} disabled={disabled}
+      style={{
+        padding: `${s.padY}px ${s.padX}px`,
+        borderRadius: 8,
+        cursor: disabled ? 'default' : 'pointer',
+        background: disabled ? T.border : v.bg,
+        color: disabled ? T.light : v.color,
+        border: `1.5px solid ${disabled ? T.border : v.border}`,
+        fontSize: s.font,
+        fontWeight: 600,
+        fontFamily: 'inherit',
+        whiteSpace: 'nowrap',
+        ...(style || {}),
+      }}>
+      {children}
+    </button>
+  )
+}
+
+// TwoColResponsive — 2 cột desktop, 1 cột mobile
+function TwoColResponsive({ left, right, mobile, leftRatio = 1, rightRatio = 1, gap = 16 }: any) {
+  if (mobile) {
+    return (
+      <div style={{ display: 'flex', flexDirection: 'column', gap }}>
+        <div>{left}</div>
+        <div>{right}</div>
+      </div>
+    )
+  }
+  return (
+    <div style={{ display: 'grid', gridTemplateColumns: `${leftRatio}fr ${rightRatio}fr`, gap }}>
+      <div>{left}</div>
+      <div>{right}</div>
+    </div>
+  )
+}
 
 // ── KV SYNC BADGE — hiển thị trạng thái sync KiotViet ─────────────────
 // Data từ `kv_sync_status.last_success_at` (server cron ghi mỗi 30s)
@@ -26255,7 +26345,7 @@ function SaleOrderTrackingModule({ user, allUsers, mobile }: any) {
   ]
 
   return (
-    <div style={{ padding:`0 ${p} ${mobile?'80px':p}` }}>
+    <PageContainer mobile={mobile}>
       <Topbar mobile={mobile} title="📦 Theo dõi đơn hàng"
         subtitle={(() => {
           if (statusFilter === 'done') {
@@ -26431,116 +26521,126 @@ function SaleOrderTrackingModule({ user, allUsers, mobile }: any) {
 
                 {/* Expanded: full timeline */}
                 {isExp && (
-                  <div style={{ padding:'14px 16px', borderTop:`1px solid ${T.border}`,
+                  <div style={{ padding: mobile ? '12px' : '14px 16px',
+                    borderTop:`1px solid ${T.border}`,
                     background:T.bg }} onClick={e => e.stopPropagation()}>
 
-                    {/* Timeline */}
-                    <div style={{ marginBottom:14 }}>
-                      <div style={{ fontSize:11, fontWeight:700, color:T.med, marginBottom:10 }}>
-                        ⏱ TIMELINE
-                      </div>
-                      <div style={{ position:'relative', paddingLeft:20 }}>
-                        {/* Vertical line */}
-                        <div style={{ position:'absolute', left:7, top:8, bottom:8,
-                          width:2, background:T.border }}/>
+                    {/* v128: 2-col responsive — Timeline trái, Info phải */}
+                    <TwoColResponsive mobile={mobile} leftRatio={1.2} rightRatio={1} gap={16}
+                      left={
+                        <div>
+                          <div style={{ fontSize:11, fontWeight:700, color:T.med, marginBottom:10 }}>
+                            ⏱ TIMELINE
+                          </div>
+                          <div style={{ position:'relative', paddingLeft:20 }}>
+                            {/* Vertical line */}
+                            <div style={{ position:'absolute', left:7, top:8, bottom:8,
+                              width:2, background:T.border }}/>
 
-                        {(() => {
-                          const STEPS_DYN = getOrderSteps(o)
-                          return STEPS_DYN.map((step, idx) => {
-                          const ts = step.ts
-                          const isDone = !!ts
-                          const prevTs = STEPS_DYN[idx-1]?.ts
-                          const isCurrentPending = !isDone && idx > 0 && !!prevTs
-                          const nextTs = STEPS_DYN[idx+1]?.ts
-                          const duration = ts ? pendingDuration(ts, nextTs) : null
+                            {(() => {
+                              const STEPS_DYN = getOrderSteps(o)
+                              return STEPS_DYN.map((step, idx) => {
+                              const ts = step.ts
+                              const isDone = !!ts
+                              const prevTs = STEPS_DYN[idx-1]?.ts
+                              const isCurrentPending = !isDone && idx > 0 && !!prevTs
+                              const nextTs = STEPS_DYN[idx+1]?.ts
+                              const duration = ts ? pendingDuration(ts, nextTs) : null
 
-                          return (
-                            <div key={step.key} style={{ display:'flex', alignItems:'flex-start',
-                              gap:10, marginBottom:12, position:'relative' }}>
-                              {/* Dot */}
-                              <div style={{ width:16, height:16, borderRadius:8, flexShrink:0,
-                                marginTop:1, zIndex:1,
-                                background: isDone ? (step.isFromGhtk ? T.blue : T.green) : (isCurrentPending ? T.amber : T.border),
-                                border:`2px solid ${isDone ? (step.isFromGhtk ? T.blue : T.green) : (isCurrentPending ? T.amber : T.border)}`,
-                                display:'flex', alignItems:'center', justifyContent:'center',
-                                fontSize:8, color:'#fff', fontWeight:800 }}>
-                                {isDone ? '✓' : (isCurrentPending ? '!' : '')}
-                              </div>
-                              <div style={{ flex:1 }}>
-                                <div style={{ fontSize:11, fontWeight:600,
-                                  color: isDone ? T.dark : (isCurrentPending ? T.amber : T.light) }}>
-                                  {step.icon} {step.label}
-                                  {step.isFromGhtk && (
-                                    <span style={{ marginLeft:6, fontSize:9, color:T.blue,
-                                      background:T.blueBg, padding:'1px 6px', borderRadius:8, fontWeight:700 }}>
-                                      GHTK
-                                    </span>
-                                  )}
-                                </div>
-                                {isDone ? (
-                                  <>
-                                    <div style={{ fontSize:10, color:T.light, marginTop:1 }}>
-                                      {fmtTime(ts)}
-                                      {duration && nextTs && (
-                                        <span style={{ color:T.med }}> → mất {duration}</span>
-                                      )}
-                                      {duration && !nextTs && o.status !== 'done' && (
-                                        <span style={{ color:T.amber, fontWeight:600 }}>
-                                          {' '}→ ⏳ đang chờ bước tiếp {duration}
+                              return (
+                                <div key={step.key} style={{ display:'flex', alignItems:'flex-start',
+                                  gap:10, marginBottom:12, position:'relative' }}>
+                                  {/* Dot */}
+                                  <div style={{ width:16, height:16, borderRadius:8, flexShrink:0,
+                                    marginTop:1, zIndex:1,
+                                    background: isDone ? (step.isFromGhtk ? T.blue : T.green) : (isCurrentPending ? T.amber : T.border),
+                                    border:`2px solid ${isDone ? (step.isFromGhtk ? T.blue : T.green) : (isCurrentPending ? T.amber : T.border)}`,
+                                    display:'flex', alignItems:'center', justifyContent:'center',
+                                    fontSize:8, color:'#fff', fontWeight:800 }}>
+                                    {isDone ? '✓' : (isCurrentPending ? '!' : '')}
+                                  </div>
+                                  <div style={{ flex:1 }}>
+                                    <div style={{ fontSize:11, fontWeight:600,
+                                      color: isDone ? T.dark : (isCurrentPending ? T.amber : T.light) }}>
+                                      {step.icon} {step.label}
+                                      {step.isFromGhtk && (
+                                        <span style={{ marginLeft:6, fontSize:9, color:T.blue,
+                                          background:T.blueBg, padding:'1px 6px', borderRadius:8, fontWeight:700 }}>
+                                          GHTK
                                         </span>
                                       )}
                                     </div>
-                                    {step.meta && (
-                                      <div style={{ fontSize:10, color:T.med, marginTop:2, fontStyle:'italic' }}>
-                                        {step.meta}
-                                      </div>
+                                    {isDone ? (
+                                      <>
+                                        <div style={{ fontSize:10, color:T.light, marginTop:1 }}>
+                                          {fmtTime(ts)}
+                                          {duration && nextTs && (
+                                            <span style={{ color:T.med }}> → mất {duration}</span>
+                                          )}
+                                          {duration && !nextTs && o.status !== 'done' && (
+                                            <span style={{ color:T.amber, fontWeight:600 }}>
+                                              {' '}→ ⏳ đang chờ bước tiếp {duration}
+                                            </span>
+                                          )}
+                                        </div>
+                                        {step.meta && (
+                                          <div style={{ fontSize:10, color:T.med, marginTop:2, fontStyle:'italic' }}>
+                                            {step.meta}
+                                          </div>
+                                        )}
+                                      </>
+                                    ) : (
+                                      isCurrentPending && (
+                                        <div style={{ fontSize:10, color:T.amber, fontWeight:600, marginTop:1 }}>
+                                          ⏳ Đang chờ — {pendingDuration(prevTs, null)} kể từ bước trước
+                                        </div>
+                                      )
                                     )}
-                                  </>
-                                ) : (
-                                  isCurrentPending && (
-                                    <div style={{ fontSize:10, color:T.amber, fontWeight:600, marginTop:1 }}>
-                                      ⏳ Đang chờ — {pendingDuration(prevTs, null)} kể từ bước trước
-                                    </div>
-                                  )
-                                )}
-                              </div>
+                                  </div>
+                                </div>
+                              )
+                              })
+                            })()}
+                          </div>
+                        </div>
+                      }
+                      right={
+                        <div>
+                          {/* NV thực hiện */}
+                          <div style={{ padding:'8px 10px', background:'#fff', borderRadius:6,
+                            border:`1px solid ${T.border}`, marginBottom:10, fontSize:11 }}>
+                            <div style={{ fontWeight:700, color:T.med, marginBottom:6 }}>
+                              👤 NHÂN VIÊN THỰC HIỆN
                             </div>
-                          )
-                          })
-                        })()}
-                      </div>
-                    </div>
+                            <div style={{ display:'flex', flexWrap:'wrap', gap:6 }}>
+                              {o.assigned_to && (
+                                <div style={{ padding:'4px 10px', borderRadius:12, background:T.bg,
+                                  border:`1px solid ${T.border}` }}>
+                                  <span style={{ fontSize:9, color:T.light }}>Nhặt: </span>
+                                  <span style={{ color:T.dark, fontWeight:600 }}>{getName(o.assigned_to)}</span>
+                                </div>
+                              )}
+                              {o.packed_by && (
+                                <div style={{ padding:'4px 10px', borderRadius:12, background:T.bg,
+                                  border:`1px solid ${T.border}` }}>
+                                  <span style={{ fontSize:9, color:T.light }}>Đóng: </span>
+                                  <span style={{ color:T.dark, fontWeight:600 }}>{getName(o.packed_by)}</span>
+                                </div>
+                              )}
+                              {o.printed_by_name && (
+                                <div style={{ padding:'4px 10px', borderRadius:12, background:T.bg,
+                                  border:`1px solid ${T.border}` }}>
+                                  <span style={{ fontSize:9, color:T.light }}>In phiếu: </span>
+                                  <span style={{ color:T.dark, fontWeight:600 }}>{o.printed_by_name}</span>
+                                </div>
+                              )}
+                            </div>
+                          </div>
+                        </div>
+                      }
+                    />
 
-                    {/* NV thực hiện */}
-                    <div style={{ padding:'8px 10px', background:'#fff', borderRadius:6,
-                      border:`1px solid ${T.border}`, marginBottom:10, fontSize:11 }}>
-                      <div style={{ fontWeight:700, color:T.med, marginBottom:6 }}>
-                        👤 NHÂN VIÊN THỰC HIỆN
-                      </div>
-                      <div style={{ display:'flex', flexWrap:'wrap', gap:8 }}>
-                        {o.assigned_to && (
-                          <div style={{ padding:'4px 10px', borderRadius:12, background:T.bg,
-                            border:`1px solid ${T.border}` }}>
-                            <span style={{ fontSize:9, color:T.light }}>Nhặt: </span>
-                            <span style={{ color:T.dark, fontWeight:600 }}>{getName(o.assigned_to)}</span>
-                          </div>
-                        )}
-                        {o.packed_by && (
-                          <div style={{ padding:'4px 10px', borderRadius:12, background:T.bg,
-                            border:`1px solid ${T.border}` }}>
-                            <span style={{ fontSize:9, color:T.light }}>Đóng: </span>
-                            <span style={{ color:T.dark, fontWeight:600 }}>{getName(o.packed_by)}</span>
-                          </div>
-                        )}
-                        {o.printed_by_name && (
-                          <div style={{ padding:'4px 10px', borderRadius:12, background:T.bg,
-                            border:`1px solid ${T.border}` }}>
-                            <span style={{ fontSize:9, color:T.light }}>In phiếu: </span>
-                            <span style={{ color:T.dark, fontWeight:600 }}>{o.printed_by_name}</span>
-                          </div>
-                        )}
-                      </div>
-                    </div>
+                    {/* v128: Các phần dưới timeline (lịch sử sửa, ảnh) vẫn full width */}
 
                     {/* Thay đổi nếu có */}
                     {modCount > 0 && (o.change_log||[]).length > 0 && (
@@ -26586,7 +26686,7 @@ function SaleOrderTrackingModule({ user, allUsers, mobile }: any) {
           })}
         </div>
       )}
-    </div>
+    </PageContainer>
   )
 }
 
@@ -29163,7 +29263,7 @@ function InventorySyncModule({ user, allUsers, mobile }: any) {
   }
 
   return (
-    <div style={{ padding:`0 ${p} ${mobile?'80px':p}` }}>
+    <PageContainer mobile={mobile}>
       <Topbar mobile={mobile} title="📊 Đối soát tồn kho"
         subtitle="So sánh tồn KiotViet với MISA Kế toán — chỉ hiển thị SP có trên MISA"
         action={
@@ -29373,7 +29473,7 @@ function InventorySyncModule({ user, allUsers, mobile }: any) {
         <br/>• <b>🔵 Chỉ MISA</b>: SP có trên MISA nhưng KiotViet chưa có — cần kiểm tra
         <br/>• <b>Lưu ý</b>: Chỉ hiển thị SP có trên MISA. SP chỉ có trên KV (SHIP, VAT...) đã được loại.
       </div>
-    </div>
+    </PageContainer>
   )
 }
 
@@ -29575,7 +29675,7 @@ function GhtkModule({ user, allUsers, mobile }: any) {
   ].filter(t => t.show)
 
   return (
-    <div style={{ padding:`0 ${p} ${mobile?'80px':p}` }}>
+    <PageContainer mobile={mobile}>
       <Topbar mobile={mobile} title="🚚 GHTK"
         subtitle={ghtkStartDate
           ? `Đơn từ ngày ${ghtkStartDate.split('-').reverse().join('/')} trở về sau`
@@ -29709,7 +29809,7 @@ function GhtkModule({ user, allUsers, mobile }: any) {
           onClose={() => setShowManualOrder(false)}
           onCreated={() => { setShowManualOrder(false); fetchOrders() }}/>
       )}
-    </div>
+    </PageContainer>
   )
 }
 
@@ -31038,27 +31138,29 @@ function GhtkBusShipPrintPanel({ user, mobile }: any) {
 
   return (
     <>
+      {/* v128: narrow form 640px */}
+      <div style={{ maxWidth: mobile ? '100%' : LAYOUT.formMax }}>
       <Card style={{ padding:mobile?14:20, marginBottom:16 }}>
         <div style={{ fontSize:14, fontWeight:700, color:T.dark, marginBottom:12,
           paddingBottom:10, borderBottom:`1px solid ${T.border}` }}>
           📄 In thông tin đơn (xe khách / đường bộ)
         </div>
 
-        {/* Chọn khổ giấy */}
+        {/* Chọn khổ giấy — v128: compact */}
         <div style={{ marginBottom:12 }}>
           <label style={labelStyle}>Khổ giấy</label>
-          <div style={{ display:'flex', gap:8 }}>
+          <div style={{ display:'flex', gap:8, flexWrap:'wrap' }}>
             <button onClick={() => setPaperSize('A6')}
-              style={{ flex:1, padding:'10px 0', borderRadius:8, cursor:'pointer',
-                fontFamily:'inherit', fontSize:13, fontWeight:700,
+              style={{ padding:'8px 18px', borderRadius:8, cursor:'pointer',
+                fontFamily:'inherit', fontSize:13, fontWeight:700, whiteSpace:'nowrap',
                 border:`2px solid ${paperSize==='A6' ? T.blue : T.border}`,
                 background: paperSize==='A6' ? T.blueBg : '#fff',
                 color: paperSize==='A6' ? T.blue : T.med }}>
               📄 A6 (to)
             </button>
             <button onClick={() => setPaperSize('A7')}
-              style={{ flex:1, padding:'10px 0', borderRadius:8, cursor:'pointer',
-                fontFamily:'inherit', fontSize:13, fontWeight:700,
+              style={{ padding:'8px 18px', borderRadius:8, cursor:'pointer',
+                fontFamily:'inherit', fontSize:13, fontWeight:700, whiteSpace:'nowrap',
                 border:`2px solid ${paperSize==='A7' ? T.purple : T.border}`,
                 background: paperSize==='A7' ? T.purpleBg : '#fff',
                 color: paperSize==='A7' ? T.purple : T.med }}>
@@ -31067,21 +31169,21 @@ function GhtkBusShipPrintPanel({ user, mobile }: any) {
           </div>
         </div>
 
-        {/* Chọn hướng in */}
+        {/* Chọn hướng in — v128: compact */}
         <div style={{ marginBottom:14 }}>
           <label style={labelStyle}>Hướng in</label>
-          <div style={{ display:'flex', gap:8 }}>
+          <div style={{ display:'flex', gap:8, flexWrap:'wrap' }}>
             <button onClick={() => setOrientation('landscape')}
-              style={{ flex:1, padding:'8px 0', borderRadius:6, cursor:'pointer',
-                fontFamily:'inherit', fontSize:12, fontWeight:600,
+              style={{ padding:'7px 14px', borderRadius:6, cursor:'pointer',
+                fontFamily:'inherit', fontSize:12, fontWeight:600, whiteSpace:'nowrap',
                 border:`1.5px solid ${orientation==='landscape' ? T.green : T.border}`,
                 background: orientation==='landscape' ? T.greenBg : '#fff',
                 color: orientation==='landscape' ? T.green : T.med }}>
               ↔️ Ngang {paperSize==='A6' ? '148×105mm' : '105×74mm'}
             </button>
             <button onClick={() => setOrientation('portrait')}
-              style={{ flex:1, padding:'8px 0', borderRadius:6, cursor:'pointer',
-                fontFamily:'inherit', fontSize:12, fontWeight:600,
+              style={{ padding:'7px 14px', borderRadius:6, cursor:'pointer',
+                fontFamily:'inherit', fontSize:12, fontWeight:600, whiteSpace:'nowrap',
                 border:`1.5px solid ${orientation==='portrait' ? T.blue : T.border}`,
                 background: orientation==='portrait' ? T.blueBg : '#fff',
                 color: orientation==='portrait' ? T.blue : T.med }}>
@@ -31153,8 +31255,9 @@ function GhtkBusShipPrintPanel({ user, mobile }: any) {
           🖨 In ({paperSize} {orientation==='landscape'?'ngang':'dọc'})
         </button>
       </Card>
+      </div>
 
-      {/* Lịch sử in */}
+      {/* Lịch sử in — v128: full width */}
       {history.length > 0 && (
         <Card style={{ padding:mobile?14:20 }}>
           <div style={{ fontSize:13, fontWeight:700, color:T.dark, marginBottom:10,
@@ -31390,7 +31493,8 @@ ${body}
         </Card>
       )}
 
-      {/* Form in */}
+      {/* Form in — v128: narrow container 640px */}
+      <div style={{ maxWidth: mobile ? '100%' : LAYOUT.formMax }}>
       <Card style={{ padding:mobile?14:20, marginBottom:16 }}>
         <div style={{ fontSize:14, fontWeight:700, color:T.dark, marginBottom:12,
           paddingBottom:10, borderBottom:`1px solid ${T.border}`,
@@ -31411,25 +31515,25 @@ ${body}
           )}
         </div>
 
-        {/* Chọn loại */}
+        {/* Chọn loại — v128: compact, fit-content */}
         <div style={{ marginBottom:14 }}>
           <div style={{ fontSize:11, color:T.med, marginBottom:6, fontWeight:600 }}>Hãng vận chuyển</div>
-          <div style={{ display:'flex', gap:8 }}>
+          <div style={{ display:'flex', gap:8, flexWrap:'wrap' }}>
             <button onClick={() => setCarrier('ghtk')}
-              style={{ flex:1, padding:'10px 0', borderRadius:8, cursor:'pointer',
-                fontFamily:'inherit', fontSize:13, fontWeight:700,
+              style={{ padding:'8px 16px', borderRadius:8, cursor:'pointer',
+                fontFamily:'inherit', fontSize:13, fontWeight:700, whiteSpace:'nowrap',
                 border:`2px solid ${carrier==='ghtk' ? T.green : T.border}`,
                 background: carrier==='ghtk' ? T.greenBg : '#fff',
                 color: carrier==='ghtk' ? T.green : T.med }}>
-              📦 GHTK (in barcode)
+              📦 GHTK (barcode)
             </button>
             <button onClick={() => setCarrier('viettel_post')}
-              style={{ flex:1, padding:'10px 0', borderRadius:8, cursor:'pointer',
-                fontFamily:'inherit', fontSize:13, fontWeight:700,
+              style={{ padding:'8px 16px', borderRadius:8, cursor:'pointer',
+                fontFamily:'inherit', fontSize:13, fontWeight:700, whiteSpace:'nowrap',
                 border:`2px solid ${carrier==='viettel_post' ? T.red : T.border}`,
                 background: carrier==='viettel_post' ? T.redBg : '#fff',
                 color: carrier==='viettel_post' ? T.red : T.med }}>
-              📮 Viettel Post (in text A7)
+              📮 Viettel Post (text A7)
             </button>
           </div>
           <div style={{ fontSize:10, color:T.light, marginTop:6, lineHeight:1.4 }}>
@@ -31439,7 +31543,7 @@ ${body}
           </div>
         </div>
 
-        {/* Nhập mã */}
+        {/* Nhập mã — v128: narrow input */}
         <div style={{ marginBottom:14 }}>
           <div style={{ fontSize:11, color:T.med, marginBottom:6, fontWeight:600 }}>
             Mã vận đơn <span style={{ color:T.red }}>*</span>
@@ -31448,7 +31552,8 @@ ${body}
             onChange={e => setCode(e.target.value)}
             placeholder={carrier === 'ghtk' ? 'VD: 1987997655 (9-15 số)' : 'VD: 123456789012 (10-15 số)'}
             autoFocus
-            style={{ width:'100%', padding:'12px 14px', border:`2px solid ${valid ? T.green : (code ? T.amber : T.border)}`,
+            style={{ width:'100%', maxWidth:360,
+              padding:'12px 14px', border:`2px solid ${valid ? T.green : (code ? T.amber : T.border)}`,
               borderRadius:8, fontSize:18, fontFamily:'Courier New, monospace', fontWeight:700,
               letterSpacing:2, color:T.dark, background:'#fff', outline:'none',
               boxSizing:'border-box' as any }}/>
@@ -31460,7 +31565,7 @@ ${body}
           </div>
         </div>
 
-        {/* Ghi chú (optional) */}
+        {/* Ghi chú — v128: narrow input */}
         <div style={{ marginBottom:14 }}>
           <div style={{ fontSize:11, color:T.med, marginBottom:6, fontWeight:600 }}>
             Ghi chú (tuỳ chọn)
@@ -31469,7 +31574,8 @@ ${body}
             onChange={e => setNote(e.target.value)}
             placeholder="VD: Đơn shop ABC, KH đã cọc..."
             maxLength={200}
-            style={{ width:'100%', padding:'8px 12px', border:`1px solid ${T.border}`,
+            style={{ width:'100%', maxWidth:500,
+              padding:'8px 12px', border:`1px solid ${T.border}`,
               borderRadius:6, fontSize:12, fontFamily:'inherit', color:T.dark,
               background:'#fff', outline:'none', boxSizing:'border-box' as any }}/>
         </div>
@@ -31514,8 +31620,9 @@ ${body}
           {printing ? '⏳ Đang in...' : `🖨 In ${carrier === 'ghtk' ? 'barcode GHTK' : 'mã Viettel Post'}`}
         </button>
       </Card>
+      </div>
 
-      {/* Lịch sử in */}
+      {/* Lịch sử in — v128: full width của PageContainer */}
       <Card style={{ padding:mobile?14:20 }}>
         <div style={{ fontSize:13, fontWeight:700, color:T.dark, marginBottom:12,
           paddingBottom:8, borderBottom:`1px solid ${T.border}`, display:'flex',
