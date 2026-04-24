@@ -2706,7 +2706,7 @@ function Checklist({ user, checklist, setChecklist, addLog, allUsers, mobile }: 
     : allUsers.filter((u: any) => dids.includes(u.id))
 
   return (
-    <div style={{ padding:`0 ${p} ${mobile?'80px':p}` }}>
+    <PageContainer mobile={mobile}>
       <Topbar mobile={mobile} title="Checklist hàng ngày"
         subtitle={`${todayStr()} — ${totalDone}/${totalItems} hoàn thành`}
         action={<GoldBtn small outline onClick={() => setShowAdd(true)}>+ Tự thêm</GoldBtn>}/>
@@ -2940,7 +2940,7 @@ function Checklist({ user, checklist, setChecklist, addLog, allUsers, mobile }: 
           <GoldBtn small onClick={addSelfItem} disabled={!addForm.title.trim()}>Thêm vào checklist</GoldBtn>
         </div>
       </Modal>
-    </div>
+    </PageContainer>
   )
 }
 
@@ -3060,7 +3060,7 @@ function Tasks({ user, tasks, setTasks, addLog, allUsers, mobile }: any) {
   )
 
   return (
-    <div style={{ padding:`0 ${p} ${mobile?'80px':p}` }}>
+    <PageContainer mobile={mobile}>
       <Topbar mobile={mobile}
         title={perm.viewAllChecklist?'Giao việc':perm.viewDeptChecklist?'Việc phòng tôi':'Việc của tôi'}
         subtitle={`Hôm nay: ${todayStr()}`}
@@ -3209,7 +3209,7 @@ function Tasks({ user, tasks, setTasks, addLog, allUsers, mobile }: any) {
           <GoldBtn small onClick={create} disabled={!form.title||!form.deadline||!form.assignee_id}>Tạo task</GoldBtn>
         </div>
       </Modal>
-    </div>
+    </PageContainer>
   )
 }
 
@@ -3270,7 +3270,7 @@ function Templates({ templates, setTemplates, allUsers, mobile }: any) {
   }
 
   return (
-    <div style={{ padding:`0 ${p} ${mobile?'80px':p}` }}>
+    <PageContainer mobile={mobile}>
       <Topbar mobile={mobile} title="Template checklist" subtitle="Tự sinh checklist hàng ngày"
         action={<GoldBtn small onClick={openCreate}>+ Thêm template</GoldBtn>}/>
 
@@ -3536,7 +3536,7 @@ function Templates({ templates, setTemplates, allUsers, mobile }: any) {
           <GoldBtn small onClick={save} disabled={!form.title||!form.assignee_id}>Lưu</GoldBtn>
         </div>
       </Modal>
-    </div>
+    </PageContainer>
   )
 }
 
@@ -3884,7 +3884,7 @@ function Attendance({ user, allUsers, leaveRequests, attendance, setAttendance, 
   }
 
   return (
-    <div style={{ padding:`0 ${p} ${mobile?'80px':p}` }}>
+    <PageContainer mobile={mobile}>
       <Topbar mobile={mobile} title="Chấm công" subtitle="Quản lý điểm danh nhân viên"/>
       <div style={{ display:'flex', gap:6, marginBottom:16, flexWrap:'wrap' }}>
         {([['today','📅 Hôm nay'],['week','📊 Tuần này'],['month','📈 Tháng này']] as [string,string][]).map(([id, label]) => (
@@ -4054,7 +4054,7 @@ function Attendance({ user, allUsers, leaveRequests, attendance, setAttendance, 
           <GoldBtn small onClick={() => saveRec(editRow.u, editRow.d)}>Lưu</GoldBtn>
         </div>
       </Modal>
-    </div>
+    </PageContainer>
   )
 }
 
@@ -4153,7 +4153,7 @@ function Overtime({ user, allUsers, mobile }: any) {
   const displayList = tab==='mine' ? myReqs : tab==='pending' ? pending : allV
 
   return (
-    <div style={{ padding:`0 ${p} ${mobile?'80px':p}` }}>
+    <PageContainer mobile={mobile}>
       <Topbar mobile={mobile} title="Làm thêm giờ (OT)"
         subtitle={canApprove && pending.length>0 ? `${pending.length} đơn chờ duyệt` : 'Quản lý OT'}
         action={<GoldBtn small onClick={() => setShow(true)}>+ Đăng ký OT</GoldBtn>}/>
@@ -4364,7 +4364,7 @@ function Overtime({ user, allUsers, mobile }: any) {
           </div>
         </>)}
       </Modal>
-    </div>
+    </PageContainer>
   )
 }
 
@@ -4529,7 +4529,7 @@ function Leave({ user, allUsers, leaveRequests, setLeaveRequests, mobile }: any)
   }
 
   return (
-    <div style={{ padding:`0 ${p} ${mobile?'80px':p}` }}>
+    <PageContainer mobile={mobile}>
       <Topbar mobile={mobile} title="Nghỉ phép"
         subtitle={canApprove && pending.length > 0 ? `${pending.length} đơn chờ duyệt` : 'Quản lý nghỉ phép'}
         action={<GoldBtn small onClick={() => setShow(true)}>+ Xin nghỉ phép</GoldBtn>}/>
@@ -4750,7 +4750,7 @@ function Leave({ user, allUsers, leaveRequests, setLeaveRequests, mobile }: any)
           </div>
         </>)}
       </Modal>
-    </div>
+    </PageContainer>
   )
 }
 
@@ -4810,7 +4810,7 @@ function Announcements({ user, allUsers, mobile }: any) {
   }
 
   return (
-    <div style={{ padding:`0 ${p} ${mobile?'80px':p}` }}>
+    <PageContainer mobile={mobile}>
       <Topbar mobile={mobile} title="Thông báo nội bộ"
         subtitle={unread>0?`${unread} thông báo chưa đọc`:'Đã đọc hết'}
         action={canCreate && <GoldBtn small onClick={() => setShow(true)}>+ Tạo thông báo</GoldBtn>}/>
@@ -4883,7 +4883,7 @@ function Announcements({ user, allUsers, mobile }: any) {
           <GoldBtn small onClick={create} disabled={!form.title||!form.content}>Đăng thông báo</GoldBtn>
         </div>
       </Modal>
-    </div>
+    </PageContainer>
   )
 }
 
@@ -5418,7 +5418,7 @@ function ShortageItems({ user, allUsers, mobile, products, setProducts }: any) {
   }
 
   return (
-    <div style={{ padding:`0 ${p} ${mobile?'80px':p}` }}>
+    <PageContainer mobile={mobile}>
       <Topbar mobile={mobile} title="📦 Hàng thiếu" subtitle="Theo dõi tình trạng hàng hóa phòng Sale"
         action={
           <div style={{ display:'flex', gap:8 }}>
@@ -5914,7 +5914,7 @@ function ShortageItems({ user, allUsers, mobile, products, setProducts }: any) {
           {products.length===0 && <div style={{ padding:'24px', textAlign:'center', color:T.light, fontSize:13 }}>Chưa có sản phẩm nào. Thêm ở trên.</div>}
         </div>
       </Modal>
-    </div>
+    </PageContainer>
   )
 }
 
@@ -6675,7 +6675,7 @@ function ReturnItems({ user, allUsers, products, mobile }: any) {
   }
 
   return (
-    <div style={{ padding:`0 ${p} ${mobile?'80px':p}` }}>
+    <PageContainer mobile={mobile}>
       <Topbar mobile={mobile} title="🔄 Báo cáo hàng hoàn"
         subtitle={`Tháng ${fm}/${fy} — ${slips.length} phiếu · ${filteredItems.length} sản phẩm`}
         action={canAdd ? <GoldBtn small onClick={openAdd}>+ Nhập phiếu hoàn</GoldBtn> : undefined}/>
@@ -7247,7 +7247,7 @@ function ReturnItems({ user, allUsers, products, mobile }: any) {
             updateSlipAudit(showAudit.slip_id, shipFee, violatorId)}
           onClose={() => setShowAudit(null)}/>}
       </Modal>
-    </div>
+    </PageContainer>
   )
 }
 
@@ -7561,7 +7561,7 @@ function OrgChart({ user, allUsers, positions, mobile }: any) {
   }
 
   return (
-    <div style={{ padding:`0 ${p} ${mobile?'80px':p}` }}>
+    <PageContainer mobile={mobile}>
       <Topbar mobile={mobile} title="Sơ đồ tổ chức" subtitle="LA Global Beauty"
         action={canEdit && (
           <div style={{ fontSize:11, color:T.light, padding:'6px 12px',
@@ -7617,7 +7617,7 @@ function OrgChart({ user, allUsers, positions, mobile }: any) {
         ))}
         <div style={{ fontSize:11, color:T.light, marginLeft:'auto' }}>Click node để thu/mở cấp dưới</div>
       </div>
-    </div>
+    </PageContainer>
   )
 }
 
@@ -7645,7 +7645,7 @@ function History({ user, history, allUsers, mobile }: any) {
   }
 
   return (
-    <div style={{ padding:`0 ${p} ${mobile?'80px':p}` }}>
+    <PageContainer mobile={mobile}>
       <Topbar mobile={mobile} title="Lịch sử công việc" subtitle="Kết quả các kỳ đã qua"/>
       {myH.length === 0 ? (
         <EmptyState icon={Ico.history} title="Chưa có lịch sử" description="Các công việc đã hoàn thành sẽ hiển thị tại đây."/>
@@ -7733,7 +7733,7 @@ function History({ user, history, allUsers, mobile }: any) {
             )
           })}
       </>)}
-    </div>
+    </PageContainer>
   )
 }
 
@@ -7805,7 +7805,7 @@ function UserManagement({ user, allUsers, allUsersRaw, setAllUsers, setAllUsersR
   const testAccounts = (allUsersRaw || []).filter((u: any) => isTestAccount(u))
 
   return (
-    <div style={{ padding:`0 ${p} ${mobile?'80px':p}` }}>
+    <PageContainer mobile={mobile}>
       <Topbar mobile={mobile} title="Quản lý nhân viên"
         subtitle={`${allUsers.filter((u: any) => u.active).length} nhân viên đang hoạt động${testAccounts.length > 0 ? ` · ${testAccounts.length} tài khoản test` : ''}`}
         action={
@@ -7942,7 +7942,7 @@ function UserManagement({ user, allUsers, allUsersRaw, setAllUsers, setAllUsersR
           <GoldBtn small onClick={resetPassword} disabled={!newPw||newPw.length<4}>Đặt lại mật khẩu</GoldBtn>
         </div>
       </Modal>
-    </div>
+    </PageContainer>
   )
 }
 
@@ -8025,7 +8025,7 @@ function PositionsManagement({ user, positions, setPositions, mobile }: any) {
   }, {})
 
   return (
-    <div style={{ padding:`0 ${p} ${mobile?'80px':p}` }}>
+    <PageContainer mobile={mobile}>
       <Topbar mobile={mobile} title="Quản lý vị trí & quyền"
         subtitle="Thiết lập quyền hạn cho từng vị trí trong công ty"
         action={<GoldBtn small onClick={openCreate}>+ Thêm vị trí</GoldBtn>}/>
@@ -8153,7 +8153,7 @@ function PositionsManagement({ user, positions, setPositions, mobile }: any) {
           onCancel={() => setConfirmDelete(null)}
         />
       )}
-    </div>
+    </PageContainer>
   )
 }
 
@@ -10761,7 +10761,7 @@ function WrongOrders({ user, allUsers, wrongOrders, setWrongOrders, mobile }: an
   ).length
 
   return (
-    <div style={{ padding:`0 ${p} ${mobile?'80px':p}` }}>
+    <PageContainer mobile={mobile}>
       <Topbar mobile={mobile} title="⚠️ Báo cáo đơn sai"
         subtitle={`Tháng ${fm}/${fy} — ${filtered.length} đơn`}
         action={
@@ -11071,7 +11071,7 @@ function WrongOrders({ user, allUsers, wrongOrders, setWrongOrders, mobile }: an
 
       {/* Modal sale điền tình trạng */}
       {showEdit && <SaleFillModal item={showEdit} onSave={saleFill} onClose={() => setShowEdit(null)}/>}
-    </div>
+    </PageContainer>
   )
 }
 
@@ -11798,7 +11798,7 @@ function InventoryModule({ user, allUsers, products, invSessions, setInvSessions
   ]
 
   return (
-    <div style={{padding:`0 ${p} ${mobile?'80px':p}`}}>
+    <PageContainer mobile={mobile}>
       <Topbar mobile={mobile} title="📦 Kiểm kê kho"
         subtitle={openSession ? `📂 Phiên ${openSession.date} đang mở` : 'Quản lý kiểm kê hàng hóa'}
         action={
@@ -12588,7 +12588,7 @@ function InventoryModule({ user, allUsers, products, invSessions, setInvSessions
           onCancel={() => setConfirmDelete(null)}
         />
       )}
-    </div>
+    </PageContainer>
   )
 }
 
@@ -13964,7 +13964,7 @@ function PriceModule({ user, mobile, products, allUsers,
   const p = mobile ? '12px' : '24px'
 
   return (
-    <div style={{ padding:`0 ${p} ${mobile?'80px':p}` }}>
+    <PageContainer mobile={mobile}>
       <Topbar mobile={mobile} title="Báo giá & Chương trình nhãn hàng"
         subtitle="Bảng giá sản phẩm và theo dõi CTKM từng nhãn hàng"/>
 
@@ -13994,7 +13994,7 @@ function PriceModule({ user, mobile, products, allUsers,
           brandPrograms={brandPrograms} setBrandPrograms={setBrandPrograms}
           canEdit={canEditPrograms}/>
       )}
-    </div>
+    </PageContainer>
   )
 }
 
@@ -15209,7 +15209,7 @@ function ExpiryModule({ user, mobile, products, batches, setBatches }: any) {
   }
 
   return (
-    <div style={{ padding: pad, paddingBottom: mobile ? 90 : pad }}>
+    <PageContainer mobile={mobile}>
       <Topbar mobile={mobile}
         title="📅 Quản lý Date SP"
         subtitle="Theo dõi hạn sử dụng theo lô hàng · Đồng bộ tồn KiotViet"
@@ -15683,7 +15683,7 @@ function ExpiryModule({ user, mobile, products, batches, setBatches }: any) {
           mobile={mobile}
         />
       )}
-    </div>
+    </PageContainer>
   )
 }
 // ══ PAYMENT MODULE — Lệnh Chuyển Khoản ══════════════════════
@@ -16687,7 +16687,7 @@ function PaymentModule({ user, mobile, allUsers }: any) {
   )
 
   return (
-    <div style={{ padding:pad, paddingBottom: mobile ? 90 : pad }}>
+    <PageContainer mobile={mobile}>
       <Topbar mobile={mobile}
         title="💸 Lệnh Chuyển Khoản"
         subtitle="Quản lý lệnh bank cho nhà cung cấp"
@@ -17162,7 +17162,7 @@ function PaymentModule({ user, mobile, allUsers }: any) {
           onCancel={() => setPaymentConfirmDelete(null)}
         />
       )}
-    </div>
+    </PageContainer>
   )
 }
 
@@ -20820,7 +20820,7 @@ function PersonalNotesModule({ user, mobile }: any) {
   }
 
   return (
-    <div style={{ padding:p }}>
+    <PageContainer mobile={mobile}>
       {/* Topbar */}
       <div style={{ display:'flex', alignItems:'center', gap:12, marginBottom:16, flexWrap:'wrap' }}>
         <div style={{ flex:1, minWidth:200 }}>
@@ -20904,7 +20904,7 @@ function PersonalNotesModule({ user, mobile }: any) {
           })}
         </div>
       )}
-    </div>
+    </PageContainer>
   )
 }
 
@@ -21641,7 +21641,7 @@ function PayrollImportModule({ user, allUsers, mobile, attendance, setAttendance
 
   // ══ RENDER ══
   return (
-    <div style={{ padding: p }}>
+    <PageContainer mobile={mobile}>
       <Topbar mobile={mobile}
         title="📥 Import chấm công từ máy"
         subtitle={`Tháng đang import: ${month}/${year}  •  Nguồn dữ liệu máy CC = nguồn duy nhất để tính lương`}/>
@@ -21995,7 +21995,7 @@ function PayrollImportModule({ user, allUsers, mobile, attendance, setAttendance
           </div>
         </>
       )}
-    </div>
+    </PageContainer>
   )
 }
 
@@ -22505,7 +22505,7 @@ function PayrollModule({ user, allUsers, mobile }: any) {
 
   // Render
   return (
-    <div style={{ padding: p }}>
+    <PageContainer mobile={mobile}>
       <Topbar mobile={mobile} title="💵 Tính lương tự động" subtitle={`Tháng ${month}/${year} • ${usersWithSalary.length} NV`}/>
 
       {error && (
@@ -22656,7 +22656,7 @@ function PayrollModule({ user, allUsers, mobile }: any) {
           }}
         />
       )}
-    </div>
+    </PageContainer>
   )
 }
 
@@ -22821,7 +22821,7 @@ function MyPayslipModule({ user, allUsers, mobile }: any) {
   }, [user.id, month, year])
 
   return (
-    <div style={{ padding: p }}>
+    <PageContainer mobile={mobile}>
       <Topbar mobile={mobile} title="💰 Phiếu lương của tôi" subtitle={`${user.name}`}/>
 
       <Card style={{ padding: 14, marginBottom: 14 }}>
@@ -22895,7 +22895,7 @@ function MyPayslipModule({ user, allUsers, mobile }: any) {
           )}
         </Card>
       )}
-    </div>
+    </PageContainer>
   )
 }
 
@@ -23025,7 +23025,7 @@ function AuditLogModule({ user, allUsers, mobile }: any) {
   if (loading) return <div style={{ padding:p, textAlign:'center', color:T.light, paddingTop:40 }}>⏳ Đang tải...</div>
 
   return (
-    <div style={{ padding:`0 ${p} ${mobile?'80px':p}` }}>
+    <PageContainer mobile={mobile}>
       <Topbar mobile={mobile} title="📜 Nhật ký hoạt động"
         subtitle={`${filtered.length}/${logs.length} hành động trong ${dayRange} ngày`}
         action={
@@ -23175,7 +23175,7 @@ function AuditLogModule({ user, allUsers, mobile }: any) {
           </div>
         </div>
       )}
-    </div>
+    </PageContainer>
   )
 }
 
@@ -23493,7 +23493,7 @@ function PriorityRequestModule({ user, allUsers, mobile }: any) {
   if (loading) return <div style={{ padding:p, textAlign:'center', color:T.light, paddingTop:40 }}>⏳ Đang tải...</div>
 
   return (
-    <div style={{ padding:`0 ${p} ${mobile?'80px':p}` }}>
+    <PageContainer mobile={mobile}>
       <Topbar mobile={mobile} title="🚨 Phiếu ưu tiên"
         subtitle={`${pendingList.length} đang chờ xử lý • ${ackList.length} đã xác nhận`}
         action={
@@ -23599,7 +23599,7 @@ function PriorityRequestModule({ user, allUsers, mobile }: any) {
         <PrioritySubmitModal user={user} onClose={() => setShowSubmit(false)}
           onSubmitted={() => fetchData()}/>
       )}
-    </div>
+    </PageContainer>
   )
 }
 
@@ -24781,7 +24781,7 @@ function WarehouseStatsModule({ user, allUsers, mobile }: any) {
   )
 
   return (
-    <div style={{ padding:`0 ${p} ${mobile?'80px':p}` }}>
+    <PageContainer mobile={mobile}>
       <Topbar mobile={mobile} title="📊 Hiệu suất kho"
         subtitle={`${totals.total_orders} đơn đóng • ${Math.round(totals.total_picked)} đơn nhặt • ${fmtMoney(totals.total_value)}đ`}/>
 
@@ -25413,7 +25413,7 @@ function WarehouseStatsModule({ user, allUsers, mobile }: any) {
           </>
         )
       )}
-    </div>
+    </PageContainer>
   )
 }
 
@@ -25562,7 +25562,7 @@ function WarehouseScheduleModule({ user, allUsers, leaveRequests, attendance, mo
   )
 
   return (
-    <div style={{ padding:`0 ${p} ${mobile?'80px':p}` }}>
+    <PageContainer mobile={mobile}>
       <Topbar mobile={mobile} title="📅 Lịch Kho"
         subtitle={canManage ? 'QM Kho chia lịch theo ngày và vai trò' : 'Xem lịch làm việc của Kho'}
         action={
@@ -25799,7 +25799,7 @@ function WarehouseScheduleModule({ user, allUsers, leaveRequests, attendance, mo
           onClose={() => setShowCopyPrev(false)}
         />
       )}
-    </div>
+    </PageContainer>
   )
 }
 
@@ -27511,7 +27511,7 @@ function ErrorReportModule({ user, allUsers, mobile }: any) {
   ).length
 
   return (
-    <div style={{ padding: p }}>
+    <PageContainer mobile={mobile}>
       {/* Header */}
       <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center',
         flexWrap:'wrap', gap:10, marginBottom:16 }}>
@@ -27640,7 +27640,7 @@ function ErrorReportModule({ user, allUsers, mobile }: any) {
           })}
         </div>
       )}
-    </div>
+    </PageContainer>
   )
 }
 
@@ -27833,7 +27833,7 @@ function SlowMovingModule({ user, allUsers, mobile }: any) {
   const scanHoursAgo = lastScanAt ? Math.floor((Date.now() - lastScanAt.getTime()) / 3600000) : 999
 
   return (
-    <div style={{ padding:`0 ${p} ${mobile?'80px':p}` }}>
+    <PageContainer mobile={mobile}>
       <Topbar mobile={mobile} title="📉 Hàng bán chậm"
         subtitle={`${stats.totalActive} SP đang theo dõi • ${(stats.totalValue).toLocaleString('vi-VN')}đ tồn "chết"`}
         action={
@@ -28081,7 +28081,7 @@ function SlowMovingModule({ user, allUsers, mobile }: any) {
           await db.from('slow_moving_settings').update(upd).eq('id', 'main')
         }}/>
       )}
-    </div>
+    </PageContainer>
   )
 }
 
