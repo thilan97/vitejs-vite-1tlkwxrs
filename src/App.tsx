@@ -12,7 +12,7 @@ const db = createClient(SUPABASE_URL, SUPABASE_KEY)
 // APP_VERSION — dùng để invalidate cache localStorage mỗi khi deploy version mới
 // (ngăn bug quyền user bị "reset" do cache position cũ sau deploy)
 // ⚠️ MỖI LẦN DEPLOY FEATURE MỚI CÓ PERMISSION MỚI, BUMP SỐ NÀY:
-const APP_VERSION = '2026.04.24.v130'
+const APP_VERSION = '2026.04.24.v131'
 
 // ════════════════════════════════════════════════════════════════
 // AUDIT LOG — ghi nhận các hành động phá hoại data để trace lại
@@ -6006,7 +6006,10 @@ function ShortageItems({ user, allUsers, mobile, products, setProducts }: any) {
           )}
 
           {tabData[mgrTab]?.length === 0 ? (
-            <EmptyState icon={Ico.alertTri} title="Không có mục nào"/>
+            <EmptyState icon={Ico.alertTri}
+              title="Không có mục nào"
+              description="Chưa có mục hàng nào trong phân loại này."
+              hint="💡 Các mục sẽ xuất hiện khi có dữ liệu mới"/>
           ) : (
             <div style={{ background:T.card, borderRadius:12, border:`1px solid ${T.border}`, overflow:'hidden' }}>
               {/* ── Sticky header (desktop only) ── */}
@@ -8191,7 +8194,10 @@ function History({ user, history, allUsers, mobile }: any) {
     <PageContainer mobile={mobile}>
       <Topbar mobile={mobile} title="Lịch sử công việc" subtitle="Kết quả các kỳ đã qua"/>
       {myH.length === 0 ? (
-        <EmptyState icon={Ico.history} title="Chưa có lịch sử" description="Các công việc đã hoàn thành sẽ hiển thị tại đây."/>
+        <EmptyState icon={Ico.history}
+              title="Chưa có lịch sử"
+              description="Các công việc đã hoàn thành sẽ hiển thị tại đây."
+              hint="💡 Dùng để tra cứu việc đã làm trong quá khứ"/>
       ) : (<>
         <div style={{ display:'flex', gap:8, marginBottom:14, flexWrap:'wrap' }}>
           {([['date','📅 Theo ngày'],['person','👤 Theo người']] as [string,string][]).map(([m, l]) => (
@@ -11191,6 +11197,8 @@ export default function App() {
         <main style={{ flex:1, overflowY:'auto', paddingTop:4, minWidth:0,
           paddingBottom: mobile ? 68 : 0 }}>
           <PriorityAlertBanner user={user} onOpen={() => setPriorityAckOpen(true)}/>
+          {/* v130: ErrorBoundary với key=validPage — reset auto khi user chuyển page */}
+          <ErrorBoundary key={validPage} module={validPage}>
           {validPage==='dashboard' && <Dashboard {...pp} checklist={checklist} tasks={tasks} attendance={attendance} leaveRequests={leaveRequests} otRequests={[]}/>}
           {validPage==='checklist'  && <Checklist {...pp} checklist={checklist} setChecklist={setChecklist} addLog={addLog}/>}
           {validPage==='tasks'      && <Tasks {...pp} tasks={tasks} setTasks={setTasks} addLog={addLog}/>}
@@ -11229,6 +11237,7 @@ export default function App() {
           {validPage==='settings'   && <Settings {...pp} setUser={setUser} settings={settings} setSettings={setSettings} onManualReset={manualReset} positions={positions} departments={departments}/>}
           {validPage==='navprefs'   && <NavCustomizer user={user} setUser={setUser} mobile={mobile}/>}
           {validPage==='notes'      && <PersonalNotesModule user={user} mobile={mobile}/>}
+          </ErrorBoundary>
         </main>
         {mobile && <BottomNav user={user} page={validPage} setPage={setPage} pendingLeave={pendingLeave} pendingOT={pendingOT} notifUnread={notifUnread} notifGroups={notifGroups} onLogout={() => {
           localStorage.removeItem('la_user')
@@ -11463,7 +11472,10 @@ function WrongOrders({ user, allUsers, wrongOrders, setWrongOrders, mobile }: an
         </div>
       ) : (
       <>{filtered.length===0
-        ? <EmptyState icon={Ico.alertTri} title="Không có đơn sai nào" description="Không có đơn sai nào trong tháng này."/>
+        ? <EmptyState icon={Ico.alertTri}
+              title="Không có đơn sai nào trong tháng này"
+              description="Tuyệt vời! Đơn hàng trong tháng đều chính xác."
+              hint="💡 Đơn sai sẽ được báo cáo khi phát hiện khi đóng đơn"/>
         : <div style={{ background:T.card, borderRadius:RD.lg, border:`1px solid ${T.border}`,
             boxShadow:'0 1px 3px rgba(0,0,0,0.04)', overflow:'hidden' }}>
 
@@ -12601,7 +12613,10 @@ function InventoryModule({ user, allUsers, products, invSessions, setInvSessions
             })()}
 
             {!searchSP.trim() && (invSessions.length===0
-              ? <EmptyState icon={Ico.clipboard} title="Chưa có phiên kiểm kê nào" description="Tạo phiên kiểm kê mới để bắt đầu."/>
+              ? <EmptyState icon={Ico.clipboard}
+                  title="Chưa có phiên kiểm kê nào"
+                  description="Phiên kiểm kê giúp đối chiếu tồn thực tế với tồn sổ sách."
+                  hint="💡 Tạo phiên mới khi cần kiểm kê định kỳ (tuần/tháng)"/>
               : invSessions.map((s: any, i: number) => {
                   const sChecks = checks.filter((c: any) => c.session_id===s.id)
                   const sLech   = sChecks.filter((c: any) => c.diff!=null && c.diff!==0).length
@@ -12871,7 +12886,10 @@ function InventoryModule({ user, allUsers, products, invSessions, setInvSessions
               const dates = Object.keys(byDate).sort((a,b)=>b.localeCompare(a))
 
               if (filtered.length===0) return (
-                <EmptyState icon={Ico.check} title="Không có mã nào lệch" description="Không có mã nào lệch trong tháng này."/>
+                <EmptyState icon={Ico.check}
+                  title="Không có mã nào lệch"
+                  description="Tuyệt vời — tồn thực tế khớp với tồn sổ sách."
+                  hint="💡 Kho đã quản lý chính xác 100%"/>
               )
 
               const DIFF_CFG: any = {
@@ -18411,7 +18429,12 @@ function PickingModule({ user, allUsers, mobile, products }: any) {
               toast.success('Không có đơn nào cần dọn dẹp.\n\nLưu ý: đơn nào đang được Kho xử lý (đã có ảnh/items đã nhặt/updated gần đây) sẽ được BẢO VỆ không xoá, dù purchase_date cũ.')
               return
             }
-            if (!confirm(`Xoá ${toDelete.length} đơn cũ (trước ngày ${cutoffDate.split('-').reverse().join('/')}) đang ở trạng thái picking/packing?\n\n⚠️ Đã loại trừ các đơn đang xử lý (có ảnh, có items đã nhặt, hoặc updated gần đây).\n\nHành động này không thể hoàn tác.`)) return
+            if (!(await confirmDialog({
+              title: `Xoá ${toDelete.length} đơn cũ?`,
+              message: `Trước ngày ${cutoffDate.split('-').reverse().join('/')} · trạng thái picking/packing.\n\n⚠️ Đã loại trừ các đơn đang xử lý (có ảnh, có items đã nhặt, hoặc updated gần đây).\n\nHành động này không thể hoàn tác.`,
+              confirmText: 'Xoá',
+              tone: 'danger',
+            }))) return
             const codes = toDelete.map(o => o.order_code)
             for (const code of codes) {
               await logAudit({
@@ -24496,11 +24519,7 @@ function OrderLookupTab({ user, allUsers, mobile }: any) {
         </div>
       )}
 
-      {loading && (
-        <div style={{ padding:'20px', textAlign:'center', color:T.light, fontSize:12 }}>
-          ⏳ Đang tải...
-        </div>
-      )}
+      {loading && <SkeletonList rows={3}/>}
 
       {searchQ.trim() && !loading && (
         <>
@@ -27047,7 +27066,8 @@ function SaleOrderTrackingModule({ user, allUsers, mobile }: any) {
       ) : filtered.length === 0 ? (
         <EmptyState icon={Ico.truck}
           title={searchQ ? `Không có đơn nào khớp "${searchQ}"` : 'Không có đơn nào'}
-          description={searchQ ? 'Thử từ khoá khác hoặc mở rộng khoảng thời gian.' : 'Không có đơn nào trong khoảng thời gian đã chọn.'}/>
+          description={searchQ ? 'Thử từ khoá khác hoặc mở rộng khoảng thời gian.' : 'Không có đơn nào trong khoảng thời gian đã chọn.'}
+          hint={searchQ ? undefined : '💡 Đổi khoảng thời gian ở filter trên để xem đơn cũ'}/>
       ) : (
         <div style={{ display:'flex', flexDirection:'column', gap:10 }}>
           {filtered.map((o: any) => {
