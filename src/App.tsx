@@ -30527,7 +30527,7 @@ function GhtkModule({ user, allUsers, mobile }: any) {
 
 
 // ── GHTK Order Row ──
-function GhtkOrderRow({ order: o, tab, mobile, onRefresh, user, onFillInfo, onEditBoxes, onChooseShipType, onCreateOrder }: any) {
+function GhtkOrderRow({ order: o, tab, mobile, onRefresh, user, onFillInfo, onEditBoxes, onChooseShipType, onCreateOrder, onLinkSupp }: any) {
   const info = o.ghtk_customer_info || {}
   const boxes = o.ghtk_boxes || []
   const labels = o.ghtk_labels || []
