@@ -30344,17 +30344,25 @@ function GhtkModule({ user, allUsers, mobile }: any) {
   }, [tab, categorized, searchQ])
 
   const TABS = [
-    { id:'pending_info',   label:'📝 Chờ điền info',  count: categorized.pending_info.length,   show: perm.ghtkFillCustomer },
-    { id:'pending_choose', label:'❓ Sale chọn loại',  count: categorized.pending_choose.length, show: perm.ghtkFillCustomer },
-    { id:'pending_link',   label:'🔗 Đơn bổ sung',     count: categorized.pending_link.length,   show: perm.ghtkFillCustomer },
-    { id:'pending_weight', label:'⚖️ Chờ cân thùng',   count: categorized.pending_weight.length, show: perm.ghtkWeight },
-    { id:'ready',          label:'🚚 Sẵn sàng tạo',    count: categorized.ready.length,          show: perm.ghtkPrintLabel || perm.ghtkWeight },
-    { id:'created',        label:'🖨 Đã tạo đơn',      count: categorized.created.length,        show: true },
-    { id:'delivered',      label:'📦 Đã giao',         count: categorized.delivered.length,      show: true },
-    { id:'dropship',       label:'🏷 In mã dropship',  count: categorized.dropship_ghtk.length + categorized.dropship_vtp.length, show: perm.ghtkPrintLabel || perm.ghtkSettings },
-    { id:'busship',        label:'📄 In thông tin đơn', count: 0,                                  show: perm.ghtkPrintLabel || perm.ghtkSettings },
-    { id:'settings',       label:'⚙️ Cấu hình',        count: 0,                                  show: perm.ghtkSettings },
+    // Nhóm Sale
+    { id:'pending_info',   group:'sale',  label:'📝 Chờ điền info',  count: categorized.pending_info.length,   show: perm.ghtkFillCustomer },
+    { id:'pending_choose', group:'sale',  label:'❓ Sale chọn loại',  count: categorized.pending_choose.length, show: perm.ghtkFillCustomer },
+    { id:'pending_link',   group:'sale',  label:'🔗 Đơn bổ sung',     count: categorized.pending_link.length,   show: perm.ghtkFillCustomer },
+    // Nhóm Kho/QM
+    { id:'pending_weight', group:'kho',   label:'⚖️ Chờ cân thùng',   count: categorized.pending_weight.length, show: perm.ghtkWeight },
+    { id:'ready',          group:'kho',   label:'🚚 Sẵn sàng tạo',    count: categorized.ready.length,          show: perm.ghtkPrintLabel || perm.ghtkWeight },
+    { id:'created',        group:'kho',   label:'🖨 Đã tạo đơn',      count: categorized.created.length,        show: true },
+    { id:'delivered',      group:'kho',   label:'📦 Đã giao',         count: categorized.delivered.length,      show: true },
+    { id:'dropship',       group:'kho',   label:'🏷 In mã dropship',  count: categorized.dropship_ghtk.length + categorized.dropship_vtp.length, show: perm.ghtkPrintLabel || perm.ghtkSettings },
+    { id:'busship',        group:'kho',   label:'📄 In thông tin đơn', count: 0,                                  show: perm.ghtkPrintLabel || perm.ghtkSettings },
+    // Nhóm Admin
+    { id:'settings',       group:'admin', label:'⚙️ Cấu hình',        count: 0,                                  show: perm.ghtkSettings },
   ].filter(t => t.show)
+
+  // v137: Phân nhóm tabs để render 2 bên
+  const saleTabs  = TABS.filter(t => t.group === 'sale')
+  const khoTabs   = TABS.filter(t => t.group === 'kho')
+  const adminTabs = TABS.filter(t => t.group === 'admin')
 
   return (
     <PageContainer mobile={mobile}>
@@ -30380,19 +30388,74 @@ function GhtkModule({ user, allUsers, mobile }: any) {
           </div>
         }/>
 
-      {/* Tabs */}
-      <div style={{ display:'flex', gap:6, marginBottom:12, flexWrap:'wrap' }}>
-        {TABS.map(t => (
-          <button key={t.id} onClick={() => setTab(t.id as any)}
-            style={{ padding:'6px 14px', borderRadius:20, cursor:'pointer',
-              fontFamily:'inherit', fontSize:12,
-              border:`1.5px solid ${tab===t.id?T.gold:T.border}`,
-              background: tab===t.id?T.goldBg:'transparent',
-              color: tab===t.id?T.goldText:T.med,
-              fontWeight: tab===t.id?700:500 }}>
-            {t.label} {t.count > 0 && `(${t.count})`}
-          </button>
-        ))}
+      {/* v137: Tabs chia 2 panel theo role — Sale | Kho/QM */}
+      <div style={{ marginBottom:12, display:'flex', flexDirection: mobile ? 'column' : 'row',
+        gap: mobile ? 8 : 12, alignItems: mobile ? 'stretch' : 'flex-start' }}>
+
+        {/* Panel Sale */}
+        {saleTabs.length > 0 && (
+          <div style={{ flex:1, padding:'8px 10px', background:'#FAFCFF',
+            border:`1px solid ${T.blue}33`, borderRadius:10 }}>
+            <div style={{ fontSize:9, fontWeight:700, color:T.blue, textTransform:'uppercase',
+              letterSpacing:0.5, marginBottom:6 }}>
+              🧑‍💼 Sale
+            </div>
+            <div style={{ display:'flex', gap:5, flexWrap:'wrap' }}>
+              {saleTabs.map(t => (
+                <button key={t.id} onClick={() => setTab(t.id as any)}
+                  style={{ padding:'5px 12px', borderRadius:18, cursor:'pointer',
+                    fontFamily:'inherit', fontSize:11,
+                    border:`1.5px solid ${tab===t.id?T.gold:T.border}`,
+                    background: tab===t.id?T.goldBg:'#fff',
+                    color: tab===t.id?T.goldText:T.med,
+                    fontWeight: tab===t.id?700:500 }}>
+                  {t.label} {t.count > 0 && <span style={{ marginLeft:2 }}>({t.count})</span>}
+                </button>
+              ))}
+            </div>
+          </div>
+        )}
+
+        {/* Panel Kho/QM */}
+        {khoTabs.length > 0 && (
+          <div style={{ flex:1.5, padding:'8px 10px', background:'#FFFCF5',
+            border:`1px solid ${T.gold}33`, borderRadius:10 }}>
+            <div style={{ fontSize:9, fontWeight:700, color:T.goldText, textTransform:'uppercase',
+              letterSpacing:0.5, marginBottom:6 }}>
+              📦 Kho / QM
+            </div>
+            <div style={{ display:'flex', gap:5, flexWrap:'wrap' }}>
+              {khoTabs.map(t => (
+                <button key={t.id} onClick={() => setTab(t.id as any)}
+                  style={{ padding:'5px 12px', borderRadius:18, cursor:'pointer',
+                    fontFamily:'inherit', fontSize:11,
+                    border:`1.5px solid ${tab===t.id?T.gold:T.border}`,
+                    background: tab===t.id?T.goldBg:'#fff',
+                    color: tab===t.id?T.goldText:T.med,
+                    fontWeight: tab===t.id?700:500 }}>
+                  {t.label} {t.count > 0 && <span style={{ marginLeft:2 }}>({t.count})</span>}
+                </button>
+              ))}
+            </div>
+          </div>
+        )}
+
+        {/* Admin (Cấu hình) */}
+        {adminTabs.length > 0 && (
+          <div style={{ display:'flex', alignItems:'center' }}>
+            {adminTabs.map(t => (
+              <button key={t.id} onClick={() => setTab(t.id as any)}
+                style={{ padding:'5px 12px', borderRadius:18, cursor:'pointer',
+                  fontFamily:'inherit', fontSize:11,
+                  border:`1.5px solid ${tab===t.id?T.gold:T.border}`,
+                  background: tab===t.id?T.goldBg:'#fff',
+                  color: tab===t.id?T.goldText:T.med,
+                  fontWeight: tab===t.id?700:500 }}>
+                {t.label}
+              </button>
+            ))}
+          </div>
+        )}
       </div>
 
       {/* Content */}
