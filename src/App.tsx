@@ -30537,11 +30537,18 @@ function GhtkOrderRow({ order: o, tab, mobile, onRefresh, user, onFillInfo, onEd
               : hoursWaiting < 24
                 ? `chờ ${hoursWaiting.toFixed(1)} giờ`
                 : `chờ ${Math.floor(hoursWaiting / 24)} ngày`
+            // v135: timestamp đầy đủ để hover xem chính xác
+            const fullTime = readyAt.toLocaleString('vi-VN', {
+              hour: '2-digit', minute: '2-digit',
+              day: '2-digit', month: '2-digit', year: 'numeric'
+            })
             return (
-              <div style={{ display:'inline-block', marginTop:4, padding:'2px 10px',
+              <div style={{ display:'inline-flex', alignItems:'center', gap:6, marginTop:4, padding:'2px 10px',
                 background:bg, color, border:`1px solid ${border}55`, borderRadius:12,
-                fontSize:10, fontWeight:600 }}>
-                {icon} {text}
+                fontSize:10, fontWeight:600 }}
+                title={`Sẵn sàng tạo lúc: ${fullTime}`}>
+                <span>{icon} {text}</span>
+                <span style={{ color:T.light, fontWeight:400, fontSize:9 }}>· từ {fullTime}</span>
                 {isOverdue && <span style={{ marginLeft:4 }}>— ưu tiên tạo nhãn</span>}
               </div>
             )
@@ -30601,77 +30608,86 @@ function GhtkOrderRow({ order: o, tab, mobile, onRefresh, user, onFillInfo, onEd
               {expanded ? '▲ Ẩn sản phẩm' : `▼ Xem ${(o.items||[]).length} sản phẩm`}
             </button>
           )}
-          {tab === 'ready' && expanded && Array.isArray(o.items) && o.items.length > 0 && (
-            <div style={{ marginTop:8, padding:'8px 10px', background:T.bg,
-              borderRadius:6, border:`1px solid ${T.border}` }}>
-              {/* Header */}
-              <div style={{ display:'flex', fontSize:10, color:T.light, fontWeight:700,
-                paddingBottom:4, marginBottom:4, borderBottom:`1px solid ${T.border}` }}>
-                <span style={{ flex:1 }}>Sản phẩm</span>
-                <span style={{ width:60, textAlign:'right' }}>SL</span>
-                <span style={{ width:90, textAlign:'right' }}>Đơn giá</span>
-                <span style={{ width:100, textAlign:'right' }}>Thành tiền</span>
-              </div>
-              {/* Items */}
-              {o.items.map((it: any, i: number) => {
-                const qty = Number(it.qty || it.quantity || 1)
-                const price = Number(it.price || it.unit_price || 0)
-                const subtotal = qty * price
-                return (
-                  <div key={i} style={{ display:'flex', fontSize:11, color:T.dark, padding:'4px 0',
-                    borderBottom: i<o.items.length-1?`1px dashed ${T.border}`:'none' }}>
-                    <span style={{ flex:1 }}>
-                      {it.code ? <b>{it.code}</b> : ''} {it.name || it.product_name || '—'}
-                    </span>
-                    <span style={{ width:60, textAlign:'right', color:T.med, fontWeight:600 }}>×{qty}</span>
-                    <span style={{ width:90, textAlign:'right', color:T.med }}>
-                      {price > 0 ? Number(price).toLocaleString('vi-VN') + 'đ' : '—'}
-                    </span>
-                    <span style={{ width:100, textAlign:'right', color:T.dark, fontWeight:600 }}>
-                      {subtotal > 0 ? Number(subtotal).toLocaleString('vi-VN') + 'đ' : '—'}
-                    </span>
-                  </div>
-                )
-              })}
-              {/* Tổng */}
-              {(() => {
-                const total = o.items.reduce((s: number, it: any) => {
+          {tab === 'ready' && expanded && Array.isArray(o.items) && o.items.length > 0 && (() => {
+            // v135: Check xem có item nào có giá không — nếu không có thì ẩn cột giá
+            const hasAnyPrice = o.items.some((it: any) =>
+              Number(it.price || it.unit_price || it.subTotal || 0) > 0
+            )
+            // Tổng — ưu tiên subTotal (KV trả sẵn), fallback qty * price
+            const total = o.items.reduce((s: number, it: any) => {
+              const sub = Number(it.subTotal || 0)
+              if (sub > 0) return s + sub
+              const qty = Number(it.qty || it.quantity || 1)
+              const price = Number(it.price || it.unit_price || 0)
+              return s + qty * price
+            }, 0)
+            const kvTotal = Number(o.total_amount || 0)
+            const mismatch = total > 0 && kvTotal > 0 && Math.abs(total - kvTotal) > 1
+            return (
+              <div style={{ marginTop:8, padding:'8px 10px', background:T.bg,
+                borderRadius:6, border:`1px solid ${T.border}` }}>
+                {/* Header */}
+                <div style={{ display:'flex', fontSize:10, color:T.light, fontWeight:700,
+                  paddingBottom:4, marginBottom:4, borderBottom:`1px solid ${T.border}` }}>
+                  <span style={{ flex:1 }}>Sản phẩm</span>
+                  <span style={{ width:50, textAlign:'right' }}>SL</span>
+                  {hasAnyPrice && <>
+                    <span style={{ width:90, textAlign:'right' }}>Đơn giá</span>
+                    <span style={{ width:100, textAlign:'right' }}>Thành tiền</span>
+                  </>}
+                </div>
+                {/* Items */}
+                {o.items.map((it: any, i: number) => {
                   const qty = Number(it.qty || it.quantity || 1)
                   const price = Number(it.price || it.unit_price || 0)
-                  return s + qty * price
-                }, 0)
-                const kvTotal = Number(o.total_amount || 0)
-                const mismatch = total > 0 && kvTotal > 0 && Math.abs(total - kvTotal) > 1
-                return (
+                  const subFromKv = Number(it.subTotal || 0)
+                  const subtotal = subFromKv > 0 ? subFromKv : qty * price
+                  return (
+                    <div key={i} style={{ display:'flex', fontSize:11, color:T.dark, padding:'4px 0',
+                      borderBottom: i<o.items.length-1?`1px dashed ${T.border}`:'none' }}>
+                      <span style={{ flex:1 }}>
+                        {it.code ? <b>{it.code}</b> : ''} {it.name || it.product_name || '—'}
+                      </span>
+                      <span style={{ width:50, textAlign:'right', color:T.med, fontWeight:600 }}>×{qty}</span>
+                      {hasAnyPrice && <>
+                        <span style={{ width:90, textAlign:'right', color:T.med }}>
+                          {price > 0 ? Number(price).toLocaleString('vi-VN') + 'đ' : '—'}
+                        </span>
+                        <span style={{ width:100, textAlign:'right', color:T.dark, fontWeight:600 }}>
+                          {subtotal > 0 ? Number(subtotal).toLocaleString('vi-VN') + 'đ' : '—'}
+                        </span>
+                      </>}
+                    </div>
+                  )
+                })}
+                {/* Tổng */}
+                {hasAnyPrice && (
                   <div style={{ display:'flex', fontSize:12, padding:'6px 0 2px',
                     marginTop:4, borderTop:`1.5px solid ${T.border}`, fontWeight:700 }}>
                     <span style={{ flex:1, color:T.med }}>Tổng cộng</span>
-                    <span style={{ width:160, textAlign:'right', color: mismatch ? T.red : T.goldText }}>
+                    <span style={{ width:50 }}/>
+                    <span style={{ width:190, textAlign:'right', color: mismatch ? T.red : T.goldText }}>
                       {Number(total).toLocaleString('vi-VN')}đ
                     </span>
                   </div>
-                )
-              })()}
-              {/* Cảnh báo lệch số tiền KV */}
-              {(() => {
-                const total = o.items.reduce((s: number, it: any) => {
-                  const qty = Number(it.qty || it.quantity || 1)
-                  const price = Number(it.price || it.unit_price || 0)
-                  return s + qty * price
-                }, 0)
-                const kvTotal = Number(o.total_amount || 0)
-                if (total > 0 && kvTotal > 0 && Math.abs(total - kvTotal) > 1) {
-                  return (
-                    <div style={{ marginTop:6, padding:'4px 8px', background:'#FFF5F5',
-                      border:`1px solid ${T.red}55`, borderRadius:4, fontSize:10, color:T.red }}>
-                      ⚠️ Lệch với tổng KV ({Number(kvTotal).toLocaleString('vi-VN')}đ) — kiểm tra lại
-                    </div>
-                  )
-                }
-                return null
-              })()}
-            </div>
-          )}
+                )}
+                {/* Cảnh báo lệch */}
+                {mismatch && (
+                  <div style={{ marginTop:6, padding:'4px 8px', background:'#FFF5F5',
+                    border:`1px solid ${T.red}55`, borderRadius:4, fontSize:10, color:T.red }}>
+                    ⚠️ Lệch với tổng KV ({Number(kvTotal).toLocaleString('vi-VN')}đ) — kiểm tra lại
+                  </div>
+                )}
+                {/* Hint nếu không có giá */}
+                {!hasAnyPrice && kvTotal > 0 && (
+                  <div style={{ marginTop:6, padding:'4px 8px', background:T.bg,
+                    border:`1px dashed ${T.border}`, borderRadius:4, fontSize:10, color:T.light, fontStyle:'italic' }}>
+                    💡 KV không sync đơn giá cho items — Tổng đơn KV: <b style={{ color:T.goldText }}>{Number(kvTotal).toLocaleString('vi-VN')}đ</b>
+                  </div>
+                )}
+              </div>
+            )
+          })()}
         </div>
 
         {/* Action area */}
