@@ -12,7 +12,7 @@ const db = createClient(SUPABASE_URL, SUPABASE_KEY)
 // APP_VERSION — dùng để invalidate cache localStorage mỗi khi deploy version mới
 // (ngăn bug quyền user bị "reset" do cache position cũ sau deploy)
 // ⚠️ MỖI LẦN DEPLOY FEATURE MỚI CÓ PERMISSION MỚI, BUMP SỐ NÀY:
-const APP_VERSION = '2026.04.25.v135'
+const APP_VERSION = '2026.04.25.v136'
 
 // ════════════════════════════════════════════════════════════════
 // AUDIT LOG — ghi nhận các hành động phá hoại data để trace lại
@@ -20444,27 +20444,38 @@ function PackingDetailPanel({ ord, mobile, user, allUsers, products, allOrders, 
       })()}
 
       {/* ══ SUPPLEMENTARY ORDERS BANNER — hiện ở đơn gốc + đơn con ══ */}
-      {ord.linked_to_order_code && (
-        <div style={{ padding:'10px 12px', marginBottom:12, background:T.blueBg,
-          border:`1px solid ${T.blue}`, borderRadius:8, fontSize:12, color:T.dark }}>
-          <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', gap:8, flexWrap:'wrap' }}>
-            <div>
-              <b style={{ color:T.blue }}>↗ Đơn bổ sung</b> — Link tới đơn gốc <b>{ord.linked_to_order_code}</b>
-              <div style={{ fontSize:10, color:T.med, marginTop:2 }}>
-                Items và ảnh của đơn này sẽ được chụp chung với đơn gốc
+      {ord.linked_to_order_code && (() => {
+        // v135: Tìm đơn gốc để hiển thị tên KH + số tiền
+        const parent = (allOrders || []).find((o: any) => o.order_code === ord.linked_to_order_code)
+        const parentName = parent?.customer_name || ord.linked_to_order_code
+        const parentAmount = Number(parent?.total_amount || 0)
+        return (
+          <div style={{ padding:'10px 12px', marginBottom:12, background:T.blueBg,
+            border:`1px solid ${T.blue}`, borderRadius:8, fontSize:12, color:T.dark }}>
+            <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', gap:8, flexWrap:'wrap' }}>
+              <div>
+                <b style={{ color:T.blue }}>↗ Đơn bổ sung cho "{parentName}"</b>
+                {parentAmount > 0 && (
+                  <span style={{ marginLeft:6, color:T.goldText, fontWeight:700 }}>
+                    — {parentAmount.toLocaleString('vi-VN')}đ
+                  </span>
+                )}
+                <div style={{ fontSize:10, color:T.med, marginTop:2 }}>
+                  Đơn gốc: <b>{ord.linked_to_order_code}</b> · Items + ảnh sẽ gộp chung khi đóng. GHTK chỉ tạo 1 nhãn theo đơn gốc.
+                </div>
               </div>
+              {canManageSupp && (
+                <button onClick={() => onUnlinkSupp && onUnlinkSupp(ord.order_code)}
+                  style={{ padding:'5px 10px', borderRadius:6, border:`1px solid ${T.red}`,
+                    background:'#fff', color:T.red, cursor:'pointer', fontFamily:'inherit',
+                    fontSize:10, fontWeight:600 }}>
+                  Bỏ link
+                </button>
+              )}
             </div>
-            {canManageSupp && (
-              <button onClick={() => onUnlinkSupp && onUnlinkSupp(ord.order_code)}
-                style={{ padding:'5px 10px', borderRadius:6, border:`1px solid ${T.red}`,
-                  background:'#fff', color:T.red, cursor:'pointer', fontFamily:'inherit',
-                  fontSize:10, fontWeight:600 }}>
-                Bỏ link
-              </button>
-            )}
           </div>
-        </div>
-      )}
+        )
+      })()}
 
       {suppOrders.length > 0 && (
         <div style={{ padding:'10px 12px', marginBottom:12, background:T.blueBg,
@@ -30127,11 +30138,16 @@ function InventorySyncModule({ user, allUsers, mobile }: any) {
 // v126: Shared helpers cho GHTK — dùng chung giữa GhtkModule + useNotifications
 // ══════════════════════════════════════════════════════════════════════
 function parseShipIntentGlobal(note: string): {
-  type: 'ghtk_create'|'ghtk_dropship'|'vtp_dropship'|'ambiguous'|'none',
+  type: 'ghtk_create'|'ghtk_dropship'|'vtp_dropship'|'supplementary'|'ambiguous'|'none',
   code?: string,
   tel?: string,
 } {
   if (!note) return { type: 'none' }
+  // v135: Detect đơn bổ sung — note có "bs" hoặc "bổ sung" (kể cả "bo sung")
+  // Match: "bs", "bs01", "bổ sung", "bổ sung đơn", "bo sung"
+  const hasSupp = /\b(bs|bổ\s*sung|bo\s*sung)\b/i.test(note.normalize('NFC'))
+  if (hasSupp) return { type: 'supplementary' }
+
   const hasGhtk = /\bghtk\b/i.test(note)
   const hasVtp  = /\b(vtp|viettel\s*post|viettelpost|viettel)\b/i.test(note)
   if (!hasGhtk && !hasVtp) return { type: 'none' }
@@ -30188,7 +30204,7 @@ function GhtkModule({ user, allUsers, mobile }: any) {
   const perm = getPerm(user)
 
   // Tabs mặc định theo quyền: Sale vào Chờ điền, Kho vào Chờ cân
-  const [tab, setTab] = useState<'pending_info'|'pending_choose'|'pending_weight'|'ready'|'created'|'delivered'|'dropship'|'busship'|'settings'>(
+  const [tab, setTab] = useState<'pending_info'|'pending_choose'|'pending_link'|'pending_weight'|'ready'|'created'|'delivered'|'dropship'|'busship'|'settings'>(
     perm.ghtkFillCustomer && !perm.ghtkWeight ? 'pending_info' : 'pending_weight'
   )
 
@@ -30201,6 +30217,8 @@ function GhtkModule({ user, allUsers, mobile }: any) {
   const [editBoxesOrder, setEditBoxesOrder] = useState<any>(null)
   // v133: Modal tạo đơn GHTK (QM bấm "Tạo đơn GHTK" trong tab Sẵn sàng tạo)
   const [createOrderTarget, setCreateOrderTarget] = useState<any>(null)
+  // v135: Modal link đơn bổ sung — Sale chọn đơn gốc
+  const [linkSuppChild, setLinkSuppChild] = useState<any>(null)
   // v122: Ngày bắt đầu quản lý GHTK
   const [ghtkStartDate, setGhtkStartDate] = useState<string|null>(null)
   // v124: Tạo đơn thủ công
@@ -30251,6 +30269,7 @@ function GhtkModule({ user, allUsers, mobile }: any) {
     const result = {
       pending_info: [] as any[],       // cần điền info để tạo đơn GHTK
       pending_choose: [] as any[],     // v125: sale cần chọn loại (ambiguous)
+      pending_link: [] as any[],       // v135: đơn bổ sung (bs/bổ sung) chưa link đơn gốc
       dropship_ghtk: [] as any[],      // v125: đã có mã GHTK dropship, chờ in barcode
       dropship_vtp: [] as any[],       // v125: đã có mã VTP dropship, chờ in text A7
       pending_weight: [] as any[],     // đã có customer_info, chưa đủ cân thùng
@@ -30259,6 +30278,10 @@ function GhtkModule({ user, allUsers, mobile }: any) {
       delivered: [] as any[],          // tất cả label đã delivered/cancelled
     }
     for (const o of orders) {
+      // v135: Đơn ĐÃ là supplementary (đã link) → ẩn khỏi GhtkModule
+      // (đơn gốc sẽ tạo nhãn cho cả 2)
+      if (o.is_supplementary) continue
+
       const hasInfo = !!(o.ghtk_customer_info?.name && o.ghtk_customer_info?.tel)
       const boxes = o.ghtk_boxes || []
       const labels = o.ghtk_labels || []
@@ -30277,7 +30300,10 @@ function GhtkModule({ user, allUsers, mobile }: any) {
         const intent = parseShipIntent(o.description_kv || '')
         const enriched = { ...o, _intent: intent }
 
-        if (intent.type === 'ghtk_dropship') {
+        if (intent.type === 'supplementary') {
+          // v135: Đơn bổ sung chưa link → bucket riêng
+          result.pending_link.push(enriched)
+        } else if (intent.type === 'ghtk_dropship') {
           result.dropship_ghtk.push(enriched)
         } else if (intent.type === 'vtp_dropship') {
           result.dropship_vtp.push(enriched)
@@ -30320,6 +30346,7 @@ function GhtkModule({ user, allUsers, mobile }: any) {
   const TABS = [
     { id:'pending_info',   label:'📝 Chờ điền info',  count: categorized.pending_info.length,   show: perm.ghtkFillCustomer },
     { id:'pending_choose', label:'❓ Sale chọn loại',  count: categorized.pending_choose.length, show: perm.ghtkFillCustomer },
+    { id:'pending_link',   label:'🔗 Đơn bổ sung',     count: categorized.pending_link.length,   show: perm.ghtkFillCustomer },
     { id:'pending_weight', label:'⚖️ Chờ cân thùng',   count: categorized.pending_weight.length, show: perm.ghtkWeight },
     { id:'ready',          label:'🚚 Sẵn sàng tạo',    count: categorized.ready.length,          show: perm.ghtkPrintLabel || perm.ghtkWeight },
     { id:'created',        label:'🖨 Đã tạo đơn',      count: categorized.created.length,        show: true },
@@ -30406,6 +30433,7 @@ function GhtkModule({ user, allUsers, mobile }: any) {
               title={searchQ ? 'Không tìm thấy đơn' : (
                 tab === 'pending_info' ? 'Không có đơn chờ điền info' :
                 tab === 'pending_choose' ? 'Không có đơn cần chọn loại' :
+                tab === 'pending_link' ? 'Không có đơn bổ sung cần gán' :
                 tab === 'pending_weight' ? 'Không có đơn chờ cân thùng' :
                 tab === 'ready' ? 'Không có đơn sẵn sàng tạo' :
                 tab === 'created' ? 'Không có đơn đã tạo' :
@@ -30413,6 +30441,7 @@ function GhtkModule({ user, allUsers, mobile }: any) {
               )}
               description={tab === 'pending_info' ? '💡 Đơn KV có ghi chú chứa "ghtk" + SĐT (VD: "ghtk 0987xxx") sẽ tự xuất hiện ở đây ngay khi sync từ KiotViet — không cần đợi "Đã đóng".' :
                 tab === 'pending_choose' ? 'Đơn có ghi chú "ghtk" nhưng không đủ thông tin (VD: "ghtk bổ sung") sẽ vào đây. Sale cần chọn loại để xử lý.' :
+                tab === 'pending_link' ? '💡 Đơn KV có ghi chú "bs" hoặc "bổ sung" sẽ vào đây. Sale chọn đơn gốc để link → 2 đơn gộp chung khi đóng, GHTK chỉ tạo 1 nhãn theo đơn gốc.' :
                 tab === 'pending_weight' ? 'Các đơn đã điền info KH, chờ Kho cân và đóng thùng.' :
                 'Phase tiếp theo sẽ hoàn thiện các chức năng này.'}/>
           ) : (
@@ -30423,6 +30452,7 @@ function GhtkModule({ user, allUsers, mobile }: any) {
                   onFillInfo={() => setFillInfoOrder(o)}
                   onEditBoxes={() => setEditBoxesOrder(o)}
                   onCreateOrder={(order: any) => setCreateOrderTarget(order)}
+                  onLinkSupp={(order: any) => setLinkSuppChild(order)}
                   onChooseShipType={async (choice: 'ghtk_create'|'ghtk_dropship'|'vtp_dropship') => {
                     if (choice === 'ghtk_create') {
                       setFillInfoOrder(o)
@@ -30474,6 +30504,14 @@ function GhtkModule({ user, allUsers, mobile }: any) {
           order={createOrderTarget} user={user} mobile={mobile}
           onClose={() => setCreateOrderTarget(null)}
           onCreated={() => { setCreateOrderTarget(null); fetchOrders() }}/>
+      )}
+
+      {/* v135: Modal link đơn bổ sung */}
+      {linkSuppChild && (
+        <LinkParentModal
+          child={linkSuppChild} user={user} mobile={mobile}
+          onClose={() => setLinkSuppChild(null)}
+          onLinked={() => { setLinkSuppChild(null); fetchOrders() }}/>
       )}
 
       {/* v124: Modal tạo đơn thủ công */}
@@ -30744,6 +30782,18 @@ function GhtkOrderRow({ order: o, tab, mobile, onRefresh, user, onFillInfo, onEd
                     📮 Mã VTP (dropship)
                   </button>
                 </div>
+              )
+            }
+
+            // v135: Tab pending_link — đơn bổ sung chưa link đơn gốc
+            if (tab === 'pending_link') {
+              return (
+                <button onClick={() => onLinkSupp && onLinkSupp(o)}
+                  style={{ padding:'7px 14px', borderRadius:18, cursor:'pointer',
+                    border:'none', background: T.blue, color:'#fff',
+                    fontSize:12, fontWeight:700, fontFamily:'inherit', whiteSpace:'nowrap' }}>
+                  🔗 Gán đơn bổ sung
+                </button>
               )
             }
 
@@ -33914,6 +33964,363 @@ function GhtkManualOrderModal({ user, mobile, onClose, onCreated }: any) {
 // ══════════════════════════════════════════════════════════════════════
 // v121: GHTK Fill Customer Modal — Sale điền info KH qua paste 3 dòng
 // ══════════════════════════════════════════════════════════════════════
+// ══════════════════════════════════════════════════════════════════════
+// v136: Helper — detect loại bổ sung từ note + check loại đơn gốc
+// ══════════════════════════════════════════════════════════════════════
+// Loại bổ sung: 'ghtk' | 'bookship' | 'vtp'
+// Auto-suggest từ note Sale ghi:
+//   - "ghtk" → ghtk
+//   - "vtp"/"viettel" → vtp
+//   - "gửi xe"/"bookship"/"giao tận nơi"/"tự giao" → bookship
+// ══════════════════════════════════════════════════════════════════════
+function suggestSuppType(note: string): 'ghtk'|'bookship'|'vtp'|null {
+  if (!note) return null
+  const n = note.toLowerCase().normalize('NFC')
+  if (/\b(ghtk|giao\s*hang\s*tiet\s*kiem)\b/i.test(n)) return 'ghtk'
+  if (/\b(vtp|viettel\s*post|viettelpost|viettel)\b/i.test(n)) return 'vtp'
+  if (/\b(bookship|book\s*ship|gửi\s*xe|gui\s*xe|giao\s*tận\s*nơi|giao\s*tan\s*noi|tự\s*giao|tu\s*giao|nhà\s*xe|nha\s*xe)\b/i.test(n)) return 'bookship'
+  return null
+}
+
+// Detect loại đơn GỐC (parent) — để filter trong modal
+function detectParentType(o: any): 'ghtk'|'bookship'|'vtp'|'unknown' {
+  // GHTK: có labels hoặc info hoặc note ghtk
+  if ((o.ghtk_labels || []).length > 0) return 'ghtk'
+  if (o.ghtk_customer_info?.name && o.ghtk_customer_info?.tel) return 'ghtk'
+  // Dropship VTP
+  if (o.dropship_carrier === 'viettel_post') return 'vtp'
+  // Dropship GHTK
+  if (o.dropship_carrier === 'ghtk') return 'ghtk'
+  // Bookship: no_box=true
+  if (o.no_box === true) return 'bookship'
+  // Note-based fallback
+  const intent = suggestSuppType(o.description_kv || '')
+  if (intent) return intent
+  return 'unknown'
+}
+
+const SUPP_TYPE_CONFIG: Record<string, any> = {
+  ghtk:     { label: '📦 GHTK',           color: '#1D4ED8', bg: '#DBEAFE', desc: 'Đơn gốc giao qua GHTK' },
+  bookship: { label: '🚌 Bookship/Gửi xe', color: '#15803D', bg: '#DCFCE7', desc: 'Đơn gốc giao tận nơi / nhà xe' },
+  vtp:      { label: '📮 VTP/Viettel Post', color: '#B45309', bg: '#FEF3C7', desc: 'Đơn gốc giao qua Viettel Post' },
+}
+
+
+// ══════════════════════════════════════════════════════════════════════
+// v135 / v136: LinkParentModal — Sale chọn loại + đơn gốc để link đơn bổ sung
+// ══════════════════════════════════════════════════════════════════════
+// 2 bước:
+//   1. Chọn loại bổ sung (auto-suggest từ note)
+//   2. Chọn đơn gốc (filter theo loại + auto-suggest cùng KH)
+// ══════════════════════════════════════════════════════════════════════
+function LinkParentModal({ child, user, mobile, onClose, onLinked }: any) {
+  // v136: Auto-detect loại bổ sung từ note đơn child
+  const autoSuggested = useMemo(
+    () => suggestSuppType(child.description_kv || ''),
+    [child.description_kv]
+  )
+  const [suppType, setSuppType] = useState<'ghtk'|'bookship'|'vtp'|null>(autoSuggested)
+
+  const [searchQ, setSearchQ] = useState('')
+  const [candidates, setCandidates] = useState<any[]>([])
+  const [loading, setLoading] = useState(true)
+  const [selectedParent, setSelectedParent] = useState<any>(null)
+  const [linking, setLinking] = useState(false)
+
+  // Fetch đơn gần đây (30 ngày, picking/packing/done)
+  useEffect(() => {
+    let cancelled = false
+    const run = async () => {
+      setLoading(true)
+      try {
+        const fromIso = new Date(Date.now() - 30 * 86400000).toISOString()
+        const { data } = await db.from('packing_workflow')
+          .select('order_code, customer_name, customer_code, total_amount, status, items, purchase_date, description_kv, is_supplementary, linked_to_order_code, ghtk_customer_info, ghtk_labels, dropship_carrier, no_box')
+          .gte('purchase_date', fromIso)
+          .neq('order_code', child.order_code)
+          .or('status.eq.picking,status.eq.packing,status.eq.done')
+          .order('purchase_date', { ascending: false })
+          .limit(300)
+        if (cancelled) return
+        const filtered = (data || []).filter((o: any) => !o.is_supplementary)
+        setCandidates(filtered)
+      } finally {
+        if (!cancelled) setLoading(false)
+      }
+    }
+    run()
+    return () => { cancelled = true }
+  }, [child.order_code])
+
+  // v136: Filter theo suppType + smart sort
+  const filteredCandidates = useMemo(() => {
+    if (!suppType) return []
+    const q = norm2(searchQ.trim())
+    const childNameNorm = norm2(child.customer_name || '')
+
+    // Filter theo loại đơn gốc
+    let list = candidates.filter((o: any) => {
+      const pt = detectParentType(o)
+      // Cho phép match cùng loại HOẶC unknown (đơn chưa rõ loại có thể là loại đó)
+      return pt === suppType || pt === 'unknown'
+    })
+
+    if (q) {
+      list = list.filter((o: any) => {
+        const hay = norm2(`${o.order_code} ${o.customer_name || ''} ${o.customer_code || ''}`)
+        return hay.includes(q)
+      })
+    }
+    return [...list].sort((a: any, b: any) => {
+      // Ưu tiên: cùng KH + loại match chính xác (không unknown)
+      const aMatch = childNameNorm && norm2(a.customer_name || '').includes(childNameNorm)
+      const bMatch = childNameNorm && norm2(b.customer_name || '').includes(childNameNorm)
+      if (aMatch && !bMatch) return -1
+      if (!aMatch && bMatch) return 1
+      // Match loại chính xác > unknown
+      const aPt = detectParentType(a)
+      const bPt = detectParentType(b)
+      const aExact = aPt === suppType ? 1 : 0
+      const bExact = bPt === suppType ? 1 : 0
+      if (aExact !== bExact) return bExact - aExact
+      const aT = a.purchase_date ? new Date(a.purchase_date).getTime() : 0
+      const bT = b.purchase_date ? new Date(b.purchase_date).getTime() : 0
+      return bT - aT
+    })
+  }, [candidates, searchQ, child.customer_name, suppType])
+
+  const handleConfirm = async () => {
+    if (!selectedParent || !suppType) return
+    const cfg = SUPP_TYPE_CONFIG[suppType]
+    if (!(await confirmDialog({
+      title: `Link đơn bổ sung?`,
+      message: `Đơn ${child.order_code} sẽ link làm đơn bổ sung của ${selectedParent.order_code} (${cfg.label}).\n\n` +
+               `Items + ảnh sẽ gộp chung khi đóng. Đơn gốc sẽ giao qua ${cfg.label}.`,
+      confirmText: 'Link đơn',
+    }))) return
+
+    setLinking(true)
+    try {
+      const nowIso = new Date().toISOString()
+      const linkEntry = {
+        order_code: child.order_code,
+        linked_at: nowIso,
+        linked_by: user.id,
+        linked_by_name: user.name || '?',
+        supp_type: suppType,  // v136: lưu loại bổ sung
+      }
+      const parentSupps = Array.isArray(selectedParent.supplementary_orders) ? selectedParent.supplementary_orders : []
+      const newParentSupps = [...parentSupps.filter((s: any) => s.order_code !== child.order_code), linkEntry]
+
+      // Update child
+      const { error: e1 } = await db.from('packing_workflow').update({
+        linked_to_order_code: selectedParent.order_code,
+        is_supplementary: true,
+        updated_at: nowIso,
+      }).eq('order_code', child.order_code)
+      if (e1) { toast.error('Lỗi link: ' + e1.message); return }
+
+      // Update parent
+      const { error: e2 } = await db.from('packing_workflow').update({
+        supplementary_orders: newParentSupps,
+        updated_at: nowIso,
+      }).eq('order_code', selectedParent.order_code)
+      if (e2) { toast.error('Lỗi link đơn gốc: ' + e2.message); return }
+
+      toast.success(`Đã link ${child.order_code} → ${selectedParent.order_code} (${cfg.label})`)
+      if (onLinked) onLinked()
+    } catch (e: any) {
+      toast.error('Lỗi: ' + (e.message || String(e)))
+    } finally {
+      setLinking(false)
+    }
+  }
+
+  return (
+    <div onClick={onClose} style={{ position:'fixed', inset:0, background:'rgba(0,0,0,0.55)', zIndex:9999,
+      display:'flex', alignItems:'center', justifyContent:'center', padding:20 }}>
+      <div onClick={e => e.stopPropagation()}
+        style={{ background:'#fff', borderRadius:12, maxWidth:680, width:'100%', maxHeight:'90vh',
+          display:'flex', flexDirection:'column' }}>
+        <div style={{ padding:'14px 20px', background:T.blue, color:'#fff', borderRadius:'12px 12px 0 0' }}>
+          <div style={{ fontSize:14, fontWeight:700 }}>🔗 Gán đơn bổ sung — {child.order_code}</div>
+          <div style={{ fontSize:11, opacity:.85, marginTop:2 }}>
+            KH: {child.customer_name || '—'}
+            {Number(child.total_amount) > 0 && <> · {Number(child.total_amount).toLocaleString('vi-VN')}đ</>}
+            <> · {(child.items||[]).length} SP</>
+          </div>
+        </div>
+
+        <div style={{ padding:'16px 20px', overflow:'auto', flex:1 }}>
+          {/* v136: Bước 1 — chọn loại bổ sung */}
+          <div style={{ marginBottom:14 }}>
+            <div style={{ fontSize:12, fontWeight:700, color:T.med, marginBottom:8 }}>
+              <span style={{ color: T.blue, fontWeight:700 }}>1.</span> Chọn loại bổ sung
+              {autoSuggested && (
+                <span style={{ marginLeft:8, fontSize:10, padding:'1px 8px', borderRadius:8,
+                  background:T.greenBg, color:T.green, fontWeight:600 }}>
+                  💡 Gợi ý từ note: {SUPP_TYPE_CONFIG[autoSuggested].label}
+                </span>
+              )}
+            </div>
+            <div style={{ display:'grid', gridTemplateColumns:'repeat(3, 1fr)', gap:8 }}>
+              {(['ghtk','bookship','vtp'] as const).map(t => {
+                const cfg = SUPP_TYPE_CONFIG[t]
+                const isSelected = suppType === t
+                const isAuto = autoSuggested === t
+                return (
+                  <button key={t} onClick={() => { setSuppType(t); setSelectedParent(null) }}
+                    style={{ padding:'10px 8px', borderRadius:10, cursor:'pointer',
+                      border:`2px solid ${isSelected ? cfg.color : T.border}`,
+                      background: isSelected ? cfg.bg : '#fff',
+                      color: isSelected ? cfg.color : T.dark,
+                      fontFamily:'inherit', textAlign:'center', position:'relative' }}>
+                    {isAuto && (
+                      <div style={{ position:'absolute', top:-6, right:-4, fontSize:10, padding:'1px 5px',
+                        borderRadius:6, background:T.green, color:'#fff', fontWeight:700 }}>
+                        ✨
+                      </div>
+                    )}
+                    <div style={{ fontSize:13, fontWeight:700 }}>{cfg.label}</div>
+                    <div style={{ fontSize:9, color:T.light, marginTop:3, lineHeight:1.3 }}>{cfg.desc}</div>
+                  </button>
+                )
+              })}
+            </div>
+            {child.description_kv && (
+              <div style={{ marginTop:8, fontSize:10, color:T.light, fontStyle:'italic' }}>
+                Note đơn này: "{child.description_kv}"
+              </div>
+            )}
+          </div>
+
+          {/* v136: Bước 2 — chọn đơn gốc (chỉ hiện khi đã chọn loại) */}
+          {suppType && (
+            <>
+              <div style={{ fontSize:12, fontWeight:700, color:T.med, marginBottom:8, marginTop:14 }}>
+                <span style={{ color: T.blue, fontWeight:700 }}>2.</span> Chọn đơn gốc ({SUPP_TYPE_CONFIG[suppType].label})
+              </div>
+
+              <input value={searchQ} onChange={e => setSearchQ(e.target.value)}
+                placeholder="🔍 Tìm theo tên KH, mã đơn..."
+                style={{ width:'100%', padding:'9px 12px', border:`1px solid ${T.border}`, borderRadius:8,
+                  fontSize:13, fontFamily:'inherit', boxSizing:'border-box' as any, marginBottom:10 }}/>
+
+              {!searchQ && (
+                <div style={{ marginBottom:10, padding:'6px 10px', background:T.blueBg,
+                  borderRadius:6, fontSize:11, color:T.blue, lineHeight:1.5 }}>
+                  💡 Tự động ưu tiên đơn cùng KH "{child.customer_name || '—'}" + cùng loại {SUPP_TYPE_CONFIG[suppType].label}.
+                </div>
+              )}
+
+              {loading ? (
+                <SkeletonList rows={4}/>
+              ) : filteredCandidates.length === 0 ? (
+                <EmptyState icon={Ico.truck}
+                  title={searchQ ? 'Không tìm thấy đơn nào' : `Không có đơn ${SUPP_TYPE_CONFIG[suppType].label} gần đây`}
+                  description="Thử search bằng tên KH/mã đơn, hoặc chọn loại khác"/>
+              ) : (
+                <div style={{ display:'flex', flexDirection:'column', gap:6 }}>
+                  {filteredCandidates.slice(0, 50).map((o: any) => {
+                    const isSelected = selectedParent?.order_code === o.order_code
+                    const childNameNorm = norm2(child.customer_name || '')
+                    const isNameMatch = childNameNorm && norm2(o.customer_name || '').includes(childNameNorm)
+                    const pt = detectParentType(o)
+                    const ptCfg = pt !== 'unknown' ? SUPP_TYPE_CONFIG[pt] : null
+                    return (
+                      <div key={o.order_code} onClick={() => setSelectedParent(o)}
+                        style={{ padding:'10px 12px', borderRadius:8, cursor:'pointer',
+                          border:`1.5px solid ${isSelected ? T.blue : T.border}`,
+                          background: isSelected ? T.blueBg : (isNameMatch ? '#FAFCFF' : '#fff') }}>
+                        <div style={{ display:'flex', justifyContent:'space-between', alignItems:'flex-start', gap:8 }}>
+                          <div style={{ flex:1, minWidth:0 }}>
+                            <div style={{ fontSize:12, fontWeight:700, color:T.dark }}>
+                              📦 {o.order_code}
+                              {isNameMatch && (
+                                <span style={{ marginLeft:6, fontSize:9, padding:'1px 6px', borderRadius:8,
+                                  background:T.greenBg, color:T.green, fontWeight:600 }}>
+                                  cùng KH
+                                </span>
+                              )}
+                              {ptCfg && (
+                                <span style={{ marginLeft:6, fontSize:9, padding:'1px 6px', borderRadius:8,
+                                  background:ptCfg.bg, color:ptCfg.color, fontWeight:600 }}>
+                                  {ptCfg.label}
+                                </span>
+                              )}
+                              {pt === 'unknown' && (
+                                <span style={{ marginLeft:6, fontSize:9, padding:'1px 6px', borderRadius:8,
+                                  background:T.bg, color:T.light, fontStyle:'italic' }}>
+                                  chưa rõ loại
+                                </span>
+                              )}
+                            </div>
+                            <div style={{ fontSize:11, color:T.med, marginTop:2 }}>
+                              👤 {o.customer_name || '—'}
+                              {Number(o.total_amount) > 0 && (
+                                <span style={{ marginLeft:8, color:T.goldText, fontWeight:700 }}>
+                                  {Number(o.total_amount).toLocaleString('vi-VN')}đ
+                                </span>
+                              )}
+                              <span style={{ marginLeft:8 }}>· {(o.items||[]).length} SP</span>
+                            </div>
+                            <div style={{ fontSize:10, color:T.light, marginTop:2 }}>
+                              {o.purchase_date ? new Date(o.purchase_date).toLocaleString('vi-VN', {
+                                day:'2-digit', month:'2-digit', hour:'2-digit', minute:'2-digit'
+                              }) : '—'}
+                              <> · </>
+                              <span style={{
+                                color: o.status === 'done' ? T.green : o.status === 'packing' ? T.amber : T.blue
+                              }}>
+                                {o.status === 'done' ? '✅ Đã đóng' :
+                                 o.status === 'packing' ? '📦 Đang đóng' :
+                                 o.status === 'picking' ? '🔍 Đang nhặt' : o.status}
+                              </span>
+                            </div>
+                          </div>
+                          {isSelected && (
+                            <div style={{ fontSize:14, color:T.blue }}>✓</div>
+                          )}
+                        </div>
+                      </div>
+                    )
+                  })}
+                  {filteredCandidates.length > 50 && (
+                    <div style={{ padding:'8px', textAlign:'center', fontSize:11, color:T.light, fontStyle:'italic' }}>
+                      Hiển thị 50/{filteredCandidates.length} kết quả — search để lọc thêm
+                    </div>
+                  )}
+                </div>
+              )}
+            </>
+          )}
+        </div>
+
+        {/* Footer */}
+        <div style={{ display:'flex', gap:8, padding:'12px 20px', borderTop:`1px solid ${T.border}` }}>
+          <button onClick={onClose} disabled={linking}
+            style={{ flex:1, padding:'10px', borderRadius:8, border:`1px solid ${T.border}`,
+              background:'#fff', color:T.med, cursor: linking?'not-allowed':'pointer',
+              fontFamily:'inherit', fontSize:13 }}>
+            Huỷ
+          </button>
+          <button onClick={handleConfirm} disabled={!selectedParent || !suppType || linking}
+            style={{ flex:2, padding:'10px', borderRadius:8, border:'none',
+              background: (!selectedParent || !suppType || linking) ? T.border : T.blue, color:'#fff',
+              cursor: (!selectedParent || !suppType || linking)?'not-allowed':'pointer',
+              fontFamily:'inherit', fontSize:13, fontWeight:700 }}>
+            {linking ? '⏳ Đang link...' :
+             !suppType ? 'Chọn loại bổ sung' :
+             selectedParent ? `🔗 Link → ${selectedParent.order_code}` :
+             'Chọn đơn gốc'}
+          </button>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+
 function GhtkFillCustomerModal({ order: o, user, mobile, onClose, onSaved }: any) {
   const existing = o.ghtk_customer_info || {}
   const [pasteText, setPasteText] = useState('')
