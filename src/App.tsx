@@ -12,7 +12,7 @@ const db = createClient(SUPABASE_URL, SUPABASE_KEY)
 // APP_VERSION — dùng để invalidate cache localStorage mỗi khi deploy version mới
 // (ngăn bug quyền user bị "reset" do cache position cũ sau deploy)
 // ⚠️ MỖI LẦN DEPLOY FEATURE MỚI CÓ PERMISSION MỚI, BUMP SỐ NÀY:
-const APP_VERSION = '2026.04.25.v137'
+const APP_VERSION = '2026.04.25.v138'
 
 // ════════════════════════════════════════════════════════════════
 // AUDIT LOG — ghi nhận các hành động phá hoại data để trace lại
@@ -35042,6 +35042,196 @@ function GhtkFillCustomerModal({ order: o, user, mobile, onClose, onSaved }: any
 }
 
 
+// ══════════════════════════════════════════════════════════════════════
+// v138: GhtkWebhookStatusCard — hiển thị status webhook + logs gần đây
+// ══════════════════════════════════════════════════════════════════════
+// Hiện trong tab "⚙️ Cấu hình" GHTK
+// - Hướng dẫn setup webhook URL với GHTK
+// - Hiện 10 webhook logs gần nhất (success/fail)
+// - Nút copy URL nhanh
+// ══════════════════════════════════════════════════════════════════════
+function GhtkWebhookStatusCard({ mobile }: any) {
+  const [logs, setLogs] = useState<any[]>([])
+  const [loading, setLoading] = useState(true)
+  const [stats, setStats] = useState<any>({ total_24h: 0, processed: 0, failed: 0 })
+  const [showSetup, setShowSetup] = useState(false)
+
+  const webhookUrl = `${SUPABASE_URL}/functions/v1/ghtk-webhook?hash=<GHTK_WEBHOOK_HASH>`
+
+  const fetchLogs = async () => {
+    setLoading(true)
+    try {
+      // Fetch 20 logs gần nhất
+      const { data: recentLogs } = await db.from('ghtk_webhook_logs')
+        .select('id, received_at, partner_id, status_id, processed, error')
+        .order('received_at', { ascending: false })
+        .limit(20)
+      setLogs(recentLogs || [])
+
+      // Stats 24h gần nhất
+      const since24h = new Date(Date.now() - 24 * 3600000).toISOString()
+      const { data: stat24h } = await db.from('ghtk_webhook_logs')
+        .select('processed', { count: 'exact' })
+        .gte('received_at', since24h)
+      const total = stat24h?.length || 0
+      const processed = (stat24h || []).filter((l: any) => l.processed).length
+      setStats({ total_24h: total, processed, failed: total - processed })
+    } catch (e) {
+      // Bảng có thể chưa exist (migration 52 chưa chạy)
+      setLogs([])
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  useEffect(() => { fetchLogs() }, [])
+
+  const isHealthy = stats.total_24h > 0 && stats.failed === 0
+  const hasFailures = stats.failed > 0
+
+  return (
+    <Card style={{ padding:16, marginBottom:14 }}>
+      <div style={{ display:'flex', alignItems:'center', justifyContent:'space-between', gap:8, marginBottom:10 }}>
+        <div style={{ fontSize:14, fontWeight:700, color:T.dark }}>
+          ⚡ Webhook Real-time
+        </div>
+        <div style={{ display:'flex', gap:6, alignItems:'center' }}>
+          {isHealthy && (
+            <span style={{ padding:'2px 10px', borderRadius:12, background:T.greenBg,
+              color:T.green, fontSize:10, fontWeight:700 }}>
+              ✓ Hoạt động
+            </span>
+          )}
+          {hasFailures && (
+            <span style={{ padding:'2px 10px', borderRadius:12, background:'#FFF5F5',
+              color:T.red, fontSize:10, fontWeight:700 }}>
+              ⚠ {stats.failed} lỗi / 24h
+            </span>
+          )}
+          {stats.total_24h === 0 && (
+            <span style={{ padding:'2px 10px', borderRadius:12, background:T.bg,
+              color:T.light, fontSize:10, fontWeight:600, fontStyle:'italic' }}>
+              Chưa có webhook 24h qua
+            </span>
+          )}
+          <button onClick={fetchLogs}
+            style={{ padding:'4px 10px', borderRadius:14, border:`1px solid ${T.border}`,
+              background:'transparent', cursor:'pointer', fontSize:10, fontFamily:'inherit', color:T.med }}>
+            🔄
+          </button>
+        </div>
+      </div>
+
+      {/* Stats 24h */}
+      <div style={{ display:'grid', gridTemplateColumns:'repeat(3, 1fr)', gap:8, marginBottom:12 }}>
+        <div style={{ padding:'8px 10px', background:T.bg, borderRadius:8, textAlign:'center' }}>
+          <div style={{ fontSize:18, fontWeight:700, color:T.dark }}>{stats.total_24h}</div>
+          <div style={{ fontSize:10, color:T.light }}>Webhooks / 24h</div>
+        </div>
+        <div style={{ padding:'8px 10px', background:T.greenBg, borderRadius:8, textAlign:'center' }}>
+          <div style={{ fontSize:18, fontWeight:700, color:T.green }}>{stats.processed}</div>
+          <div style={{ fontSize:10, color:T.green }}>Thành công</div>
+        </div>
+        <div style={{ padding:'8px 10px', background: hasFailures?'#FFF5F5':T.bg, borderRadius:8, textAlign:'center' }}>
+          <div style={{ fontSize:18, fontWeight:700, color: hasFailures?T.red:T.light }}>{stats.failed}</div>
+          <div style={{ fontSize:10, color: hasFailures?T.red:T.light }}>Lỗi</div>
+        </div>
+      </div>
+
+      {/* Setup toggle */}
+      <button onClick={() => setShowSetup(s => !s)}
+        style={{ padding:'6px 12px', borderRadius:14, border:`1px solid ${T.blue}`,
+          background:T.blueBg, color:T.blue, cursor:'pointer', fontSize:11, fontFamily:'inherit',
+          fontWeight:600, marginBottom: showSetup ? 10 : 0 }}>
+        {showSetup ? '▼ Ẩn hướng dẫn setup' : '▶ Hướng dẫn setup webhook'}
+      </button>
+
+      {showSetup && (
+        <div style={{ padding:'12px 14px', background:'#FFFCF5', border:`1px solid ${T.gold}55`,
+          borderRadius:8, fontSize:11, color:T.dark, lineHeight:1.7, marginBottom:12 }}>
+          <div style={{ fontWeight:700, marginBottom:8, color:T.goldText }}>
+            🛠 Cách setup webhook (làm 1 lần)
+          </div>
+          <div><b>Bước 1:</b> Tạo Secret <code style={{ padding:'1px 5px', background:'#fff', borderRadius:3 }}>GHTK_WEBHOOK_HASH</code> trong Supabase</div>
+          <div style={{ paddingLeft:20, color:T.med, fontSize:10 }}>
+            (random string 32+ ký tự, VD: <code>abc123xyz...</code>)
+          </div>
+          <div style={{ marginTop:6 }}><b>Bước 2:</b> Deploy edge function <code style={{ padding:'1px 5px', background:'#fff', borderRadius:3 }}>ghtk-webhook</code></div>
+          <div style={{ paddingLeft:20, color:T.med, fontSize:10 }}>
+            ⚠ Quan trọng: phải <b>disable JWT verification</b> cho function này (vì GHTK không gửi auth)
+          </div>
+          <div style={{ marginTop:6 }}><b>Bước 3:</b> Vào <a href="https://khachhang.giaohangtietkiem.vn/web/thong-tin-shop/cau-hinh-api"
+            target="_blank" rel="noopener" style={{ color:T.blue }}>khachhang.giaohangtietkiem.vn → Cấu hình API</a></div>
+          <div style={{ paddingLeft:20, color:T.med, fontSize:10 }}>
+            Tìm mục "Webhook URL" hoặc "URL nhận callback" → paste URL bên dưới
+          </div>
+          <div style={{ marginTop:8, padding:'8px 10px', background:'#fff', borderRadius:6,
+            border:`1px dashed ${T.border}`, fontFamily:'monospace', fontSize:10, wordBreak:'break-all' }}>
+            {webhookUrl}
+          </div>
+          <button onClick={() => {
+            navigator.clipboard?.writeText(webhookUrl.replace('<GHTK_WEBHOOK_HASH>', ''))
+            window.toast?.info('Đã copy URL — nhớ thay <GHTK_WEBHOOK_HASH> bằng giá trị thật')
+          }} style={{ marginTop:6, padding:'4px 10px', borderRadius:12, border:`1px solid ${T.gold}`,
+            background:'transparent', color:T.goldText, cursor:'pointer', fontSize:10, fontFamily:'inherit' }}>
+            📋 Copy URL
+          </button>
+          <div style={{ marginTop:8, padding:'6px 8px', background:T.amberBg, borderRadius:4,
+            color:T.amber, fontSize:10 }}>
+            💡 Sau khi setup xong, GHTK sẽ tự gọi webhook mỗi khi đơn đổi trạng thái — không cần bấm Sync nữa.
+            Sync manual vẫn giữ làm backup nếu webhook miss.
+          </div>
+        </div>
+      )}
+
+      {/* Recent logs */}
+      <div style={{ fontSize:11, fontWeight:700, color:T.med, marginBottom:6 }}>
+        📜 20 webhook gần nhất
+      </div>
+      {loading ? (
+        <SkeletonList rows={3}/>
+      ) : logs.length === 0 ? (
+        <div style={{ padding:'12px', background:T.bg, borderRadius:6, textAlign:'center',
+          fontSize:11, color:T.light, fontStyle:'italic' }}>
+          Chưa có webhook nào — hoặc bảng <code>ghtk_webhook_logs</code> chưa được tạo (chạy Migration 52)
+        </div>
+      ) : (
+        <div style={{ display:'flex', flexDirection:'column', gap:4, maxHeight:300, overflowY:'auto' }}>
+          {logs.map((l: any) => (
+            <div key={l.id} style={{ padding:'6px 10px', borderRadius:6,
+              background: l.processed ? '#FAFFFA' : '#FFF5F5',
+              border: `1px solid ${l.processed ? T.green+'33' : T.red+'33'}`,
+              fontSize:10, lineHeight:1.5 }}>
+              <div style={{ display:'flex', justifyContent:'space-between', gap:8, alignItems:'center' }}>
+                <div>
+                  <span style={{ color: l.processed ? T.green : T.red, fontWeight:700 }}>
+                    {l.processed ? '✓' : '✗'}
+                  </span>
+                  <span style={{ marginLeft:6, fontWeight:600, color:T.dark }}>{l.partner_id || '—'}</span>
+                  <span style={{ marginLeft:6, color:T.med }}>
+                    status={l.status_id || '—'}
+                  </span>
+                </div>
+                <span style={{ color:T.light, fontSize:9 }}>
+                  {l.received_at ? new Date(l.received_at).toLocaleString('vi-VN', {
+                    hour:'2-digit', minute:'2-digit', day:'2-digit', month:'2-digit'
+                  }) : '—'}
+                </span>
+              </div>
+              {l.error && (
+                <div style={{ marginTop:2, color:T.red, fontStyle:'italic', fontSize:9 }}>
+                  ⚠ {l.error}
+                </div>
+              )}
+            </div>
+          ))}
+        </div>
+      )}
+    </Card>
+  )
+}
+
+
 function GhtkSettingsPanel({ user, mobile }: any) {
   const [settings, setSettings] = useState<any>(null)
   const [loading, setLoading] = useState(true)
@@ -35200,6 +35390,9 @@ function GhtkSettingsPanel({ user, mobile }: any) {
           4. Save → các edge functions tự dùng token mới (không cần redeploy)
         </div>
       </div>
+
+      {/* v138: Webhook real-time status */}
+      <GhtkWebhookStatusCard mobile={mobile}/>
 
       <div style={{ fontSize:14, fontWeight:700, color:T.dark, marginBottom:14,
         paddingTop:14, borderTop:`1px solid ${T.border}` }}>🏠 Địa chỉ kho lấy hàng</div>
