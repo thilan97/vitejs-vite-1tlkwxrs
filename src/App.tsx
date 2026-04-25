@@ -34014,6 +34014,9 @@ const SUPP_TYPE_CONFIG: Record<string, any> = {
 //   2. Chọn đơn gốc (filter theo loại + auto-suggest cùng KH)
 // ══════════════════════════════════════════════════════════════════════
 function LinkParentModal({ child, user, mobile, onClose, onLinked }: any) {
+  // v136: norm2 helper local (không global trong app)
+  const norm2 = (s: string) => (s||'').toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g,'').replace(/đ/g,'d').trim()
+
   // v136: Auto-detect loại bổ sung từ note đơn child
   const autoSuggested = useMemo(
     () => suggestSuppType(child.description_kv || ''),
