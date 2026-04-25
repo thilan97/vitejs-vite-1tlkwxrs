@@ -12,7 +12,7 @@ const db = createClient(SUPABASE_URL, SUPABASE_KEY)
 // APP_VERSION — dùng để invalidate cache localStorage mỗi khi deploy version mới
 // (ngăn bug quyền user bị "reset" do cache position cũ sau deploy)
 // ⚠️ MỖI LẦN DEPLOY FEATURE MỚI CÓ PERMISSION MỚI, BUMP SỐ NÀY:
-const APP_VERSION = '2026.04.24.v132'
+const APP_VERSION = '2026.04.25.v133'
 
 // ════════════════════════════════════════════════════════════════
 // AUDIT LOG — ghi nhận các hành động phá hoại data để trace lại
@@ -30358,6 +30358,16 @@ function GhtkModule({ user, allUsers, mobile }: any) {
                 boxSizing:'border-box' as any }}/>
           </Card>
 
+          {/* v133: Sync batch button — chỉ hiển thị tab 'created' khi có đơn pending */}
+          {tab === 'created' && (perm.ghtkPrintLabel || perm.ghtkSettings) && (() => {
+            const pendingList = filtered.filter((o: any) => {
+              const ls = o.ghtk_labels || []
+              return ls.length > 0 && ls.some((l: any) => !l.label_id || l.status === '1' || l.status_text === 'Chưa tiếp nhận')
+            })
+            if (pendingList.length === 0) return null
+            return <GhtkSyncBatchButton pendingOrders={pendingList} onSynced={fetchOrders}/>
+          })()}
+
           {loading ? (
             <SkeletonList rows={4}/>
           ) : filtered.length === 0 ? (
@@ -31310,6 +31320,79 @@ function findAddrByDistrict(tree: any[], districtName: string, hints: { province
     return results.filter(r => r.score === 1.0)
   }
   return results
+}
+
+
+// ══════════════════════════════════════════════════════════════════════
+// v133: GhtkSyncBatchButton — sync nhiều đơn pending cùng lúc
+// ══════════════════════════════════════════════════════════════════════
+// Hiển thị ở đầu tab "Đã tạo đơn" khi có đơn label_id=null hoặc status="1"
+// Gọi edge function ghtk-tracking với array order_codes (max 100)
+// ══════════════════════════════════════════════════════════════════════
+function GhtkSyncBatchButton({ pendingOrders, onSynced }: any) {
+  const [working, setWorking] = useState(false)
+  const [lastResult, setLastResult] = useState<any>(null)
+
+  const handleSyncAll = async () => {
+    if (!(await confirmDialog({
+      title: `Sync trạng thái ${pendingOrders.length} đơn pending?`,
+      message: `Sẽ gọi GHTK API để cập nhật label_id và trạng thái mới nhất cho ${pendingOrders.length} đơn. Mất khoảng ${Math.ceil(pendingOrders.length / 5) * 2}s.`,
+      confirmText: 'Sync ngay',
+    }))) return
+
+    setWorking(true); setLastResult(null)
+    try {
+      const codes = pendingOrders.map((o: any) => o.order_code).slice(0, 100)
+      const res = await fetch(`${SUPABASE_URL}/functions/v1/ghtk-tracking`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${SUPABASE_ANON}` },
+        body: JSON.stringify({ order_codes: codes }),
+      })
+      const data = await res.json()
+      setLastResult(data)
+      if (data.success && data.summary) {
+        const s = data.summary
+        if (s.changed > 0) {
+          toast.success(`Đã sync ${s.success}/${s.total} đơn — ${s.changed} đơn có thay đổi`)
+        } else {
+          toast.info(`Đã sync ${s.success}/${s.total} đơn — chưa có thay đổi từ GHTK`)
+        }
+        if (onSynced) onSynced()
+      } else {
+        toast.error(data.error || 'Sync batch lỗi')
+      }
+    } catch (e: any) {
+      toast.error('Lỗi sync: ' + (e.message || String(e)))
+    } finally {
+      setWorking(false)
+    }
+  }
+
+  return (
+    <Card style={{ padding:'10px 14px', marginBottom:12, background: T.amberBg, border: `1.5px solid ${T.amber}55` }}>
+      <div style={{ display:'flex', alignItems:'center', justifyContent:'space-between', gap:12, flexWrap:'wrap' }}>
+        <div style={{ flex:1, minWidth:200 }}>
+          <div style={{ fontSize:13, fontWeight:700, color:T.amber, marginBottom:2 }}>
+            ⏳ {pendingOrders.length} đơn đang chờ GHTK accept
+          </div>
+          <div style={{ fontSize:11, color:T.med, lineHeight:1.4 }}>
+            Sync trạng thái để cập nhật label_id và status mới nhất từ GHTK.
+            {lastResult?.summary && (
+              <span style={{ marginLeft:6, color:T.green, fontWeight:600 }}>
+                · Lần sync gần nhất: {lastResult.summary.changed} đơn thay đổi
+              </span>
+            )}
+          </div>
+        </div>
+        <button onClick={handleSyncAll} disabled={working}
+          style={{ padding:'8px 18px', borderRadius:20, cursor: working?'wait':'pointer',
+            border:`1.5px solid ${T.blue}`, background: working ? T.bg : T.blue, color: working ? T.light : '#fff',
+            fontSize: 12, fontWeight: 700, fontFamily: 'inherit', whiteSpace: 'nowrap' }}>
+          {working ? '⏳ Đang sync...' : `🔄 Sync tất cả (${pendingOrders.length})`}
+        </button>
+      </div>
+    </Card>
+  )
 }
 
 
