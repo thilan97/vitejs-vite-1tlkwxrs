@@ -12,7 +12,7 @@ const db = createClient(SUPABASE_URL, SUPABASE_KEY)
 // APP_VERSION — dùng để invalidate cache localStorage mỗi khi deploy version mới
 // (ngăn bug quyền user bị "reset" do cache position cũ sau deploy)
 // ⚠️ MỖI LẦN DEPLOY FEATURE MỚI CÓ PERMISSION MỚI, BUMP SỐ NÀY:
-const APP_VERSION = '2026.04.24.v131'
+const APP_VERSION = '2026.04.24.v132'
 
 // ════════════════════════════════════════════════════════════════
 // AUDIT LOG — ghi nhận các hành động phá hoại data để trace lại
@@ -30771,6 +30771,47 @@ function GhtkPackingSection({ ord, user, mobile }: any) {
         body: JSON.stringify(payload),
       })
       const json = await res.json()
+
+      // v131: Validate labels từ edge function trước khi accept
+      // Edge function có thể return success=true nhưng labels[] thiếu ID hợp lệ
+      // → Refuse và treat như lỗi để user retry, tránh save data rác vào DB
+      if (json.success && json.labels && Array.isArray(json.labels)) {
+        const validLabels = json.labels.filter((l: any) =>
+          l && (l.label_id || l.tracking_id || l.trackingId || l.package_id)
+        )
+        if (validLabels.length === 0 && json.labels.length > 0) {
+          // Edge function trả labels nhưng không có ID nào hợp lệ
+          // Override response để hiển thị lỗi rõ ràng cho user
+          setCreateResult({
+            success: false,
+            error: 'GHTK trả về nhãn nhưng thiếu mã ID. Vui lòng thử lại hoặc kiểm tra log GHTK.',
+            ghtk_response: json,
+          })
+          return
+        }
+        // Filter chỉ giữ labels có ID, gắn vào response
+        if (validLabels.length < json.labels.length) {
+          console.warn(`[GHTK] ${json.labels.length - validLabels.length} label(s) bị thiếu ID, đã filter ra`)
+          json.labels = validLabels
+        }
+
+        // v131: Tự save labels vào DB (trước đây edge function tự save → có thể save sai)
+        // Save phía client đảm bảo structure đúng
+        try {
+          await db.from('packing_workflow').update({
+            is_ghtk_order: true,
+            ghtk_customer_info: payload.customer_info,
+            ghtk_boxes: boxes,
+            ghtk_labels: json.labels,
+            ghtk_created_at: new Date().toISOString(),
+            updated_at: new Date().toISOString(),
+          }).eq('order_code', ord.order_code)
+        } catch (dbErr: any) {
+          console.error('[GHTK] Save labels to DB failed:', dbErr)
+          toast.warning('Đơn đã tạo trên GHTK, nhưng lưu vào DB lỗi. Hãy reload trang.')
+        }
+      }
+
       setCreateResult(json)
     } catch (e: any) {
       setCreateResult({ success: false, error: e.message })
@@ -31273,6 +31314,141 @@ function findAddrByDistrict(tree: any[], districtName: string, hints: { province
 
 
 // ══════════════════════════════════════════════════════════════════════
+// v132: GhtkPendingButton — đơn đã tạo nhưng GHTK chưa accept
+// ══════════════════════════════════════════════════════════════════════
+// Use case: ghtk_labels có entry với label_id=null, status="1",
+// status_text="Chưa tiếp nhận". Đây là trạng thái HỢP LỆ — GHTK đang
+// xử lý đơn (kiểm tra địa chỉ, gán shipper). Cần CHỜ hoặc sync lại để
+// lấy label_id thật.
+//
+// Khác với GhtkResyncButton (clear & tạo lại) — button này chỉ refresh
+// status từ GHTK API.
+// ══════════════════════════════════════════════════════════════════════
+function GhtkPendingButton({ order: o, user, onSynced }: any) {
+  const [working, setWorking] = useState(false)
+  const labels = o.ghtk_labels || []
+  const createdAt = labels[0]?.created_at ? new Date(labels[0].created_at) : null
+  const minutesAgo = createdAt ? Math.floor((Date.now() - createdAt.getTime()) / 60000) : 0
+  const perm = getPerm(user)
+  const canSync = perm.ghtkPrintLabel || perm.ghtkSettings
+
+  const handleSync = async () => {
+    setWorking(true)
+    try {
+      const res = await fetch(`${SUPABASE_URL}/functions/v1/ghtk-tracking`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${SUPABASE_ANON}` },
+        body: JSON.stringify({ order_code: o.order_code }),
+      })
+      const data = await res.json()
+      if (data.success) {
+        toast.success(`Đã sync ${o.order_code}`)
+        if (onSynced) onSynced()
+      } else {
+        toast.warning(data.error || 'GHTK chưa accept đơn — thử lại sau vài phút')
+      }
+    } catch (e: any) {
+      toast.error('Lỗi sync: ' + (e.message || String(e)))
+    } finally {
+      setWorking(false)
+    }
+  }
+
+  // Hiển thị thời gian chờ
+  const timeText = minutesAgo < 1 ? 'vừa tạo' :
+                   minutesAgo < 60 ? `${minutesAgo} phút trước` :
+                   `${Math.floor(minutesAgo / 60)}h${minutesAgo % 60}p trước`
+
+  return (
+    <div style={{ display:'flex', flexDirection:'column', gap:4, alignItems:'flex-end' }}>
+      <div style={{ fontSize:10, color:T.amber, padding:'4px 10px',
+        background:T.amberBg, borderRadius:6, border:`1px solid ${T.amber}55`,
+        fontWeight:600, lineHeight:1.4, whiteSpace:'nowrap' }}>
+        ⏳ GHTK đang xử lý · {timeText}
+      </div>
+      {canSync && (
+        <button onClick={handleSync} disabled={working}
+          style={{ padding:'4px 10px', borderRadius:14, cursor: working?'wait':'pointer',
+            border:`1px solid ${T.blue}`, background: working ? T.bg : '#fff',
+            color: T.blue, fontSize: 10, fontWeight: 600, fontFamily: 'inherit', whiteSpace: 'nowrap' }}>
+          {working ? '⏳ Sync...' : '🔄 Sync trạng thái'}
+        </button>
+      )}
+    </div>
+  )
+}
+
+
+// ══════════════════════════════════════════════════════════════════════
+// v131: GhtkResyncButton — sync lại đơn từ GHTK khi labels thiếu mã ID
+// ══════════════════════════════════════════════════════════════════════
+// Use case: Edge function ghtk-create-order đôi khi save labels[] thiếu
+// label_id/tracking_id (do API GHTK trả error nhưng sai response code).
+// Khi đó cần: clear ghtk_labels[] để user có thể tạo lại đơn từ đầu.
+// ══════════════════════════════════════════════════════════════════════
+function GhtkResyncButton({ order: o, user, onResynced }: any) {
+  const [working, setWorking] = useState(false)
+  const perm = getPerm(user)
+  const canResync = perm.ghtkPrintLabel || perm.ghtkSettings // QM hoặc Admin
+
+  if (!canResync) {
+    return (
+      <div style={{ fontSize:10, color:T.amber, fontStyle:'italic', padding:'4px 10px',
+        background:T.amberBg, borderRadius:6, border:`1px solid ${T.amber}55`,
+        maxWidth:200, lineHeight:1.4 }}>
+        ⚠️ Có nhãn nhưng thiếu mã ID — báo QM/Admin sync lại
+      </div>
+    )
+  }
+
+  const handleResync = async () => {
+    if (!(await confirmDialog({
+      title: 'Sync lại đơn từ GHTK?',
+      message: `Đơn ${o.order_code} có labels nhưng thiếu mã ID — không in được nhãn. ` +
+               `Sync lại sẽ XOÁ labels rỗng hiện tại để Kho có thể tạo lại đơn GHTK.`,
+      confirmText: 'Xoá & Cho phép tạo lại',
+      tone: 'warning',
+    }))) return
+
+    setWorking(true)
+    try {
+      // Clear ghtk_labels + ghtk_created_at → user có thể vào tab "Sẵn sàng" tạo lại
+      const { error } = await db.from('packing_workflow').update({
+        ghtk_labels: null,
+        ghtk_created_at: null,
+        updated_at: new Date().toISOString(),
+      }).eq('order_code', o.order_code)
+
+      if (error) {
+        toast.error('Lỗi khi clear labels: ' + error.message)
+        return
+      }
+      toast.success(`Đã clear labels của ${o.order_code}. Vào tab "Sẵn sàng" để tạo lại.`)
+      if (onResynced) onResynced()
+    } catch (e: any) {
+      toast.error('Lỗi: ' + (e.message || String(e)))
+    } finally {
+      setWorking(false)
+    }
+  }
+
+  return (
+    <div style={{ display:'flex', flexDirection:'column', gap:4, alignItems:'flex-end' }}>
+      <button onClick={handleResync} disabled={working}
+        style={{ padding:'5px 12px', borderRadius:16, cursor: working ? 'wait' : 'pointer',
+          border:`1.5px solid ${T.amber}`, background: working ? T.bg : T.amberBg,
+          color: T.amber, fontSize: 11, fontWeight: 700, fontFamily: 'inherit', whiteSpace: 'nowrap' }}>
+        {working ? '⏳ Đang xử lý...' : '🔄 Sync lại GHTK'}
+      </button>
+      <div style={{ fontSize:9, color:T.light, fontStyle:'italic', maxWidth:160, textAlign:'right', lineHeight:1.3 }}>
+        Labels thiếu mã ID — bấm để clear & tạo lại
+      </div>
+    </div>
+  )
+}
+
+
+// ══════════════════════════════════════════════════════════════════════
 // v124: GHTK Print Label Button — in nhãn PDF A6 (Phase 4.1)
 // ══════════════════════════════════════════════════════════════════════
 function GhtkPrintLabelButton({ order: o, user, onPrinted, compact }: any) {
@@ -31288,6 +31464,13 @@ function GhtkPrintLabelButton({ order: o, user, onPrinted, compact }: any) {
   ).filter(Boolean)
   const hasLabels = labelIds.length > 0
   const hasLabelsButNoId = labels.length > 0 && !hasLabels
+  // v132: Phân biệt 2 cases khi labels thiếu ID:
+  //   (a) GHTK chưa accept đơn (status_text="Chưa tiếp nhận", label_id=null)
+  //       → chờ GHTK xử lý hoặc sync lại
+  //   (b) Lỗi thật (entry rỗng) → cần clear & tạo lại
+  const isPendingGhtk = hasLabelsButNoId && labels.every((l: any) =>
+    l && (l.status === '1' || l.status_text === 'Chưa tiếp nhận' || l.created_at)
+  )
   const printedAt = o.ghtk_printed_at ? new Date(o.ghtk_printed_at) : null
 
   const handlePrint = async () => {
@@ -31338,15 +31521,11 @@ function GhtkPrintLabelButton({ order: o, user, onPrinted, compact }: any) {
   }
 
   if (!hasLabels) {
+    if (isPendingGhtk) {
+      return <GhtkPendingButton order={o} user={user} onSynced={onPrinted}/>
+    }
     if (hasLabelsButNoId) {
-      return (
-        <div style={{ fontSize:10, color:T.amber, fontStyle:'italic', padding:'4px 10px',
-          background:T.amberBg, borderRadius:6, border:`1px solid ${T.amber}55`,
-          maxWidth:200, lineHeight:1.4 }}
-          title={JSON.stringify(labels)}>
-          ⚠️ Có nhãn nhưng thiếu mã ID — cần sync GHTK
-        </div>
-      )
+      return <GhtkResyncButton order={o} user={user} onResynced={onPrinted}/>
     }
     return (
       <div style={{ fontSize:10, color:T.light, fontStyle:'italic', padding:'4px 10px',
