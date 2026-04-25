@@ -198,13 +198,11 @@ const ATT_STATUS: any = {
   late:       { label:'⏰ Đi muộn',   color:T.amber,  bg:T.amberBg  },
   early_out:  { label:'🏃 Về sớm',    color:'#7C3AED', bg:'#EDE9FE'  },
   absent:  { label:'❌ Nghỉ không lý do', color:T.red,    bg:T.redBg    },
-  sick:    { label:'🏥 Nghỉ bệnh', color:T.purple, bg:T.purpleBg },
   leave:   { label:'🏖️ Nghỉ phép', color:T.blue,   bg:T.blueBg   },
   half:    { label:'🌓 Nửa ngày',  color:T.teal,   bg:T.tealBg   },
 }
 const LEAVE_TYPE: any = {
-  annual:'Nghỉ phép năm', sick:'Nghỉ bệnh', personal:'Việc cá nhân', unpaid:'Nghỉ không lương', half:'Nghỉ nửa ngày',
-  half:'Nghỉ nửa ngày'
+  annual:'Nghỉ phép năm', personal:'Việc cá nhân', unpaid:'Nghỉ không lương', half:'Nghỉ nửa ngày',
 }
 const FREQ_COLOR: any = {
   'Hàng ngày':     { color:'#1D4ED8', bg:'#DBEAFE' },
@@ -2282,7 +2280,7 @@ function Dashboard({ user, checklist, tasks, allUsers, attendance, leaveRequests
   const todayAtt = attendance.filter((a: any) => a.date === todayISO() && rIds.includes(a.user_id))
   const clDone = myCl.filter((c: any) => c.status === 'done').length
   const staffCount = allUsers.filter((u: any) => rIds.includes(u.id) && u.id !== 'admin').length
-  const absentCount = todayAtt.filter((a: any) => ['absent','sick'].includes(a.status)).length
+  const absentCount = todayAtt.filter((a: any) => a.status === 'absent').length
   const pendingLeave = leaveRequests.filter((r: any) => r.status === 'pending' &&
     (perm.viewAllDashboard || (perm.approveLeave && dids.includes(r.user_id)))).length
   const pendingOT = (otRequests||[]).filter((r: any) => r.status === 'pending' &&
@@ -4190,7 +4188,7 @@ function Attendance({ user, allUsers, leaveRequests, attendance, setAttendance, 
   })
 
   const monthSummary = (uid: string) => {
-    let present=0,late=0,absent=0,sick=0,leave=0,half=0,outMins=0
+    let present=0,late=0,absent=0,leave=0,half=0,outMins=0
     monthDays.forEach(({ iso, isWeekend }) => {
       if (isWeekend) return
       const s = getStatus(uid, iso)
@@ -4198,13 +4196,13 @@ function Attendance({ user, allUsers, leaveRequests, attendance, setAttendance, 
       else if (s==='late')       { present++; late++ }
       else if (s==='early_out') { present++ }
       else if (s==='absent') absent++
-      else if (s==='sick') sick++
+      else if (s==='sick') absent++   // v133: data cũ có sick → coi như absent
       else if (s==='leave') leave++
       else if (s==='half') half++
       // v116: cộng dồn phút ra ngoài
       outMins += totalOutMins(getRec(uid, iso))
     })
-    return { present, late, absent, sick, leave, half, outMins }
+    return { present, late, absent, leave, half, outMins }
   }
 
   const renderToday = () => (
@@ -4332,7 +4330,7 @@ function Attendance({ user, allUsers, leaveRequests, attendance, setAttendance, 
                               <div style={{ display:'flex', flexDirection:'column', alignItems:'center', gap:2 }}>
                                 <span style={{ fontSize:16, cursor:canMark?'pointer':'default' }}
                                   onClick={() => canMark && openEdit(u, d.iso)}>
-                                  {status==='present'?'✅':status==='late'?'⏰':status==='absent'?'❌':status==='sick'?'🏥':status==='leave'?'🏖️':'🌓'}
+                                  {status==='present'?'✅':status==='late'?'⏰':status==='absent'?'❌':status==='leave'?'🏖️':status==='half'?'🌓':status==='early_out'?'🏃':'—'}
                                 </span>
                                 {rec?.late_mins>0 && <span style={{ fontSize:9, color:T.amber }}>+{rec.late_mins}'</span>}
                                 {/* v116: dot ra ngoài */}
@@ -4379,7 +4377,7 @@ function Attendance({ user, allUsers, leaveRequests, attendance, setAttendance, 
             </div>
             <div style={{ background:T.card, border:`1px solid ${T.border}`, borderRadius:'0 0 10px 10px', overflow:'hidden' }}>
               <table style={{ width:'100%', borderCollapse:'collapse' }}>
-                <TH cols={['Nhân viên','Ngày đi','Đi muộn','Nghỉ KLý do','Nghỉ bệnh','Nghỉ phép','Ra ngoài','Tỷ lệ']}/>
+                <TH cols={['Nhân viên','Ngày đi','Đi muộn','Nghỉ KLý do','Nửa ngày','Nghỉ phép','Ra ngoài','Tỷ lệ']}/>
                 <tbody>
                   {group.users.map((u: any, i: number) => {
                     const ms = monthSummary(u.id)
@@ -4393,7 +4391,7 @@ function Attendance({ user, allUsers, leaveRequests, attendance, setAttendance, 
                         <td style={{ padding:'10px', textAlign:'center', fontSize:13, fontWeight:700, color:T.green }}>{ms.present}/{workDays}</td>
                         <td style={{ padding:'10px', textAlign:'center', fontSize:13, fontWeight:600, color:ms.late>0?T.amber:T.light }}>{ms.late}</td>
                         <td style={{ padding:'10px', textAlign:'center', fontSize:13, fontWeight:600, color:ms.absent>0?T.red:T.light }}>{ms.absent}</td>
-                        <td style={{ padding:'10px', textAlign:'center', fontSize:13, fontWeight:600, color:ms.sick>0?T.purple:T.light }}>{ms.sick}</td>
+                        <td style={{ padding:'10px', textAlign:'center', fontSize:13, fontWeight:600, color:ms.half>0?T.amber:T.light }}>{ms.half}</td>
                         <td style={{ padding:'10px', textAlign:'center', fontSize:13, fontWeight:600, color:ms.leave>0?T.blue:T.light }}>{ms.leave}</td>
                         {/* v116: Ra ngoài */}
                         <td style={{ padding:'10px', textAlign:'center' }}>
@@ -4452,7 +4450,7 @@ function Attendance({ user, allUsers, leaveRequests, attendance, setAttendance, 
             onChange={(v) => setEditForm((f: any) => ({...f, late_mins:Number(v)}))}
             placeholder="VD: 15"/>
         )}
-        {['absent','sick','half'].includes(editForm.status) && (
+        {['absent','half'].includes(editForm.status) && (
           <Inp label="Lý do" value={editForm.reason}
             onChange={(v) => setEditForm((f: any) => ({...f, reason:v}))}
             placeholder="Nhập lý do..."/>
@@ -25177,7 +25175,7 @@ function WarehouseStatsModule({ user, allUsers, mobile }: any) {
         late_small: 0, late_medium: 0, late_large: 0,  // <15, 15-30, >30
         early_out: 0,
         half: 0,
-        leave_excused: 0,   // sick + leave
+        leave_excused: 0,   // v133: chỉ leave (đã bỏ sick)
         absent_unexcused: 0, // absent
       }
 
@@ -25207,6 +25205,7 @@ function WarehouseStatsModule({ user, allUsers, mobile }: any) {
         } else if (status === 'half') {
           score -= 5; breakdown.half++
         } else if (status === 'leave' || status === 'sick') {
+          // v133: data cũ sick vẫn count như leave_excused (backward compat)
           score -= 2; breakdown.leave_excused++
         } else if (status === 'absent') {
           score -= 15; breakdown.absent_unexcused++
@@ -30380,7 +30379,7 @@ function GhtkModule({ user, allUsers, mobile }: any) {
                 tab === 'created' ? 'Không có đơn đã tạo' :
                 'Không có đơn đã giao'
               )}
-              description={tab === 'pending_info' ? 'Đơn KV có SĐT trong ghi chú "ghtk" sẽ tự xuất hiện ở đây để Sale điền info.' :
+              description={tab === 'pending_info' ? '💡 Đơn KV có ghi chú chứa "ghtk" + SĐT (VD: "ghtk 0987xxx") sẽ tự xuất hiện ở đây ngay khi sync từ KiotViet — không cần đợi "Đã đóng".' :
                 tab === 'pending_choose' ? 'Đơn có ghi chú "ghtk" nhưng không đủ thông tin (VD: "ghtk bổ sung") sẽ vào đây. Sale cần chọn loại để xử lý.' :
                 tab === 'pending_weight' ? 'Các đơn đã điền info KH, chờ Kho cân và đóng thùng.' :
                 'Phase tiếp theo sẽ hoàn thiện các chức năng này.'}/>
