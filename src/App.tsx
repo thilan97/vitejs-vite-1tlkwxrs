@@ -12,7 +12,7 @@ const db = createClient(SUPABASE_URL, SUPABASE_KEY)
 // APP_VERSION — dùng để invalidate cache localStorage mỗi khi deploy version mới
 // (ngăn bug quyền user bị "reset" do cache position cũ sau deploy)
 // ⚠️ MỖI LẦN DEPLOY FEATURE MỚI CÓ PERMISSION MỚI, BUMP SỐ NÀY:
-const APP_VERSION = '2026.04.25.v133'
+const APP_VERSION = '2026.04.25.v135'
 
 // ════════════════════════════════════════════════════════════════
 // AUDIT LOG — ghi nhận các hành động phá hoại data để trace lại
@@ -19153,6 +19153,19 @@ function PackingModule({ user, allUsers, mobile, products }: any) {
       toast.error(`Cần tối thiểu ${min} ảnh thùng hàng (hiện có ${packed}).\nNếu đơn bookship không đóng thùng, hãy tick vào ô "Đơn bookship — không đóng thùng".`)
       return
     }
+    // v134: Bắt buộc cân thùng — chỉ áp dụng cho đơn GHTK (bookship không cần)
+    if (ord.is_ghtk_order && !ord.no_box) {
+      const boxes = ord.ghtk_boxes || []
+      if (boxes.length === 0) {
+        toast.error('Đơn GHTK cần nhập số thùng và cân nặng trước khi hoàn tất.')
+        return
+      }
+      const invalidBox = boxes.find((b: any) => !Number(b.weight_kg) || Number(b.weight_kg) <= 0)
+      if (invalidBox) {
+        toast.error(`Thùng ${invalidBox.box_no} chưa có cân nặng hợp lệ.`)
+        return
+      }
+    }
     // Soft popup: nếu đơn >=3 SP mà ảnh hàng đã nhặt < suggest
     if (totalItems >= 3 && picked < suggest) {
       const aiWarn = totalItems >= 10
@@ -20838,9 +20851,18 @@ function PackingDetailPanel({ ord, mobile, user, allUsers, products, allOrders, 
             </div>
           )}
 
-          {/* v122: Phase 3 — Section GHTK (điền cân + tạo đơn) */}
+          {/* v134: BoxesSection — chỉ hiện cho đơn GHTK (bookship/đơn thường không cần cân)
+              State boxes lưu vào field ghtk_boxes (giữ tên cũ để tránh migration). */}
           {ord.is_ghtk_order && !ord.no_box && (
-            <GhtkPackingSection ord={ord} user={user} mobile={mobile}/>
+            <BoxesSection ord={ord} user={user} mobile={mobile}
+              onChange={(newBoxes) => {
+                // Update state local để finishPacking thấy đủ boxes ngay
+                if (typeof setOrders === 'function') {
+                  setOrders((prev: any[]) => prev.map((o: any) =>
+                    o.order_code === ord.order_code ? { ...o, ghtk_boxes: newBoxes } : o
+                  ))
+                }
+              }}/>
           )}
 
           {/* Footer */}
@@ -30177,6 +30199,8 @@ function GhtkModule({ user, allUsers, mobile }: any) {
   const [fillInfoOrder, setFillInfoOrder] = useState<any>(null)
   // v122: Modal sửa cân thủ công
   const [editBoxesOrder, setEditBoxesOrder] = useState<any>(null)
+  // v133: Modal tạo đơn GHTK (QM bấm "Tạo đơn GHTK" trong tab Sẵn sàng tạo)
+  const [createOrderTarget, setCreateOrderTarget] = useState<any>(null)
   // v122: Ngày bắt đầu quản lý GHTK
   const [ghtkStartDate, setGhtkStartDate] = useState<string|null>(null)
   // v124: Tạo đơn thủ công
@@ -30390,6 +30414,7 @@ function GhtkModule({ user, allUsers, mobile }: any) {
                   onRefresh={fetchOrders} user={user}
                   onFillInfo={() => setFillInfoOrder(o)}
                   onEditBoxes={() => setEditBoxesOrder(o)}
+                  onCreateOrder={(order: any) => setCreateOrderTarget(order)}
                   onChooseShipType={async (choice: 'ghtk_create'|'ghtk_dropship'|'vtp_dropship') => {
                     if (choice === 'ghtk_create') {
                       setFillInfoOrder(o)
@@ -30435,6 +30460,14 @@ function GhtkModule({ user, allUsers, mobile }: any) {
           onSaved={() => { setEditBoxesOrder(null); fetchOrders() }}/>
       )}
 
+      {/* v133: Modal tạo đơn GHTK (QM bấm "🚚 Tạo đơn GHTK" trong tab Sẵn sàng tạo) */}
+      {createOrderTarget && (
+        <GhtkCreateOrderModal
+          order={createOrderTarget} user={user} mobile={mobile}
+          onClose={() => setCreateOrderTarget(null)}
+          onCreated={() => { setCreateOrderTarget(null); fetchOrders() }}/>
+      )}
+
       {/* v124: Modal tạo đơn thủ công */}
       {showManualOrder && (
         <GhtkManualOrderModal
@@ -30448,10 +30481,21 @@ function GhtkModule({ user, allUsers, mobile }: any) {
 
 
 // ── GHTK Order Row ──
-function GhtkOrderRow({ order: o, tab, mobile, onRefresh, user, onFillInfo, onEditBoxes, onChooseShipType }: any) {
+function GhtkOrderRow({ order: o, tab, mobile, onRefresh, user, onFillInfo, onEditBoxes, onChooseShipType, onCreateOrder }: any) {
   const info = o.ghtk_customer_info || {}
   const boxes = o.ghtk_boxes || []
   const labels = o.ghtk_labels || []
+  // v133: expand state cho tab "ready" (QM verify items + địa chỉ trước khi tạo nhãn)
+  const [expanded, setExpanded] = useState(false)
+
+  // v133: Build full address string
+  const fullAddress = [
+    info.address,
+    info.hamlet && info.hamlet !== 'Khác' ? info.hamlet : null,
+    info.ward,
+    info.district,
+    info.province,
+  ].filter(Boolean).join(', ')
 
   return (
     <Card style={{ padding:12 }}>
@@ -30490,6 +30534,14 @@ function GhtkOrderRow({ order: o, tab, mobile, onRefresh, user, onFillInfo, onEd
               )}
             </div>
           )}
+          {/* v133: Địa chỉ đầy đủ — quan trọng cho tab "Sẵn sàng tạo" để QM verify */}
+          {fullAddress && tab === 'ready' && (
+            <div style={{ fontSize:11, color:T.dark, marginTop:4,
+              padding:'5px 8px', background:'#FFFBEB', borderRadius:4,
+              border:`1px solid ${T.gold}55` }}>
+              📍 {fullAddress}
+            </div>
+          )}
           {/* Số thùng */}
           {boxes.length > 0 && (
             <div style={{ fontSize:11, color:T.blue, marginTop:4 }}>
@@ -30505,6 +30557,29 @@ function GhtkOrderRow({ order: o, tab, mobile, onRefresh, user, onFillInfo, onEd
               🏷 {labels.length} nhãn GHTK: {labels.map((l: any) =>
                 l.label_id || l.tracking_id || l.trackingId || l.package_id || '(thiếu mã)'
               ).join(', ')}
+            </div>
+          )}
+
+          {/* v133: Expandable items list cho tab "ready" — QM verify SP trước khi tạo nhãn */}
+          {tab === 'ready' && (
+            <button onClick={() => setExpanded(e => !e)}
+              style={{ marginTop:6, padding:'4px 10px', borderRadius:14,
+                border:`1px solid ${T.border}`, background:'transparent', color:T.med,
+                cursor:'pointer', fontSize:10, fontFamily:'inherit' }}>
+              {expanded ? '▲ Ẩn sản phẩm' : `▼ Xem ${(o.items||[]).length} sản phẩm`}
+            </button>
+          )}
+          {tab === 'ready' && expanded && Array.isArray(o.items) && o.items.length > 0 && (
+            <div style={{ marginTop:8, padding:'8px 10px', background:T.bg,
+              borderRadius:6, border:`1px solid ${T.border}` }}>
+              {o.items.map((it: any, i: number) => (
+                <div key={i} style={{ display:'flex', justifyContent:'space-between',
+                  fontSize:11, color:T.dark, padding:'3px 0',
+                  borderBottom: i<o.items.length-1?`1px dashed ${T.border}`:'none' }}>
+                  <span>{it.code ? <b>{it.code}</b> : ''} {it.name || it.product_name || '—'}</span>
+                  <span style={{ color:T.med, fontWeight:600, marginLeft:8 }}>×{it.qty || it.quantity || 1}</span>
+                </div>
+              ))}
             </div>
           )}
         </div>
@@ -30596,8 +30671,9 @@ function GhtkOrderRow({ order: o, tab, mobile, onRefresh, user, onFillInfo, onEd
               )
             }
 
-            // Tab ready: sửa info (Sale + QM)
+            // Tab ready: sửa info (Sale + QM) + Tạo đơn GHTK (QM)
             if (tab === 'ready') {
+              const canCreate = p.ghtkPrintLabel || p.ghtkSettings // QM/Admin
               return (
                 <>
                   {canEditInfo && (
@@ -30616,10 +30692,19 @@ function GhtkOrderRow({ order: o, tab, mobile, onRefresh, user, onFillInfo, onEd
                       ⚖️ Sửa cân
                     </button>
                   )}
-                  <div style={{ fontSize:10, color:T.green, padding:'4px 10px',
-                    background:T.greenBg, borderRadius:6, fontWeight:600 }}>
-                    ✓ Sẵn sàng tạo đơn (Kho tạo trong màn Đóng đơn)
-                  </div>
+                  {canCreate ? (
+                    <button onClick={() => onCreateOrder && onCreateOrder(o)}
+                      style={{ padding:'7px 16px', borderRadius:20, cursor:'pointer',
+                        border:'none', background: T.blue, color:'#fff',
+                        fontSize:12, fontWeight:700, fontFamily:'inherit', whiteSpace:'nowrap' }}>
+                      🚚 Tạo đơn GHTK
+                    </button>
+                  ) : (
+                    <div style={{ fontSize:10, color:T.green, padding:'4px 10px',
+                      background:T.greenBg, borderRadius:6, fontWeight:600 }}>
+                      ✓ Sẵn sàng — chờ QM tạo đơn
+                    </div>
+                  )}
                 </>
               )
             }
@@ -30653,7 +30738,146 @@ function GhtkOrderRow({ order: o, tab, mobile, onRefresh, user, onFillInfo, onEd
 
 // ── GHTK Settings Panel ──
 // ══════════════════════════════════════════════════════════════════════
+// ══════════════════════════════════════════════════════════════════════
+// v133: BoxesSection — chỉ nhập số thùng + cân nặng (không gắn GHTK)
+// ══════════════════════════════════════════════════════════════════════
+// Được nhúng trong PackingModule cho NV Kho. Mọi đơn không bookship đều
+// cần cân thùng. NV không cần biết về GHTK — QM sẽ tạo đơn ở GhtkModule.
+// ══════════════════════════════════════════════════════════════════════
+function BoxesSection({ ord, user, mobile, onChange }: any) {
+  const existingBoxes = ord.ghtk_boxes || []
+  const existingLabels = ord.ghtk_labels || []
+  const hasLabels = existingLabels.length > 0  // đã tạo đơn GHTK → khoá
+
+  const [boxes, setBoxes] = useState<any[]>(() => {
+    if (existingBoxes.length > 0) return existingBoxes
+    return [{ box_no: 1, weight_kg: '' }]
+  })
+  const [saving, setSaving] = useState(false)
+  const [savedJustNow, setSavedJustNow] = useState(false)
+
+  const addBox = () => {
+    if (hasLabels) return
+    setBoxes((prev: any[]) => [...prev, { box_no: prev.length + 1, weight_kg: '' }])
+  }
+  const removeBox = (idx: number) => {
+    if (hasLabels) return
+    if (boxes.length === 1) return
+    setBoxes((prev: any[]) => prev.filter((_: any, i: number) => i !== idx)
+      .map((b: any, i: number) => ({ ...b, box_no: i + 1 })))
+  }
+  const updateBoxWeight = (idx: number, value: string) => {
+    if (hasLabels) return
+    setBoxes((prev: any[]) => prev.map((b: any, i: number) =>
+      i === idx ? { ...b, weight_kg: value } : b
+    ))
+  }
+
+  const totalWeight = boxes.reduce((s: number, b: any) => s + Number(b.weight_kg || 0), 0)
+  const allValid = boxes.every((b: any) => Number(b.weight_kg || 0) > 0)
+
+  const handleBlurSave = async () => {
+    if (hasLabels) return
+    if (!allValid) return
+    setSaving(true)
+    try {
+      const cleanBoxes = boxes.map((b: any) => ({
+        box_no: b.box_no, weight_kg: Number(b.weight_kg || 0),
+      }))
+      await db.from('packing_workflow')
+        .update({ ghtk_boxes: cleanBoxes, updated_at: new Date().toISOString() })
+        .eq('order_code', ord.order_code)
+      setSavedJustNow(true)
+      setTimeout(() => setSavedJustNow(false), 2000)
+      if (onChange) onChange(cleanBoxes)
+    } catch (e: any) {
+      toast.error('Lỗi lưu cân: ' + (e.message || String(e)))
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  return (
+    <div style={{ padding:'14px', marginTop:14, borderRadius:10,
+      background:'#FAF8F3', border:`1.5px solid ${T.border}` }}>
+      <div style={{ display:'flex', alignItems:'center', justifyContent:'space-between', marginBottom:10 }}>
+        <span style={{ fontSize:13, fontWeight:700, color:T.dark }}>
+          📦 Số thùng & Cân nặng
+        </span>
+        {hasLabels ? (
+          <span style={{ fontSize:11, padding:'2px 10px', borderRadius:12,
+            background:T.greenBg, color:T.green, fontWeight:600 }}>
+            🔒 Đã tạo đơn GHTK — không sửa được
+          </span>
+        ) : savedJustNow ? (
+          <span style={{ fontSize:11, padding:'2px 10px', borderRadius:12,
+            background:T.greenBg, color:T.green, fontWeight:600 }}>
+            ✓ Đã lưu
+          </span>
+        ) : saving ? (
+          <span style={{ fontSize:11, color:T.light }}>⏳ Đang lưu...</span>
+        ) : null}
+      </div>
+
+      <div style={{ display:'flex', flexDirection:'column', gap:8 }}>
+        {boxes.map((b: any, idx: number) => (
+          <div key={idx} style={{ display:'flex', alignItems:'center', gap:8 }}>
+            <span style={{ fontSize:12, color:T.med, minWidth:60 }}>📦 Thùng {b.box_no}:</span>
+            <input
+              type="number"
+              step="0.1"
+              min="0"
+              value={b.weight_kg}
+              disabled={hasLabels}
+              onChange={(e) => updateBoxWeight(idx, e.target.value)}
+              onBlur={handleBlurSave}
+              placeholder="VD: 0.5"
+              style={{ flex:1, padding:'7px 10px', border:`1px solid ${T.border}`,
+                borderRadius:6, fontSize:12, fontFamily:'inherit',
+                background: hasLabels ? T.bg : '#fff', cursor: hasLabels?'not-allowed':'text' }}
+            />
+            <span style={{ fontSize:11, color:T.light }}>kg</span>
+            {!hasLabels && boxes.length > 1 && (
+              <button onClick={() => { removeBox(idx); setTimeout(handleBlurSave, 100) }}
+                style={{ padding:'4px 8px', borderRadius:6, border:`1px solid ${T.red}55`,
+                  background:'#FFF5F5', color:T.red, cursor:'pointer', fontSize:11, fontFamily:'inherit' }}>
+                ✕
+              </button>
+            )}
+          </div>
+        ))}
+      </div>
+
+      {!hasLabels && (
+        <div style={{ display:'flex', alignItems:'center', justifyContent:'space-between', marginTop:10 }}>
+          <button onClick={addBox}
+            style={{ padding:'5px 12px', borderRadius:16, border:`1px dashed ${T.gold}`,
+              background:'transparent', color:T.gold, cursor:'pointer', fontSize:11, fontFamily:'inherit' }}>
+            + Thêm thùng
+          </button>
+          <span style={{ fontSize:12, color:T.med }}>
+            Tổng: <b style={{ color:T.dark }}>{totalWeight.toFixed(1)}kg</b>
+            {boxes.some((b: any) => Number(b.weight_kg || 0) >= 20) && (
+              <span style={{ marginLeft:8, fontSize:10, color:T.amber }}>⚠️ ≥20kg = bigsize</span>
+            )}
+          </span>
+        </div>
+      )}
+
+      {!allValid && !hasLabels && (
+        <div style={{ marginTop:8, padding:'6px 10px', background:T.amberBg,
+          borderRadius:6, fontSize:11, color:T.amber, fontWeight:500 }}>
+          ⚠️ Cần điền cân nặng cho tất cả thùng trước khi hoàn tất đóng đơn
+        </div>
+      )}
+    </div>
+  )
+}
+
+
+// ══════════════════════════════════════════════════════════════════════
 // v122: GHTK Packing Section — NV Kho điền cân thùng + tạo đơn
+// (deprecated v133 — giữ cho compatibility nhưng KHÔNG còn dùng trong Packing)
 // ══════════════════════════════════════════════════════════════════════
 function GhtkPackingSection({ ord, user, mobile }: any) {
   const perm = getPerm(user)
@@ -31095,6 +31319,217 @@ function GhtkPackingSection({ ord, user, mobile }: any) {
 
 // ══════════════════════════════════════════════════════════════════════
 // v122: GHTK Edit Boxes Modal — QM sửa cân thùng thủ công trong module GHTK
+// ══════════════════════════════════════════════════════════════════════
+// ══════════════════════════════════════════════════════════════════════
+// v133: GhtkCreateOrderModal — QM tạo đơn GHTK từ tab "Sẵn sàng tạo"
+// ══════════════════════════════════════════════════════════════════════
+// Hiển thị info đầy đủ để QM verify, gọi edge function ghtk-create-order
+// Sau khi success → tự đóng modal + refresh list (đơn nhảy sang "Đã tạo nhãn")
+// ══════════════════════════════════════════════════════════════════════
+function GhtkCreateOrderModal({ order: ord, user, mobile, onClose, onCreated }: any) {
+  const info = ord.ghtk_customer_info || {}
+  const boxes = ord.ghtk_boxes || []
+  const [creating, setCreating] = useState(false)
+  const [result, setResult] = useState<any>(null)
+
+  const fullAddress = [
+    info.address,
+    info.hamlet && info.hamlet !== 'Khác' ? info.hamlet : null,
+    info.ward,
+    info.district,
+    info.province,
+  ].filter(Boolean).join(', ')
+
+  const totalWeight = boxes.reduce((s: number, b: any) => s + Number(b.weight_kg || 0), 0)
+  const hasBigsize = boxes.some((b: any) => Number(b.weight_kg) >= 20)
+
+  const handleCreate = async () => {
+    setCreating(true); setResult(null)
+    try {
+      const totalAmountVnd = Math.min(Number(ord.total_amount || 0) * 1000, 3000000)
+      const payload = {
+        order_code: ord.order_code,
+        customer_info: {
+          name: info.name, tel: info.tel,
+          address: info.address,
+          ward: info.ward || '',
+          district: info.district || '',
+          province: info.province,
+          hamlet: info.hamlet || 'Khác',
+          pick_money: Number(info.pick_money || 0),
+          order_value: totalAmountVnd,
+          is_freeship: Number(info.is_freeship || 0),
+          tags: info.tags || [3],
+          note: info.note || '',
+        },
+        boxes: boxes.map((b: any) => ({ box_no: b.box_no, weight_kg: Number(b.weight_kg) })),
+      }
+      const res = await fetch(`${SUPABASE_URL}/functions/v1/ghtk-create-order`, {
+        method: 'POST',
+        headers: { 'Content-Type':'application/json', 'Authorization':`Bearer ${SUPABASE_ANON}` },
+        body: JSON.stringify(payload),
+      })
+      const json = await res.json()
+
+      // v131: Validate labels từ edge function
+      if (json.success && json.labels && Array.isArray(json.labels)) {
+        const validLabels = json.labels.filter((l: any) =>
+          l && (l.label_id || l.tracking_id || l.trackingId || l.package_id)
+        )
+        if (validLabels.length === 0 && json.labels.length > 0) {
+          setResult({ success: false, error: 'GHTK trả về nhãn nhưng thiếu mã ID. Thử lại sau.', ghtk_response: json })
+          return
+        }
+        if (validLabels.length < json.labels.length) json.labels = validLabels
+
+        // Save labels phía client (đảm bảo structure đúng)
+        try {
+          await db.from('packing_workflow').update({
+            is_ghtk_order: true,
+            ghtk_customer_info: payload.customer_info,
+            ghtk_boxes: boxes,
+            ghtk_labels: json.labels,
+            ghtk_created_at: new Date().toISOString(),
+            updated_at: new Date().toISOString(),
+          }).eq('order_code', ord.order_code)
+        } catch (dbErr: any) {
+          toast.warning('Đơn đã tạo trên GHTK nhưng lưu DB lỗi. Reload trang.')
+        }
+      }
+      setResult(json)
+      if (json.success) {
+        toast.success(`Đã tạo ${json.labels?.length || 1} nhãn GHTK`)
+        // Auto-close sau 1.5s nếu success
+        setTimeout(() => { if (onCreated) onCreated() }, 1500)
+      }
+    } catch (e: any) {
+      setResult({ success: false, error: e.message })
+    } finally {
+      setCreating(false)
+    }
+  }
+
+  return (
+    <div onClick={onClose} style={{ position:'fixed', inset:0, background:'rgba(0,0,0,0.55)', zIndex:9999,
+      display:'flex', alignItems:'center', justifyContent:'center', padding:20 }}>
+      <div onClick={e => e.stopPropagation()}
+        style={{ background:'#fff', borderRadius:12, maxWidth:560, width:'100%', maxHeight:'90vh', overflow:'auto' }}>
+        <div style={{ padding:'14px 20px', background:T.blue, color:'#fff', borderRadius:'12px 12px 0 0' }}>
+          <div style={{ fontSize:14, fontWeight:700 }}>🚚 Tạo đơn GHTK — {ord.order_code}</div>
+          <div style={{ fontSize:11, opacity:.85, marginTop:2 }}>QM verify thông tin trước khi tạo</div>
+        </div>
+
+        <div style={{ padding:'16px 20px' }}>
+          {/* Verify customer */}
+          <div style={{ marginBottom:14 }}>
+            <div style={{ fontSize:12, fontWeight:700, color:T.med, marginBottom:6 }}>👤 Người nhận</div>
+            <div style={{ padding:10, background:T.bg, borderRadius:8, fontSize:13, color:T.dark, lineHeight:1.6 }}>
+              <div><b>{info.name || '—'}</b> · 📞 {info.tel || '—'}</div>
+              <div style={{ marginTop:4 }}>📍 {fullAddress || '— chưa có địa chỉ'}</div>
+              {Number(info.pick_money) > 0 ? (
+                <div style={{ marginTop:4, color:T.red, fontWeight:700 }}>
+                  💰 COD: {Number(info.pick_money).toLocaleString('vi-VN')}đ
+                </div>
+              ) : (
+                <div style={{ marginTop:4, color:T.light, fontSize:11 }}>(không thu COD)</div>
+              )}
+              <div style={{ marginTop:4, fontSize:11, color:T.med }}>
+                💼 Phí ship: {Number(info.is_freeship) === 1 ? 'Shop trả' : 'KH trả'}
+              </div>
+            </div>
+          </div>
+
+          {/* Verify boxes */}
+          <div style={{ marginBottom:14 }}>
+            <div style={{ fontSize:12, fontWeight:700, color:T.med, marginBottom:6 }}>📦 Số thùng & Cân nặng</div>
+            <div style={{ padding:10, background:T.bg, borderRadius:8, fontSize:13 }}>
+              {boxes.length === 0 ? (
+                <span style={{ color:T.red }}>⚠️ Chưa có thùng — báo Kho cân lại</span>
+              ) : (
+                <>
+                  <div>{boxes.length} thùng: {boxes.map((b: any) => `${b.weight_kg}kg`).join(' + ')}</div>
+                  <div style={{ marginTop:4, fontSize:11, color:T.med }}>
+                    Tổng: <b>{totalWeight.toFixed(1)}kg</b>
+                    {hasBigsize && <span style={{ marginLeft:8, color:T.amber }}>⚠️ Có thùng ≥20kg = bigsize (giá khác)</span>}
+                  </div>
+                </>
+              )}
+            </div>
+          </div>
+
+          {/* Verify items */}
+          {Array.isArray(ord.items) && ord.items.length > 0 && (
+            <details style={{ marginBottom:14 }}>
+              <summary style={{ fontSize:12, fontWeight:700, color:T.med, cursor:'pointer', marginBottom:6 }}>
+                📋 Sản phẩm ({ord.items.length})
+              </summary>
+              <div style={{ padding:10, background:T.bg, borderRadius:8, marginTop:6 }}>
+                {ord.items.map((it: any, i: number) => (
+                  <div key={i} style={{ display:'flex', justifyContent:'space-between',
+                    fontSize:11, padding:'3px 0',
+                    borderBottom: i<ord.items.length-1?`1px dashed ${T.border}`:'none' }}>
+                    <span>{it.code ? <b>{it.code}</b> : ''} {it.name || it.product_name || '—'}</span>
+                    <span style={{ color:T.med, fontWeight:600, marginLeft:8 }}>×{it.qty || it.quantity || 1}</span>
+                  </div>
+                ))}
+              </div>
+            </details>
+          )}
+
+          {/* Result */}
+          {result && (
+            <div style={{ padding:12, borderRadius:8, marginBottom:14,
+              background: result.success ? T.greenBg : '#FFF5F5',
+              border: `1.5px solid ${result.success ? T.green : T.red}` }}>
+              {result.success ? (
+                <>
+                  <div style={{ fontSize:13, fontWeight:700, color:T.green }}>✅ Tạo đơn thành công!</div>
+                  {result.results?.map((r: any, i: number) => (
+                    <div key={i} style={{ marginTop:6, fontSize:11, color:T.dark }}>
+                      Thùng {r.box_no}: <b>{r.label_id}</b>
+                      {r.fee && <span style={{ color:T.med }}> · Phí: {Number(r.fee).toLocaleString('vi-VN')}đ</span>}
+                    </div>
+                  ))}
+                  <div style={{ marginTop:6, fontSize:11, color:T.med }}>Đang đóng modal...</div>
+                </>
+              ) : (
+                <>
+                  <div style={{ fontSize:13, fontWeight:700, color:T.red }}>❌ Tạo đơn thất bại</div>
+                  <div style={{ marginTop:6, fontSize:11, color:T.dark }}>{result.error || 'Lỗi không xác định'}</div>
+                  {result.failed && result.failed.map((f: string, i: number) => (
+                    <div key={i} style={{ marginTop:4, fontSize:11, color:T.red }}>• {f}</div>
+                  ))}
+                </>
+              )}
+            </div>
+          )}
+
+          {/* Actions */}
+          <div style={{ display:'flex', gap:8, paddingTop:10, borderTop:`1px solid ${T.border}` }}>
+            <button onClick={onClose} disabled={creating}
+              style={{ flex:1, padding:'10px', borderRadius:8, border:`1px solid ${T.border}`,
+                background:'#fff', color:T.med, cursor: creating?'not-allowed':'pointer',
+                fontFamily:'inherit', fontSize:13 }}>
+              {result?.success ? 'Đóng' : 'Huỷ'}
+            </button>
+            {!result?.success && (
+              <button onClick={handleCreate} disabled={creating || boxes.length === 0 || !info.name || !info.tel || !info.province}
+                style={{ flex:2, padding:'10px', borderRadius:8, border:'none',
+                  background: creating ? T.border : T.blue, color:'#fff',
+                  cursor: creating?'not-allowed':'pointer', fontFamily:'inherit', fontSize:13, fontWeight:700 }}>
+                {creating ? '⏳ Đang tạo...' : (result ? '🔁 Thử lại' : '🚚 Tạo đơn GHTK')}
+              </button>
+            )}
+          </div>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+
+// ══════════════════════════════════════════════════════════════════════
+// v122: GhtkEditBoxesModal — modal sửa cân thủ công
 // ══════════════════════════════════════════════════════════════════════
 function GhtkEditBoxesModal({ order: o, user, mobile, onClose, onSaved }: any) {
   const existingBoxes = o.ghtk_boxes || []
