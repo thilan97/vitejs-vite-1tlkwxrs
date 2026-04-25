@@ -30393,52 +30393,74 @@ function GhtkModule({ user, allUsers, mobile }: any) {
         gap: mobile ? 8 : 12, alignItems: mobile ? 'stretch' : 'flex-start' }}>
 
         {/* Panel Sale */}
-        {saleTabs.length > 0 && (
-          <div style={{ flex:1, padding:'8px 10px', background:'#FAFCFF',
-            border:`1px solid ${T.blue}33`, borderRadius:10 }}>
-            <div style={{ fontSize:9, fontWeight:700, color:T.blue, textTransform:'uppercase',
-              letterSpacing:0.5, marginBottom:6 }}>
-              🧑‍💼 Sale
+        {saleTabs.length > 0 && (() => {
+          const totalSale = saleTabs.reduce((s, t) => s + (t.count || 0), 0)
+          return (
+            <div style={{ flex:1, padding:'8px 10px', background:'#FAFCFF',
+              border:`1px solid ${T.blue}33`, borderRadius:10 }}>
+              <div style={{ fontSize:9, fontWeight:700, color:T.blue, textTransform:'uppercase',
+                letterSpacing:0.5, marginBottom:6, display:'flex', alignItems:'center', justifyContent:'space-between' }}>
+                <span>🧑‍💼 Sale</span>
+                {totalSale > 0 && (
+                  <span style={{ padding:'1px 7px', borderRadius:8, background:T.blue, color:'#fff',
+                    fontSize:9, fontWeight:700 }}>
+                    {totalSale} đơn cần xử lý
+                  </span>
+                )}
+              </div>
+              <div style={{ display:'flex', gap:5, flexWrap:'wrap' }}>
+                {saleTabs.map(t => (
+                  <button key={t.id} onClick={() => setTab(t.id as any)}
+                    style={{ padding:'5px 12px', borderRadius:18, cursor:'pointer',
+                      fontFamily:'inherit', fontSize:11,
+                      border:`1.5px solid ${tab===t.id?T.gold:T.border}`,
+                      background: tab===t.id?T.goldBg:'#fff',
+                      color: tab===t.id?T.goldText:T.med,
+                      fontWeight: tab===t.id?700:500 }}>
+                    {t.label} {t.count > 0 && <span style={{ marginLeft:2 }}>({t.count})</span>}
+                  </button>
+                ))}
+              </div>
             </div>
-            <div style={{ display:'flex', gap:5, flexWrap:'wrap' }}>
-              {saleTabs.map(t => (
-                <button key={t.id} onClick={() => setTab(t.id as any)}
-                  style={{ padding:'5px 12px', borderRadius:18, cursor:'pointer',
-                    fontFamily:'inherit', fontSize:11,
-                    border:`1.5px solid ${tab===t.id?T.gold:T.border}`,
-                    background: tab===t.id?T.goldBg:'#fff',
-                    color: tab===t.id?T.goldText:T.med,
-                    fontWeight: tab===t.id?700:500 }}>
-                  {t.label} {t.count > 0 && <span style={{ marginLeft:2 }}>({t.count})</span>}
-                </button>
-              ))}
-            </div>
-          </div>
-        )}
+          )
+        })()}
 
         {/* Panel Kho/QM */}
-        {khoTabs.length > 0 && (
-          <div style={{ flex:1.5, padding:'8px 10px', background:'#FFFCF5',
-            border:`1px solid ${T.gold}33`, borderRadius:10 }}>
-            <div style={{ fontSize:9, fontWeight:700, color:T.goldText, textTransform:'uppercase',
-              letterSpacing:0.5, marginBottom:6 }}>
-              📦 Kho / QM
+        {khoTabs.length > 0 && (() => {
+          // v137: Đếm chỉ những tab có "việc cần làm" (pending_weight, ready, dropship)
+          // Không đếm "đã tạo đơn", "đã giao" vì những đơn này đã xong
+          const actionableTabs = ['pending_weight','ready','dropship']
+          const totalKho = khoTabs.filter(t => actionableTabs.includes(t.id))
+            .reduce((s, t) => s + (t.count || 0), 0)
+          return (
+            <div style={{ flex:1.7, padding:'8px 10px', background:'#FFFCF5',
+              border:`1px solid ${T.gold}33`, borderRadius:10 }}>
+              <div style={{ fontSize:9, fontWeight:700, color:T.goldText, textTransform:'uppercase',
+                letterSpacing:0.5, marginBottom:6, display:'flex', alignItems:'center', justifyContent:'space-between' }}>
+                <span>📦 Kho / QM</span>
+                {totalKho > 0 && (
+                  <span style={{ padding:'1px 7px', borderRadius:8, background:T.gold, color:'#fff',
+                    fontSize:9, fontWeight:700 }}>
+                    {totalKho} đơn cần xử lý
+                  </span>
+                )}
+              </div>
+              <div style={{ display:'flex', gap:5, flexWrap:'wrap' }}>
+                {khoTabs.map(t => (
+                  <button key={t.id} onClick={() => setTab(t.id as any)}
+                    style={{ padding:'5px 12px', borderRadius:18, cursor:'pointer',
+                      fontFamily:'inherit', fontSize:11,
+                      border:`1.5px solid ${tab===t.id?T.gold:T.border}`,
+                      background: tab===t.id?T.goldBg:'#fff',
+                      color: tab===t.id?T.goldText:T.med,
+                      fontWeight: tab===t.id?700:500 }}>
+                    {t.label} {t.count > 0 && <span style={{ marginLeft:2 }}>({t.count})</span>}
+                  </button>
+                ))}
+              </div>
             </div>
-            <div style={{ display:'flex', gap:5, flexWrap:'wrap' }}>
-              {khoTabs.map(t => (
-                <button key={t.id} onClick={() => setTab(t.id as any)}
-                  style={{ padding:'5px 12px', borderRadius:18, cursor:'pointer',
-                    fontFamily:'inherit', fontSize:11,
-                    border:`1.5px solid ${tab===t.id?T.gold:T.border}`,
-                    background: tab===t.id?T.goldBg:'#fff',
-                    color: tab===t.id?T.goldText:T.med,
-                    fontWeight: tab===t.id?700:500 }}>
-                  {t.label} {t.count > 0 && <span style={{ marginLeft:2 }}>({t.count})</span>}
-                </button>
-              ))}
-            </div>
-          </div>
-        )}
+          )
+        })()}
 
         {/* Admin (Cấu hình) */}
         {adminTabs.length > 0 && (
