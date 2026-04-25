@@ -30306,6 +30306,14 @@ function GhtkModule({ user, allUsers, mobile }: any) {
         return tokens.every(t => hay.includes(t))
       })
     }
+    // v135: Tab "Sẵn sàng tạo" sort theo ghtk_ready_at cũ nhất lên đầu (priority cao)
+    if (tab === 'ready') {
+      list = [...list].sort((a: any, b: any) => {
+        const aT = a.ghtk_ready_at ? new Date(a.ghtk_ready_at).getTime() : Infinity
+        const bT = b.ghtk_ready_at ? new Date(b.ghtk_ready_at).getTime() : Infinity
+        return aT - bT
+      })
+    }
     return list
   }, [tab, categorized, searchQ])
 
@@ -30514,6 +30522,30 @@ function GhtkOrderRow({ order: o, tab, mobile, onRefresh, user, onFillInfo, onEd
             Ngày tạo: {o.purchase_date ? new Date(o.purchase_date).toLocaleDateString('vi-VN') : '—'}
             {o.sold_by_name && <> • Sale: {o.sold_by_name}</>}
           </div>
+          {/* v135: Badge "chờ X giờ" cho tab Sẵn sàng tạo */}
+          {tab === 'ready' && o.ghtk_ready_at && (() => {
+            const readyAt = new Date(o.ghtk_ready_at)
+            const hoursWaiting = (Date.now() - readyAt.getTime()) / 3600000
+            const isOverdue = hoursWaiting >= 3
+            const isMedium = hoursWaiting >= 1
+            const bg = isOverdue ? '#FFF5F5' : isMedium ? T.amberBg : T.greenBg
+            const color = isOverdue ? T.red : isMedium ? T.amber : T.green
+            const border = isOverdue ? T.red : isMedium ? T.amber : T.green
+            const icon = isOverdue ? '⚠️' : isMedium ? '⏳' : '✓'
+            const text = hoursWaiting < 1
+              ? `vừa sẵn sàng (${Math.round(hoursWaiting * 60)} phút)`
+              : hoursWaiting < 24
+                ? `chờ ${hoursWaiting.toFixed(1)} giờ`
+                : `chờ ${Math.floor(hoursWaiting / 24)} ngày`
+            return (
+              <div style={{ display:'inline-block', marginTop:4, padding:'2px 10px',
+                background:bg, color, border:`1px solid ${border}55`, borderRadius:12,
+                fontSize:10, fontWeight:600 }}>
+                {icon} {text}
+                {isOverdue && <span style={{ marginLeft:4 }}>— ưu tiên tạo nhãn</span>}
+              </div>
+            )
+          })()}
           {o.description_kv && (
             <div style={{ fontSize:11, color:T.med, marginTop:4,
               background:T.bg, padding:'4px 8px', borderRadius:4 }}>
@@ -30572,14 +30604,72 @@ function GhtkOrderRow({ order: o, tab, mobile, onRefresh, user, onFillInfo, onEd
           {tab === 'ready' && expanded && Array.isArray(o.items) && o.items.length > 0 && (
             <div style={{ marginTop:8, padding:'8px 10px', background:T.bg,
               borderRadius:6, border:`1px solid ${T.border}` }}>
-              {o.items.map((it: any, i: number) => (
-                <div key={i} style={{ display:'flex', justifyContent:'space-between',
-                  fontSize:11, color:T.dark, padding:'3px 0',
-                  borderBottom: i<o.items.length-1?`1px dashed ${T.border}`:'none' }}>
-                  <span>{it.code ? <b>{it.code}</b> : ''} {it.name || it.product_name || '—'}</span>
-                  <span style={{ color:T.med, fontWeight:600, marginLeft:8 }}>×{it.qty || it.quantity || 1}</span>
-                </div>
-              ))}
+              {/* Header */}
+              <div style={{ display:'flex', fontSize:10, color:T.light, fontWeight:700,
+                paddingBottom:4, marginBottom:4, borderBottom:`1px solid ${T.border}` }}>
+                <span style={{ flex:1 }}>Sản phẩm</span>
+                <span style={{ width:60, textAlign:'right' }}>SL</span>
+                <span style={{ width:90, textAlign:'right' }}>Đơn giá</span>
+                <span style={{ width:100, textAlign:'right' }}>Thành tiền</span>
+              </div>
+              {/* Items */}
+              {o.items.map((it: any, i: number) => {
+                const qty = Number(it.qty || it.quantity || 1)
+                const price = Number(it.price || it.unit_price || 0)
+                const subtotal = qty * price
+                return (
+                  <div key={i} style={{ display:'flex', fontSize:11, color:T.dark, padding:'4px 0',
+                    borderBottom: i<o.items.length-1?`1px dashed ${T.border}`:'none' }}>
+                    <span style={{ flex:1 }}>
+                      {it.code ? <b>{it.code}</b> : ''} {it.name || it.product_name || '—'}
+                    </span>
+                    <span style={{ width:60, textAlign:'right', color:T.med, fontWeight:600 }}>×{qty}</span>
+                    <span style={{ width:90, textAlign:'right', color:T.med }}>
+                      {price > 0 ? Number(price).toLocaleString('vi-VN') + 'đ' : '—'}
+                    </span>
+                    <span style={{ width:100, textAlign:'right', color:T.dark, fontWeight:600 }}>
+                      {subtotal > 0 ? Number(subtotal).toLocaleString('vi-VN') + 'đ' : '—'}
+                    </span>
+                  </div>
+                )
+              })}
+              {/* Tổng */}
+              {(() => {
+                const total = o.items.reduce((s: number, it: any) => {
+                  const qty = Number(it.qty || it.quantity || 1)
+                  const price = Number(it.price || it.unit_price || 0)
+                  return s + qty * price
+                }, 0)
+                const kvTotal = Number(o.total_amount || 0)
+                const mismatch = total > 0 && kvTotal > 0 && Math.abs(total - kvTotal) > 1
+                return (
+                  <div style={{ display:'flex', fontSize:12, padding:'6px 0 2px',
+                    marginTop:4, borderTop:`1.5px solid ${T.border}`, fontWeight:700 }}>
+                    <span style={{ flex:1, color:T.med }}>Tổng cộng</span>
+                    <span style={{ width:160, textAlign:'right', color: mismatch ? T.red : T.goldText }}>
+                      {Number(total).toLocaleString('vi-VN')}đ
+                    </span>
+                  </div>
+                )
+              })()}
+              {/* Cảnh báo lệch số tiền KV */}
+              {(() => {
+                const total = o.items.reduce((s: number, it: any) => {
+                  const qty = Number(it.qty || it.quantity || 1)
+                  const price = Number(it.price || it.unit_price || 0)
+                  return s + qty * price
+                }, 0)
+                const kvTotal = Number(o.total_amount || 0)
+                if (total > 0 && kvTotal > 0 && Math.abs(total - kvTotal) > 1) {
+                  return (
+                    <div style={{ marginTop:6, padding:'4px 8px', background:'#FFF5F5',
+                      border:`1px solid ${T.red}55`, borderRadius:4, fontSize:10, color:T.red }}>
+                      ⚠️ Lệch với tổng KV ({Number(kvTotal).toLocaleString('vi-VN')}đ) — kiểm tra lại
+                    </div>
+                  )
+                }
+                return null
+              })()}
             </div>
           )}
         </div>
