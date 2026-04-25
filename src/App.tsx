@@ -34061,10 +34061,17 @@ function LinkParentModal({ child, user, mobile, onClose, onLinked }: any) {
     const q = norm2(searchQ.trim())
     const childNameNorm = norm2(child.customer_name || '')
 
-    // Filter theo loại đơn gốc
+    // v136: STRICT — chỉ hiện đơn có tên KH trùng với đơn bổ sung
+    // Logic match: child name xuất hiện trong parent name HOẶC ngược lại
+    // (handle case "Nguyễn Văn A" vs "Nguyễn Văn A (Hồng Hạnh)")
     let list = candidates.filter((o: any) => {
+      if (!childNameNorm) return false  // child không có tên → không match được gì
+      const pNameNorm = norm2(o.customer_name || '')
+      if (!pNameNorm) return false
+      const nameMatch = pNameNorm.includes(childNameNorm) || childNameNorm.includes(pNameNorm)
+      if (!nameMatch) return false
+      // Filter theo loại đơn gốc
       const pt = detectParentType(o)
-      // Cho phép match cùng loại HOẶC unknown (đơn chưa rõ loại có thể là loại đó)
       return pt === suppType || pt === 'unknown'
     })
 
@@ -34074,13 +34081,8 @@ function LinkParentModal({ child, user, mobile, onClose, onLinked }: any) {
         return hay.includes(q)
       })
     }
+    // Sort: loại match chính xác > theo ngày
     return [...list].sort((a: any, b: any) => {
-      // Ưu tiên: cùng KH + loại match chính xác (không unknown)
-      const aMatch = childNameNorm && norm2(a.customer_name || '').includes(childNameNorm)
-      const bMatch = childNameNorm && norm2(b.customer_name || '').includes(childNameNorm)
-      if (aMatch && !bMatch) return -1
-      if (!aMatch && bMatch) return 1
-      // Match loại chính xác > unknown
       const aPt = detectParentType(a)
       const bPt = detectParentType(b)
       const aExact = aPt === suppType ? 1 : 0
@@ -34212,7 +34214,7 @@ function LinkParentModal({ child, user, mobile, onClose, onLinked }: any) {
               {!searchQ && (
                 <div style={{ marginBottom:10, padding:'6px 10px', background:T.blueBg,
                   borderRadius:6, fontSize:11, color:T.blue, lineHeight:1.5 }}>
-                  💡 Tự động ưu tiên đơn cùng KH "{child.customer_name || '—'}" + cùng loại {SUPP_TYPE_CONFIG[suppType].label}.
+                  💡 Chỉ hiển thị đơn của KH <b>"{child.customer_name || '—'}"</b> · loại {SUPP_TYPE_CONFIG[suppType].label} (30 ngày gần đây).
                 </div>
               )}
 
@@ -34220,31 +34222,23 @@ function LinkParentModal({ child, user, mobile, onClose, onLinked }: any) {
                 <SkeletonList rows={4}/>
               ) : filteredCandidates.length === 0 ? (
                 <EmptyState icon={Ico.truck}
-                  title={searchQ ? 'Không tìm thấy đơn nào' : `Không có đơn ${SUPP_TYPE_CONFIG[suppType].label} gần đây`}
-                  description="Thử search bằng tên KH/mã đơn, hoặc chọn loại khác"/>
+                  title={searchQ ? 'Không tìm thấy đơn nào' : `Không có đơn ${SUPP_TYPE_CONFIG[suppType].label} của KH "${child.customer_name || '—'}"`}
+                  description={searchQ ? 'Thử search bằng mã đơn' : 'Có thể chưa có đơn gốc nào — đợi đơn gốc sync về app trước, hoặc chọn loại bổ sung khác'}/>
               ) : (
                 <div style={{ display:'flex', flexDirection:'column', gap:6 }}>
                   {filteredCandidates.slice(0, 50).map((o: any) => {
                     const isSelected = selectedParent?.order_code === o.order_code
-                    const childNameNorm = norm2(child.customer_name || '')
-                    const isNameMatch = childNameNorm && norm2(o.customer_name || '').includes(childNameNorm)
                     const pt = detectParentType(o)
                     const ptCfg = pt !== 'unknown' ? SUPP_TYPE_CONFIG[pt] : null
                     return (
                       <div key={o.order_code} onClick={() => setSelectedParent(o)}
                         style={{ padding:'10px 12px', borderRadius:8, cursor:'pointer',
                           border:`1.5px solid ${isSelected ? T.blue : T.border}`,
-                          background: isSelected ? T.blueBg : (isNameMatch ? '#FAFCFF' : '#fff') }}>
+                          background: isSelected ? T.blueBg : '#fff' }}>
                         <div style={{ display:'flex', justifyContent:'space-between', alignItems:'flex-start', gap:8 }}>
                           <div style={{ flex:1, minWidth:0 }}>
                             <div style={{ fontSize:12, fontWeight:700, color:T.dark }}>
                               📦 {o.order_code}
-                              {isNameMatch && (
-                                <span style={{ marginLeft:6, fontSize:9, padding:'1px 6px', borderRadius:8,
-                                  background:T.greenBg, color:T.green, fontWeight:600 }}>
-                                  cùng KH
-                                </span>
-                              )}
                               {ptCfg && (
                                 <span style={{ marginLeft:6, fontSize:9, padding:'1px 6px', borderRadius:8,
                                   background:ptCfg.bg, color:ptCfg.color, fontWeight:600 }}>
