@@ -12,7 +12,7 @@ const db = createClient(SUPABASE_URL, SUPABASE_KEY)
 // APP_VERSION — dùng để invalidate cache localStorage mỗi khi deploy version mới
 // (ngăn bug quyền user bị "reset" do cache position cũ sau deploy)
 // ⚠️ MỖI LẦN DEPLOY FEATURE MỚI CÓ PERMISSION MỚI, BUMP SỐ NÀY:
-const APP_VERSION = '2026.04.25.v136'
+const APP_VERSION = '2026.04.25.v137'
 
 // ════════════════════════════════════════════════════════════════
 // AUDIT LOG — ghi nhận các hành động phá hoại data để trace lại
@@ -35010,16 +35010,18 @@ function GhtkSettingsPanel({ user, mobile }: any) {
   }, [])
 
   const save = async () => {
-    if (!form.api_token.trim()) { window.toast.error('Cần API Token'); return }
+    // v136: Token đã chuyển sang Supabase Secrets, chỉ cần check pick info
     if (!form.pick_name.trim() || !form.pick_tel.trim() || !form.pick_address.trim()) {
       window.toast.error('Cần đầy đủ thông tin kho lấy hàng'); return
     }
     setSaving(true)
     try {
+      // v136: Không lưu api_token / x_client_source vào DB nữa (đã ở Secrets)
+      const { api_token, x_client_source, ...formToSave } = form
       const { error } = await db.from('ghtk_settings').upsert({
         id: 1,
-        ...form,
-        ghtk_start_date: form.ghtk_start_date || null,  // v122: empty string → null
+        ...formToSave,
+        ghtk_start_date: formToSave.ghtk_start_date || null,
         updated_at: new Date().toISOString(),
         updated_by: user.id,
       }, { onConflict: 'id' })
@@ -35032,7 +35034,7 @@ function GhtkSettingsPanel({ user, mobile }: any) {
 
   // v119: Tạo đơn test GHTK
   const runTest = async () => {
-    if (!form.api_token.trim()) { window.toast.error('Cần lưu API Token trước'); return }
+    // v136: Token đã ở Secrets, edge function tự đọc — không cần truyền từ form
     if (!testForm.pick_tel.trim() && !form.pick_tel.trim()) { window.toast.error('Cần nhập SĐT kho'); return }
     if (!testForm.cust_tel.trim() || !testForm.cust_name.trim()) {
       window.toast.error('Cần nhập thông tin KH test'); return
@@ -35042,9 +35044,7 @@ function GhtkSettingsPanel({ user, mobile }: any) {
     try {
       const payload = {
         order_code: `TEST_${Date.now()}`,
-        // Override settings bằng form hiện tại (chưa lưu cũng test được)
-        api_token:      form.api_token,
-        x_client_source: form.x_client_source,
+        // v136: Không gửi api_token / x_client_source nữa — edge function dùng env
         pick_name:      form.pick_name || 'LA Global Beauty',
         pick_tel:       testForm.pick_tel || form.pick_tel,
         pick_address:   form.pick_address,
@@ -35097,18 +35097,23 @@ function GhtkSettingsPanel({ user, mobile }: any) {
     <Card style={{ padding:16 }}>
       <div style={{ fontSize:14, fontWeight:700, color:T.dark, marginBottom:14 }}>🔑 Credentials GHTK</div>
 
-      <div style={{ marginBottom:12 }}>
-        <label style={labelStyle}>API Token (lấy từ khachhang.giaohangtietkiem.vn) *</label>
-        <input type="password" value={form.api_token}
-          onChange={e => setForm(f => ({...f, api_token:e.target.value}))}
-          placeholder="APITokenSample-ca441e70288c..." style={fieldStyle}/>
-      </div>
-
-      <div style={{ marginBottom:20 }}>
-        <label style={labelStyle}>X-Client-Source (Partner code — nếu có)</label>
-        <input value={form.x_client_source}
-          onChange={e => setForm(f => ({...f, x_client_source:e.target.value}))}
-          placeholder="S308157" style={fieldStyle}/>
+      {/* v136: Token + ClientSource giờ lưu ở Supabase Secrets (không qua app) */}
+      <div style={{ padding:'12px 14px', marginBottom:20, background:T.greenBg,
+        border:`1.5px solid ${T.green}55`, borderRadius:10, fontSize:12, color:T.dark, lineHeight:1.6 }}>
+        <div style={{ fontWeight:700, color:T.green, marginBottom:6 }}>
+          🔒 Token được lưu an toàn trong Supabase Secrets
+        </div>
+        <div>
+          API Token và X-Client-Source giờ được mã hoá trong <b>Supabase Secrets</b>, không lưu trong DB.
+          Chỉ có Admin Supabase mới đổi được.
+        </div>
+        <div style={{ marginTop:8, fontSize:11, color:T.med }}>
+          <b>Để đổi token:</b><br/>
+          1. Mở <b>Supabase Dashboard</b> → Project<br/>
+          2. Sidebar trái → <b>Edge Functions</b> → tab <b>Secrets</b><br/>
+          3. Edit <code style={{ padding:'1px 5px', background:'#fff', borderRadius:3 }}>GHTK_API_TOKEN</code> hoặc <code style={{ padding:'1px 5px', background:'#fff', borderRadius:3 }}>GHTK_X_CLIENT_SOURCE</code><br/>
+          4. Save → các edge functions tự dùng token mới (không cần redeploy)
+        </div>
       </div>
 
       <div style={{ fontSize:14, fontWeight:700, color:T.dark, marginBottom:14,
