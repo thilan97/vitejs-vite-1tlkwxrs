@@ -35060,10 +35060,18 @@ function GhtkAutoSyncCard({ mobile }: any) {
   const fetchConfig = async () => {
     setLoading(true)
     try {
-      const { data } = await db.from('ghtk_cron_config').select('*').eq('id', 1).maybeSingle()
-      setCfg(data)
-    } catch {
-      setCfg(null)  // bảng chưa exist
+      const { data, error } = await db.from('ghtk_cron_config').select('*').eq('id', 1).maybeSingle()
+      if (error) {
+        console.warn('[GhtkAutoSync] Fetch error:', error.message)
+        // Nếu là PGRST116 hoặc 42P01 (bảng chưa tạo) → "Chưa setup"
+        // Nếu khác (RLS, network...) → coi như chưa setup nhưng log để biết
+        setCfg(null)
+      } else {
+        setCfg(data)  // null nếu chưa có row, object nếu có
+      }
+    } catch (e: any) {
+      console.warn('[GhtkAutoSync] Exception:', e?.message || e)
+      setCfg(null)
     } finally {
       setLoading(false)
     }
