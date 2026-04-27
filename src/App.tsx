@@ -12,7 +12,7 @@ const db = createClient(SUPABASE_URL, SUPABASE_KEY)
 // APP_VERSION — dùng để invalidate cache localStorage mỗi khi deploy version mới
 // (ngăn bug quyền user bị "reset" do cache position cũ sau deploy)
 // ⚠️ MỖI LẦN DEPLOY FEATURE MỚI CÓ PERMISSION MỚI, BUMP SỐ NÀY:
-const APP_VERSION = '2026.04.25.v138'
+const APP_VERSION = '2026.04.25.v139'
 
 // ════════════════════════════════════════════════════════════════
 // AUDIT LOG — ghi nhận các hành động phá hoại data để trace lại
@@ -35043,78 +35043,102 @@ function GhtkFillCustomerModal({ order: o, user, mobile, onClose, onSaved }: any
 
 
 // ══════════════════════════════════════════════════════════════════════
-// v138: GhtkWebhookStatusCard — hiển thị status webhook + logs gần đây
+// ══════════════════════════════════════════════════════════════════════
+// v138: GhtkAutoSyncCard — hiển thị status cron auto-sync
 // ══════════════════════════════════════════════════════════════════════
 // Hiện trong tab "⚙️ Cấu hình" GHTK
-// - Hướng dẫn setup webhook URL với GHTK
-// - Hiện 10 webhook logs gần nhất (success/fail)
-// - Nút copy URL nhanh
+// - Enable/disable cron
+// - Hiện last run time + count
+// - Hướng dẫn setup
 // ══════════════════════════════════════════════════════════════════════
-function GhtkWebhookStatusCard({ mobile }: any) {
-  const [logs, setLogs] = useState<any[]>([])
+function GhtkAutoSyncCard({ mobile }: any) {
+  const [cfg, setCfg] = useState<any>(null)
   const [loading, setLoading] = useState(true)
-  const [stats, setStats] = useState<any>({ total_24h: 0, processed: 0, failed: 0 })
   const [showSetup, setShowSetup] = useState(false)
+  const [toggling, setToggling] = useState(false)
 
-  const webhookUrl = `${SUPABASE_URL}/functions/v1/ghtk-webhook?hash=<GHTK_WEBHOOK_HASH>`
-
-  const fetchLogs = async () => {
+  const fetchConfig = async () => {
     setLoading(true)
     try {
-      // Fetch 20 logs gần nhất
-      const { data: recentLogs } = await db.from('ghtk_webhook_logs')
-        .select('id, received_at, partner_id, status_id, processed, error')
-        .order('received_at', { ascending: false })
-        .limit(20)
-      setLogs(recentLogs || [])
-
-      // Stats 24h gần nhất
-      const since24h = new Date(Date.now() - 24 * 3600000).toISOString()
-      const { data: stat24h } = await db.from('ghtk_webhook_logs')
-        .select('processed', { count: 'exact' })
-        .gte('received_at', since24h)
-      const total = stat24h?.length || 0
-      const processed = (stat24h || []).filter((l: any) => l.processed).length
-      setStats({ total_24h: total, processed, failed: total - processed })
-    } catch (e) {
-      // Bảng có thể chưa exist (migration 52 chưa chạy)
-      setLogs([])
+      const { data } = await db.from('ghtk_cron_config').select('*').eq('id', 1).maybeSingle()
+      setCfg(data)
+    } catch {
+      setCfg(null)  // bảng chưa exist
     } finally {
       setLoading(false)
     }
   }
 
-  useEffect(() => { fetchLogs() }, [])
+  useEffect(() => { fetchConfig() }, [])
 
-  const isHealthy = stats.total_24h > 0 && stats.failed === 0
-  const hasFailures = stats.failed > 0
+  const toggleEnabled = async () => {
+    if (!cfg) return
+    setToggling(true)
+    try {
+      const { error } = await db.from('ghtk_cron_config')
+        .update({ enabled: !cfg.enabled })
+        .eq('id', 1)
+      if (error) { window.toast?.error('Lỗi: ' + error.message); return }
+      window.toast?.success(cfg.enabled ? 'Đã tạm dừng auto-sync' : 'Đã bật auto-sync')
+      fetchConfig()
+    } finally {
+      setToggling(false)
+    }
+  }
+
+  const runNow = async () => {
+    setToggling(true)
+    try {
+      const { error } = await db.rpc('ghtk_auto_sync')
+      if (error) { window.toast?.error('Lỗi: ' + error.message); return }
+      window.toast?.success('Đã trigger sync ngay — đợi vài giây rồi refresh')
+      setTimeout(fetchConfig, 3000)
+    } catch (e: any) {
+      window.toast?.error('Lỗi: ' + (e.message || String(e)))
+    } finally {
+      setToggling(false)
+    }
+  }
+
+  // Thời gian chạy gần nhất
+  const lastRunMin = cfg?.last_run_at
+    ? Math.round((Date.now() - new Date(cfg.last_run_at).getTime()) / 60000)
+    : null
+  const isHealthy = cfg?.enabled && lastRunMin !== null && lastRunMin < 30
+  const isStale = cfg?.enabled && lastRunMin !== null && lastRunMin >= 30
 
   return (
     <Card style={{ padding:16, marginBottom:14 }}>
       <div style={{ display:'flex', alignItems:'center', justifyContent:'space-between', gap:8, marginBottom:10 }}>
         <div style={{ fontSize:14, fontWeight:700, color:T.dark }}>
-          ⚡ Webhook Real-time
+          🔄 Auto-Sync (mỗi 15 phút)
         </div>
         <div style={{ display:'flex', gap:6, alignItems:'center' }}>
-          {isHealthy && (
+          {!cfg && !loading && (
+            <span style={{ padding:'2px 10px', borderRadius:12, background:T.bg,
+              color:T.light, fontSize:10, fontWeight:600, fontStyle:'italic' }}>
+              Chưa setup
+            </span>
+          )}
+          {cfg && cfg.enabled && isHealthy && (
             <span style={{ padding:'2px 10px', borderRadius:12, background:T.greenBg,
               color:T.green, fontSize:10, fontWeight:700 }}>
               ✓ Hoạt động
             </span>
           )}
-          {hasFailures && (
-            <span style={{ padding:'2px 10px', borderRadius:12, background:'#FFF5F5',
-              color:T.red, fontSize:10, fontWeight:700 }}>
-              ⚠ {stats.failed} lỗi / 24h
+          {cfg && cfg.enabled && isStale && (
+            <span style={{ padding:'2px 10px', borderRadius:12, background:T.amberBg,
+              color:T.amber, fontSize:10, fontWeight:700 }}>
+              ⚠ Lâu chưa chạy
             </span>
           )}
-          {stats.total_24h === 0 && (
+          {cfg && !cfg.enabled && (
             <span style={{ padding:'2px 10px', borderRadius:12, background:T.bg,
-              color:T.light, fontSize:10, fontWeight:600, fontStyle:'italic' }}>
-              Chưa có webhook 24h qua
+              color:T.light, fontSize:10, fontWeight:700 }}>
+              ⏸ Đã tạm dừng
             </span>
           )}
-          <button onClick={fetchLogs}
+          <button onClick={fetchConfig}
             style={{ padding:'4px 10px', borderRadius:14, border:`1px solid ${T.border}`,
               background:'transparent', cursor:'pointer', fontSize:10, fontFamily:'inherit', color:T.med }}>
             🔄
@@ -35122,109 +35146,87 @@ function GhtkWebhookStatusCard({ mobile }: any) {
         </div>
       </div>
 
-      {/* Stats 24h */}
-      <div style={{ display:'grid', gridTemplateColumns:'repeat(3, 1fr)', gap:8, marginBottom:12 }}>
-        <div style={{ padding:'8px 10px', background:T.bg, borderRadius:8, textAlign:'center' }}>
-          <div style={{ fontSize:18, fontWeight:700, color:T.dark }}>{stats.total_24h}</div>
-          <div style={{ fontSize:10, color:T.light }}>Webhooks / 24h</div>
+      {loading ? (
+        <SkeletonList rows={2}/>
+      ) : !cfg ? (
+        <div style={{ padding:'10px 12px', background:T.amberBg, borderRadius:6,
+          border:`1px solid ${T.amber}55`, fontSize:11, color:T.dark, lineHeight:1.6 }}>
+          <b style={{ color:T.amber }}>⚠ Cron chưa được setup.</b><br/>
+          Chạy <code style={{ padding:'1px 5px', background:'#fff', borderRadius:3 }}>migration_52_ghtk_auto_sync_cron.sql</code> trong Supabase SQL Editor + điền config theo hướng dẫn trong file.
         </div>
-        <div style={{ padding:'8px 10px', background:T.greenBg, borderRadius:8, textAlign:'center' }}>
-          <div style={{ fontSize:18, fontWeight:700, color:T.green }}>{stats.processed}</div>
-          <div style={{ fontSize:10, color:T.green }}>Thành công</div>
-        </div>
-        <div style={{ padding:'8px 10px', background: hasFailures?'#FFF5F5':T.bg, borderRadius:8, textAlign:'center' }}>
-          <div style={{ fontSize:18, fontWeight:700, color: hasFailures?T.red:T.light }}>{stats.failed}</div>
-          <div style={{ fontSize:10, color: hasFailures?T.red:T.light }}>Lỗi</div>
-        </div>
-      </div>
+      ) : (
+        <>
+          {/* Stats */}
+          <div style={{ display:'grid', gridTemplateColumns:'repeat(3, 1fr)', gap:8, marginBottom:12 }}>
+            <div style={{ padding:'8px 10px', background:T.bg, borderRadius:8, textAlign:'center' }}>
+              <div style={{ fontSize:14, fontWeight:700, color:T.dark }}>
+                {lastRunMin !== null ? (lastRunMin < 60 ? `${lastRunMin}p` : `${Math.round(lastRunMin/60)}h`) : '—'}
+              </div>
+              <div style={{ fontSize:9, color:T.light }}>Trước</div>
+            </div>
+            <div style={{ padding:'8px 10px', background:T.bg, borderRadius:8, textAlign:'center' }}>
+              <div style={{ fontSize:14, fontWeight:700, color:T.dark }}>{cfg.last_run_count ?? '—'}</div>
+              <div style={{ fontSize:9, color:T.light }}>Đơn sync lần cuối</div>
+            </div>
+            <div style={{ padding:'8px 10px', background:T.bg, borderRadius:8, textAlign:'center' }}>
+              <div style={{ fontSize:14, fontWeight:700, color:T.dark }}>{cfg.max_orders}</div>
+              <div style={{ fontSize:9, color:T.light }}>Max/lần</div>
+            </div>
+          </div>
+
+          {/* Last run status */}
+          {cfg.last_run_status && (
+            <div style={{ padding:'5px 10px', marginBottom:10, background:T.bg,
+              borderRadius:6, fontSize:10, color:T.med, fontFamily:'monospace' }}>
+              Last: {cfg.last_run_status}
+            </div>
+          )}
+
+          {/* Actions */}
+          <div style={{ display:'flex', gap:6, marginBottom:10 }}>
+            <button onClick={toggleEnabled} disabled={toggling}
+              style={{ flex:1, padding:'7px 12px', borderRadius:14, cursor: toggling?'wait':'pointer',
+                border:`1.5px solid ${cfg.enabled ? T.amber : T.green}`,
+                background: cfg.enabled ? T.amberBg : T.greenBg,
+                color: cfg.enabled ? T.amber : T.green,
+                fontSize:11, fontWeight:700, fontFamily:'inherit' }}>
+              {cfg.enabled ? '⏸ Tạm dừng' : '▶ Bật lại'}
+            </button>
+            <button onClick={runNow} disabled={toggling || !cfg.enabled}
+              style={{ flex:1, padding:'7px 12px', borderRadius:14, cursor: (toggling||!cfg.enabled)?'not-allowed':'pointer',
+                border:`1.5px solid ${T.blue}`,
+                background: !cfg.enabled ? T.bg : T.blueBg,
+                color: !cfg.enabled ? T.light : T.blue,
+                fontSize:11, fontWeight:700, fontFamily:'inherit', opacity: !cfg.enabled?0.6:1 }}>
+              ⚡ Chạy ngay
+            </button>
+          </div>
+        </>
+      )}
 
       {/* Setup toggle */}
       <button onClick={() => setShowSetup(s => !s)}
-        style={{ padding:'6px 12px', borderRadius:14, border:`1px solid ${T.blue}`,
-          background:T.blueBg, color:T.blue, cursor:'pointer', fontSize:11, fontFamily:'inherit',
-          fontWeight:600, marginBottom: showSetup ? 10 : 0 }}>
-        {showSetup ? '▼ Ẩn hướng dẫn setup' : '▶ Hướng dẫn setup webhook'}
+        style={{ padding:'6px 12px', borderRadius:14, border:`1px solid ${T.border}`,
+          background:'transparent', color:T.med, cursor:'pointer', fontSize:10, fontFamily:'inherit' }}>
+        {showSetup ? '▼ Ẩn hướng dẫn' : '▶ Hướng dẫn setup'}
       </button>
 
       {showSetup && (
-        <div style={{ padding:'12px 14px', background:'#FFFCF5', border:`1px solid ${T.gold}55`,
-          borderRadius:8, fontSize:11, color:T.dark, lineHeight:1.7, marginBottom:12 }}>
-          <div style={{ fontWeight:700, marginBottom:8, color:T.goldText }}>
-            🛠 Cách setup webhook (làm 1 lần)
-          </div>
-          <div><b>Bước 1:</b> Tạo Secret <code style={{ padding:'1px 5px', background:'#fff', borderRadius:3 }}>GHTK_WEBHOOK_HASH</code> trong Supabase</div>
+        <div style={{ marginTop:10, padding:'12px 14px', background:'#FFFCF5',
+          border:`1px solid ${T.gold}55`, borderRadius:8, fontSize:11, color:T.dark, lineHeight:1.7 }}>
+          <div style={{ fontWeight:700, marginBottom:8, color:T.goldText }}>🛠 Cách setup</div>
+          <div><b>Bước 1:</b> Deploy edge function <code style={{ padding:'1px 5px', background:'#fff', borderRadius:3 }}>ghtk-tracking</code> (đã có)</div>
+          <div><b>Bước 2:</b> Run <code style={{ padding:'1px 5px', background:'#fff', borderRadius:3 }}>migration_52_ghtk_auto_sync_cron.sql</code> trong SQL Editor</div>
+          <div><b>Bước 3:</b> Run lệnh INSERT (đã ghi sẵn cuối file migration) với:</div>
           <div style={{ paddingLeft:20, color:T.med, fontSize:10 }}>
-            (random string 32+ ký tự, VD: <code>abc123xyz...</code>)
+            • <code>edge_url</code> = URL edge function ghtk-tracking<br/>
+            • <code>auth_header</code> = "Bearer &lt;SERVICE_ROLE_KEY&gt;" (lấy ở Project Settings → API)
           </div>
-          <div style={{ marginTop:6 }}><b>Bước 2:</b> Deploy edge function <code style={{ padding:'1px 5px', background:'#fff', borderRadius:3 }}>ghtk-webhook</code></div>
-          <div style={{ paddingLeft:20, color:T.med, fontSize:10 }}>
-            ⚠ Quan trọng: phải <b>disable JWT verification</b> cho function này (vì GHTK không gửi auth)
-          </div>
-          <div style={{ marginTop:6 }}><b>Bước 3:</b> Vào <a href="https://khachhang.giaohangtietkiem.vn/web/thong-tin-shop/cau-hinh-api"
-            target="_blank" rel="noopener" style={{ color:T.blue }}>khachhang.giaohangtietkiem.vn → Cấu hình API</a></div>
-          <div style={{ paddingLeft:20, color:T.med, fontSize:10 }}>
-            Tìm mục "Webhook URL" hoặc "URL nhận callback" → paste URL bên dưới
-          </div>
-          <div style={{ marginTop:8, padding:'8px 10px', background:'#fff', borderRadius:6,
-            border:`1px dashed ${T.border}`, fontFamily:'monospace', fontSize:10, wordBreak:'break-all' }}>
-            {webhookUrl}
-          </div>
-          <button onClick={() => {
-            navigator.clipboard?.writeText(webhookUrl.replace('<GHTK_WEBHOOK_HASH>', ''))
-            window.toast?.info('Đã copy URL — nhớ thay <GHTK_WEBHOOK_HASH> bằng giá trị thật')
-          }} style={{ marginTop:6, padding:'4px 10px', borderRadius:12, border:`1px solid ${T.gold}`,
-            background:'transparent', color:T.goldText, cursor:'pointer', fontSize:10, fontFamily:'inherit' }}>
-            📋 Copy URL
-          </button>
+          <div><b>Bước 4:</b> Refresh trang này → thấy stats hiện ra</div>
           <div style={{ marginTop:8, padding:'6px 8px', background:T.amberBg, borderRadius:4,
             color:T.amber, fontSize:10 }}>
-            💡 Sau khi setup xong, GHTK sẽ tự gọi webhook mỗi khi đơn đổi trạng thái — không cần bấm Sync nữa.
-            Sync manual vẫn giữ làm backup nếu webhook miss.
+            💡 Cron chạy mỗi 15 phút, sync max 100 đơn pending cũ nhất. Sync manual vẫn dùng được bình thường.
           </div>
-        </div>
-      )}
-
-      {/* Recent logs */}
-      <div style={{ fontSize:11, fontWeight:700, color:T.med, marginBottom:6 }}>
-        📜 20 webhook gần nhất
-      </div>
-      {loading ? (
-        <SkeletonList rows={3}/>
-      ) : logs.length === 0 ? (
-        <div style={{ padding:'12px', background:T.bg, borderRadius:6, textAlign:'center',
-          fontSize:11, color:T.light, fontStyle:'italic' }}>
-          Chưa có webhook nào — hoặc bảng <code>ghtk_webhook_logs</code> chưa được tạo (chạy Migration 52)
-        </div>
-      ) : (
-        <div style={{ display:'flex', flexDirection:'column', gap:4, maxHeight:300, overflowY:'auto' }}>
-          {logs.map((l: any) => (
-            <div key={l.id} style={{ padding:'6px 10px', borderRadius:6,
-              background: l.processed ? '#FAFFFA' : '#FFF5F5',
-              border: `1px solid ${l.processed ? T.green+'33' : T.red+'33'}`,
-              fontSize:10, lineHeight:1.5 }}>
-              <div style={{ display:'flex', justifyContent:'space-between', gap:8, alignItems:'center' }}>
-                <div>
-                  <span style={{ color: l.processed ? T.green : T.red, fontWeight:700 }}>
-                    {l.processed ? '✓' : '✗'}
-                  </span>
-                  <span style={{ marginLeft:6, fontWeight:600, color:T.dark }}>{l.partner_id || '—'}</span>
-                  <span style={{ marginLeft:6, color:T.med }}>
-                    status={l.status_id || '—'}
-                  </span>
-                </div>
-                <span style={{ color:T.light, fontSize:9 }}>
-                  {l.received_at ? new Date(l.received_at).toLocaleString('vi-VN', {
-                    hour:'2-digit', minute:'2-digit', day:'2-digit', month:'2-digit'
-                  }) : '—'}
-                </span>
-              </div>
-              {l.error && (
-                <div style={{ marginTop:2, color:T.red, fontStyle:'italic', fontSize:9 }}>
-                  ⚠ {l.error}
-                </div>
-              )}
-            </div>
-          ))}
         </div>
       )}
     </Card>
@@ -35391,8 +35393,8 @@ function GhtkSettingsPanel({ user, mobile }: any) {
         </div>
       </div>
 
-      {/* v138: Webhook real-time status */}
-      <GhtkWebhookStatusCard mobile={mobile}/>
+      {/* v138: Auto-sync cron job status */}
+      <GhtkAutoSyncCard mobile={mobile}/>
 
       <div style={{ fontSize:14, fontWeight:700, color:T.dark, marginBottom:14,
         paddingTop:14, borderTop:`1px solid ${T.border}` }}>🏠 Địa chỉ kho lấy hàng</div>
