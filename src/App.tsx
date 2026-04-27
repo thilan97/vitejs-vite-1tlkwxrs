@@ -35152,7 +35152,7 @@ function GhtkAutoSyncCard({ mobile }: any) {
         <div style={{ padding:'10px 12px', background:T.amberBg, borderRadius:6,
           border:`1px solid ${T.amber}55`, fontSize:11, color:T.dark, lineHeight:1.6 }}>
           <b style={{ color:T.amber }}>⚠ Cron chưa được setup.</b><br/>
-          Chạy <code style={{ padding:'1px 5px', background:'#fff', borderRadius:3 }}>migration_52_ghtk_auto_sync_cron.sql</code> trong Supabase SQL Editor + điền config theo hướng dẫn trong file.
+          Chạy <code style={{ padding:'1px 6px', background:'#F3F4F6', color:'#1F2937', border:'1px solid #E5E7EB', borderRadius:3, fontFamily:'monospace', fontWeight:600 }}>migration_52_ghtk_auto_sync_cron.sql</code> trong Supabase SQL Editor + điền config theo hướng dẫn trong file.
         </div>
       ) : (
         <>
@@ -35215,8 +35215,8 @@ function GhtkAutoSyncCard({ mobile }: any) {
         <div style={{ marginTop:10, padding:'12px 14px', background:'#FFFCF5',
           border:`1px solid ${T.gold}55`, borderRadius:8, fontSize:11, color:T.dark, lineHeight:1.7 }}>
           <div style={{ fontWeight:700, marginBottom:8, color:T.goldText }}>🛠 Cách setup</div>
-          <div><b>Bước 1:</b> Deploy edge function <code style={{ padding:'1px 5px', background:'#fff', borderRadius:3 }}>ghtk-tracking</code> (đã có)</div>
-          <div><b>Bước 2:</b> Run <code style={{ padding:'1px 5px', background:'#fff', borderRadius:3 }}>migration_52_ghtk_auto_sync_cron.sql</code> trong SQL Editor</div>
+          <div><b>Bước 1:</b> Deploy edge function <code style={{ padding:'1px 6px', background:'#F3F4F6', color:'#1F2937', border:'1px solid #E5E7EB', borderRadius:3, fontFamily:'monospace', fontWeight:600 }}>ghtk-tracking</code> (đã có)</div>
+          <div><b>Bước 2:</b> Run <code style={{ padding:'1px 6px', background:'#F3F4F6', color:'#1F2937', border:'1px solid #E5E7EB', borderRadius:3, fontFamily:'monospace', fontWeight:600 }}>migration_52_ghtk_auto_sync_cron.sql</code> trong SQL Editor</div>
           <div><b>Bước 3:</b> Run lệnh INSERT (đã ghi sẵn cuối file migration) với:</div>
           <div style={{ paddingLeft:20, color:T.med, fontSize:10 }}>
             • <code>edge_url</code> = URL edge function ghtk-tracking<br/>
@@ -35388,7 +35388,7 @@ function GhtkSettingsPanel({ user, mobile }: any) {
           <b>Để đổi token:</b><br/>
           1. Mở <b>Supabase Dashboard</b> → Project<br/>
           2. Sidebar trái → <b>Edge Functions</b> → tab <b>Secrets</b><br/>
-          3. Edit <code style={{ padding:'1px 5px', background:'#fff', borderRadius:3 }}>GHTK_API_TOKEN</code> hoặc <code style={{ padding:'1px 5px', background:'#fff', borderRadius:3 }}>GHTK_X_CLIENT_SOURCE</code><br/>
+          3. Edit <code style={{ padding:'1px 6px', background:'#F3F4F6', color:'#1F2937', border:'1px solid #E5E7EB', borderRadius:3, fontFamily:'monospace', fontWeight:600 }}>GHTK_API_TOKEN</code> hoặc <code style={{ padding:'1px 6px', background:'#F3F4F6', color:'#1F2937', border:'1px solid #E5E7EB', borderRadius:3, fontFamily:'monospace', fontWeight:600 }}>GHTK_X_CLIENT_SOURCE</code><br/>
           4. Save → các edge functions tự dùng token mới (không cần redeploy)
         </div>
       </div>
