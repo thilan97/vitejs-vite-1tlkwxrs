@@ -12,7 +12,7 @@ const db = createClient(SUPABASE_URL, SUPABASE_KEY)
 // APP_VERSION — dùng để invalidate cache localStorage mỗi khi deploy version mới
 // (ngăn bug quyền user bị "reset" do cache position cũ sau deploy)
 // ⚠️ MỖI LẦN DEPLOY FEATURE MỚI CÓ PERMISSION MỚI, BUMP SỐ NÀY:
-const APP_VERSION = '2026.04.25.v140'
+const APP_VERSION = '2026.04.25.v141'
 
 // ════════════════════════════════════════════════════════════════
 // AUDIT LOG — ghi nhận các hành động phá hoại data để trace lại
@@ -26971,15 +26971,30 @@ function SaleOrderTrackingModule({ user, allUsers, mobile }: any) {
       })
     }
 
-    // Phase B (v129+): GHTK shipment history
+    // Phase B (v129+): GHTK shipment history (từ ghtk-tracking edge function)
+    // v141: Field từ tracking-v3 = synced_at + new_status_text + box_no
     const ghtkHistory = Array.isArray(o.ghtk_status_history) ? o.ghtk_status_history : []
-    for (const h of ghtkHistory) {
+    for (let i = 0; i < ghtkHistory.length; i++) {
+      const h = ghtkHistory[i]
+      const ts = h.synced_at || h.time || h.action_time
+      if (!ts) continue
+      const statusText = h.new_status_text || h.status_text || h.action || 'Cập nhật GHTK'
+      const oldText = h.old_status_text
+      const boxNo = h.box_no
+      // Skip duplicate entries trong cùng giây với cùng status (filter noise)
+      if (i > 0) {
+        const prev = ghtkHistory[i - 1]
+        if (prev && prev.new_status === h.new_status && prev.box_no === h.box_no &&
+            Math.abs(new Date(ts).getTime() - new Date(prev.synced_at || prev.time || 0).getTime()) < 2000) {
+          continue
+        }
+      }
       steps.push({
-        key: `ghtk_h_${h.time}`,
-        ts: h.time,
-        label: h.action || h.status_text || 'Cập nhật GHTK',
+        key: `ghtk_h_${ts}_${boxNo || 0}_${i}`,
+        ts,
+        label: boxNo ? `Thùng ${boxNo}: ${statusText}` : statusText,
         icon: '🚚',
-        meta: h.reason || h.note || h.location || null,
+        meta: oldText && oldText !== statusText ? `${oldText} → ${statusText}` : (h.reason || null),
         isFromGhtk: true,
       })
     }
@@ -30308,11 +30323,12 @@ function GhtkModule({ user, allUsers, mobile }: any) {
           l.status === '5' || l.status === '6' || l.status === '-1' || l.status === 5 || l.status === 6)
         if (allDone) result.delivered.push(o)
         else result.created.push(o)
+      } else if (o.dropship_printed_at) {
+        // v141: Đơn dropship đã in mã → đưa vào tab "Đã tạo đơn" để theo dõi
+        // (timestamp dropship_printed_at đủ thông tin, không cần sync status từ GHTK)
+        result.created.push(o)
       } else if (!hasInfo) {
         // v125: Chưa có info → phân loại theo intent của note
-        // Skip nếu đã in dropship rồi
-        if (o.dropship_printed_at) continue
-
         const intent = parseShipIntent(o.description_kv || '')
         const enriched = { ...o, _intent: intent }
 
@@ -30736,6 +30752,32 @@ function GhtkOrderRow({ order: o, tab, mobile, onRefresh, user, onFillInfo, onEd
               🏷 {labels.length} nhãn GHTK: {labels.map((l: any) =>
                 l.label_id || l.tracking_id || l.trackingId || l.package_id || '(thiếu mã)'
               ).join(', ')}
+            </div>
+          )}
+
+          {/* v141: Dropship info — đơn đã in mã dropship (không tạo qua API) */}
+          {o.dropship_printed_at && labels.length === 0 && (
+            <div style={{ fontSize:11, color:T.dark, marginTop:6,
+              padding:'5px 10px', background:'#FEF3C7', borderRadius:6,
+              border:`1px solid ${T.amber}55` }}>
+              <div style={{ fontWeight:700, color:T.amber }}>
+                📮 Dropship — {o.dropship_carrier === 'viettel_post' ? 'Viettel Post' : 'GHTK'}
+                {o.dropship_code && (
+                  <span style={{ marginLeft:6, fontFamily:'monospace', background:'#fff',
+                    padding:'1px 6px', borderRadius:3, color:T.dark }}>
+                    {o.dropship_code}
+                  </span>
+                )}
+              </div>
+              <div style={{ fontSize:10, color:T.med, marginTop:2 }}>
+                In mã: {new Date(o.dropship_printed_at).toLocaleString('vi-VN', {
+                  day:'2-digit', month:'2-digit', year:'numeric',
+                  hour:'2-digit', minute:'2-digit'
+                })}
+                <span style={{ marginLeft:8, fontStyle:'italic', color:T.light }}>
+                  (đơn tạo từ tài khoản KH — không track được status)
+                </span>
+              </div>
             </div>
           )}
 
@@ -33700,30 +33742,30 @@ function GhtkManualOrderModal({ user, mobile, onClose, onCreated }: any) {
             </div>
           </div>
 
-          <div style={{ marginBottom:12 }}>
-            <label style={labelStyle}>Địa chỉ chi tiết (số nhà, tên đường)</label>
+          {/* v141: 4 ô địa chỉ giống GHTK web — Chi tiết (optional) | Đường/Ấp/Khu * | Phường/Xã * | Tỉnh/TP * */}
+          <div style={{ marginBottom:8 }}>
+            <label style={labelStyle}>🏠 Địa chỉ chi tiết (số nhà, ngách, ngõ)</label>
             <input value={form.address} onChange={e => setForm(f => ({...f, address:e.target.value}))}
-              placeholder="123 Nguyễn Chí Thanh" style={fieldStyle}/>
+              placeholder="VD: 123 / Ngõ 45 ngách 6 / Số 18B" style={fieldStyle}/>
           </div>
 
-          <div style={{ marginBottom:12 }}>
-            <label style={labelStyle}>Đường/Xóm/Thôn/Ngõ (cho địa chỉ nông thôn)</label>
-            <input value={form.hamlet} onChange={e => setForm(f => ({...f, hamlet:e.target.value}))}
-              placeholder="Thôn Đồng Tâm / Xóm 3 / Ngõ 12..." style={fieldStyle}/>
-          </div>
-
-          {/* v140: Sau sáp nhập 2025 — bỏ cấp Quận/Huyện, chỉ Phường/Xã + Tỉnh/TP */}
           <div style={{ display:'grid', gridTemplateColumns: mobile?'1fr':'1fr 1fr', gap:8, marginBottom:8 }}>
+            <div>
+              <label style={labelStyle}>📍 Đường/Ấp/Khu *</label>
+              <input value={form.hamlet} onChange={e => setForm(f => ({...f, hamlet:e.target.value}))}
+                placeholder="Đường Láng / Ấp 5 / Khu A..." style={fieldStyle}/>
+            </div>
             <div>
               <label style={labelStyle}>Phường/Xã *</label>
               <input value={form.ward} onChange={e => setForm(f => ({...f, ward:e.target.value}))}
                 placeholder="Phường Láng Thượng" style={fieldStyle}/>
             </div>
-            <div>
-              <label style={labelStyle}>Tỉnh/TP *</label>
-              <input value={form.province} onChange={e => setForm(f => ({...f, province:e.target.value}))}
-                placeholder="Hà Nội" style={fieldStyle}/>
-            </div>
+          </div>
+
+          <div style={{ marginBottom:8 }}>
+            <label style={labelStyle}>Tỉnh/TP *</label>
+            <input value={form.province} onChange={e => setForm(f => ({...f, province:e.target.value}))}
+              placeholder="Hà Nội" style={fieldStyle}/>
           </div>
 
           {smartMsg && (
@@ -34618,8 +34660,10 @@ function GhtkFillCustomerModal({ order: o, user, mobile, onClose, onSaved }: any
     const telClean = form.tel.replace(/[^0-9]/g, '')
     if (telClean.length < 10 || telClean.length > 11) return 'SĐT phải có 10-11 số'
     if (!form.name.trim()) return 'Cần tên người nhận'
-    if (!form.address.trim()) return 'Cần địa chỉ chi tiết'
-    if (!form.province.trim()) return 'Cần tỉnh/TP'
+    // v141: 3 ô bắt buộc giống GHTK web — Đường/Ấp/Khu, Phường/Xã, Tỉnh/TP
+    if (!form.hamlet.trim()) return 'Cần điền Đường/Ấp/Khu'
+    if (!form.ward.trim()) return 'Cần điền Phường/Xã'
+    if (!form.province.trim()) return 'Cần điền Tỉnh/TP'
     if (form.has_cod && (!form.pick_money || Number(form.pick_money) <= 0)) {
       return 'Chọn "Có thu tiền" thì phải nhập số tiền COD > 0'
     }
