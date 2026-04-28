@@ -12,7 +12,7 @@ const db = createClient(SUPABASE_URL, SUPABASE_KEY)
 // APP_VERSION — dùng để invalidate cache localStorage mỗi khi deploy version mới
 // (ngăn bug quyền user bị "reset" do cache position cũ sau deploy)
 // ⚠️ MỖI LẦN DEPLOY FEATURE MỚI CÓ PERMISSION MỚI, BUMP SỐ NÀY:
-const APP_VERSION = '2026.04.25.v139'
+const APP_VERSION = '2026.04.25.v140'
 
 // ════════════════════════════════════════════════════════════════
 // AUDIT LOG — ghi nhận các hành động phá hoại data để trace lại
@@ -30265,6 +30265,10 @@ function GhtkModule({ user, allUsers, mobile }: any) {
   // v125: Parse ghi chú đơn KV để detect intent dropship
   const parseShipIntent = parseShipIntentGlobal
 
+  // v140: Helper normalize KV name để match user.kiotviet_user_names với o.sold_by_name
+  const normalizeKvNameLocal = (s: string) =>
+    (s||'').toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g,'').replace(/đ/g,'d').trim().replace(/\s+/g, ' ')
+
   const categorized = useMemo(() => {
     const result = {
       pending_info: [] as any[],       // cần điền info để tạo đơn GHTK
@@ -30277,6 +30281,18 @@ function GhtkModule({ user, allUsers, mobile }: any) {
       created: [] as any[],            // đã tạo đơn, chưa giao xong
       delivered: [] as any[],          // tất cả label đã delivered/cancelled
     }
+    // v140: Filter cho Sale — chỉ thấy đơn của chính mình ở tab pending_info, pending_choose, pending_link
+    // Sale là user có perm.ghtkFillCustomer nhưng KHÔNG có perm.ghtkWeight và KHÔNG phải Admin
+    const isPureSale = perm.ghtkFillCustomer && !perm.ghtkWeight && !perm.ghtkSettings
+    const myKvNames = Array.isArray(user?.kiotviet_user_names) ? user.kiotviet_user_names : []
+    const myKvNamesNorm = myKvNames.map((n: string) => normalizeKvNameLocal(n)).filter(Boolean)
+    const isMyOrder = (o: any) => {
+      if (!isPureSale) return true  // Admin/QM thấy hết
+      if (myKvNamesNorm.length === 0) return false  // Sale chưa map → không thấy gì (an toàn)
+      const soldByNorm = normalizeKvNameLocal(o.sold_by_name || '')
+      return myKvNamesNorm.includes(soldByNorm)
+    }
+
     for (const o of orders) {
       // v135: Đơn ĐÃ là supplementary (đã link) → ẩn khỏi GhtkModule
       // (đơn gốc sẽ tạo nhãn cho cả 2)
@@ -30301,17 +30317,18 @@ function GhtkModule({ user, allUsers, mobile }: any) {
         const enriched = { ...o, _intent: intent }
 
         if (intent.type === 'supplementary') {
-          // v135: Đơn bổ sung chưa link → bucket riêng
-          result.pending_link.push(enriched)
+          // v135: Đơn bổ sung chưa link → bucket riêng (chỉ đơn của mình nếu là Sale)
+          if (isMyOrder(o)) result.pending_link.push(enriched)
         } else if (intent.type === 'ghtk_dropship') {
           result.dropship_ghtk.push(enriched)
         } else if (intent.type === 'vtp_dropship') {
           result.dropship_vtp.push(enriched)
         } else if (intent.type === 'ambiguous') {
-          result.pending_choose.push(enriched)
+          // Sale chọn loại — chỉ đơn của mình nếu là Sale
+          if (isMyOrder(o)) result.pending_choose.push(enriched)
         } else {
-          // ghtk_create + none → đi theo flow cũ
-          result.pending_info.push(enriched)
+          // v140: Chờ điền info — chỉ đơn của mình nếu là Sale
+          if (isMyOrder(o)) result.pending_info.push(enriched)
         }
       } else if (boxes.length === 0) {
         result.pending_weight.push(o)
@@ -33470,7 +33487,7 @@ function GhtkManualOrderModal({ user, mobile, onClose, onCreated }: any) {
           address:    form.address.trim(),
           hamlet:     form.hamlet.trim() || 'Khác',
           ward:       form.ward.trim(),
-          district:   form.district.trim(),
+          district:   ''  /* v140: bỏ cấp Huyện sau sáp nhập 2025 */,
           province:   form.province.trim(),
           is_freeship: Number(form.is_freeship),
         },
@@ -33512,7 +33529,7 @@ function GhtkManualOrderModal({ user, mobile, onClose, onCreated }: any) {
           address:     form.address,
           hamlet:      form.hamlet || 'Khác',
           ward:        form.ward || '',
-          district:    form.district || '',
+          district:    '',  // v140: Sau sáp nhập 2025 — không gửi cấp Huyện
           province:    form.province,
           pick_money:  form.has_cod ? Number(form.pick_money || 0) : 0,
           order_value: orderValue,
@@ -33695,16 +33712,12 @@ function GhtkManualOrderModal({ user, mobile, onClose, onCreated }: any) {
               placeholder="Thôn Đồng Tâm / Xóm 3 / Ngõ 12..." style={fieldStyle}/>
           </div>
 
-          <div style={{ ...gr3, marginBottom:8 }}>
+          {/* v140: Sau sáp nhập 2025 — bỏ cấp Quận/Huyện, chỉ Phường/Xã + Tỉnh/TP */}
+          <div style={{ display:'grid', gridTemplateColumns: mobile?'1fr':'1fr 1fr', gap:8, marginBottom:8 }}>
             <div>
-              <label style={labelStyle}>Phường/Xã</label>
+              <label style={labelStyle}>Phường/Xã *</label>
               <input value={form.ward} onChange={e => setForm(f => ({...f, ward:e.target.value}))}
                 placeholder="Phường Láng Thượng" style={fieldStyle}/>
-            </div>
-            <div>
-              <label style={labelStyle}>Quận/Huyện</label>
-              <input value={form.district} onChange={e => setForm(f => ({...f, district:e.target.value}))}
-                placeholder="Quận Đống Đa" style={fieldStyle}/>
             </div>
             <div>
               <label style={labelStyle}>Tỉnh/TP *</label>
@@ -34628,7 +34641,7 @@ function GhtkFillCustomerModal({ order: o, user, mobile, onClose, onSaved }: any
           address:    form.address.trim(),
           hamlet:     form.hamlet.trim(),
           ward:       form.ward.trim(),
-          district:   form.district.trim(),
+          district:   ''  /* v140: bỏ cấp Huyện sau sáp nhập 2025 */,
           province:   form.province.trim(),
           is_freeship: Number(form.is_freeship),
         },
@@ -34813,10 +34826,11 @@ function GhtkFillCustomerModal({ order: o, user, mobile, onClose, onSaved }: any
           placeholder="Xóm 12 / Ngõ 234 / Thôn..." style={fieldStyle}/>
       </div>
 
-      <div style={{ display:'grid', gridTemplateColumns: mobile ? '1fr' : '1fr 1fr 1fr', gap:10, marginBottom:8 }}>
+      {/* v140: Sau sáp nhập 2025 — bỏ Quận/Huyện, chỉ Phường/Xã + Tỉnh/TP */}
+      <div style={{ display:'grid', gridTemplateColumns: mobile ? '1fr' : '1fr 1fr', gap:10, marginBottom:8 }}>
         <div>
           <label style={labelStyle}>
-            Phường/Xã
+            Phường/Xã *
             {vnTree.length > 0 && (
               <span style={{ fontSize:9, color:T.blue, marginLeft:5, fontWeight:400 }}>✨ smart</span>
             )}
@@ -34824,17 +34838,6 @@ function GhtkFillCustomerModal({ order: o, user, mobile, onClose, onSaved }: any
           <input value={form.ward}
             onChange={e => setForm(f => ({...f, ward:e.target.value}))}
             placeholder="Nghĩa Đô" style={fieldStyle}/>
-        </div>
-        <div>
-          <label style={labelStyle}>
-            Quận/Huyện
-            {vnTree.length > 0 && (
-              <span style={{ fontSize:9, color:T.blue, marginLeft:5, fontWeight:400 }}>✨ smart</span>
-            )}
-          </label>
-          <input value={form.district}
-            onChange={e => setForm(f => ({...f, district:e.target.value}))}
-            placeholder="Cầu Giấy" style={fieldStyle}/>
         </div>
         <div>
           <label style={labelStyle}>Tỉnh/TP *</label>
