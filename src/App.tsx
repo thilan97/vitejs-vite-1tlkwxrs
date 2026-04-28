@@ -12,7 +12,7 @@ const db = createClient(SUPABASE_URL, SUPABASE_KEY)
 // APP_VERSION — dùng để invalidate cache localStorage mỗi khi deploy version mới
 // (ngăn bug quyền user bị "reset" do cache position cũ sau deploy)
 // ⚠️ MỖI LẦN DEPLOY FEATURE MỚI CÓ PERMISSION MỚI, BUMP SỐ NÀY:
-const APP_VERSION = '2026.04.25.v141'
+const APP_VERSION = '2026.04.25.v142'
 
 // ════════════════════════════════════════════════════════════════
 // AUDIT LOG — ghi nhận các hành động phá hoại data để trace lại
@@ -5512,6 +5512,16 @@ function MgrShortageRow({ item, idx, total, products, norm, setItems, mobile: is
           {/* Status badge */}
           <span style={{ fontSize:10,fontWeight:700,padding:'2px 7px',borderRadius:20,
             color:sb.color,background:sb.bg,whiteSpace:'nowrap',flexShrink:0 }}>{sb.label}</span>
+          {/* v141: Nút xoá nhanh cho tab "Đã về" — không cần expand */}
+          {item.status === 'arrived' && (
+            <button onClick={e => { e.stopPropagation(); remove() }}
+              title="Xóa khỏi danh sách"
+              style={{ flexShrink:0, padding:'3px 7px', borderRadius:6,
+                border:`1px solid ${T.red}55`, background:'#FFF5F5', cursor:'pointer',
+                fontSize:11, fontFamily:'inherit', color:T.red, lineHeight:1 }}>
+              🗑️
+            </button>
+          )}
           <span style={{ fontSize:10,color:T.light,flexShrink:0 }}>{open?'▲':'▼'}</span>
         </div>
       ) : (
@@ -5582,6 +5592,17 @@ function MgrShortageRow({ item, idx, total, products, norm, setItems, mobile: is
               style={{ padding:'3px 10px', borderRadius:20, border:'none',
                 background:T.green, cursor:'pointer', fontSize:10,
                 fontFamily:'inherit', color:'#fff', fontWeight:700 }}>✅</button>
+          )}
+          {/* v141: Nút Xoá nhanh cho tab "Đã về" — không cần expand */}
+          {item.status==='arrived' && (
+            <button onClick={remove}
+              title="Xóa khỏi danh sách (để có thể report lại sau)"
+              style={{ padding:'3px 10px', borderRadius:20,
+                border:`1px solid ${T.red}55`, background:'#FFF5F5',
+                cursor:'pointer', fontSize:10, fontFamily:'inherit',
+                color:T.red, fontWeight:600 }}>
+              🗑️ Xóa
+            </button>
           )}
           <span style={{ fontSize:9, color:T.light }}>{open?'▲':'▼'}</span>
         </div>
@@ -5988,6 +6009,31 @@ function ShortageItems({ user, allUsers, mobile, products, setProducts }: any) {
                 <option value="hot">🔥 Nóng nhất</option>
                 <option value="date">📅 Ngày về gần nhất</option>
               </select>
+            )}
+            {/* v141: Nút Xóa hết các mục đã về (chỉ hiện ở tab arrived) */}
+            {mgrTab==='arrived' && arrivedList.length > 0 && (
+              <button
+                onClick={async () => {
+                  if (!(await confirmDialog({
+                    title: `Xóa ${arrivedList.length} mục đã về?`,
+                    message: 'Sau khi xóa, các mã SP này có thể được report lại nếu cần.',
+                    confirmText: 'Xóa hết',
+                    tone: 'danger',
+                  }))) return
+                  try {
+                    const ids = arrivedList.map((i: any) => i.id)
+                    await db.from('shortage_items').delete().in('id', ids)
+                    setItems((prev: any) => prev.filter((i: any) => !ids.includes(i.id)))
+                    window.toast?.success(`Đã xóa ${ids.length} mục`)
+                  } catch (e: any) {
+                    window.toast?.error('Lỗi: ' + (e.message || String(e)))
+                  }
+                }}
+                style={{ marginLeft:'auto', padding:'6px 12px', borderRadius:8, cursor:'pointer',
+                  border:`1.5px solid ${T.red}`, background:'#FFF5F5', color:T.red,
+                  fontSize:11, fontFamily:'inherit', fontWeight:700 }}>
+                🗑️ Xóa hết ({arrivedList.length})
+              </button>
             )}
           </div>
           {/* KV Sync time banner */}
