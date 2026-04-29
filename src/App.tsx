@@ -12,7 +12,7 @@ const db = createClient(SUPABASE_URL, SUPABASE_KEY)
 // APP_VERSION — dùng để invalidate cache localStorage mỗi khi deploy version mới
 // (ngăn bug quyền user bị "reset" do cache position cũ sau deploy)
 // ⚠️ MỖI LẦN DEPLOY FEATURE MỚI CÓ PERMISSION MỚI, BUMP SỐ NÀY:
-const APP_VERSION = '2026.04.25.v149'
+const APP_VERSION = '2026.04.25.v151'
 
 // ════════════════════════════════════════════════════════════════
 // AUDIT LOG — ghi nhận các hành động phá hoại data để trace lại
@@ -2339,8 +2339,8 @@ function Dashboard({ user, checklist, tasks, allUsers, attendance, leaveRequests
     setLoadingOps(true)
     try {
       const [ordPicked, ordPacked, wrongRes, retRes] = await Promise.all([
-        db.from('packing_workflow').select('*').gte('picked_at', todayStartISO).lte('picked_at', todayEndISO).limit(2000),
-        db.from('packing_workflow').select('*').gte('packed_at', todayStartISO).lte('packed_at', todayEndISO).limit(2000),
+        db.from('packing_workflow').select('*').neq('is_deleted', true).gte('picked_at', todayStartISO).lte('picked_at', todayEndISO).limit(2000),
+        db.from('packing_workflow').select('*').neq('is_deleted', true).gte('packed_at', todayStartISO).lte('packed_at', todayEndISO).limit(2000),
         db.from('wrong_orders').select('*').gte('created_at', todayStartISO).lte('created_at', todayEndISO).limit(500),
         db.from('return_slips').select('*').eq('date', todayISOStr).limit(500),
       ])
@@ -7933,7 +7933,7 @@ function ReturnInvoiceSection({ slip, canUpload, onUpload, onRemove, mobile }: a
             borderRadius:6, overflow:'hidden', border:`1px solid ${T.border}`,
             background:'#fff', cursor:'pointer' }}
             onClick={() => setPreviewIdx(i)}>
-            <img src={ph.url || ph} alt=""
+            <ZoomableImg src={ph.url || ph} alt=""
               style={{ width:'100%', height:'100%', objectFit:'cover' }}/>
             {canUpload && (
               <button
@@ -11041,6 +11041,7 @@ export default function App() {
         const sevenDaysAgo = new Date(Date.now() - 7*86400000).toISOString()
         db.from('packing_workflow')
           .select('order_code, customer_name, description_kv, ghtk_customer_info, ghtk_boxes, ghtk_labels, ghtk_created_at, ghtk_printed_at, dropship_printed_at, dropship_carrier, dropship_code, purchase_date, status')
+          .neq('is_deleted', true)
           .or('ghtk_labels.not.is.null,description_kv.ilike.%ghtk%,description_kv.ilike.%vtp%,description_kv.ilike.%viettel%')
           .gte('purchase_date', sevenDaysAgo)
           .order('purchase_date', { ascending: false })
@@ -11175,6 +11176,7 @@ export default function App() {
   })
 
   return (
+    <ImageZoomProvider>
     <div style={{ display:'flex', minHeight:'100vh', flexDirection: mobile?'column':'row',
       fontFamily:"'Segoe UI',system-ui,sans-serif", background:T.bg,
       paddingTop: isTestAccount(user) ? 28 : 0 }}>
@@ -11313,6 +11315,7 @@ export default function App() {
           <PriorityAckModal user={user} onClose={() => setPriorityAckOpen(false)}/>
         )}
       </div>
+     </ImageZoomProvider>
      )
 }
 
@@ -18017,6 +18020,204 @@ function PaymentModule({ user, mobile, allUsers }: any) {
 
 
 // ══════════════════════════════════════════════════════════════════════
+// ══════════════════════════════════════════════════════════════════════
+// ══ GLOBAL IMAGE ZOOM (v149) ══════════════════════════════════════════
+// ══════════════════════════════════════════════════════════════════════
+// Click vào bất kỳ ảnh nào trong app → mở fullscreen modal với khả năng:
+// - Desktop: scroll-wheel zoom + drag pan + double-click reset
+// - Mobile: pinch-zoom + drag pan + double-tap reset
+// - ESC hoặc click outside để đóng
+//
+// Sử dụng:
+// - Thay <img src=...> bằng <ZoomableImg src=... /> (có cùng props/style)
+// - Hoặc gọi window.openImageZoom(url) thủ công từ bất kỳ nơi nào
+// ══════════════════════════════════════════════════════════════════════
+
+function ImageZoomModal({ src, onClose }: { src: string; onClose: () => void }) {
+  const [scale, setScale] = useState(1)
+  const [pos, setPos] = useState({ x: 0, y: 0 })
+  const [dragging, setDragging] = useState(false)
+  const dragStart = React.useRef({ x: 0, y: 0, posX: 0, posY: 0 })
+  const lastTouchDist = React.useRef<number | null>(null)
+  const lastTap = React.useRef(0)
+
+  // Reset khi đổi ảnh
+  React.useEffect(() => {
+    setScale(1); setPos({ x: 0, y: 0 })
+  }, [src])
+
+  // ESC đóng
+  React.useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') onClose()
+      if (e.key === '+' || e.key === '=') setScale(s => Math.min(s * 1.3, 5))
+      if (e.key === '-') setScale(s => Math.max(s / 1.3, 1))
+      if (e.key === '0') { setScale(1); setPos({ x: 0, y: 0 }) }
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [onClose])
+
+  // Wheel zoom (desktop)
+  const onWheel = (e: React.WheelEvent) => {
+    e.preventDefault()
+    const delta = e.deltaY > 0 ? 0.85 : 1.15
+    setScale(s => Math.max(1, Math.min(s * delta, 5)))
+  }
+
+  // Mouse drag
+  const onMouseDown = (e: React.MouseEvent) => {
+    if (scale <= 1) return
+    setDragging(true)
+    dragStart.current = { x: e.clientX, y: e.clientY, posX: pos.x, posY: pos.y }
+  }
+  const onMouseMove = (e: React.MouseEvent) => {
+    if (!dragging) return
+    setPos({
+      x: dragStart.current.posX + (e.clientX - dragStart.current.x),
+      y: dragStart.current.posY + (e.clientY - dragStart.current.y),
+    })
+  }
+  const onMouseUp = () => setDragging(false)
+
+  // Touch handlers (mobile)
+  const onTouchStart = (e: React.TouchEvent) => {
+    if (e.touches.length === 1) {
+      // Detect double-tap
+      const now = Date.now()
+      if (now - lastTap.current < 300) {
+        // Double-tap: reset hoặc zoom in
+        if (scale > 1) { setScale(1); setPos({ x: 0, y: 0 }) }
+        else setScale(2.5)
+      }
+      lastTap.current = now
+      // Drag setup
+      if (scale > 1) {
+        const t = e.touches[0]
+        setDragging(true)
+        dragStart.current = { x: t.clientX, y: t.clientY, posX: pos.x, posY: pos.y }
+      }
+    } else if (e.touches.length === 2) {
+      // Pinch start
+      const dx = e.touches[0].clientX - e.touches[1].clientX
+      const dy = e.touches[0].clientY - e.touches[1].clientY
+      lastTouchDist.current = Math.sqrt(dx*dx + dy*dy)
+      setDragging(false)
+    }
+  }
+  const onTouchMove = (e: React.TouchEvent) => {
+    if (e.touches.length === 2 && lastTouchDist.current !== null) {
+      e.preventDefault()
+      const dx = e.touches[0].clientX - e.touches[1].clientX
+      const dy = e.touches[0].clientY - e.touches[1].clientY
+      const dist = Math.sqrt(dx*dx + dy*dy)
+      const ratio = dist / lastTouchDist.current
+      setScale(s => Math.max(1, Math.min(s * ratio, 5)))
+      lastTouchDist.current = dist
+    } else if (e.touches.length === 1 && dragging && scale > 1) {
+      const t = e.touches[0]
+      setPos({
+        x: dragStart.current.posX + (t.clientX - dragStart.current.x),
+        y: dragStart.current.posY + (t.clientY - dragStart.current.y),
+      })
+    }
+  }
+  const onTouchEnd = (e: React.TouchEvent) => {
+    if (e.touches.length < 2) lastTouchDist.current = null
+    if (e.touches.length === 0) setDragging(false)
+  }
+
+  return (
+    <div onClick={onClose}
+      onWheel={onWheel}
+      style={{
+        position:'fixed', inset:0, background:'rgba(0,0,0,0.95)', zIndex: 99999,
+        display:'flex', alignItems:'center', justifyContent:'center',
+        cursor: scale > 1 ? (dragging ? 'grabbing' : 'grab') : 'zoom-out',
+        overflow:'hidden', touchAction:'none',
+      }}>
+      <img src={src} alt="zoom"
+        onClick={e => e.stopPropagation()}
+        onMouseDown={onMouseDown}
+        onMouseMove={onMouseMove}
+        onMouseUp={onMouseUp}
+        onMouseLeave={onMouseUp}
+        onTouchStart={onTouchStart}
+        onTouchMove={onTouchMove}
+        onTouchEnd={onTouchEnd}
+        onDoubleClick={e => {
+          e.stopPropagation()
+          if (scale > 1) { setScale(1); setPos({ x: 0, y: 0 }) }
+          else setScale(2.5)
+        }}
+        style={{
+          maxWidth:'95vw', maxHeight:'95vh', objectFit:'contain',
+          transform: `scale(${scale}) translate(${pos.x/scale}px, ${pos.y/scale}px)`,
+          transition: dragging ? 'none' : 'transform 0.15s',
+          userSelect:'none', WebkitUserSelect:'none',
+          WebkitUserDrag:'none', pointerEvents:'auto',
+        } as any}
+        draggable={false}/>
+
+      {/* Toolbar */}
+      <div onClick={e => e.stopPropagation()}
+        style={{ position:'fixed', top:16, right:16, display:'flex', gap:8, zIndex:1 }}>
+        <button onClick={() => setScale(s => Math.min(s * 1.3, 5))}
+          style={zoomBtnStyle}>＋</button>
+        <button onClick={() => setScale(s => Math.max(s / 1.3, 1))}
+          style={zoomBtnStyle}>−</button>
+        <button onClick={() => { setScale(1); setPos({ x: 0, y: 0 }) }}
+          style={zoomBtnStyle} title="Reset (phím 0)">⟲</button>
+        <button onClick={() => window.open(src, '_blank')}
+          style={zoomBtnStyle} title="Mở tab mới">↗</button>
+        <button onClick={onClose}
+          style={{ ...zoomBtnStyle, background:'rgba(255,255,255,0.25)' }}>✕</button>
+      </div>
+
+      {/* Hint mobile */}
+      <div style={{ position:'fixed', bottom:16, left:'50%', transform:'translateX(-50%)',
+        background:'rgba(0,0,0,0.6)', color:'#fff', padding:'6px 14px', borderRadius:20,
+        fontSize:11, pointerEvents:'none', userSelect:'none' }}>
+        💡 Pinch hoặc cuộn để zoom • Double-tap reset • ESC hoặc tap ngoài để đóng
+      </div>
+    </div>
+  )
+}
+
+const zoomBtnStyle: any = {
+  width:36, height:36, borderRadius:18, border:'none',
+  background:'rgba(255,255,255,0.15)', color:'#fff',
+  cursor:'pointer', fontSize:16, fontWeight:700,
+  display:'flex', alignItems:'center', justifyContent:'center',
+}
+
+// Provider context — gắn 1 lần ở App root
+function ImageZoomProvider({ children }: { children: any }) {
+  const [zoomSrc, setZoomSrc] = useState<string | null>(null)
+  React.useEffect(() => {
+    ;(window as any).openImageZoom = (url: string) => setZoomSrc(url)
+    return () => { delete (window as any).openImageZoom }
+  }, [])
+  return <>
+    {children}
+    {zoomSrc && <ImageZoomModal src={zoomSrc} onClose={() => setZoomSrc(null)}/>}
+  </>
+}
+
+// Drop-in replacement cho <img> — click sẽ mở zoom modal
+function ZoomableImg(props: any) {
+  const { onClick, src, style, ...rest } = props
+  return <img src={src} {...rest}
+    style={{ ...style, cursor: 'zoom-in' }}
+    onClick={(e: any) => {
+      if (onClick) onClick(e)
+      if (!e.defaultPrevented && src) {
+        ;(window as any).openImageZoom?.(src)
+      }
+    }}/>
+}
+
+// ══════════════════════════════════════════════════════════════════════
 // ══ PICKING MODULE v2 — Nhặt Hàng (redesign desktop-friendly) ════════
 // ══════════════════════════════════════════════════════════════════════
 
@@ -18213,6 +18414,8 @@ function PickingModule({ user, allUsers, mobile, products }: any) {
   // Cutoff date: chỉ hiển thị đơn từ ngày này trở đi (null = không filter)
   const [cutoffDate, setCutoffDate] = useState<string|null>(null)
   const [showCutoffModal, setShowCutoffModal] = useState(false)
+  // v150: Admin delete order
+  const [adminDeleteOrder, setAdminDeleteOrder] = useState<any>(null)
 
   const fetchCutoff = async () => {
     const { data } = await db.from('settings')
@@ -18225,12 +18428,12 @@ function PickingModule({ user, allUsers, mobile, products }: any) {
     if (!quiet) setSyncing(true)
     // Query 1: ALL orders đang picking
     const { data: pickingData } = await db.from('packing_workflow').select('*')
-      .eq('status', 'picking')
+      .neq('is_deleted', true).eq('status', 'picking')
       .order('purchase_date', { ascending: false })
     // Query 2: orders đã nhặt trong 3 ngày gần nhất
     const threeDaysAgo = new Date(Date.now() - 3*86400000).toISOString()
     const { data: donePickData } = await db.from('packing_workflow').select('*')
-      .in('status', ['packing','done'])
+      .neq('is_deleted', true).in('status', ['packing','done'])
       .gte('picked_at', threeDaysAgo)
       .order('picked_at', { ascending: false })
       .limit(500)
@@ -18587,6 +18790,17 @@ function PickingModule({ user, allUsers, mobile, products }: any) {
                               • {Number(o.total_amount).toLocaleString('vi-VN')}đ
                             </span>
                           )}
+                          {/* v150: Admin xóa đơn */}
+                          {isAdmin && (
+                            <button onClick={(e) => { e.stopPropagation(); setAdminDeleteOrder(o) }}
+                              title="Admin xóa đơn"
+                              style={{ marginLeft:6, padding:'1px 5px', borderRadius:3,
+                                border:`1px solid ${T.red}40`, background:'transparent',
+                                color:T.red, cursor:'pointer', fontSize:10, lineHeight:1,
+                                fontFamily:'inherit', verticalAlign:'middle' }}>
+                              🗑️
+                            </button>
+                          )}
                         </div>
                         <div style={{ fontSize:10, color:T.light, marginTop:2 }}>
                           Sale: {o.sold_by_name||'—'} • {daysOld>0?`${daysOld}N trước`:'hôm nay'}
@@ -18718,6 +18932,18 @@ function PickingModule({ user, allUsers, mobile, products }: any) {
           }}
           onClose={() => setShowCutoffModal(false)}
         />
+      )}
+
+      {/* v150: Modal Admin xóa đơn */}
+      {adminDeleteOrder && (
+        <AdminDeleteOrderModal ord={adminDeleteOrder} user={user} mobile={mobile}
+          onClose={() => setAdminDeleteOrder(null)}
+          onDeleted={() => {
+            setAdminDeleteOrder(null)
+            // Remove khỏi list local + close panel nếu đang xem
+            setOrders(prev => prev.filter((o: any) => o.order_code !== adminDeleteOrder.order_code))
+            if (selectedCode === adminDeleteOrder.order_code) setSelectedCode(null)
+          }}/>
       )}
     </PageContainer>
   )
@@ -19200,7 +19426,7 @@ function ProductImageModalV2({ code, onClose }: any) {
         {!loading && imgs.length > 0 && (
           <div style={{ display:'grid', gridTemplateColumns:'1fr', gap:10 }}>
             {imgs.map((url: string, i: number) => (
-              <img key={i} src={url} alt={info?.name}
+              <ZoomableImg key={i} src={url} alt={info?.name}
                 style={{ width:'100%', borderRadius:8, border:`1px solid ${T.border}`,
                   display:'block' }}
                 onError={(e: any) => { e.currentTarget.style.display = 'none' }}/>
@@ -19315,6 +19541,201 @@ function AllowEditOrderModal({ ord, onClose, onConfirm }: any) {
 // ══════════════════════════════════════════════════════════════════════
 // ══ PACKING MODULE v2 — Đóng Đơn (2 loại ảnh: nhặt + thùng) ═══════════
 // ══════════════════════════════════════════════════════════════════════
+// ══════════════════════════════════════════════════════════════════════
+// ══ ADMIN DELETE ORDER MODAL (v150) ═══════════════════════════════════
+// ══════════════════════════════════════════════════════════════════════
+// Soft delete đơn packing_workflow — chỉ Admin (perm.viewAllDashboard).
+// - Note bắt buộc ≥10 ký tự
+// - Cảnh báo nặng nếu đơn đã có nhãn GHTK
+// - Lưu snapshot vào audit_log để khôi phục được
+// ══════════════════════════════════════════════════════════════════════
+function AdminDeleteOrderModal({ ord, user, mobile, onClose, onDeleted }: any) {
+  const [note, setNote] = useState('')
+  const [confirmStep, setConfirmStep] = useState(false)
+  const [deleting, setDeleting] = useState(false)
+  const labels = ord.ghtk_labels || []
+  const hasLabels = labels.length > 0
+  const dropshipPrinted = !!ord.dropship_printed_at
+
+  const validateNote = () => {
+    if (note.trim().length < 10) return 'Lý do xóa cần ≥10 ký tự'
+    return null
+  }
+
+  const handleDelete = async () => {
+    const err = validateNote()
+    if (err) { window.toast?.error(err); return }
+    setDeleting(true)
+    try {
+      const now = new Date().toISOString()
+      // Lưu snapshot full đơn vào audit_log TRƯỚC khi soft delete
+      await logAudit({
+        user,
+        action: 'delete',
+        table: 'packing_workflow',
+        recordId: String(ord.order_code),
+        snapshot: ord,
+        note: `Admin xóa đơn ${ord.order_code} (${ord.customer_name||'?'} - ${(ord.total_amount||0).toLocaleString('vi-VN')}đ). Lý do: ${note.trim()}`,
+      })
+      // Soft delete
+      const { error } = await db.from('packing_workflow')
+        .update({
+          is_deleted: true,
+          deleted_at: now,
+          deleted_by: user.id,
+          delete_reason: note.trim(),
+          updated_at: now,
+        })
+        .eq('order_code', ord.order_code)
+      if (error) {
+        window.toast?.error('Lỗi: ' + error.message)
+        return
+      }
+      window.toast?.success(`✅ Đã xóa đơn ${ord.order_code}`)
+      onDeleted()
+    } catch (e: any) {
+      window.toast?.error('Lỗi: ' + (e.message || String(e)))
+    } finally {
+      setDeleting(false)
+    }
+  }
+
+  return (
+    <Modal open onClose={onClose} title={`🗑️ Admin xóa đơn — ${ord.order_code}`}>
+      {/* Order summary */}
+      <div style={{ padding:'12px 14px', background:T.bg, borderRadius:8, marginBottom:14 }}>
+        <div style={{ fontSize:13, fontWeight:700, color:T.dark }}>
+          📦 {ord.order_code}
+          {ord.customer_name && <span style={{ color:T.med, fontWeight:500 }}> • {ord.customer_name}</span>}
+        </div>
+        <div style={{ fontSize:12, color:T.med, marginTop:4 }}>
+          💰 {(ord.total_amount||0).toLocaleString('vi-VN')}đ
+          {ord.sold_by_name && <> · 👤 Sale: {ord.sold_by_name}</>}
+        </div>
+        <div style={{ fontSize:11, color:T.light, marginTop:2 }}>
+          Trạng thái: {ord.status||'?'} {ord.packed_at && '· Đã đóng xong'}
+        </div>
+      </div>
+
+      {/* Warning đặc biệt cho đơn GHTK đã có nhãn */}
+      {hasLabels && (
+        <div style={{ padding:'12px 14px', borderRadius:8, marginBottom:14,
+          background:'#FEE2E2', border:`2px solid ${T.red}` }}>
+          <div style={{ fontSize:13, fontWeight:700, color:T.red, marginBottom:6 }}>
+            🚨 CẢNH BÁO NẶNG — Đơn đã có nhãn GHTK!
+          </div>
+          <div style={{ fontSize:11, color:T.dark, lineHeight:1.6 }}>
+            <b>Đơn này đã được tạo trên hệ thống GHTK</b> với {labels.length} nhãn:
+            <div style={{ fontFamily:'monospace', fontSize:10, marginTop:4,
+              background:'#fff', padding:6, borderRadius:4 }}>
+              {labels.map((l: any) => l.label_id || l.tracking_id || '?').join(', ')}
+            </div>
+            <div style={{ marginTop:8, padding:'6px 10px', background:'#FEF3C7',
+              borderRadius:4, fontSize:11 }}>
+              ⚠️ <b>App KHÔNG hủy đơn trên GHTK!</b> Bạn cần vào GHTK trực tiếp để hủy
+              các đơn này nếu cần. Việc xóa ở đây chỉ ẩn đơn khỏi app của mình.
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Warning cho dropship */}
+      {dropshipPrinted && !hasLabels && (
+        <div style={{ padding:'10px 12px', borderRadius:8, marginBottom:14,
+          background:'#FEF3C7', border:`1.5px solid ${T.amber}` }}>
+          <div style={{ fontSize:12, fontWeight:700, color:T.amber }}>
+            ⚠️ Đơn đã in mã dropship ({ord.dropship_carrier||'?'})
+          </div>
+          <div style={{ fontSize:11, color:T.dark, marginTop:4 }}>
+            Mã: {ord.dropship_code||'?'} — đơn đã được tạo trên tài khoản KH.
+            Việc xóa chỉ ẩn khỏi app, không ảnh hưởng đến đơn vận chuyển thực tế.
+          </div>
+        </div>
+      )}
+
+      {/* Step 1: Nhập note */}
+      {!confirmStep && (
+        <>
+          <div style={{ fontSize:12, fontWeight:700, color:T.dark, marginBottom:6 }}>
+            Lý do xóa <span style={{ color:T.red }}>*</span>
+            <span style={{ fontSize:10, fontWeight:400, color:T.light, marginLeft:6 }}>
+              (≥10 ký tự — sẽ được lưu vào audit log)
+            </span>
+          </div>
+          <textarea value={note} onChange={e => setNote(e.target.value)}
+            placeholder="VD: Đơn KH hủy không lấy / Tạo nhầm trùng đơn DH00xxx / Sale tạo test..."
+            rows={3}
+            style={{ width:'100%', padding:'10px 12px', border:`1.5px solid ${T.border}`,
+              borderRadius:8, fontSize:13, fontFamily:'inherit', color:T.dark,
+              background:'#fff', outline:'none', resize:'vertical', boxSizing:'border-box',
+              WebkitTextFillColor: T.dark }}/>
+          <div style={{ fontSize:10, color: note.trim().length < 10 ? T.red : T.green,
+            marginTop:4, textAlign:'right' }}>
+            {note.trim().length}/10 ký tự
+          </div>
+
+          <div style={{ display:'flex', gap:8, marginTop:14, justifyContent:'flex-end' }}>
+            <button onClick={onClose}
+              style={{ padding:'8px 16px', borderRadius:8, border:`1px solid ${T.border}`,
+                background:'#fff', cursor:'pointer', fontSize:12, fontFamily:'inherit',
+                color:T.dark }}>
+              Hủy
+            </button>
+            <button onClick={() => {
+                const err = validateNote()
+                if (err) { window.toast?.error(err); return }
+                setConfirmStep(true)
+              }}
+              disabled={note.trim().length < 10}
+              style={{ padding:'8px 16px', borderRadius:8, border:'none',
+                background: note.trim().length < 10 ? T.gray : T.red,
+                cursor: note.trim().length < 10 ? 'not-allowed' : 'pointer',
+                fontSize:12, fontFamily:'inherit', color:'#fff', fontWeight:700 }}>
+              Tiếp tục →
+            </button>
+          </div>
+        </>
+      )}
+
+      {/* Step 2: Confirm cuối */}
+      {confirmStep && (
+        <>
+          <div style={{ padding:'14px 16px', background:'#FEE2E2', borderRadius:8,
+            border:`2px solid ${T.red}`, marginBottom:14 }}>
+            <div style={{ fontSize:13, fontWeight:700, color:T.red, marginBottom:8 }}>
+              ⚠️ Xác nhận xóa cuối cùng
+            </div>
+            <div style={{ fontSize:12, color:T.dark, lineHeight:1.6 }}>
+              Bạn đang chuẩn bị xóa đơn <b>{ord.order_code}</b>.<br/>
+              Đơn sẽ bị ẩn khỏi tất cả các tab trong app. Có thể khôi phục qua audit log nếu cần.<br/>
+              <div style={{ marginTop:8, padding:'6px 10px', background:'#fff', borderRadius:4 }}>
+                <b>Lý do:</b> {note.trim()}
+              </div>
+            </div>
+          </div>
+
+          <div style={{ display:'flex', gap:8, justifyContent:'flex-end' }}>
+            <button onClick={() => setConfirmStep(false)}
+              disabled={deleting}
+              style={{ padding:'8px 16px', borderRadius:8, border:`1px solid ${T.border}`,
+                background:'#fff', cursor: deleting?'not-allowed':'pointer', fontSize:12, fontFamily:'inherit',
+                color:T.dark }}>
+              ← Quay lại
+            </button>
+            <button onClick={handleDelete} disabled={deleting}
+              style={{ padding:'8px 16px', borderRadius:8, border:'none',
+                background: T.red,
+                cursor: deleting?'not-allowed':'pointer', opacity: deleting?0.6:1,
+                fontSize:12, fontFamily:'inherit', color:'#fff', fontWeight:700 }}>
+              {deleting ? '⏳ Đang xóa...' : '🗑️ Xóa đơn'}
+            </button>
+          </div>
+        </>
+      )}
+    </Modal>
+  )
+}
+
 function PackingModule({ user, allUsers, mobile, products }: any) {
   const perm    = getPerm(user)
   const canPack = perm.packOrders || perm.viewAllDashboard
@@ -19330,15 +19751,18 @@ function PackingModule({ user, allUsers, mobile, products }: any) {
   const [joinConfirm, setJoinConfirm] = useState<any>(null)
   const [linkSuppOrder, setLinkSuppOrder] = useState<any>(null)  // đơn con đang chọn để link: open modal pick parent
   const [showAllowEdit, setShowAllowEdit] = useState<any>(null)  // đơn đang được QM cấp quyền sửa
+  // v150: Admin delete order
+  const [adminDeleteOrder, setAdminDeleteOrder] = useState<any>(null)
+  const isAdmin = perm.viewAllDashboard
 
   const fetchData = async () => {
     setLoading(true)
     const { data: pendingData } = await db.from('packing_workflow').select('*')
-      .eq('status', 'packing')
+      .neq('is_deleted', true).eq('status', 'packing')
       .order('picked_at', { ascending: true })
     const threeDaysAgo = new Date(Date.now() - 3*86400000).toISOString()
     const { data: doneData } = await db.from('packing_workflow').select('*')
-      .eq('status', 'done')
+      .neq('is_deleted', true).eq('status', 'done')
       .gte('packed_at', threeDaysAgo)
       .order('packed_at', { ascending: false })
       .limit(500)
@@ -19873,6 +20297,17 @@ function PackingModule({ user, allUsers, mobile, products }: any) {
                           • {Number(o.total_amount).toLocaleString('vi-VN')}đ
                         </span>
                       )}
+                      {/* v150: Admin xóa đơn */}
+                      {isAdmin && (
+                        <button onClick={(e) => { e.stopPropagation(); setAdminDeleteOrder(o) }}
+                          title="Admin xóa đơn"
+                          style={{ marginLeft:6, padding:'1px 5px', borderRadius:3,
+                            border:`1px solid ${T.red}40`, background:'transparent',
+                            color:T.red, cursor:'pointer', fontSize:10, lineHeight:1,
+                            fontFamily:'inherit', verticalAlign:'middle' }}>
+                          🗑️
+                        </button>
+                      )}
                     </div>
                     <div style={{ fontSize:10, color:T.light, marginTop:2, textAlign:'left' }}>
                       {totalItems} SP
@@ -20089,6 +20524,18 @@ function PackingModule({ user, allUsers, mobile, products }: any) {
           onConfirm={(parentCode: string) =>
             linkSupplementary(linkSuppOrder.order_code, parentCode)}
         />
+      )}
+
+      {/* v150: Modal Admin xóa đơn */}
+      {adminDeleteOrder && (
+        <AdminDeleteOrderModal ord={adminDeleteOrder} user={user} mobile={mobile}
+          onClose={() => setAdminDeleteOrder(null)}
+          onDeleted={() => {
+            const code = adminDeleteOrder.order_code
+            setAdminDeleteOrder(null)
+            setOrders(prev => prev.filter((o: any) => o.order_code !== code))
+            if (selectedCode === code) setSelectedCode(null)
+          }}/>
       )}
     </PageContainer>
   )
@@ -20474,6 +20921,9 @@ function PackingDetailPanel({ ord, mobile, user, allUsers, products, allOrders, 
   const [showImgModal, setShowImgModal] = useState<string|null>(null)
   // v114: Đổi state để dùng PhotoZoomViewer (zoom + pan + keyboard nav)
   const [previewPickedIdx, setPreviewPickedIdx] = useState<number|null>(null)
+  // v150: Admin delete order modal
+  const [showAdminDelete, setShowAdminDelete] = useState(false)
+  const isAdmin = getPerm(user).viewAllDashboard
 
   // Supplementary orders: đơn con đã link vào đơn này
   const suppList: any[] = Array.isArray(ord.supplementary_orders) ? ord.supplementary_orders : []
@@ -20573,14 +21023,36 @@ function PackingDetailPanel({ ord, mobile, user, allUsers, products, allOrders, 
               {ord.no_box && <span style={{ color:T.amber, fontWeight:600 }}>• 📮 Bookship (không đóng thùng)</span>}
             </div>
           </div>
-          <button onClick={handleClose}
-            style={{ padding:'5px 10px', borderRadius:6, border:`1px solid ${T.border}`,
-              background:'#fff', color:T.med, cursor:'pointer', fontFamily:'inherit',
-              fontSize:11, flexShrink:0 }}>
-            ✕ Đóng
-          </button>
+          <div style={{ display:'flex', gap:6, flexShrink:0 }}>
+            {/* v150: Admin xóa đơn */}
+            {isAdmin && (
+              <button onClick={() => setShowAdminDelete(true)}
+                title="Admin xóa đơn (soft delete)"
+                style={{ padding:'5px 10px', borderRadius:6, border:`1px solid ${T.red}55`,
+                  background:'#FFF5F5', color:T.red, cursor:'pointer', fontFamily:'inherit',
+                  fontSize:11, fontWeight:600 }}>
+                🗑️ Xóa đơn
+              </button>
+            )}
+            <button onClick={handleClose}
+              style={{ padding:'5px 10px', borderRadius:6, border:`1px solid ${T.border}`,
+                background:'#fff', color:T.med, cursor:'pointer', fontFamily:'inherit',
+                fontSize:11 }}>
+              ✕ Đóng
+            </button>
+          </div>
         </div>
       </div>
+
+      {/* v150: Modal Admin xóa đơn */}
+      {showAdminDelete && (
+        <AdminDeleteOrderModal ord={ord} user={user} mobile={mobile}
+          onClose={() => setShowAdminDelete(false)}
+          onDeleted={() => {
+            setShowAdminDelete(false)
+            onClose()  // Close panel sau khi xóa
+          }}/>
+      )}
 
       <div style={{ padding:16 }}>
 
@@ -21020,7 +21492,7 @@ function PackingDetailPanel({ ord, mobile, user, allUsers, products, allOrders, 
                         boxShadow: note ? `0 0 0 1px ${T.gold}55` : 'none' }}
                         onClick={() => setPreviewPickedIdx(i)}>
                         <div style={{ aspectRatio:'1/1', overflow:'hidden' }}>
-                          <img src={url} alt={`Ảnh nhặt ${i+1}`}
+                          <ZoomableImg src={url} alt={`Ảnh nhặt ${i+1}`}
                             style={{ width:'100%', height:'100%', objectFit:'cover', display:'block',
                               transform: rot ? `rotate(${rot}deg)` : undefined,
                               transition: 'transform 0.2s ease' }}/>
@@ -21218,7 +21690,7 @@ function PackingDetailPanel({ ord, mobile, user, allUsers, products, allOrders, 
                 <>
                   <div style={{ display:'flex', gap:10, marginBottom:12, padding:8,
                     background:T.bg, borderRadius:6 }}>
-                    <img src={url} alt="preview"
+                    <ZoomableImg src={url} alt="preview"
                       style={{ width:60, height:60, objectFit:'cover', borderRadius:4,
                         border:`1px solid ${T.border}` }}/>
                     <div style={{ flex:1, fontSize:10, color:T.med, lineHeight:1.4 }}>
@@ -21448,7 +21920,7 @@ function PhotoSection({ title, subtitle, photos, min, max, readOnly, orderCode, 
                 boxShadow: note ? `0 0 0 1px ${T.gold}55` : 'none' }}
                 onClick={() => setPreviewIdx(i)}>
                 <div style={{ aspectRatio:'1/1', overflow:'hidden' }}>
-                  <img src={url} alt={`Photo ${i+1}`}
+                  <ZoomableImg src={url} alt={`Photo ${i+1}`}
                     style={{ width:'100%', height:'100%', objectFit:'cover', display:'block',
                       transform: rot ? `rotate(${rot}deg)` : undefined,
                       transition: 'transform 0.2s ease' }}/>
@@ -21581,7 +22053,7 @@ function PhotoSection({ title, subtitle, photos, min, max, readOnly, orderCode, 
             {/* Preview ảnh nhỏ */}
             <div style={{ display:'flex', gap:10, marginBottom:12, padding:8,
               background:T.bg, borderRadius:6 }}>
-              <img src={getUrl(photos[editingNoteIdx])} alt="preview"
+              <ZoomableImg src={getUrl(photos[editingNoteIdx])} alt="preview"
                 style={{ width:60, height:60, objectFit:'cover', borderRadius:4,
                   border:`1px solid ${T.border}` }}/>
               <div style={{ flex:1, fontSize:10, color:T.med, lineHeight:1.4 }}>
@@ -24574,6 +25046,7 @@ function OrderLookupTab({ user, allUsers, mobile }: any) {
       const fromISO = new Date(dateFrom + 'T00:00:00').toISOString()
       const toISO   = new Date(dateTo   + 'T23:59:59').toISOString()
       const { data } = await db.from('packing_workflow').select('*')
+        .neq('is_deleted', true)
         .gte('purchase_date', fromISO)
         .lte('purchase_date', toISO)
         .order('purchase_date', { ascending: false })
@@ -25110,7 +25583,7 @@ function PhotoGallery({ title, photos, allUsers, orderCode, kind }: any) {
                 boxShadow: note ? `0 0 0 1px ${T.gold}55` : 'none' }}
                 onClick={() => setPreviewIdx(i)}>
                 <div style={{ aspectRatio:'1/1', overflow:'hidden' }}>
-                  <img src={url} alt="" style={{ width:'100%', height:'100%', objectFit:'cover', display:'block' }}/>
+                  <ZoomableImg src={url} alt="" style={{ width:'100%', height:'100%', objectFit:'cover', display:'block' }}/>
                 </div>
                 {note && (
                   <div style={{ position:'absolute', top:2, left:2, padding:'1px 5px',
@@ -25151,7 +25624,7 @@ function PhotoGallery({ title, photos, allUsers, orderCode, kind }: any) {
               style={{ position:'absolute', top:10, right:10, width:36, height:36, zIndex:2,
                 borderRadius:18, border:'none', background:'rgba(255,255,255,0.9)', color:T.dark,
                 cursor:'pointer', fontSize:18, fontFamily:'inherit' }}>×</button>
-            <img src={getUrl(photos[previewIdx])} alt=""
+            <ZoomableImg src={getUrl(photos[previewIdx])} alt=""
               style={{ maxWidth:'90vw', maxHeight:'85vh', borderRadius:8, display:'block' }}/>
             {getNote(photos[previewIdx]) && (
               <div style={{ position:'absolute', top:10, left:10, right:60,
@@ -25245,9 +25718,9 @@ function WarehouseStatsModule({ user, allUsers, mobile }: any) {
     const toISO   = new Date(toDate   + 'T23:59:59').toISOString()
     const [packRes, pickRes, attRes, wrongRes, returnRes] = await Promise.all([
       db.from('packing_workflow').select('*')
-        .gte('packed_at', fromISO).lte('packed_at', toISO).limit(5000),
+        .neq('is_deleted', true).gte('packed_at', fromISO).lte('packed_at', toISO).limit(5000),
       db.from('packing_workflow').select('*')
-        .gte('picked_at', fromISO).lte('picked_at', toISO).limit(5000),
+        .neq('is_deleted', true).gte('picked_at', fromISO).lte('picked_at', toISO).limit(5000),
       db.from('attendance').select('*')
         .gte('date', fromDate).lte('date', toDate).limit(5000),
       db.from('wrong_orders').select('*')
@@ -27048,6 +27521,7 @@ function SaleOrderTrackingModule({ user, allUsers, mobile }: any) {
     setLoading(true)
     const fromDate = new Date(Date.now() - dayRange * 86400000).toISOString()
     let query = db.from('packing_workflow').select('*')
+      .neq('is_deleted', true)
       .gte('purchase_date', fromDate)
       .order('purchase_date', { ascending: false })
       .limit(1000)
@@ -27696,8 +28170,8 @@ function TrackingOrderPhotos({ photosPicked, photosPacked, orderCode }: any) {
         if (!url) return null
         return (
           <div key={i} style={{ position:'relative', borderRadius:6, overflow:'hidden',
-            border:`1px solid ${accent}`, cursor:'pointer', background:'#fff' }}
-            onClick={() => setShowModal(url)}>
+            border:`1px solid ${accent}`, cursor:'zoom-in', background:'#fff' }}
+            onClick={() => (window as any).openImageZoom?.(url)}>
             <div style={{ aspectRatio:'1/1' }}>
               <img src={url} alt={`${orderCode} ${i+1}`}
                 style={{ width:'100%', height:'100%', objectFit:'cover', display:'block' }}/>
@@ -27752,21 +28226,7 @@ function TrackingOrderPhotos({ photosPicked, photosPacked, orderCode }: any) {
         </div>
       )}
 
-      {showModal && (
-        <div onClick={() => setShowModal(null)}
-          style={{ position:'fixed', inset:0, background:'rgba(0,0,0,0.9)', zIndex:9999,
-            display:'flex', alignItems:'center', justifyContent:'center', padding:20,
-            cursor:'zoom-out' }}>
-          <img src={showModal} alt="Preview"
-            style={{ maxWidth:'100%', maxHeight:'100%', objectFit:'contain' }}/>
-          <button onClick={e => { e.stopPropagation(); setShowModal(null) }}
-            style={{ position:'absolute', top:20, right:20, width:40, height:40,
-              borderRadius:20, border:'none', background:'rgba(255,255,255,0.2)', color:'#fff',
-              cursor:'pointer', fontSize:20 }}>
-            ✕
-          </button>
-        </div>
-      )}
+      {/* v149: Old preview modal removed — global ImageZoomModal handles all zoom */}
     </div>
   )
 }
@@ -28104,7 +28564,7 @@ function ErrorReportModule({ user, allUsers, mobile }: any) {
                     <a key={i} href={ph.url||ph} target="_blank" rel="noreferrer"
                       style={{ borderRadius:8, overflow:'hidden', display:'block',
                         border:`1px solid ${T.border}`, aspectRatio:'4/3' }}>
-                      <img src={ph.url||ph} alt={`ảnh ${i+1}`}
+                      <ZoomableImg src={ph.url||ph} alt={`ảnh ${i+1}`}
                         style={{ width:'100%', height:'100%', objectFit:'cover' }}/>
                     </a>
                   ))}
@@ -28159,7 +28619,7 @@ function ErrorReportModule({ user, allUsers, mobile }: any) {
                         <a key={i} href={ph.url||ph} target="_blank" rel="noreferrer"
                           style={{ borderRadius:6, overflow:'hidden', display:'block',
                             border:`1px solid ${T.green}`, aspectRatio:'4/3' }}>
-                          <img src={ph.url||ph} alt={`xử lý ${i+1}`}
+                          <ZoomableImg src={ph.url||ph} alt={`xử lý ${i+1}`}
                             style={{ width:'100%', height:'100%', objectFit:'cover' }}/>
                         </a>
                       ))}
@@ -28238,7 +28698,7 @@ function ErrorReportModule({ user, allUsers, mobile }: any) {
                       {resolvePhotos.map((ph: any, i: number) => (
                         <div key={i} style={{ position:'relative', borderRadius:6, overflow:'hidden',
                           border:`1px solid ${T.border}`, aspectRatio:'4/3' }}>
-                          <img src={ph.url} alt={`xử lý ${i+1}`}
+                          <ZoomableImg src={ph.url} alt={`xử lý ${i+1}`}
                             style={{ width:'100%', height:'100%', objectFit:'cover' }}/>
                           <button onClick={() => setResolvePhotos(prev => prev.filter((_,j) => j!==i))}
                             style={{ position:'absolute', top:2, right:2, width:18, height:18,
@@ -28357,7 +28817,7 @@ function ErrorReportModule({ user, allUsers, mobile }: any) {
                 {fPhotos.map((ph: any, i: number) => (
                   <div key={i} style={{ position:'relative', borderRadius:6, overflow:'hidden',
                     border:`1px solid ${T.border}`, aspectRatio:'4/3' }}>
-                    <img src={ph.url} alt={`ảnh ${i+1}`}
+                    <ZoomableImg src={ph.url} alt={`ảnh ${i+1}`}
                       style={{ width:'100%', height:'100%', objectFit:'cover' }}/>
                     <button onClick={() => setFPhotos(prev => prev.filter((_,j) => j!==i))}
                       style={{ position:'absolute', top:2, right:2, width:20, height:20,
@@ -29905,7 +30365,7 @@ function DailyPhotoGroup({ day, mobile, allUsers, onOpenViewer }: any) {
               borderRadius:4, overflow:'hidden', cursor:'pointer',
               background:'#f0f0f0',
             }}>
-            <img src={ph._url} alt="" loading="lazy"
+            <ZoomableImg src={ph._url} alt="" loading="lazy"
               style={{ width:'100%', height:'100%', objectFit:'cover', display:'block',
                 transform: ph.rot ? `rotate(${ph.rot}deg)` : undefined,
                 transition: 'transform 0.2s ease' }}/>
@@ -30027,7 +30487,7 @@ function PhotoGrid({ photos, mobile, type, onClick }: any) {
         <div key={i} onClick={() => onClick(i)}
           style={{ position:'relative', cursor:'pointer', aspectRatio:'1',
             overflow:'hidden', background:'#000' }}>
-          <img src={getUrl(ph)} alt=""
+          <ZoomableImg src={getUrl(ph)} alt=""
             loading="lazy"
             style={{ width:'100%', height:'100%', objectFit:'cover', display:'block' }}
             onError={(e: any) => { e.target.style.display='none' }}/>
@@ -30509,6 +30969,9 @@ function GhtkModule({ user, allUsers, mobile }: any) {
   const [ghtkStartDate, setGhtkStartDate] = useState<string|null>(null)
   // v124: Tạo đơn thủ công
   const [showManualOrder, setShowManualOrder] = useState(false)
+  // v150: Admin delete order modal
+  const [adminDeleteOrder, setAdminDeleteOrder] = useState<any>(null)
+  const isAdmin = perm.viewAllDashboard
 
   const norm2 = (s: string) => (s||'').toLowerCase().normalize('NFD')
     .replace(/[\u0300-\u036f]/g,'').replace(/đ/g,'d').trim()
@@ -30842,6 +31305,7 @@ function GhtkModule({ user, allUsers, mobile }: any) {
                   onEditBoxes={() => setEditBoxesOrder(o)}
                   onCreateOrder={(order: any) => setCreateOrderTarget(order)}
                   onLinkSupp={(order: any) => setLinkSuppChild(order)}
+                  onAdminDelete={isAdmin ? ((order: any) => setAdminDeleteOrder(order)) : undefined}
                   onChooseShipType={async (choice: 'ghtk_create'|'ghtk_dropship'|'vtp_dropship') => {
                     if (choice === 'ghtk_create') {
                       setFillInfoOrder(o)
@@ -30910,13 +31374,20 @@ function GhtkModule({ user, allUsers, mobile }: any) {
           onClose={() => setShowManualOrder(false)}
           onCreated={() => { setShowManualOrder(false); fetchOrders() }}/>
       )}
+
+      {/* v150: Modal Admin xóa đơn */}
+      {adminDeleteOrder && (
+        <AdminDeleteOrderModal ord={adminDeleteOrder} user={user} mobile={mobile}
+          onClose={() => setAdminDeleteOrder(null)}
+          onDeleted={() => { setAdminDeleteOrder(null); fetchOrders() }}/>
+      )}
     </PageContainer>
   )
 }
 
 
 // ── GHTK Order Row ──
-function GhtkOrderRow({ order: o, tab, mobile, onRefresh, user, onFillInfo, onEditBoxes, onChooseShipType, onCreateOrder, onLinkSupp }: any) {
+function GhtkOrderRow({ order: o, tab, mobile, onRefresh, user, onFillInfo, onEditBoxes, onChooseShipType, onCreateOrder, onLinkSupp, onAdminDelete }: any) {
   const info = o.ghtk_customer_info || {}
   const boxes = o.ghtk_boxes || []
   const labels = o.ghtk_labels || []
@@ -30943,6 +31414,17 @@ function GhtkOrderRow({ order: o, tab, mobile, onRefresh, user, onFillInfo, onEd
               <span style={{ marginLeft:8, fontSize:12, color:T.goldText, fontWeight:700 }}>
                 • {Number(o.total_amount).toLocaleString('vi-VN')}đ
               </span>
+            )}
+            {/* v150: Admin xóa đơn — icon nhỏ ở cuối tên */}
+            {onAdminDelete && (
+              <button onClick={(e) => { e.stopPropagation(); onAdminDelete(o) }}
+                title="Admin xóa đơn"
+                style={{ marginLeft:8, padding:'2px 6px', borderRadius:4,
+                  border:`1px solid ${T.red}40`, background:'transparent',
+                  color:T.red, cursor:'pointer', fontSize:11, lineHeight:1,
+                  fontFamily:'inherit', verticalAlign:'middle' }}>
+                🗑️
+              </button>
             )}
           </div>
           <div style={{ fontSize:10, color:T.light, marginTop:3 }}>
@@ -36267,7 +36749,7 @@ function PhotoZoomViewer({ photos, startIdx, mobile, onClose, onRotate }: any) {
         display:'flex', alignItems:'center', justifyContent:'center' }}
         onWheel={handleWheel}
         onTouchStart={handleTouchStart} onTouchMove={handleTouchMove} onTouchEnd={handleTouchEnd}>
-        <img src={url} alt=""
+        <ZoomableImg src={url} alt=""
           draggable={false}
           onDoubleClick={handleDoubleClick}
           onMouseDown={handleMouseDown}
