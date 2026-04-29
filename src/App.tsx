@@ -12,7 +12,7 @@ const db = createClient(SUPABASE_URL, SUPABASE_KEY)
 // APP_VERSION — dùng để invalidate cache localStorage mỗi khi deploy version mới
 // (ngăn bug quyền user bị "reset" do cache position cũ sau deploy)
 // ⚠️ MỖI LẦN DEPLOY FEATURE MỚI CÓ PERMISSION MỚI, BUMP SỐ NÀY:
-const APP_VERSION = '2026.04.25.v154'
+const APP_VERSION = '2026.04.25.v155'
 
 // ════════════════════════════════════════════════════════════════
 // AUDIT LOG — ghi nhận các hành động phá hoại data để trace lại
@@ -71,6 +71,25 @@ async function deleteWithAudit(opts: {
     note: opts.note,
   })
   return { error: null, snapshot }
+}
+
+// ════════════════════════════════════════════════════════════════
+// v9: Normalize fancy Unicode (mathematical italic, fraktur, etc.)
+// → letters ASCII tương đương (giữ nguyên dấu tiếng Việt)
+// VD: "𝑁ℎ𝑎̀ 𝑠𝑜̂́" (Math Italic) → "Nhà số"
+// Dùng cho TẤT CẢ input từ user (text copy từ Zalo/email/etc.)
+// ════════════════════════════════════════════════════════════════
+function normalizeUnicode(input: string): string {
+  if (!input) return ''
+  let s = input
+  try {
+    // NFKC normalize bao phủ Mathematical Alphanumeric Symbols, full-width, etc.
+    s = s.normalize('NFKC')
+  } catch {}
+  // Manual map cho các ký tự ZWS/BOM hay xuất hiện khi copy/paste
+  s = s.replace(/[\u200B\u200C\u200D\uFEFF]/g, '')  // zero-width chars → bỏ
+  s = s.replace(/\u00A0/g, ' ')                       // NBSP → space thường
+  return s.replace(/\s+/g, ' ').trim()
 }
 
 // ── THEME ────────────────────────────────────────
@@ -35465,6 +35484,10 @@ function GhtkFillCustomerModal({ order: o, user, mobile, onClose, onSaved }: any
   const parsePaste = (text: string) => {
     if (!text.trim()) return
 
+    // v9: Normalize fancy Unicode (Math Italic, Fraktur, etc.) ngay khi paste
+    // VD: "𝑁ℎ𝑎̀ 𝑠𝑜̂́ 8" (Math Italic from Zalo) → "Nhà số 8"
+    text = normalizeUnicode(text)
+
     const norm = (s: string) => (s||'').toLowerCase().normalize('NFD')
       .replace(/[\u0300-\u036f]/g, '').replace(/đ/g, 'd').trim()
 
@@ -35675,17 +35698,18 @@ function GhtkFillCustomerModal({ order: o, user, mobile, onClose, onSaved }: any
       }
 
       const info = {
-        name:        form.name.trim(),
+        // v9: normalizeUnicode để clean fancy text user copy từ Zalo
+        name:        normalizeUnicode(form.name),
         tel:         form.tel.replace(/[^0-9]/g, ''),
-        address:     form.address.trim(),
-        ward:        form.ward.trim(),
-        district:    cleanDistrict,
-        province:    cleanProvince,
-        hamlet:      form.hamlet.trim() || 'Khác',
+        address:     normalizeUnicode(form.address),
+        ward:        normalizeUnicode(form.ward),
+        district:    normalizeUnicode(cleanDistrict),
+        province:    normalizeUnicode(cleanProvince),
+        hamlet:      normalizeUnicode(form.hamlet) || 'Khác',
         pick_money:  form.has_cod ? Number(form.pick_money || 0) : 0,
         is_freeship: Number(form.is_freeship),
         tags:        form.tags,
-        note:        form.note.trim(),
+        note:        normalizeUnicode(form.note),
         is_other_receiver: form.is_other_receiver,  // v122
         filled_by:   user.id,
         filled_at:   new Date().toISOString(),
