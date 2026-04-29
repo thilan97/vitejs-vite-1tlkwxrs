@@ -12,7 +12,7 @@ const db = createClient(SUPABASE_URL, SUPABASE_KEY)
 // APP_VERSION — dùng để invalidate cache localStorage mỗi khi deploy version mới
 // (ngăn bug quyền user bị "reset" do cache position cũ sau deploy)
 // ⚠️ MỖI LẦN DEPLOY FEATURE MỚI CÓ PERMISSION MỚI, BUMP SỐ NÀY:
-const APP_VERSION = '2026.04.25.v148'
+const APP_VERSION = '2026.04.25.v149'
 
 // ════════════════════════════════════════════════════════════════
 // AUDIT LOG — ghi nhận các hành động phá hoại data để trace lại
@@ -31426,9 +31426,15 @@ function BoxesSection({ ord, user, mobile, onChange }: any) {
               onChange={(e) => updateBoxWeight(idx, e.target.value)}
               onBlur={() => handleBlurSave(idx)}
               placeholder="VD: 0.5"
-              style={{ flex:1, padding:'7px 10px', border:`1px solid ${T.border}`,
-                borderRadius:6, fontSize:12, fontFamily:'inherit',
-                background: hasLabels ? T.bg : '#fff', cursor: hasLabels?'not-allowed':'text' }}
+              style={{ flex:1, padding:'9px 12px',
+                border:`1.5px solid ${hasLabels ? T.border : T.gold}`,
+                borderRadius:6, fontSize:14, fontWeight:700, fontFamily:'inherit',
+                color: T.dark,
+                background: hasLabels ? T.bg : '#fff',
+                cursor: hasLabels?'not-allowed':'text',
+                outline:'none',
+                WebkitTextFillColor: T.dark,  // iOS Safari fix
+                opacity: 1 }}
             />
             <span style={{ fontSize:11, color:T.light }}>kg</span>
             {!hasLabels && boxes.length > 1 && (
@@ -31787,9 +31793,12 @@ function GhtkPackingSection({ ord, user, mobile }: any) {
                     onChange={e => updateBoxWeight(i, e.target.value)}
                     disabled={!canWeight || hasLabels}
                     placeholder="Cân (kg)"
-                    style={{ flex:1, minWidth:80, padding:'6px 10px', border:`1px solid ${T.border}`,
-                      borderRadius:5, fontSize:12, fontFamily:'inherit', color:T.dark,
-                      background:'#fff', outline:'none' }}/>
+                    style={{ flex:1, minWidth:80, padding:'9px 12px',
+                      border:`1.5px solid ${(!canWeight || hasLabels) ? T.border : T.gold}`,
+                      borderRadius:5, fontSize:14, fontWeight:700, fontFamily:'inherit',
+                      color: T.dark,
+                      background:'#fff', outline:'none',
+                      WebkitTextFillColor: T.dark, opacity: 1 }}/>
                   <span style={{ fontSize:11, color:T.med, minWidth:28 }}>kg</span>
                   {isBig && (
                     <span style={{ fontSize:9, fontWeight:700, padding:'2px 7px', borderRadius:10,
@@ -32223,9 +32232,12 @@ function GhtkEditBoxesModal({ order: o, user, mobile, onClose, onSaved }: any) {
                 value={b.weight_kg}
                 onChange={e => updateBoxWeight(i, e.target.value)}
                 placeholder="Cân (kg)"
-                style={{ flex:1, minWidth:80, padding:'6px 10px', border:`1px solid ${T.border}`,
-                  borderRadius:5, fontSize:12, fontFamily:'inherit', color:T.dark,
-                  background:'#fff', outline:'none' }}/>
+                style={{ flex:1, minWidth:80, padding:'9px 12px',
+                  border:`1.5px solid ${T.gold}`,
+                  borderRadius:5, fontSize:14, fontWeight:700, fontFamily:'inherit',
+                  color: T.dark,
+                  background:'#fff', outline:'none',
+                  WebkitTextFillColor: T.dark, opacity: 1 }}/>
               <span style={{ fontSize:11, color:T.med, minWidth:28 }}>kg</span>
               {isBig && (
                 <span style={{ fontSize:9, fontWeight:700, padding:'2px 7px', borderRadius:10,
