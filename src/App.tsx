@@ -12,7 +12,7 @@ const db = createClient(SUPABASE_URL, SUPABASE_KEY)
 // APP_VERSION — dùng để invalidate cache localStorage mỗi khi deploy version mới
 // (ngăn bug quyền user bị "reset" do cache position cũ sau deploy)
 // ⚠️ MỖI LẦN DEPLOY FEATURE MỚI CÓ PERMISSION MỚI, BUMP SỐ NÀY:
-const APP_VERSION = '2026.04.25.v151'
+const APP_VERSION = '2026.04.25.v152'
 
 // ════════════════════════════════════════════════════════════════
 // AUDIT LOG — ghi nhận các hành động phá hoại data để trace lại
@@ -32382,6 +32382,28 @@ function GhtkPackingSection({ ord, user, mobile }: any) {
               <div style={{ fontSize:12, fontWeight:700, color:T.red, marginBottom:6 }}>
                 ❌ Tạo đơn thất bại
               </div>
+              {/* v152: Show detailed error per box từ results[] */}
+              {createResult.results?.filter((r: any) => !r.success).map((r: any, i: number) => (
+                <div key={i} style={{ marginBottom:8, padding:'8px 10px',
+                  background:'#FFF5F5', borderRadius:6, border:`1px solid ${T.red}40` }}>
+                  <div style={{ fontSize:11, color:T.red, fontWeight:700 }}>
+                    Thùng {r.box_no}: {r.error || r.message || 'Lỗi không xác định'}
+                  </div>
+                  {r.debug && (
+                    <details style={{ marginTop:6 }}>
+                      <summary style={{ fontSize:10, color:T.med, cursor:'pointer' }}>
+                        🔍 Chi tiết debug (click để xem)
+                      </summary>
+                      <pre style={{ fontSize:9, color:T.dark, marginTop:4,
+                        padding:6, background:'#fff', borderRadius:4, overflow:'auto',
+                        maxHeight:300, fontFamily:'monospace', whiteSpace:'pre-wrap' }}>
+                        {JSON.stringify(r.debug, null, 2)}
+                      </pre>
+                    </details>
+                  )}
+                </div>
+              ))}
+              {/* Legacy: createResult.failed[] (v6 trở về trước) */}
               {createResult.failed?.map((f: string, i: number) => (
                 <div key={i} style={{ fontSize:11, color:T.dark, marginBottom:3 }}>• {f}</div>
               ))}
