@@ -23,7 +23,8 @@ const db = createClient(SUPABASE_URL, SUPABASE_KEY)
 // v166: refactor SlowMovingSettings dùng SettingComponents (5 sliders + 1 toggle, disable khi off)
 // v167: refactor GhtkSettingsPanel — bỏ Quận/Huyện theo cải cách 2 cấp 2025, test panel chuyển vào Modal
 // v168: fix bug visual GhtkManualOrderModal — bỏ nested scroll + sticky footer (footer normal flow ở cuối)
-const APP_VERSION = '2026.04.29.v168'
+// v169: feature "📊 Theo dõi đơn" — tab mới track + sync status từ GHTK + filter theo trạng thái + sync tất cả
+const APP_VERSION = '2026.04.29.v169'
 
 // ════════════════════════════════════════════════════════════════
 // v158: VersionBadge — Hiển thị APP_VERSION ở góc dưới phải
@@ -31297,13 +31298,17 @@ function GhtkModule({ user, allUsers, mobile }: any) {
   const perm = getPerm(user)
 
   // Tabs mặc định theo quyền: Sale vào Chờ điền, Kho vào Chờ cân
-  const [tab, setTab] = useState<'pending_info'|'pending_choose'|'pending_link'|'pending_weight'|'ready'|'created'|'delivered'|'dropship'|'busship'|'settings'>(
+  const [tab, setTab] = useState<'pending_info'|'pending_choose'|'pending_link'|'pending_weight'|'ready'|'created'|'track'|'delivered'|'dropship'|'busship'|'settings'>(
     perm.ghtkFillCustomer && !perm.ghtkWeight ? 'pending_info' : 'pending_weight'
   )
 
   const [orders, setOrders] = useState<any[]>([])
   const [loading, setLoading] = useState(true)
   const [searchQ, setSearchQ] = useState('')
+  // v169: Filter status cho tab "Theo dõi đơn"
+  const [trackStatusFilter, setTrackStatusFilter] = useState<'all'|'pending'|'shipping'|'done'|'returned'|'cancelled'|'unsynced'>('all')
+  // v169: State cho "Sync tất cả"
+  const [syncingAll, setSyncingAll] = useState(false)
   // v121: Phase 2 - modal điền info KH
   const [fillInfoOrder, setFillInfoOrder] = useState<any>(null)
   // v122: Modal sửa cân thủ công
@@ -31378,6 +31383,7 @@ function GhtkModule({ user, allUsers, mobile }: any) {
       ready: [] as any[],              // đủ cân, chưa tạo đơn GHTK
       created: [] as any[],            // đã tạo đơn, chưa giao xong
       delivered: [] as any[],          // tất cả label đã delivered/cancelled
+      track: [] as any[],              // v169: tab Theo dõi — TẤT CẢ đơn đã có ghtk_labels (cross-cut với created+delivered)
     }
     // v140: Filter cho Sale — chỉ thấy đơn của chính mình ở tab pending_info, pending_choose, pending_link
     // Sale là user có perm.ghtkFillCustomer nhưng KHÔNG có perm.ghtkWeight và KHÔNG phải Admin
@@ -31406,6 +31412,8 @@ function GhtkModule({ user, allUsers, mobile }: any) {
           l.status === '5' || l.status === '6' || l.status === '-1' || l.status === 5 || l.status === 6)
         if (allDone) result.delivered.push(o)
         else result.created.push(o)
+        // v169: Cross-cut — mọi đơn có labels đều vào tab "Theo dõi đơn"
+        result.track.push(o)
       } else if (o.dropship_printed_at) {
         // v141: Đơn dropship đã in mã → đưa vào tab "Đã tạo đơn" để theo dõi
         // (timestamp dropship_printed_at đủ thông tin, không cần sync status từ GHTK)
@@ -31454,6 +31462,14 @@ function GhtkModule({ user, allUsers, mobile }: any) {
         return tokens.every(t => hay.includes(t))
       })
     }
+    // v169: Filter status cho tab "Theo dõi đơn"
+    if (tab === 'track' && trackStatusFilter !== 'all') {
+      list = list.filter((o: any) => {
+        const status = o.ghtk_status || (o.ghtk_labels?.[0]?.status ?? '')
+        if (trackStatusFilter === 'unsynced') return !o.ghtk_status_synced_at
+        return ghtkStatusBucket(status) === trackStatusFilter
+      })
+    }
     // v135: Tab "Sẵn sàng tạo" sort theo ghtk_ready_at cũ nhất lên đầu (priority cao)
     if (tab === 'ready') {
       list = [...list].sort((a: any, b: any) => {
@@ -31481,6 +31497,24 @@ function GhtkModule({ user, allUsers, mobile }: any) {
         return bT - aT
       })
     }
+    // v169: Tab "Theo dõi đơn" — chưa sync đầu, sau đó sync_at DESC
+    else if (tab === 'track') {
+      list = [...list].sort((a: any, b: any) => {
+        const aSynced = a.ghtk_status_synced_at
+        const bSynced = b.ghtk_status_synced_at
+        // Đơn chưa sync lên đầu (đề xuất QM sync trước)
+        if (!aSynced && bSynced) return -1
+        if (aSynced && !bSynced) return 1
+        // Cả 2 chưa sync → sort theo created DESC
+        if (!aSynced && !bSynced) {
+          const aT = a.ghtk_created_at ? new Date(a.ghtk_created_at).getTime() : 0
+          const bT = b.ghtk_created_at ? new Date(b.ghtk_created_at).getTime() : 0
+          return bT - aT
+        }
+        // Cả 2 đã sync → sort theo synced_at DESC (mới sync lên đầu)
+        return new Date(bSynced).getTime() - new Date(aSynced).getTime()
+      })
+    }
     // v157: Tab "Dropship của tôi" — Sale theo dõi đơn dropship in mã, mới nhất lên đầu
     else if (tab === 'dropship_mine') {
       list = [...list].sort((a: any, b: any) => {
@@ -31490,7 +31524,7 @@ function GhtkModule({ user, allUsers, mobile }: any) {
       })
     }
     return list
-  }, [tab, categorized, searchQ])
+  }, [tab, categorized, searchQ, trackStatusFilter])
 
   const TABS = [
     // Nhóm Sale
@@ -31502,6 +31536,7 @@ function GhtkModule({ user, allUsers, mobile }: any) {
     { id:'pending_weight', group:'kho',   label:'⚖️ Chờ cân thùng',   count: categorized.pending_weight.length, show: perm.ghtkWeight },
     { id:'ready',          group:'kho',   label:'🚚 Sẵn sàng tạo',    count: categorized.ready.length,          show: perm.ghtkPrintLabel || perm.ghtkWeight },
     { id:'created',        group:'kho',   label:'🖨 Đã tạo đơn',      count: categorized.created.length,        show: true },
+    { id:'track',          group:'kho',   label:'📊 Theo dõi đơn',    count: categorized.track.length,          show: true },
     { id:'delivered',      group:'kho',   label:'📦 Đã giao',         count: categorized.delivered.length,      show: true },
     { id:'dropship',       group:'kho',   label:'🏷 In mã dropship',  count: categorized.dropship_ghtk.length + categorized.dropship_vtp.length, show: perm.ghtkPrintLabel || perm.ghtkSettings },
     { id:'busship',        group:'kho',   label:'📄 In thông tin đơn', count: 0,                                  show: perm.ghtkPrintLabel || perm.ghtkSettings },
@@ -31661,6 +31696,96 @@ function GhtkModule({ user, allUsers, mobile }: any) {
             return <GhtkSyncBatchButton pendingOrders={pendingList} onSynced={fetchOrders}/>
           })()}
 
+          {/* v169: Tab "Theo dõi đơn" — Filter status + Sync tất cả */}
+          {tab === 'track' && (
+            <Card style={{ padding:10, marginBottom:8 }}>
+              <div style={{ display:'flex', gap:8, flexWrap:'wrap', alignItems:'center' }}>
+                <div style={{ fontSize:11, color:T.med, fontWeight:600 }}>Lọc trạng thái:</div>
+                {[
+                  { id:'all',       label:'Tất cả',         count: categorized.track.length },
+                  { id:'unsynced',  label:'⚠ Chưa sync',    count: categorized.track.filter((o: any) => !o.ghtk_status_synced_at).length },
+                  { id:'pending',   label:'⏳ Chưa lấy',     count: categorized.track.filter((o: any) => ghtkStatusBucket(o.ghtk_status || o.ghtk_labels?.[0]?.status) === 'pending').length },
+                  { id:'shipping',  label:'🚚 Đang giao',   count: categorized.track.filter((o: any) => ghtkStatusBucket(o.ghtk_status || o.ghtk_labels?.[0]?.status) === 'shipping').length },
+                  { id:'done',      label:'✅ Đã giao',     count: categorized.track.filter((o: any) => ghtkStatusBucket(o.ghtk_status || o.ghtk_labels?.[0]?.status) === 'done').length },
+                  { id:'returned',  label:'↩️ Hoàn',         count: categorized.track.filter((o: any) => ghtkStatusBucket(o.ghtk_status || o.ghtk_labels?.[0]?.status) === 'returned').length },
+                  { id:'cancelled', label:'❌ Huỷ',          count: categorized.track.filter((o: any) => ghtkStatusBucket(o.ghtk_status || o.ghtk_labels?.[0]?.status) === 'cancelled').length },
+                ].map(opt => (
+                  <button key={opt.id}
+                    onClick={() => setTrackStatusFilter(opt.id as any)}
+                    style={{
+                      padding:'5px 10px', borderRadius:14, fontSize:11, fontWeight:600,
+                      border: `1px solid ${trackStatusFilter === opt.id ? T.gold : T.border}`,
+                      background: trackStatusFilter === opt.id ? T.goldBg : '#fff',
+                      color: trackStatusFilter === opt.id ? T.goldText : T.med,
+                      cursor:'pointer', fontFamily:'inherit', whiteSpace:'nowrap',
+                    }}>
+                    {opt.label} {opt.count > 0 && <span style={{ opacity:0.7 }}>({opt.count})</span>}
+                  </button>
+                ))}
+                <div style={{ flex:1 }}/>
+                {/* Sync tất cả button — chỉ Admin/QM, chỉ sync đơn đang lọc */}
+                {(perm.ghtkPrintLabel || perm.ghtkSettings) && filtered.length > 0 && (
+                  <button onClick={async () => {
+                      if (!confirm(`Sync trạng thái ${filtered.length} đơn từ GHTK? (Có thể mất 5-10s)`)) return
+                      setSyncingAll(true)
+                      let okCount = 0, errCount = 0
+                      try {
+                        // Gom tất cả label_ids + map ngược về order
+                        for (const o of filtered) {
+                          const labels = o.ghtk_labels || []
+                          const labelIds = labels.map((l: any) => l.label_id || l.tracking_id || l.partner_id || '').filter(Boolean)
+                          if (labelIds.length === 0) { errCount++; continue }
+                          try {
+                            const res = await fetch(`${SUPABASE_URL}/functions/v1/ghtk-track-status`, {
+                              method:'POST',
+                              headers:{ 'Content-Type':'application/json', 'Authorization':`Bearer ${SUPABASE_ANON}` },
+                              body: JSON.stringify({ label_ids: labelIds }),
+                            })
+                            const json = await res.json()
+                            const okResults = (json.results || []).filter((r: any) => r.success)
+                            if (okResults.length === 0) { errCount++; continue }
+                            const priority = (code: string) => {
+                              const c = String(code)
+                              if (c === '-1') return 100
+                              if (['11','12','13','20','21'].includes(c)) return 90
+                              if (['1','2'].includes(c)) return 80
+                              if (['3','4','5'].includes(c)) return 50
+                              if (['6','9'].includes(c)) return 10
+                              return 60
+                            }
+                            const worst = okResults.reduce((acc: any, r: any) =>
+                              priority(r.status) > priority(acc.status) ? r : acc
+                            , okResults[0])
+                            await db.from('packing_workflow').update({
+                              ghtk_status: worst.status,
+                              ghtk_status_text: worst.status_text,
+                              ghtk_status_details: okResults,
+                              ghtk_status_synced_at: new Date().toISOString(),
+                              ghtk_status_synced_by: user?.id || null,
+                            }).eq('order_code', o.order_code)
+                            okCount++
+                          } catch { errCount++ }
+                        }
+                        toast.success(`Sync ${okCount}/${filtered.length} đơn` + (errCount > 0 ? ` (${errCount} lỗi)` : ''))
+                        fetchOrders()
+                      } finally {
+                        setSyncingAll(false)
+                      }
+                    }}
+                    disabled={syncingAll}
+                    style={{
+                      padding:'6px 14px', borderRadius:14, fontSize:11, fontWeight:700,
+                      border: `1.5px solid ${T.gold}`,
+                      background: syncingAll ? T.bg : T.gold, color: syncingAll ? T.med : '#fff',
+                      cursor: syncingAll ? 'wait' : 'pointer', fontFamily:'inherit',
+                    }}>
+                    {syncingAll ? '⏳ Đang sync...' : `🔄 Sync tất cả (${filtered.length})`}
+                  </button>
+                )}
+              </div>
+            </Card>
+          )}
+
           {loading ? (
             <SkeletonList rows={4}/>
           ) : filtered.length === 0 ? (
@@ -31672,13 +31797,23 @@ function GhtkModule({ user, allUsers, mobile }: any) {
                 tab === 'pending_weight' ? 'Không có đơn chờ cân thùng' :
                 tab === 'ready' ? 'Không có đơn sẵn sàng tạo' :
                 tab === 'created' ? 'Không có đơn đã tạo' :
+                tab === 'track' ? (trackStatusFilter !== 'all' ? 'Không có đơn ở trạng thái này' : 'Chưa có đơn nào để theo dõi') :
                 'Không có đơn đã giao'
               )}
               description={tab === 'pending_info' ? '💡 Đơn KV có ghi chú chứa "ghtk" + SĐT (VD: "ghtk 0987xxx") sẽ tự xuất hiện ở đây ngay khi sync từ KiotViet — không cần đợi "Đã đóng".' :
                 tab === 'pending_choose' ? 'Đơn có ghi chú "ghtk" nhưng không đủ thông tin (VD: "ghtk bổ sung") sẽ vào đây. Sale cần chọn loại để xử lý.' :
                 tab === 'pending_link' ? '💡 Đơn KV có ghi chú "bs" hoặc "bổ sung" sẽ vào đây. Sale chọn đơn gốc để link → 2 đơn gộp chung khi đóng, GHTK chỉ tạo 1 nhãn theo đơn gốc.' :
                 tab === 'pending_weight' ? 'Các đơn đã điền info KH, chờ Kho cân và đóng thùng.' :
+                tab === 'track' ? '📊 Mọi đơn GHTK đã tạo sẽ hiện ở đây. Bấm "Sync" để cập nhật trạng thái mới nhất từ GHTK.' :
                 'Phase tiếp theo sẽ hoàn thiện các chức năng này.'}/>
+          ) : tab === 'track' ? (
+            // v169: Tab "Theo dõi đơn" — render GhtkTrackCard riêng
+            <div style={{ display:'flex', flexDirection:'column', gap:8 }}>
+              {filtered.map((o: any) => (
+                <GhtkTrackCard key={o.order_code} order={o} user={user} mobile={mobile}
+                  onRefresh={fetchOrders}/>
+              ))}
+            </div>
           ) : (
             <div style={{ display:'flex', flexDirection:'column', gap:8 }}>
               {filtered.map((o: any) => (
@@ -33397,6 +33532,218 @@ function GhtkSyncBatchButton({ pendingOrders, onSynced }: any) {
 // Khác với GhtkResyncButton (clear & tạo lại) — button này chỉ refresh
 // status từ GHTK API.
 // ══════════════════════════════════════════════════════════════════════
+// ══════════════════════════════════════════════════════════════════════
+// v169: Helpers cho tab "Theo dõi đơn" — status mapping
+// ══════════════════════════════════════════════════════════════════════
+const GHTK_STATUS_TEXT: Record<string, string> = {
+  '-1': 'Đã huỷ', '1': 'Chưa tiếp nhận', '2': 'Đã tiếp nhận',
+  '3': 'Đang lấy hàng', '4': 'Đã lấy hàng', '5': 'Đang giao',
+  '6': 'Đã giao', '9': 'Hoàn tất', '11': 'Hoàn lại',
+  '12': 'Đã chuyển hoàn', '13': 'Đã đối soát hoàn',
+  '20': 'Đang trả hàng', '21': 'Đã trả hàng',
+}
+
+const ghtkStatusEmoji = (code: string): string => {
+  const c = String(code || '')
+  if (c === '-1') return '❌'
+  if (['1','2'].includes(c)) return '⏳'
+  if (['3','4'].includes(c)) return '📦'
+  if (c === '5') return '🚚'
+  if (['6','9'].includes(c)) return '✅'
+  if (['11','12','13','20','21'].includes(c)) return '↩️'
+  return '❓'
+}
+
+const ghtkStatusColor = (code: string): { bg: string, text: string, border: string } => {
+  const c = String(code || '')
+  if (c === '-1') return { bg: T.redBg, text: T.red, border: T.red }
+  if (['1','2'].includes(c)) return { bg: T.amberBg, text: T.amber, border: T.amber }
+  if (['3','4','5'].includes(c)) return { bg: T.blueBg, text: T.blue, border: T.blue }
+  if (['6','9'].includes(c)) return { bg: T.greenBg, text: T.green, border: T.green }
+  if (['11','12','13','20','21'].includes(c)) return { bg: T.purpleBg, text: T.purple, border: T.purple }
+  return { bg: T.bg, text: T.med, border: T.border }
+}
+
+// Bucket để filter dropdown gom
+const ghtkStatusBucket = (code: string): 'pending'|'shipping'|'done'|'returned'|'cancelled'|'unknown' => {
+  const c = String(code || '')
+  if (c === '-1') return 'cancelled'
+  if (['1','2'].includes(c)) return 'pending'
+  if (['3','4','5'].includes(c)) return 'shipping'
+  if (['6','9'].includes(c)) return 'done'
+  if (['11','12','13','20','21'].includes(c)) return 'returned'
+  return 'unknown'
+}
+
+// Format thời gian "X phút trước"
+const formatAgo = (iso: string | null | undefined): string => {
+  if (!iso) return ''
+  const ms = Date.now() - new Date(iso).getTime()
+  if (ms < 60000) return 'vừa xong'
+  const m = Math.floor(ms / 60000)
+  if (m < 60) return `${m} phút trước`
+  const h = Math.floor(m / 60)
+  if (h < 24) return `${h} giờ trước`
+  const d = Math.floor(h / 24)
+  return `${d} ngày trước`
+}
+
+// ══════════════════════════════════════════════════════════════════════
+// v169: GhtkSyncStatusButton — sync trạng thái 1 đơn từ GHTK API
+// ══════════════════════════════════════════════════════════════════════
+function GhtkSyncStatusButton({ order: o, user, onSynced, compact }: any) {
+  const [syncing, setSyncing] = useState(false)
+  const labels = o.ghtk_labels || []
+  const labelIds = labels.map((l: any) =>
+    l.label_id || l.tracking_id || l.partner_id || ''
+  ).filter(Boolean)
+
+  const handleSync = async () => {
+    if (labelIds.length === 0) { toast.error('Đơn chưa có label_id'); return }
+    setSyncing(true)
+    try {
+      const res = await fetch(`${SUPABASE_URL}/functions/v1/ghtk-track-status`, {
+        method: 'POST',
+        headers: { 'Content-Type':'application/json', 'Authorization':`Bearer ${SUPABASE_ANON}` },
+        body: JSON.stringify({ label_ids: labelIds }),
+      })
+      const json = await res.json()
+      if (!json.success && !json.partial) {
+        toast.error('Sync lỗi: ' + (json.error || 'không rõ'))
+        return
+      }
+
+      // Aggregate status: dùng status XẤU NHẤT làm tổng (nếu 1 thùng huỷ → coi như có vấn đề)
+      const okResults = (json.results || []).filter((r: any) => r.success)
+      if (okResults.length === 0) {
+        toast.error('Không lấy được status nào')
+        return
+      }
+
+      // Logic aggregate: ưu tiên từ tệ → ổn
+      // huỷ > pending > shipping > done > returned (nhưng returned cuối là OK rồi)
+      const priority = (code: string) => {
+        const c = String(code)
+        if (c === '-1') return 100              // huỷ
+        if (['11','12','13','20','21'].includes(c)) return 90  // hoàn
+        if (['1','2'].includes(c)) return 80    // pending
+        if (['3','4','5'].includes(c)) return 50 // shipping
+        if (['6','9'].includes(c)) return 10    // done
+        return 60
+      }
+      const worst = okResults.reduce((acc: any, r: any) =>
+        priority(r.status) > priority(acc.status) ? r : acc
+      , okResults[0])
+
+      // Update DB
+      await db.from('packing_workflow').update({
+        ghtk_status: worst.status,
+        ghtk_status_text: worst.status_text,
+        ghtk_status_details: okResults,
+        ghtk_status_synced_at: new Date().toISOString(),
+        ghtk_status_synced_by: user?.id || null,
+      }).eq('order_code', o.order_code)
+
+      toast.success(`Đã sync: ${worst.status_text}`)
+      if (onSynced) onSynced()
+    } catch (e: any) {
+      toast.error('Lỗi: ' + (e.message || String(e)))
+    } finally {
+      setSyncing(false)
+    }
+  }
+
+  return (
+    <button onClick={handleSync} disabled={syncing || labelIds.length === 0}
+      style={{
+        padding: compact ? '4px 10px' : '6px 14px',
+        borderRadius: 6,
+        border: `1px solid ${T.blue}`,
+        background: syncing ? T.bg : T.blueBg, color: T.blue,
+        cursor: syncing ? 'wait' : 'pointer',
+        fontFamily: 'inherit', fontSize: compact ? 11 : 12, fontWeight: 600,
+        whiteSpace: 'nowrap',
+      }}>
+      {syncing ? '⏳ Sync...' : '🔄 Sync'}
+    </button>
+  )
+}
+
+// ══════════════════════════════════════════════════════════════════════
+// v169: GhtkTrackCard — Card 1 đơn cho tab "Theo dõi"
+// ══════════════════════════════════════════════════════════════════════
+function GhtkTrackCard({ order: o, user, mobile, onRefresh }: any) {
+  const labels = o.ghtk_labels || []
+  const labelIds = labels.map((l: any) =>
+    l.label_id || l.tracking_id || l.partner_id || ''
+  ).filter(Boolean)
+  const customerInfo = o.ghtk_customer_info || {}
+  const status = o.ghtk_status || (labels[0]?.status ?? '')
+  const statusText = o.ghtk_status_text || GHTK_STATUS_TEXT[String(status)] || (labels[0]?.status_text ?? 'Chưa sync')
+  const colors = ghtkStatusColor(status)
+  const totalAmount = o.total_amount ? Number(o.total_amount) : 0
+  const customerName = customerInfo.name || o.customer_name || 'KH chưa có'
+  const customerTel = customerInfo.tel || ''
+  const province = customerInfo.province || ''
+  const ward = customerInfo.ward || ''
+  const synced = o.ghtk_status_synced_at
+
+  return (
+    <Card style={{ padding: mobile ? 10 : 14 }}>
+      {/* Header: order_code + customer + amount */}
+      <div style={{ display:'flex', justifyContent:'space-between', alignItems:'flex-start',
+        gap:10, marginBottom:8, flexWrap:'wrap' }}>
+        <div style={{ flex:1, minWidth:0 }}>
+          <div style={{ fontSize:13, fontWeight:700, color:T.dark }}>
+            {o.order_code} <span style={{ color:T.med, fontWeight:400 }}>• {customerName}</span>
+            {totalAmount > 0 && (
+              <span style={{ marginLeft:8, color:T.gold, fontWeight:700 }}>
+                {totalAmount.toLocaleString('vi-VN')}đ
+              </span>
+            )}
+          </div>
+          {customerTel && (
+            <div style={{ fontSize:11, color:T.light, marginTop:2 }}>📞 {customerTel}</div>
+          )}
+        </div>
+        {/* Status badge */}
+        <div style={{
+          padding:'4px 10px', borderRadius:14,
+          background: colors.bg, color: colors.text,
+          border: `1px solid ${colors.border}33`,
+          fontSize:11, fontWeight:700, whiteSpace:'nowrap',
+        }}>
+          {ghtkStatusEmoji(status)} {statusText}
+        </div>
+      </div>
+
+      {/* Info row: thùng + label_id + địa chỉ */}
+      <div style={{ fontSize:11, color:T.med, lineHeight:1.7 }}>
+        <div>📦 {labels.length} thùng → <code style={{
+          padding:'1px 6px', background:T.bg, borderRadius:3,
+          fontFamily:'monospace', fontSize:10, color:T.dark }}>
+          {labelIds.join(', ') || 'chưa có ID'}
+        </code></div>
+        {(province || ward) && (
+          <div>📍 {[ward, province].filter(Boolean).join(', ')}</div>
+        )}
+        <div style={{ display:'flex', gap:14, flexWrap:'wrap', color:T.light, fontSize:10, marginTop:4 }}>
+          {o.ghtk_created_at && <span>🕐 Tạo: {formatAgo(o.ghtk_created_at)}</span>}
+          {synced && <span>🔄 Sync: {formatAgo(synced)}</span>}
+          {!synced && <span style={{ color:T.amber }}>⚠ Chưa sync lần nào</span>}
+        </div>
+      </div>
+
+      {/* Actions */}
+      <div style={{ marginTop:10, display:'flex', gap:8, flexWrap:'wrap' }}>
+        <GhtkSyncStatusButton order={o} user={user} onSynced={onRefresh}/>
+        {/* v169 Phase 1 — chỉ Sync. Phase 2 sẽ thêm "Sửa địa chỉ" + "Huỷ đơn" */}
+      </div>
+    </Card>
+  )
+}
+
+
 function GhtkPendingButton({ order: o, user, onSynced }: any) {
   const [working, setWorking] = useState(false)
   const labels = o.ghtk_labels || []
