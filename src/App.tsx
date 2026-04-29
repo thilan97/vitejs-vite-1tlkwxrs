@@ -12,7 +12,45 @@ const db = createClient(SUPABASE_URL, SUPABASE_KEY)
 // APP_VERSION — dùng để invalidate cache localStorage mỗi khi deploy version mới
 // (ngăn bug quyền user bị "reset" do cache position cũ sau deploy)
 // ⚠️ MỖI LẦN DEPLOY FEATURE MỚI CÓ PERMISSION MỚI, BUMP SỐ NÀY:
-const APP_VERSION = '2026.04.25.v155'
+// v158: hiển thị version badge ở góc dưới phải (cả desktop & mobile)
+const APP_VERSION = '2026.04.29.v158'
+
+// ════════════════════════════════════════════════════════════════
+// v158: VersionBadge — Hiển thị APP_VERSION ở góc dưới phải
+// ────────────────────────────────────────────────────────────────
+// Mục đích: khi anh chụp screenshot, version sẽ luôn hiện trên ảnh
+// → đỡ phải hỏi/check code để biết user đang dùng version nào.
+// Position: fixed bottom-right (cả desktop & mobile)
+// Styling: subtle, monospace, opacity thấp, pointer-events none để
+//          không cản click vào content phía dưới
+// ════════════════════════════════════════════════════════════════
+function VersionBadge({ mobile }: { mobile?: boolean }) {
+  return (
+    <div
+      title={`App version: ${APP_VERSION}`}
+      style={{
+        position: 'fixed',
+        bottom: mobile ? 6 : 10,
+        right:  mobile ? 6 : 12,
+        padding: mobile ? '2px 6px' : '3px 8px',
+        borderRadius: 5,
+        background: 'rgba(0,0,0,0.45)',
+        color: '#fff',
+        fontSize: mobile ? 9 : 10,
+        fontFamily: 'ui-monospace, SFMono-Regular, Menlo, Consolas, monospace',
+        fontWeight: 600,
+        letterSpacing: 0.3,
+        zIndex: 50,                 // dưới Modal (zIndex 9999) để không che dialog
+        pointerEvents: 'none',      // không cản click content
+        userSelect: 'none',
+        opacity: 0.65,
+        boxShadow: '0 1px 3px rgba(0,0,0,0.15)',
+      }}
+    >
+      {APP_VERSION}
+    </div>
+  )
+}
 
 // ════════════════════════════════════════════════════════════════
 // AUDIT LOG — ghi nhận các hành động phá hoại data để trace lại
@@ -11237,6 +11275,8 @@ export default function App() {
         {/* v128: Toast + Confirm global UI — không cần wrap provider */}
         <ToastContainer/>
         <ConfirmContainer/>
+        {/* v158: Version badge — luôn hiện ở góc dưới phải để screenshot có version */}
+        <VersionBadge mobile={mobile}/>
         {/* TEST ACCOUNT BANNER — luôn hiện khi login bằng tài khoản test */}
         {isTestAccount(user) && (
           <div style={{ position:'fixed', top:0, left:0, right:0, zIndex:9999,
