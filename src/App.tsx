@@ -31079,6 +31079,7 @@ function GhtkModule({ user, allUsers, mobile }: any) {
       pending_link: [] as any[],       // v135: đơn bổ sung (bs/bổ sung) chưa link đơn gốc
       dropship_ghtk: [] as any[],      // v125: đã có mã GHTK dropship, chờ in barcode
       dropship_vtp: [] as any[],       // v125: đã có mã VTP dropship, chờ in text A7
+      dropship_mine: [] as any[],      // v157: đơn dropship đã in mã của Sale — cross-cut với "created"
       pending_weight: [] as any[],     // đã có customer_info, chưa đủ cân thùng
       ready: [] as any[],              // đủ cân, chưa tạo đơn GHTK
       created: [] as any[],            // đã tạo đơn, chưa giao xong
@@ -31139,6 +31140,12 @@ function GhtkModule({ user, allUsers, mobile }: any) {
       } else {
         result.ready.push(o)
       }
+
+      // v157: Cross-cut — Sale theo dõi đơn dropship đã in mã (của riêng mình)
+      // Đơn này CŨNG xuất hiện ở tab "created" (cho Kho/QM nhìn tổng) — không exclusive
+      if (o.dropship_printed_at && isMyOrder(o)) {
+        result.dropship_mine.push(o)
+      }
     }
     return result
   }, [orders])
@@ -31161,6 +31168,33 @@ function GhtkModule({ user, allUsers, mobile }: any) {
         return aT - bT
       })
     }
+    // v157: Tab "Đã tạo đơn" sort 2 lớp:
+    //  1) Đơn GHTK chưa in nhãn lên đầu (QM cần in)
+    //  2) Trong cùng nhóm, ngày tạo mã DESC (mới nhất lên đầu)
+    else if (tab === 'created') {
+      list = [...list].sort((a: any, b: any) => {
+        const aIsGhtk = !!a.ghtk_created_at
+        const bIsGhtk = !!b.ghtk_created_at
+        const aUnprinted = aIsGhtk && !a.ghtk_printed_at
+        const bUnprinted = bIsGhtk && !b.ghtk_printed_at
+        // Ưu tiên 1: chưa in lên đầu
+        if (aUnprinted !== bUnprinted) return aUnprinted ? -1 : 1
+        // Ưu tiên 2: ngày tạo mã DESC (GHTK dùng ghtk_created_at, dropship dùng dropship_printed_at)
+        const aT = a.ghtk_created_at ? new Date(a.ghtk_created_at).getTime() :
+                   a.dropship_printed_at ? new Date(a.dropship_printed_at).getTime() : 0
+        const bT = b.ghtk_created_at ? new Date(b.ghtk_created_at).getTime() :
+                   b.dropship_printed_at ? new Date(b.dropship_printed_at).getTime() : 0
+        return bT - aT
+      })
+    }
+    // v157: Tab "Dropship của tôi" — Sale theo dõi đơn dropship in mã, mới nhất lên đầu
+    else if (tab === 'dropship_mine') {
+      list = [...list].sort((a: any, b: any) => {
+        const aT = a.dropship_printed_at ? new Date(a.dropship_printed_at).getTime() : 0
+        const bT = b.dropship_printed_at ? new Date(b.dropship_printed_at).getTime() : 0
+        return bT - aT
+      })
+    }
     return list
   }, [tab, categorized, searchQ])
 
@@ -31169,6 +31203,7 @@ function GhtkModule({ user, allUsers, mobile }: any) {
     { id:'pending_info',   group:'sale',  label:'📝 Chờ điền info',  count: categorized.pending_info.length,   show: perm.ghtkFillCustomer },
     { id:'pending_choose', group:'sale',  label:'❓ Sale chọn loại',  count: categorized.pending_choose.length, show: perm.ghtkFillCustomer },
     { id:'pending_link',   group:'sale',  label:'🔗 Đơn bổ sung',     count: categorized.pending_link.length,   show: perm.ghtkFillCustomer },
+    { id:'dropship_mine',  group:'sale',  label:'🏷 Dropship của tôi', count: categorized.dropship_mine.length,  show: perm.ghtkFillCustomer },
     // Nhóm Kho/QM
     { id:'pending_weight', group:'kho',   label:'⚖️ Chờ cân thùng',   count: categorized.pending_weight.length, show: perm.ghtkWeight },
     { id:'ready',          group:'kho',   label:'🚚 Sẵn sàng tạo',    count: categorized.ready.length,          show: perm.ghtkPrintLabel || perm.ghtkWeight },
