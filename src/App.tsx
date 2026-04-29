@@ -14,7 +14,8 @@ const db = createClient(SUPABASE_URL, SUPABASE_KEY)
 // ⚠️ MỖI LẦN DEPLOY FEATURE MỚI CÓ PERMISSION MỚI, BUMP SỐ NÀY:
 // v158: hiển thị version badge ở góc dưới phải (cả desktop & mobile)
 // v159: fix bug GhtkModule không filter is_deleted → đơn đã xóa vẫn hiện
-const APP_VERSION = '2026.04.29.v159'
+// v160: fix silent fail update packing_workflow sau khi in mã VTP/GHTK dropship
+const APP_VERSION = '2026.04.29.v160'
 
 // ════════════════════════════════════════════════════════════════
 // v158: VersionBadge — Hiển thị APP_VERSION ở góc dưới phải
@@ -34006,12 +34007,24 @@ ${body}
 
       // v125: Nếu có linked order → mark đã in vào packing_workflow
       if (linkedOrderCode) {
-        await db.from('packing_workflow').update({
+        // v160: check error để không silent fail (đặc biệt với VTP)
+        const { error: updErr } = await db.from('packing_workflow').update({
           dropship_printed_at: new Date().toISOString(),
           dropship_printed_by: user?.id || null,
           dropship_carrier: carrier,
           dropship_code: cleaned,
         }).eq('order_code', linkedOrderCode)
+        if (updErr) {
+          console.error('[Dropship] Update packing_workflow FAILED:', {
+            orderCode: linkedOrderCode,
+            carrier,
+            code: cleaned,
+            error: updErr,
+          })
+          toast.error(`⚠️ In OK nhưng update đơn ${linkedOrderCode} fail: ${updErr.message}`)
+        } else {
+          toast.success(`✅ Đã in & link đơn ${linkedOrderCode}`)
+        }
         if (onRefresh) onRefresh()
       }
 
