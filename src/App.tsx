@@ -20,7 +20,8 @@ const db = createClient(SUPABASE_URL, SUPABASE_KEY)
 // v163: refactor Settings page dùng SettingComponents — Modal đổi mật khẩu, slider thay input số
 // v164: fix bottom nav che drawer "Khác" + thêm icon ⚙️ Cài đặt ở user card
 // v165: fix bug "thêm thùng" mất sau khi blur — bỏ focusedIdx khỏi dep useEffect sync
-const APP_VERSION = '2026.04.29.v165'
+// v166: refactor SlowMovingSettings dùng SettingComponents (5 sliders + 1 toggle, disable khi off)
+const APP_VERSION = '2026.04.29.v166'
 
 // ════════════════════════════════════════════════════════════════
 // v158: VersionBadge — Hiển thị APP_VERSION ở góc dưới phải
@@ -1080,10 +1081,10 @@ const SettingToggleRow = ({ title, description, enabled, onChange, disabled }: a
 // Slider có range labels + suffix line
 // suffix có thể là string hoặc function (value) => string
 const SettingSliderRow = ({ label, description, min, max, value, onChange,
-  suffix, step = 1, unit = '' }: any) => {
+  suffix, step = 1, unit = '', disabled = false }: any) => {
   const pct = max === min ? 0 : ((value - min) / (max - min)) * 100
   return (
-    <div style={{ padding: '14px 0' }}>
+    <div style={{ padding: '14px 0', opacity: disabled ? 0.45 : 1 }}>
       <div style={{ fontSize: 15, fontWeight: 500, color: T.dark, marginBottom: 4 }}>{label}</div>
       {description && (
         <div style={{ fontSize: 12, color: T.med, lineHeight: 1.5, marginBottom: 16 }}>
@@ -1093,10 +1094,12 @@ const SettingSliderRow = ({ label, description, min, max, value, onChange,
       <div style={{ position: 'relative', height: 24, marginBottom: 8 }}>
         {/* Native input range — để hỗ trợ kéo trên mobile */}
         <input type="range" min={min} max={max} value={value} step={step}
+          disabled={disabled}
           onChange={e => onChange?.(Number(e.target.value))}
           style={{
             position: 'absolute', top: 0, left: 0, width: '100%', height: 24,
-            margin: 0, padding: 0, opacity: 0, cursor: 'pointer', zIndex: 2,
+            margin: 0, padding: 0, opacity: 0,
+            cursor: disabled ? 'not-allowed' : 'pointer', zIndex: 2,
             WebkitAppearance: 'none', appearance: 'none', background: 'transparent',
           }}/>
         {/* Visual track — nền xám */}
@@ -29985,12 +29988,12 @@ function SlowMovingRow({ item, idx, mobile, onUpdate }: any) {
 
 // ── Settings component ──
 function SlowMovingSettings({ settings, onUpdate }: any) {
-  const [thresholdDays, setThresholdDays] = useState(settings.threshold_days || 45)
-  const [thresholdQty, setThresholdQty]   = useState(settings.threshold_qty || 3)
-  const [periodDays, setPeriodDays]       = useState(settings.period_days || 60)
-  const [minPrice, setMinPrice]           = useState(settings.min_price || 0)
-  const [minStock, setMinStock]           = useState(settings.min_stock || 1)
-  const [enabled, setEnabled]             = useState(settings.enabled !== false)
+  const [thresholdDays, setThresholdDays] = useState<number>(settings.threshold_days || 45)
+  const [thresholdQty, setThresholdQty]   = useState<number>(settings.threshold_qty || 3)
+  const [periodDays, setPeriodDays]       = useState<number>(settings.period_days || 60)
+  const [minPrice, setMinPrice]           = useState<number>(settings.min_price || 0)
+  const [minStock, setMinStock]           = useState<number>(settings.min_stock || 1)
+  const [enabled, setEnabled]             = useState<boolean>(settings.enabled !== false)
 
   const [saving, setSaving] = useState(false)
 
@@ -30010,119 +30013,100 @@ function SlowMovingSettings({ settings, onUpdate }: any) {
   }
 
   return (
-    <Card style={{ padding:20, maxWidth:600 }}>
-      <div style={{ fontSize:14, fontWeight:700, color:T.dark, marginBottom:14 }}>
-        ⚙️ Thiết lập module Hàng bán chậm
+    <div style={{ maxWidth: 600 }}>
+      {/* ── HOẠT ĐỘNG ── */}
+      <SettingSectionTitle>Hoạt động</SettingSectionTitle>
+      <SettingCard>
+        <SettingToggleHeader
+          title="🔍 Bật scan tự động"
+          description="Cron sẽ chạy mỗi ngày 3h sáng. Có thể tắt tạm thời nếu không cần."
+          enabled={enabled}
+          onChange={setEnabled}
+        />
+      </SettingCard>
+
+      {/* ── NGƯỠNG "BÁN CHẬM" ── */}
+      <SettingSectionTitle>Ngưỡng đánh giá "bán chậm"</SettingSectionTitle>
+      <SettingCard>
+        <SettingSliderRow
+          label="📅 Ngưỡng chưa bán"
+          description="SP chưa bán trong khoảng này sẽ bị gắn cờ bán chậm."
+          min={1} max={180} value={thresholdDays} onChange={setThresholdDays}
+          unit=" ngày" disabled={!enabled}
+          suffix={(v: number) => `Chưa bán quá ${v} ngày → bán chậm`}
+        />
+        <SettingDivider/>
+        <SettingSliderRow
+          label="📦 Ngưỡng số lượng bán"
+          description={`Trong khoảng thời gian xét, SP bán < ngưỡng này sẽ bị gắn cờ.`}
+          min={1} max={100} value={thresholdQty} onChange={setThresholdQty}
+          unit=" SP" disabled={!enabled}
+          suffix={(v: number) => `Bán < ${v} SP trong ${periodDays} ngày → bán chậm`}
+        />
+        <SettingDivider/>
+        <SettingSliderRow
+          label="🕐 Khoảng thời gian xét"
+          description="Khoảng thời gian gần nhất dùng để tính sold_in_period."
+          min={7} max={365} value={periodDays} onChange={setPeriodDays}
+          unit=" ngày" disabled={!enabled}
+          suffix={(v: number) => `Tính SL bán trong ${v} ngày gần nhất`}
+        />
+      </SettingCard>
+
+      {/* ── BỘ LỌC SP SCAN ── */}
+      <SettingSectionTitle>Bộ lọc sản phẩm scan</SettingSectionTitle>
+      <SettingCard>
+        <SettingSliderRow
+          label="💰 Giá tối thiểu"
+          description="Loại bỏ SP giá quá thấp (túi bóng, bao bì...). 0 = scan tất cả."
+          min={0} max={500000} step={10000} value={minPrice} onChange={setMinPrice}
+          disabled={!enabled}
+          suffix={(v: number) => v === 0
+            ? 'Scan tất cả SP, không lọc theo giá'
+            : `Chỉ scan SP có giá ≥ ${v.toLocaleString('vi-VN')}đ`}
+        />
+        <SettingDivider/>
+        <SettingSliderRow
+          label="📊 Tồn kho tối thiểu"
+          description="Bỏ qua SP đã hết tồn — không cần báo bán chậm."
+          min={1} max={50} value={minStock} onChange={setMinStock}
+          unit=" SP" disabled={!enabled}
+          suffix={(v: number) => `Chỉ scan SP có tồn ≥ ${v}`}
+        />
+      </SettingCard>
+
+      {/* Action footer */}
+      <div style={{ padding:'8px 14px 16px' }}>
+        <button onClick={save} disabled={saving}
+          style={{ padding:'10px 16px', borderRadius:8, border:'none',
+            background: saving ? T.border : T.gold,
+            color:'#fff', cursor: saving ? 'wait' : 'pointer', fontFamily:'inherit',
+            fontSize:13, fontWeight:700, width:'100%' }}>
+          {saving ? 'Đang lưu...' : '💾 Lưu thiết lập'}
+        </button>
       </div>
 
-      {/* Enabled */}
-      <label style={{ display:'flex', alignItems:'center', gap:10, padding:10,
-        background:enabled ? T.greenBg : T.bg, borderRadius:8,
-        border:`1px solid ${enabled ? T.green : T.border}`, cursor:'pointer', marginBottom:14 }}>
-        <input type="checkbox" checked={enabled} onChange={e => setEnabled(e.target.checked)}
-          style={{ width:16, height:16, cursor:'pointer' }}/>
-        <div>
-          <div style={{ fontSize:12, fontWeight:600, color:T.dark }}>
-            {enabled ? '✅ Bật scan tự động' : '⏸ Tắt scan tự động'}
-          </div>
-          <div style={{ fontSize:10, color:T.light, marginTop:2 }}>
-            Cron sẽ chạy mỗi ngày 3h sáng. Có thể tắt tạm thời nếu không cần.
-          </div>
-        </div>
-      </label>
-
-      {/* Threshold days */}
-      <div style={{ marginBottom:14 }}>
-        <label style={{ fontSize:12, fontWeight:600, color:T.dark, display:'block', marginBottom:4 }}>
-          📅 Ngưỡng "chưa bán" (X ngày)
-        </label>
-        <input type="number" value={thresholdDays} onChange={e => setThresholdDays(Number(e.target.value)||0)}
-          min={1} max={180}
-          style={{ width:'100%', padding:'7px 10px', border:`1px solid ${T.border}`, borderRadius:8,
-            fontSize:12, fontFamily:'inherit', color:T.dark , background:'#fff' }}/>
-        <div style={{ fontSize:10, color:T.light, marginTop:3 }}>
-          Nếu SP chưa bán trong X ngày → gắn cờ "bán chậm". Mặc định: 45 ngày.
-        </div>
-      </div>
-
-      {/* Threshold qty */}
-      <div style={{ marginBottom:14 }}>
-        <label style={{ fontSize:12, fontWeight:600, color:T.dark, display:'block', marginBottom:4 }}>
-          📦 Ngưỡng SL bán (N SP) trong {periodDays} ngày
-        </label>
-        <input type="number" value={thresholdQty} onChange={e => setThresholdQty(Number(e.target.value)||0)}
-          min={1} max={100}
-          style={{ width:'100%', padding:'7px 10px', border:`1px solid ${T.border}`, borderRadius:8,
-            fontSize:12, fontFamily:'inherit', color:T.dark , background:'#fff' }}/>
-        <div style={{ fontSize:10, color:T.light, marginTop:3 }}>
-          Nếu SP bán &lt; N trong {periodDays} ngày → gắn cờ "bán chậm". Mặc định: 3 SP.
-        </div>
-      </div>
-
-      {/* Period days */}
-      <div style={{ marginBottom:14 }}>
-        <label style={{ fontSize:12, fontWeight:600, color:T.dark, display:'block', marginBottom:4 }}>
-          🕐 Khoảng thời gian xét (ngày)
-        </label>
-        <input type="number" value={periodDays} onChange={e => setPeriodDays(Number(e.target.value)||0)}
-          min={7} max={365}
-          style={{ width:'100%', padding:'7px 10px', border:`1px solid ${T.border}`, borderRadius:8,
-            fontSize:12, fontFamily:'inherit', color:T.dark , background:'#fff' }}/>
-        <div style={{ fontSize:10, color:T.light, marginTop:3 }}>
-          Tính sold_in_period trong X ngày gần nhất. Mặc định: 60 ngày.
-        </div>
-      </div>
-
-      {/* Min price */}
-      <div style={{ marginBottom:14 }}>
-        <label style={{ fontSize:12, fontWeight:600, color:T.dark, display:'block', marginBottom:4 }}>
-          💰 Chỉ scan SP có giá ≥ (đồng)
-        </label>
-        <input type="number" value={minPrice} onChange={e => setMinPrice(Number(e.target.value)||0)}
-          min={0} step={10000}
-          style={{ width:'100%', padding:'7px 10px', border:`1px solid ${T.border}`, borderRadius:8,
-            fontSize:12, fontFamily:'inherit', color:T.dark , background:'#fff' }}/>
-        <div style={{ fontSize:10, color:T.light, marginTop:3 }}>
-          Loại bỏ SP giá quá thấp (túi bóng, bao bì...). Dùng 0 để scan tất cả.
-        </div>
-      </div>
-
-      {/* Min stock */}
-      <div style={{ marginBottom:14 }}>
-        <label style={{ fontSize:12, fontWeight:600, color:T.dark, display:'block', marginBottom:4 }}>
-          📊 Chỉ scan SP có tồn ≥
-        </label>
-        <input type="number" value={minStock} onChange={e => setMinStock(Number(e.target.value)||0)}
-          min={1}
-          style={{ width:'100%', padding:'7px 10px', border:`1px solid ${T.border}`, borderRadius:8,
-            fontSize:12, fontFamily:'inherit', color:T.dark , background:'#fff' }}/>
-        <div style={{ fontSize:10, color:T.light, marginTop:3 }}>
-          Mặc định: 1 (chỉ scan SP còn tồn). Không cần báo SP hết tồn.
-        </div>
-      </div>
-
-      <button onClick={save} disabled={saving}
-        style={{ padding:'9px 16px', borderRadius:8, border:'none', background:T.gold,
-          color:'#fff', cursor: saving ? 'wait' : 'pointer', fontFamily:'inherit',
-          fontSize:13, fontWeight:700, width:'100%' }}>
-        {saving ? 'Đang lưu...' : '💾 Lưu thiết lập'}
-      </button>
-
+      {/* Stats card — lần scan cuối */}
       {settings.last_scan_at && (
-        <div style={{ marginTop:14, padding:10, background:T.bg, borderRadius:6, fontSize:10, color:T.light, lineHeight:1.6 }}>
-          <div>🔄 Lần scan cuối: {new Date(settings.last_scan_at).toLocaleString('vi-VN')}</div>
-          <div>⏱ Thời gian: {Math.round((settings.last_scan_duration_ms||0)/1000)}s</div>
-          <div>📦 SP scan: {settings.last_scan_product_count||0}</div>
-          <div>📉 Bán chậm: {settings.last_scan_slow_count||0}</div>
-          <div>🆕 Mới: {settings.last_scan_new_count||0}</div>
-          {settings.last_scan_error && (
-            <div style={{ color:T.red, marginTop:4, fontWeight:600 }}>
-              ❌ Lỗi: {settings.last_scan_error}
+        <>
+          <SettingSectionTitle>Lần scan gần nhất</SettingSectionTitle>
+          <SettingCard style={{ padding:'12px 14px' }}>
+            <div style={{ fontSize:12, color:T.med, lineHeight:1.8 }}>
+              <div>🔄 <b style={{ color:T.dark }}>{new Date(settings.last_scan_at).toLocaleString('vi-VN')}</b></div>
+              <div>⏱ Thời gian: <b style={{ color:T.dark }}>{Math.round((settings.last_scan_duration_ms||0)/1000)}s</b></div>
+              <div>📦 SP scan: <b style={{ color:T.dark }}>{settings.last_scan_product_count||0}</b></div>
+              <div>📉 Bán chậm: <b style={{ color:T.dark }}>{settings.last_scan_slow_count||0}</b></div>
+              <div>🆕 Mới: <b style={{ color:T.dark }}>{settings.last_scan_new_count||0}</b></div>
+              {settings.last_scan_error && (
+                <div style={{ color:T.red, marginTop:6, fontWeight:600 }}>
+                  ❌ Lỗi: {settings.last_scan_error}
+                </div>
+              )}
             </div>
-          )}
-        </div>
+          </SettingCard>
+        </>
       )}
-    </Card>
+    </div>
   )
 }
 
