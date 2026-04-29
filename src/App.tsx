@@ -24,7 +24,9 @@ const db = createClient(SUPABASE_URL, SUPABASE_KEY)
 // v167: refactor GhtkSettingsPanel — bỏ Quận/Huyện theo cải cách 2 cấp 2025, test panel chuyển vào Modal
 // v168: fix bug visual GhtkManualOrderModal — bỏ nested scroll + sticky footer (footer normal flow ở cuối)
 // v169: feature "📊 Theo dõi đơn" — tab mới track + sync status từ GHTK + filter theo trạng thái + sync tất cả
-const APP_VERSION = '2026.04.29.v169'
+// v170: fix Note FAB đè VersionBadge — dịch lên bottom:44 (desktop)
+// v171: feature "Theo dõi đơn" Iteration 2 — modal chi tiết + sửa địa chỉ + huỷ đơn (call GHTK API)
+const APP_VERSION = '2026.04.29.v171'
 
 // ════════════════════════════════════════════════════════════════
 // v158: VersionBadge — Hiển thị APP_VERSION ở góc dưới phải
@@ -6855,7 +6857,7 @@ function StickyNote({ user }: any) {
   if (!open) {
     return (
       <button onClick={() => setOpen(true)}
-        style={{ position:'fixed', bottom:mobile_?140:20, right:mobile_?12:20, zIndex:998,
+        style={{ position:'fixed', bottom:mobile_?140:44, right:mobile_?12:20, zIndex:998,
           width:40, height:40, borderRadius:'50%', background:T.gold, border:'none',
           boxShadow:'0 4px 12px rgba(196,151,58,0.4)', cursor:'pointer',
           display:'flex', alignItems:'center', justifyContent:'center', fontSize:18 }}>
@@ -6864,7 +6866,7 @@ function StickyNote({ user }: any) {
     )
   }
   return (
-    <div style={{ position:'fixed', bottom:mobile_?140:20, right:mobile_?8:20, zIndex:999,
+    <div style={{ position:'fixed', bottom:mobile_?140:44, right:mobile_?8:20, zIndex:999,
       width: mobile_?'calc(100vw - 16px)':340, background:T.card,
       border:`2px solid ${T.gold}`, borderRadius:16,
       boxShadow:'0 8px 32px rgba(0,0,0,0.18)', display:'flex', flexDirection:'column' }}>
@@ -33688,6 +33690,22 @@ function GhtkTrackCard({ order: o, user, mobile, onRefresh }: any) {
   const ward = customerInfo.ward || ''
   const synced = o.ghtk_status_synced_at
 
+  // v170: 3 modals — chi tiết / sửa địa chỉ / huỷ đơn
+  const [showDetail, setShowDetail] = useState(false)
+  const [showEdit, setShowEdit] = useState(false)
+  const [showCancel, setShowCancel] = useState(false)
+
+  // Permissions
+  const perm = getPerm(user)
+  const canManage = perm.ghtkPrintLabel || perm.ghtkSettings  // QM Kho hoặc Admin
+
+  // Constraint: Sửa địa chỉ chỉ khi đơn chưa hoàn tất / huỷ
+  const statusBucket = ghtkStatusBucket(status)
+  const canEdit = canManage && statusBucket !== 'done' && statusBucket !== 'cancelled' && labelIds.length > 0
+
+  // Constraint: Huỷ đơn chỉ khi GHTK chưa lấy hàng (status 1, 2)
+  const canCancel = canManage && (String(status) === '1' || String(status) === '2') && labelIds.length > 0
+
   return (
     <Card style={{ padding: mobile ? 10 : 14 }}>
       {/* Header: order_code + customer + amount */}
@@ -33737,9 +33755,451 @@ function GhtkTrackCard({ order: o, user, mobile, onRefresh }: any) {
       {/* Actions */}
       <div style={{ marginTop:10, display:'flex', gap:8, flexWrap:'wrap' }}>
         <GhtkSyncStatusButton order={o} user={user} onSynced={onRefresh}/>
-        {/* v169 Phase 1 — chỉ Sync. Phase 2 sẽ thêm "Sửa địa chỉ" + "Huỷ đơn" */}
+        <button onClick={() => setShowDetail(true)}
+          style={{
+            padding:'6px 14px', borderRadius:6, border:`1px solid ${T.border}`,
+            background:'#fff', color:T.med,
+            cursor:'pointer', fontFamily:'inherit', fontSize:12, fontWeight:600,
+          }}>
+          👁 Chi tiết
+        </button>
+        {canEdit && (
+          <button onClick={() => setShowEdit(true)}
+            title="Sửa địa chỉ KH (chỉ khi đơn chưa giao xong)"
+            style={{
+              padding:'6px 14px', borderRadius:6, border:`1px solid ${T.amber}`,
+              background:T.amberBg, color:T.amber,
+              cursor:'pointer', fontFamily:'inherit', fontSize:12, fontWeight:600,
+            }}>
+            ✏️ Sửa địa chỉ
+          </button>
+        )}
+        {canCancel && (
+          <button onClick={() => setShowCancel(true)}
+            title="Huỷ đơn (chỉ khi GHTK chưa lấy hàng)"
+            style={{
+              padding:'6px 14px', borderRadius:6, border:`1px solid ${T.red}`,
+              background:'#fff', color:T.red,
+              cursor:'pointer', fontFamily:'inherit', fontSize:12, fontWeight:600,
+            }}>
+            ❌ Huỷ đơn
+          </button>
+        )}
       </div>
+
+      {/* Modals */}
+      {showDetail && (
+        <GhtkOrderDetailModal order={o} mobile={mobile} onClose={() => setShowDetail(false)}/>
+      )}
+      {showEdit && (
+        <GhtkEditAddressModal order={o} user={user} mobile={mobile}
+          onClose={() => setShowEdit(false)}
+          onSaved={() => { setShowEdit(false); onRefresh && onRefresh() }}/>
+      )}
+      {showCancel && (
+        <GhtkCancelOrderModal order={o} user={user} mobile={mobile}
+          onClose={() => setShowCancel(false)}
+          onCancelled={() => { setShowCancel(false); onRefresh && onRefresh() }}/>
+      )}
     </Card>
+  )
+}
+
+
+// ══════════════════════════════════════════════════════════════════════
+// v170: GhtkOrderDetailModal — modal xem chi tiết status từng thùng
+// ══════════════════════════════════════════════════════════════════════
+function GhtkOrderDetailModal({ order: o, mobile, onClose }: any) {
+  const labels = o.ghtk_labels || []
+  const details = o.ghtk_status_details || []
+  const customerInfo = o.ghtk_customer_info || {}
+  const status = o.ghtk_status || ''
+  const statusText = o.ghtk_status_text || GHTK_STATUS_TEXT[String(status)] || 'Chưa sync'
+  const colors = ghtkStatusColor(status)
+
+  return (
+    <Modal open wide title={`👁 Chi tiết đơn ${o.order_code}`} onClose={onClose}>
+      <div style={{ padding: mobile ? '0 4px' : '0' }}>
+        {/* Tổng quan */}
+        <div style={{ padding:'12px 14px', background:T.bg, borderRadius:8, marginBottom:14 }}>
+          <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center',
+            marginBottom:8, flexWrap:'wrap', gap:10 }}>
+            <div style={{ fontSize:14, fontWeight:700, color:T.dark }}>
+              {customerInfo.name || o.customer_name} — {customerInfo.tel}
+            </div>
+            <div style={{
+              padding:'4px 10px', borderRadius:14,
+              background: colors.bg, color: colors.text,
+              border: `1px solid ${colors.border}33`,
+              fontSize:11, fontWeight:700,
+            }}>
+              {ghtkStatusEmoji(status)} {statusText}
+            </div>
+          </div>
+          {customerInfo.address && (
+            <div style={{ fontSize:12, color:T.med, lineHeight:1.6 }}>
+              📍 {customerInfo.address}, {[customerInfo.ward, customerInfo.province].filter(Boolean).join(', ')}
+            </div>
+          )}
+          <div style={{ fontSize:11, color:T.light, marginTop:6 }}>
+            🕐 Tạo: {o.ghtk_created_at ? new Date(o.ghtk_created_at).toLocaleString('vi-VN') : '—'}
+            {o.ghtk_status_synced_at && ` · 🔄 Sync: ${new Date(o.ghtk_status_synced_at).toLocaleString('vi-VN')}`}
+          </div>
+        </div>
+
+        {/* Chi tiết từng thùng */}
+        <div style={{ fontSize:13, fontWeight:700, color:T.dark, marginBottom:8 }}>
+          📦 {labels.length} thùng
+        </div>
+
+        {labels.map((lbl: any, idx: number) => {
+          const detail = details.find((d: any) => d.label_id === (lbl.label_id || lbl.tracking_id))
+          const lblStatus = detail?.status || lbl.status || ''
+          const lblStatusText = detail?.status_text || GHTK_STATUS_TEXT[String(lblStatus)] || lbl.status_text || 'Chưa sync'
+          const lblColors = ghtkStatusColor(lblStatus)
+
+          return (
+            <Card key={lbl.label_id || idx} style={{ padding:12, marginBottom:8 }}>
+              <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center',
+                marginBottom:8, flexWrap:'wrap', gap:8 }}>
+                <div style={{ fontSize:12, fontWeight:700, color:T.dark }}>
+                  Thùng {lbl.box_no || idx + 1}: <code style={{
+                    padding:'1px 6px', background:T.bg, borderRadius:3,
+                    fontFamily:'monospace', fontSize:11 }}>
+                    {lbl.label_id || lbl.tracking_id || 'chưa có ID'}
+                  </code>
+                </div>
+                <div style={{
+                  padding:'3px 8px', borderRadius:12,
+                  background: lblColors.bg, color: lblColors.text,
+                  fontSize:10, fontWeight:700,
+                }}>
+                  {ghtkStatusEmoji(lblStatus)} {lblStatusText}
+                </div>
+              </div>
+
+              {detail && (
+                <div style={{ fontSize:11, color:T.med, lineHeight:1.7 }}>
+                  {detail.location && <div>📍 Vị trí: {detail.location}</div>}
+                  {detail.action && <div>🔧 Hành động: {detail.action}</div>}
+                  {detail.action_time && <div>⏰ Thời gian: {detail.action_time}</div>}
+                  {(detail.deliver_name || detail.deliver_tel) && (
+                    <div>🚚 Shipper: {detail.deliver_name} {detail.deliver_tel && `(${detail.deliver_tel})`}</div>
+                  )}
+                  {detail.ship_money > 0 && (
+                    <div>💰 Phí ship: {Number(detail.ship_money).toLocaleString('vi-VN')}đ</div>
+                  )}
+                  {detail.pick_money > 0 && (
+                    <div>💵 COD: {Number(detail.pick_money).toLocaleString('vi-VN')}đ</div>
+                  )}
+                </div>
+              )}
+
+              {!detail && (
+                <div style={{ fontSize:11, color:T.light, fontStyle:'italic' }}>
+                  Bấm "🔄 Sync" trên card để xem chi tiết hành trình.
+                </div>
+              )}
+            </Card>
+          )
+        })}
+
+        {/* Footer */}
+        <div style={{ display:'flex', justifyContent:'flex-end', marginTop:14,
+          paddingTop:12, borderTop:`1px solid ${T.border}` }}>
+          <button onClick={onClose}
+            style={{ padding:'8px 18px', borderRadius:6, border:`1px solid ${T.border}`,
+              background:'#fff', color:T.med, cursor:'pointer',
+              fontFamily:'inherit', fontSize:12 }}>
+            Đóng
+          </button>
+        </div>
+      </div>
+    </Modal>
+  )
+}
+
+
+// ══════════════════════════════════════════════════════════════════════
+// v170: GhtkEditAddressModal — sửa địa chỉ KH (gọi GHTK update_order)
+// ══════════════════════════════════════════════════════════════════════
+function GhtkEditAddressModal({ order: o, user, mobile, onClose, onSaved }: any) {
+  const customerInfo = o.ghtk_customer_info || {}
+  const labels = o.ghtk_labels || []
+  const labelIds = labels.map((l: any) =>
+    l.label_id || l.tracking_id || l.partner_id || ''
+  ).filter(Boolean)
+
+  const [form, setForm] = useState({
+    name:     customerInfo.name || '',
+    tel:      customerInfo.tel || '',
+    address:  customerInfo.address || '',
+    province: customerInfo.province || '',
+    ward:     customerInfo.ward || '',
+    hamlet:   customerInfo.hamlet || 'Khác',
+  })
+  const [saving, setSaving] = useState(false)
+  const [result, setResult] = useState<any>(null)
+
+  const handleSave = async () => {
+    if (!form.name.trim() || !form.tel.trim() || !form.address.trim()
+      || !form.province.trim() || !form.ward.trim()) {
+      toast.error('Cần đầy đủ: tên, SĐT, địa chỉ, tỉnh, xã/phường')
+      return
+    }
+    if (labelIds.length === 0) { toast.error('Đơn chưa có label_id'); return }
+
+    setSaving(true)
+    setResult(null)
+    try {
+      const res = await fetch(`${SUPABASE_URL}/functions/v1/ghtk-edit-order`, {
+        method: 'POST',
+        headers: { 'Content-Type':'application/json', 'Authorization':`Bearer ${SUPABASE_ANON}` },
+        body: JSON.stringify({ label_ids: labelIds, customer_info: form }),
+      })
+      const json = await res.json()
+      setResult(json)
+
+      if (json.success) {
+        // Update DB customer_info
+        const newInfo = { ...customerInfo, ...form, district: '' }
+        await db.from('packing_workflow').update({
+          ghtk_customer_info: newInfo,
+          updated_at: new Date().toISOString(),
+        }).eq('order_code', o.order_code)
+        toast.success(`Đã cập nhật ${json.success_count}/${json.total} đơn trên GHTK`)
+        // Đợi 1s cho user thấy success state, rồi đóng
+        setTimeout(() => onSaved && onSaved(), 1500)
+      } else if (json.partial) {
+        toast.warning(`Chỉ ${json.success_count}/${json.total} đơn cập nhật được`)
+      } else {
+        toast.error('Lỗi: ' + (json.error || json.results?.[0]?.error || 'không rõ'))
+      }
+    } catch (e: any) {
+      toast.error('Lỗi: ' + (e.message || String(e)))
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  return (
+    <Modal open wide title={`✏️ Sửa địa chỉ — ${o.order_code}`} onClose={onClose}>
+      <div style={{ padding: mobile ? '0 4px' : '0' }}>
+        {/* Cảnh báo */}
+        <div style={{ padding:'10px 12px', background:T.amberBg, border:`1px solid ${T.amber}55`,
+          borderRadius:6, marginBottom:14, fontSize:12, color:'#92400E', lineHeight:1.6 }}>
+          ⚠️ Sẽ cập nhật địa chỉ trên GHTK cho <b>{labelIds.length} thùng</b>:{' '}
+          <code style={{ fontFamily:'monospace', fontSize:11 }}>{labelIds.join(', ')}</code>.
+          GHTK chỉ accept update khi đơn chưa giao xong.
+        </div>
+
+        <div style={{ padding:'8px 12px', background:T.blueBg, borderRadius:6,
+          marginBottom:14, fontSize:11, color:T.blue }}>
+          💡 Cải cách hành chính 2 cấp (1/7/2025): chỉ cần Tỉnh/TP + Xã/Phường.
+        </div>
+
+        {/* Form */}
+        <div style={{ display:'grid', gridTemplateColumns: mobile ? '1fr' : '1fr 1fr', gap:10 }}>
+          <Inp label="Tên người nhận *" value={form.name}
+            onChange={v => setForm(f => ({...f, name: v}))} placeholder="Nguyễn Văn A"/>
+          <Inp label="Số điện thoại *" value={form.tel}
+            onChange={v => setForm(f => ({...f, tel: v}))} placeholder="0987..."/>
+        </div>
+        <Inp label="Địa chỉ chi tiết (số nhà, đường, thôn) *" value={form.address}
+          onChange={v => setForm(f => ({...f, address: v}))} placeholder="123 Đường Lý Thường Kiệt"/>
+        <div style={{ display:'grid', gridTemplateColumns: mobile ? '1fr' : '1fr 1fr', gap:10 }}>
+          <Inp label="Tỉnh/TP *" value={form.province}
+            onChange={v => setForm(f => ({...f, province: v}))} placeholder="Bắc Ninh"/>
+          <Inp label="Xã/Phường *" value={form.ward}
+            onChange={v => setForm(f => ({...f, ward: v}))} placeholder="Hiệp Hòa"/>
+        </div>
+
+        {/* Result */}
+        {result && (
+          <div style={{ marginTop:14, padding:12, borderRadius:8,
+            background: result.success ? T.greenBg : T.redBg,
+            border: `1px solid ${result.success ? T.green : T.red}` }}>
+            <div style={{ fontSize:12, fontWeight:700,
+              color: result.success ? T.green : T.red, marginBottom:8 }}>
+              {result.success ? '✅ Cập nhật thành công' : (result.partial ? '⚠️ Một phần thành công' : '❌ Cập nhật thất bại')}
+            </div>
+            {(result.results || []).map((r: any) => (
+              <div key={r.label_id} style={{ fontSize:11, color: r.success ? T.dark : T.red, marginTop:3 }}>
+                {r.success ? '✓' : '✗'} <code style={{ fontFamily:'monospace' }}>{r.label_id}</code>
+                {!r.success && <span> — {r.error}</span>}
+              </div>
+            ))}
+          </div>
+        )}
+
+        {/* Footer */}
+        <div style={{ display:'flex', gap:10, justifyContent:'flex-end',
+          marginTop:14, paddingTop:12, borderTop:`1px solid ${T.border}` }}>
+          <button onClick={onClose}
+            style={{ padding:'8px 18px', borderRadius:6, border:`1px solid ${T.border}`,
+              background:'#fff', color:T.med, cursor:'pointer',
+              fontFamily:'inherit', fontSize:12 }}>
+            Huỷ
+          </button>
+          <button onClick={handleSave} disabled={saving}
+            style={{ padding:'9px 22px', borderRadius:6, border:'none',
+              background: saving ? T.border : T.amber,
+              color:'#fff', cursor: saving ? 'wait' : 'pointer',
+              fontFamily:'inherit', fontSize:13, fontWeight:700 }}>
+            {saving ? '⏳ Đang lưu...' : '💾 Cập nhật trên GHTK'}
+          </button>
+        </div>
+      </div>
+    </Modal>
+  )
+}
+
+
+// ══════════════════════════════════════════════════════════════════════
+// v170: GhtkCancelOrderModal — confirm huỷ đơn
+// ══════════════════════════════════════════════════════════════════════
+function GhtkCancelOrderModal({ order: o, user, mobile, onClose, onCancelled }: any) {
+  const labels = o.ghtk_labels || []
+  const labelIds = labels.map((l: any) =>
+    l.label_id || l.tracking_id || l.partner_id || ''
+  ).filter(Boolean)
+  const customerInfo = o.ghtk_customer_info || {}
+  const totalAmount = o.total_amount ? Number(o.total_amount) : 0
+
+  const [confirming, setConfirming] = useState(false)
+  const [result, setResult] = useState<any>(null)
+  const [confirmText, setConfirmText] = useState('')
+
+  const expectedConfirm = o.order_code
+
+  const handleCancel = async () => {
+    if (confirmText.trim() !== expectedConfirm) {
+      toast.error(`Gõ đúng mã đơn "${expectedConfirm}" để xác nhận`)
+      return
+    }
+    if (labelIds.length === 0) { toast.error('Đơn chưa có label_id'); return }
+
+    setConfirming(true)
+    setResult(null)
+    try {
+      const res = await fetch(`${SUPABASE_URL}/functions/v1/ghtk-cancel-order`, {
+        method: 'POST',
+        headers: { 'Content-Type':'application/json', 'Authorization':`Bearer ${SUPABASE_ANON}` },
+        body: JSON.stringify({ label_ids: labelIds }),
+      })
+      const json = await res.json()
+      setResult(json)
+
+      if (json.success) {
+        // Update DB: status = -1 (huỷ)
+        await db.from('packing_workflow').update({
+          ghtk_status: '-1',
+          ghtk_status_text: 'Đã huỷ',
+          ghtk_status_synced_at: new Date().toISOString(),
+          ghtk_status_synced_by: user?.id || null,
+          updated_at: new Date().toISOString(),
+        }).eq('order_code', o.order_code)
+        toast.success(`Đã huỷ ${json.success_count}/${json.total} đơn trên GHTK`)
+        setTimeout(() => onCancelled && onCancelled(), 1500)
+      } else if (json.partial) {
+        toast.warning(`Chỉ ${json.success_count}/${json.total} đơn huỷ được`)
+      } else {
+        toast.error('Lỗi: ' + (json.error || json.results?.[0]?.error || 'không rõ'))
+      }
+    } catch (e: any) {
+      toast.error('Lỗi: ' + (e.message || String(e)))
+    } finally {
+      setConfirming(false)
+    }
+  }
+
+  return (
+    <Modal open title={`❌ Huỷ đơn ${o.order_code}`} onClose={onClose}>
+      <div style={{ padding: mobile ? '0 4px' : '0' }}>
+        {/* Cảnh báo nghiêm trọng */}
+        <div style={{ padding:'12px 14px', background:T.redBg, border:`1.5px solid ${T.red}`,
+          borderRadius:8, marginBottom:14, fontSize:12, color:T.red, lineHeight:1.7 }}>
+          <div style={{ fontSize:14, fontWeight:700, marginBottom:6 }}>⚠️ KHÔNG THỂ HOÀN TÁC!</div>
+          Sẽ gửi yêu cầu huỷ tới GHTK cho <b>{labelIds.length} thùng</b>:{' '}
+          <code style={{ fontFamily:'monospace', fontSize:11, color:T.dark }}>{labelIds.join(', ')}</code>
+          <div style={{ marginTop:6 }}>
+            GHTK chỉ chấp nhận huỷ khi đơn ở trạng thái <b>"Chưa tiếp nhận"</b> hoặc <b>"Đã tiếp nhận"</b>.
+            Nếu shipper đã lấy hàng → GHTK sẽ từ chối.
+          </div>
+        </div>
+
+        {/* Tóm tắt đơn */}
+        <div style={{ padding:'10px 12px', background:T.bg, borderRadius:6, marginBottom:14 }}>
+          <div style={{ fontSize:12, color:T.dark }}>
+            <b>{customerInfo.name || o.customer_name}</b> — {customerInfo.tel}
+          </div>
+          <div style={{ fontSize:11, color:T.med, marginTop:4 }}>
+            📍 {[customerInfo.address, customerInfo.ward, customerInfo.province].filter(Boolean).join(', ')}
+          </div>
+          {totalAmount > 0 && (
+            <div style={{ fontSize:11, color:T.med, marginTop:4 }}>
+              💰 Giá trị: <b style={{ color:T.gold }}>{totalAmount.toLocaleString('vi-VN')}đ</b>
+            </div>
+          )}
+        </div>
+
+        {/* Confirm typing */}
+        <div style={{ marginBottom:14 }}>
+          <div style={{ fontSize:12, color:T.dark, fontWeight:600, marginBottom:6 }}>
+            Để xác nhận, gõ mã đơn{' '}
+            <code style={{ padding:'1px 6px', background:T.redBg, color:T.red,
+              borderRadius:3, fontFamily:'monospace', fontWeight:700 }}>
+              {expectedConfirm}
+            </code>:
+          </div>
+          <input value={confirmText}
+            onChange={e => setConfirmText(e.target.value)}
+            placeholder={expectedConfirm}
+            style={{ width:'100%', padding:'9px 12px', boxSizing:'border-box',
+              border:`1.5px solid ${confirmText === expectedConfirm ? T.green : T.border}`,
+              borderRadius:6, fontSize:13, fontFamily:'monospace', color:T.dark, background:'#fff' }}/>
+        </div>
+
+        {/* Result */}
+        {result && (
+          <div style={{ marginTop:14, padding:12, borderRadius:8,
+            background: result.success ? T.greenBg : T.redBg,
+            border: `1px solid ${result.success ? T.green : T.red}` }}>
+            <div style={{ fontSize:12, fontWeight:700,
+              color: result.success ? T.green : T.red, marginBottom:8 }}>
+              {result.success ? '✅ Đã huỷ thành công' : (result.partial ? '⚠️ Một phần huỷ được' : '❌ Huỷ thất bại')}
+            </div>
+            {(result.results || []).map((r: any) => (
+              <div key={r.label_id} style={{ fontSize:11, color: r.success ? T.dark : T.red, marginTop:3 }}>
+                {r.success ? '✓' : '✗'} <code style={{ fontFamily:'monospace' }}>{r.label_id}</code>
+                {!r.success && <span> — {r.error}</span>}
+              </div>
+            ))}
+          </div>
+        )}
+
+        {/* Footer */}
+        <div style={{ display:'flex', gap:10, justifyContent:'flex-end',
+          marginTop:14, paddingTop:12, borderTop:`1px solid ${T.border}` }}>
+          <button onClick={onClose}
+            style={{ padding:'8px 18px', borderRadius:6, border:`1px solid ${T.border}`,
+              background:'#fff', color:T.med, cursor:'pointer',
+              fontFamily:'inherit', fontSize:12 }}>
+            Không huỷ nữa
+          </button>
+          <button onClick={handleCancel}
+            disabled={confirming || confirmText.trim() !== expectedConfirm}
+            style={{ padding:'9px 22px', borderRadius:6, border:'none',
+              background: confirming ? T.border : (confirmText === expectedConfirm ? T.red : T.border),
+              color:'#fff',
+              cursor: confirming ? 'wait' : (confirmText === expectedConfirm ? 'pointer' : 'not-allowed'),
+              fontFamily:'inherit', fontSize:13, fontWeight:700,
+              opacity: confirmText === expectedConfirm ? 1 : 0.5 }}>
+            {confirming ? '⏳ Đang huỷ...' : '❌ Xác nhận huỷ'}
+          </button>
+        </div>
+      </div>
+    </Modal>
   )
 }
 
