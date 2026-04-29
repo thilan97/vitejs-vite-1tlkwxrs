@@ -17,7 +17,8 @@ const db = createClient(SUPABASE_URL, SUPABASE_KEY)
 // v160: fix silent fail update packing_workflow sau khi in mã VTP/GHTK dropship
 // v161: GhtkModule load cả đơn VTP dropship (is_ghtk_order=false, note có vtp/viettel)
 // v162: thêm SettingComponents reusable (SettingCard, SettingToggle, SettingRow, SettingSlider...)
-const APP_VERSION = '2026.04.29.v162'
+// v163: refactor Settings page dùng SettingComponents — Modal đổi mật khẩu, slider thay input số
+const APP_VERSION = '2026.04.29.v163'
 
 // ════════════════════════════════════════════════════════════════
 // v158: VersionBadge — Hiển thị APP_VERSION ở góc dưới phải
@@ -9329,16 +9330,19 @@ function TestRoleSwitcher({ user, setUser, positions, departments }: any) {
 }
 
 function Settings({ user, setUser, settings, setSettings, onManualReset, mobile, positions, departments }: any) {
+  const [showPasswordModal, setShowPasswordModal] = useState(false)
   const [oldPw, setOldPw]     = useState('')
   const [newPw, setNewPw]     = useState('')
   const [confPw, setConfPw]   = useState('')
   const [pwMsg, setPwMsg]     = useState('')
-  const [monthDay, setMonthDay] = useState(String(settings?.monthly_reset_day||1))
-  const [weekInt, setWeekInt]   = useState(String(settings?.weekly_reset_interval||7))
-  const [overdayThreshold, setOverdayThreshold] = useState(String(settings?.overdue_days_threshold||7))
+  // v162: Slider dùng Number (không phải String) — convert tại nguồn
+  const [monthDay, setMonthDay] = useState<number>(Number(settings?.monthly_reset_day||1))
+  const [weekInt, setWeekInt]   = useState<number>(Number(settings?.weekly_reset_interval||7))
+  const [overdayThreshold, setOverdayThreshold] = useState<number>(Number(settings?.overdue_days_threshold||7))
   const [saved, setSaved]       = useState(false)
   const [resetting, setResetting] = useState(false)
   const p = mobile ? '16px' : '24px'
+  const perm = getPerm(user)
 
   const changePassword = async () => {
     if (oldPw !== user.pin) { setPwMsg('❌ Mật khẩu hiện tại không đúng!'); return }
@@ -9348,11 +9352,15 @@ function Settings({ user, setUser, settings, setSettings, onManualReset, mobile,
     setUser((prev: any) => ({...prev, pin:newPw}))
     setOldPw(''); setNewPw(''); setConfPw('')
     setPwMsg('✅ Đổi mật khẩu thành công!')
-    setTimeout(() => setPwMsg(''), 3000)
+    setTimeout(() => { setPwMsg(''); setShowPasswordModal(false) }, 1500)
   }
 
   const saveSettings = async () => {
-    const updated = {...settings, id:'main', monthly_reset_day:Number(monthDay), weekly_reset_interval:Number(weekInt), overdue_days_threshold:Number(overdayThreshold)||7}
+    const updated = {...settings, id:'main',
+      monthly_reset_day: monthDay,
+      weekly_reset_interval: weekInt,
+      overdue_days_threshold: overdayThreshold || 7,
+    }
     await db.from('settings').upsert(updated)
     setSettings(updated); setSaved(true); setTimeout(() => setSaved(false), 2000)
   }
@@ -9360,73 +9368,127 @@ function Settings({ user, setUser, settings, setSettings, onManualReset, mobile,
   return (
     <div style={{ padding:`0 ${p} ${mobile?'80px':p}` }}>
       <Topbar mobile={mobile} title="Cài đặt"/>
-      <div style={{ maxWidth:560, display:'flex', flexDirection:'column', gap:14 }}>
-        <Card>
-          <div style={{ fontSize:13, fontWeight:700, color:T.dark, marginBottom:14 }}>Tài khoản của tôi</div>
-          <div style={{ display:'flex', alignItems:'center', gap:14, padding:14, background:T.bg, borderRadius:10, marginBottom:16 }}>
-            <div style={{ width:50, height:50, borderRadius:'50%', background:DEPT_COLOR[user.dept_id]||T.gold,
-              display:'flex', alignItems:'center', justifyContent:'center', color:'#fff', fontSize:16, fontWeight:700 }}>{user.ini}</div>
-            <div>
-              <div style={{ fontSize:16, fontWeight:700, color:T.dark }}>
+      <div style={{ maxWidth:560, margin:'0 auto' }}>
+
+        {/* ── PROFILE CARD ── */}
+        <SettingCard style={{ padding:14, marginBottom:16 }}>
+          <div style={{ display:'flex', alignItems:'center', gap:14 }}>
+            <div style={{
+              width:50, height:50, borderRadius:'50%',
+              background: DEPT_COLOR[user.dept_id] || T.gold,
+              display:'flex', alignItems:'center', justifyContent:'center',
+              color:'#fff', fontSize:16, fontWeight:700, flexShrink:0,
+            }}>{user.ini}</div>
+            <div style={{ flex:1, minWidth:0 }}>
+              <div style={{ fontSize:15, fontWeight:500, color:T.dark,
+                display:'flex', alignItems:'center', gap:8, flexWrap:'wrap' }}>
                 {user.name}
                 {isTestAccount(user) && (
-                  <span style={{ marginLeft:8, padding:'2px 8px', borderRadius:RD.full,
-                    background:T.red, color:'#fff', fontSize:FS.xs, fontWeight:700 }}>TEST</span>
+                  <span style={{ padding:'2px 8px', borderRadius:RD.full,
+                    background:T.red, color:'#fff', fontSize:10, fontWeight:600 }}>TEST</span>
                 )}
               </div>
-              <div style={{ fontSize:12, color:T.gold, marginTop:2, fontWeight:600 }}>{user.position_name||'Chưa có vị trí'}</div>
-              <div style={{ fontSize:11, color:T.light, marginTop:2 }}>{user.dept_name}</div>
+              <div style={{ fontSize:12, color:T.med, marginTop:2 }}>
+                {user.position_name||'Chưa có vị trí'}{user.dept_name && ` · ${user.dept_name}`}
+              </div>
             </div>
           </div>
-          <div style={{ fontSize:13, fontWeight:600, color:T.dark, marginBottom:12 }}>🔐 Đổi mật khẩu</div>
-          <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr 1fr', gap:10 }}>
-            <Inp label="Mật khẩu hiện tại" type="password" value={oldPw} onChange={setOldPw} placeholder="••••"/>
-            <Inp label="Mật khẩu mới" type="password" value={newPw} onChange={setNewPw} placeholder="••••"/>
-            <Inp label="Xác nhận" type="password" value={confPw} onChange={setConfPw} placeholder="••••"/>
-          </div>
-          {pwMsg && <div style={{ fontSize:12, color:pwMsg.includes('✅')?T.green:T.red, marginBottom:10 }}>{pwMsg}</div>}
-          <GoldBtn small onClick={changePassword}>Đổi mật khẩu</GoldBtn>
-        </Card>
+        </SettingCard>
 
-        {/* ── TEST ROLE SWITCHER — chỉ hiện cho test account ── */}
+        {/* ── BẢO MẬT ── */}
+        <SettingSectionTitle>Bảo mật</SettingSectionTitle>
+        <SettingCard>
+          <SettingRow
+            label="🔐 Đổi mật khẩu"
+            value="••••"
+            onClick={() => setShowPasswordModal(true)}
+          />
+        </SettingCard>
+
+        {/* ── TEST ROLE SWITCHER (chỉ test account) ── */}
         {isTestAccount(user) && (
           <TestRoleSwitcher user={user} setUser={setUser}
             positions={positions} departments={departments}/>
         )}
 
-        {getPerm(user).resetChecklist && (
-          <Card>
-            <div style={{ fontSize:13, fontWeight:700, color:T.dark, marginBottom:14 }}>⚙️ Lịch reset tự động</div>
-            <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:12, marginBottom:14 }}>
-              <Inp label="Reset hàng tháng vào ngày (1-28)" type="number" min="1" max="28" value={monthDay} onChange={setMonthDay}/>
-              <Inp label="Chu kỳ reset hàng tuần (số ngày)" type="number" min="1" max="30" value={weekInt} onChange={setWeekInt}/>
-            </div>
-            <div style={{ marginBottom:14, paddingTop:10, borderTop:`1px solid ${T.border}` }}>
-              <div style={{ fontSize:12, fontWeight:600, color:T.dark, marginBottom:8 }}>🕐 Cảnh báo đơn hàng KiotViet quá hạn</div>
-              <div style={{ display:'grid', gridTemplateColumns:'1fr 2fr', gap:12, alignItems:'center' }}>
-                <Inp label="Ngưỡng cảnh báo (ngày)" type="number" min="1" max="30" value={overdayThreshold} onChange={setOverdayThreshold}/>
-                <div style={{ fontSize:11, color:T.light, paddingTop:16 }}>
-                  Đơn "Phiếu tạm" trong KiotViet chưa được xử lý quá <b style={{ color:T.amber }}>{overdayThreshold} ngày</b> sẽ hiện cảnh báo cho sale và manager
-                </div>
-              </div>
-            </div>
-            <div style={{ display:'flex', gap:10, alignItems:'center' }}>
+        {/* ── LỊCH RESET TỰ ĐỘNG (chỉ admin) ── */}
+        {perm.resetChecklist && (
+          <>
+            <SettingSectionTitle>Lịch reset tự động</SettingSectionTitle>
+            <SettingCard>
+              <SettingSliderRow
+                label="🗓 Reset hàng tháng vào ngày"
+                description="Hệ thống tự động reset checklist mỗi tháng vào ngày này."
+                min={1} max={28} value={monthDay} onChange={setMonthDay}
+                suffix={(v: number) => `Reset vào ngày ${v} mỗi tháng`}
+              />
+              <SettingDivider/>
+              <SettingSliderRow
+                label="📆 Chu kỳ reset hàng tuần"
+                description="Số ngày giữa các lần reset checklist hàng tuần."
+                min={1} max={30} value={weekInt} onChange={setWeekInt}
+                unit=" ngày"
+                suffix={(v: number) => `Reset mỗi ${v} ngày`}
+              />
+            </SettingCard>
+
+            <SettingSectionTitle>Cảnh báo đơn KiotViet</SettingSectionTitle>
+            <SettingCard>
+              <SettingSliderRow
+                label="🕐 Ngưỡng cảnh báo đơn quá hạn"
+                description="Đơn 'Phiếu tạm' trong KiotViet chưa được xử lý quá ngưỡng này sẽ hiện cảnh báo cho sale và manager."
+                min={1} max={30} value={overdayThreshold} onChange={setOverdayThreshold}
+                unit=" ngày"
+                suffix={(v: number) => `Cảnh báo khi đơn quá ${v} ngày`}
+              />
+            </SettingCard>
+
+            {/* Action footer */}
+            <div style={{ display:'flex', gap:10, alignItems:'center',
+              padding:'8px 14px 16px', flexWrap:'wrap' }}>
               <GoldBtn small onClick={saveSettings}>Lưu cài đặt</GoldBtn>
               {saved && <span style={{ color:T.green, fontSize:12 }}>✅ Đã lưu!</span>}
-              <div style={{ flex:1 }}/>
+              <div style={{ flex:1, minWidth:0 }}/>
               <GoldBtn outline small disabled={resetting}
-                onClick={async () => { if (!(await confirmDialog({ title: 'Reset checklist ngay?' }))) return; setResetting(true); await onManualReset(); setResetting(false) }}>
+                onClick={async () => {
+                  if (!(await confirmDialog({ title: 'Reset checklist ngay?' }))) return
+                  setResetting(true); await onManualReset(); setResetting(false)
+                }}>
                 {resetting ? 'Đang reset...' : '🔄 Reset ngay'}
               </GoldBtn>
             </div>
-          </Card>
+          </>
         )}
 
-        {/* Export Data */}
-        {getPerm(user).viewAllDashboard && (
+        {/* Export Data (chỉ admin) */}
+        {perm.viewAllDashboard && (
           <ExportDataCard/>
         )}
       </div>
+
+      {/* ── MODAL ĐỔI MẬT KHẨU ── */}
+      {showPasswordModal && (
+        <Modal open onClose={() => { setShowPasswordModal(false); setPwMsg('') }}
+          title="🔐 Đổi mật khẩu">
+          <div style={{ display:'flex', flexDirection:'column', gap:4 }}>
+            <Inp label="Mật khẩu hiện tại" type="password" value={oldPw} onChange={setOldPw} placeholder="••••"/>
+            <Inp label="Mật khẩu mới (≥4 ký tự)" type="password" value={newPw} onChange={setNewPw} placeholder="••••"/>
+            <Inp label="Xác nhận mật khẩu mới" type="password" value={confPw} onChange={setConfPw} placeholder="••••"/>
+            {pwMsg && (
+              <div style={{ fontSize:12, padding:'8px 12px', borderRadius:6,
+                background: pwMsg.includes('✅') ? '#DCFCE7' : T.redBg,
+                color: pwMsg.includes('✅') ? '#15803D' : T.red,
+                marginTop:4, marginBottom:4,
+              }}>{pwMsg}</div>
+            )}
+            <div style={{ display:'flex', gap:10, marginTop:8 }}>
+              <GoldBtn small onClick={changePassword}>Đổi mật khẩu</GoldBtn>
+              <GoldBtn outline small
+                onClick={() => { setShowPasswordModal(false); setPwMsg('') }}>Hủy</GoldBtn>
+            </div>
+          </div>
+        </Modal>
+      )}
     </div>
   )
 }
