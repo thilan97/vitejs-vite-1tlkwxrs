@@ -12,7 +12,7 @@ const db = createClient(SUPABASE_URL, SUPABASE_KEY)
 // APP_VERSION — dùng để invalidate cache localStorage mỗi khi deploy version mới
 // (ngăn bug quyền user bị "reset" do cache position cũ sau deploy)
 // ⚠️ MỖI LẦN DEPLOY FEATURE MỚI CÓ PERMISSION MỚI, BUMP SỐ NÀY:
-const APP_VERSION = '2026.04.25.v143'
+const APP_VERSION = '2026.04.25.v144'
 
 // ════════════════════════════════════════════════════════════════
 // AUDIT LOG — ghi nhận các hành động phá hoại data để trace lại
@@ -33597,7 +33597,7 @@ function GhtkManualOrderModal({ user, mobile, onClose, onCreated }: any) {
 
   // Check address
   const checkAddress = async () => {
-    if (!form.province) { alert('Chưa có Tỉnh/TP'); return }
+    if (!form.province) { window.toast?.error('Chưa có Tỉnh/TP'); return }
     setChecking(true); setCheckResult(null)
     try {
       const orderValue = Math.min(Number(form.order_value || 0), 3000000)
@@ -33615,14 +33615,43 @@ function GhtkManualOrderModal({ user, mobile, onClose, onCreated }: any) {
         weight_gram: Math.max(500, Math.round(totalBoxWeight * 1000)),
         value: orderValue,
       }
-      const res = await fetch(`${SUPABASE_URL}/functions/v1/ghtk-check-address`, {
-        method: 'POST',
-        headers: { 'Content-Type':'application/json', 'Authorization':`Bearer ${SUPABASE_ANON}` },
-        body: JSON.stringify(payload),
-      })
-      setCheckResult(await res.json())
+      // v143: Timeout 30s + better error
+      const controller = new AbortController()
+      const timeout = setTimeout(() => controller.abort(), 30000)
+      try {
+        const res = await fetch(`${SUPABASE_URL}/functions/v1/ghtk-check-address`, {
+          method: 'POST',
+          headers: { 'Content-Type':'application/json', 'Authorization':`Bearer ${SUPABASE_ANON}` },
+          body: JSON.stringify(payload),
+          signal: controller.signal,
+        })
+        clearTimeout(timeout)
+        if (!res.ok) {
+          const txt = await res.text().catch(() => '')
+          const errMsg = `Lỗi server (${res.status}): ${txt.slice(0, 150) || res.statusText}`
+          window.toast?.error(errMsg)
+          setCheckResult({ success: false, error: errMsg })
+          return
+        }
+        const json = await res.json()
+        setCheckResult(json)
+        if (!json.success) {
+          window.toast?.error('Địa chỉ không hợp lệ: ' + (json.error || 'GHTK từ chối'))
+        }
+      } catch(fetchErr: any) {
+        clearTimeout(timeout)
+        if (fetchErr.name === 'AbortError') {
+          const msg = 'Quá thời gian chờ (30s) — GHTK đang chậm, vui lòng thử lại'
+          window.toast?.error(msg)
+          setCheckResult({ success: false, error: msg })
+        } else {
+          throw fetchErr
+        }
+      }
     } catch(e: any) {
-      setCheckResult({ success: false, error: e.message })
+      const msg = 'Lỗi kết nối: ' + (e.message || String(e))
+      window.toast?.error(msg)
+      setCheckResult({ success: false, error: msg })
     } finally {
       setChecking(false)
     }
@@ -34771,18 +34800,46 @@ function GhtkFillCustomerModal({ order: o, user, mobile, onClose, onSaved }: any
         weight_gram: 500,
         value: totalAmountVnd,
       }
-      const res = await fetch(`${SUPABASE_URL}/functions/v1/ghtk-check-address`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${SUPABASE_ANON}`,
-        },
-        body: JSON.stringify(payload),
-      })
-      const json = await res.json()
-      setCheckResult(json)
+      // v143: Timeout 30s + better error handling
+      const controller = new AbortController()
+      const timeout = setTimeout(() => controller.abort(), 30000)
+      try {
+        const res = await fetch(`${SUPABASE_URL}/functions/v1/ghtk-check-address`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'Authorization': `Bearer ${SUPABASE_ANON}`,
+          },
+          body: JSON.stringify(payload),
+          signal: controller.signal,
+        })
+        clearTimeout(timeout)
+        if (!res.ok) {
+          const txt = await res.text().catch(() => '')
+          const errMsg = `Lỗi server (${res.status}): ${txt.slice(0, 150) || res.statusText}`
+          window.toast.error(errMsg)
+          setCheckResult({ success: false, error: errMsg })
+          return
+        }
+        const json = await res.json()
+        setCheckResult(json)
+        if (!json.success) {
+          window.toast.error('Địa chỉ không hợp lệ: ' + (json.error || 'GHTK từ chối'))
+        }
+      } catch(fetchErr: any) {
+        clearTimeout(timeout)
+        if (fetchErr.name === 'AbortError') {
+          const msg = 'Quá thời gian chờ (30s) — GHTK đang chậm, vui lòng thử lại'
+          window.toast.error(msg)
+          setCheckResult({ success: false, error: msg })
+        } else {
+          throw fetchErr
+        }
+      }
     } catch(e: any) {
-      setCheckResult({ success: false, error: e.message })
+      const msg = 'Lỗi kết nối: ' + (e.message || String(e))
+      window.toast.error(msg)
+      setCheckResult({ success: false, error: msg })
     } finally {
       setChecking(false)
     }
