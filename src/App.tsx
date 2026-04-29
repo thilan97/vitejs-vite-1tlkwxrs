@@ -16,7 +16,8 @@ const db = createClient(SUPABASE_URL, SUPABASE_KEY)
 // v159: fix bug GhtkModule không filter is_deleted → đơn đã xóa vẫn hiện
 // v160: fix silent fail update packing_workflow sau khi in mã VTP/GHTK dropship
 // v161: GhtkModule load cả đơn VTP dropship (is_ghtk_order=false, note có vtp/viettel)
-const APP_VERSION = '2026.04.29.v161'
+// v162: thêm SettingComponents reusable (SettingCard, SettingToggle, SettingRow, SettingSlider...)
+const APP_VERSION = '2026.04.29.v162'
 
 // ════════════════════════════════════════════════════════════════
 // v158: VersionBadge — Hiển thị APP_VERSION ở góc dưới phải
@@ -968,6 +969,194 @@ function ConfirmContainer() {
     </div>
   )
 }
+
+// ──────────────────────────────────────────────────────────
+// Setting Components (v162) — kiến trúc cài đặt mobile-first
+// Cảm hứng từ iOS Settings: card có header toggle + sub-rows
+// Style: theme gold của LA Global (T.gold #C4973A)
+// Chiến lược icon: emoji cho category (⚙️ 🔋), SVG cho action (chevron, lock)
+// ──────────────────────────────────────────────────────────
+
+// Wrapper card cho 1 group setting liên quan
+const SettingCard = ({ children, style }: { children: any, style?: any }) => (
+  <div style={{
+    background: T.card,
+    border: `0.5px solid ${T.border}`,
+    borderRadius: RD.lg,
+    padding: '4px 14px',
+    marginBottom: 12,
+    ...style,
+  }}>
+    {children}
+  </div>
+)
+
+// Đường kẻ ngăn cách giữa các row trong 1 SettingCard
+const SettingDivider = () => (
+  <div style={{ height: '0.5px', background: T.divider, margin: 0 }}/>
+)
+
+// Toggle on/off — tái sử dụng cho header và inline rows
+const SettingToggle = ({ enabled, onChange, disabled }: any) => (
+  <div onClick={() => !disabled && onChange?.(!enabled)} style={{
+    width: 44, height: 26, borderRadius: 13,
+    background: enabled ? T.gold : '#E5E1D6',
+    position: 'relative', flexShrink: 0,
+    cursor: disabled ? 'not-allowed' : 'pointer',
+    transition: 'background 200ms',
+  }}>
+    <div style={{
+      width: 22, height: 22, borderRadius: '50%', background: '#fff',
+      position: 'absolute', top: 2, left: enabled ? 20 : 2,
+      boxShadow: '0 1px 2px rgba(0,0,0,0.1)',
+      transition: 'left 200ms',
+    }}/>
+  </div>
+)
+
+// SVG chevron right — dùng cho action row (tránh emoji ngoài category)
+const ChevronRight = ({ size = 14, color = T.light }: any) => (
+  <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke={color}
+    strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+    <polyline points="9 18 15 12 9 6"/>
+  </svg>
+)
+
+// Header card có toggle — title + description + toggle (kiểu Battery screenshot)
+// Optional emoji ở title: title="🏷 Tự động tạo đơn GHTK"
+const SettingToggleHeader = ({ title, description, enabled, onChange, disabled }: any) => (
+  <div style={{
+    padding: '14px 0', display: 'flex', alignItems: 'flex-start', gap: 12,
+    opacity: disabled ? 0.45 : 1,
+  }}>
+    <div style={{ flex: 1, minWidth: 0 }}>
+      <div style={{ fontSize: 15, fontWeight: 500, color: T.dark,
+        marginBottom: description ? 4 : 0 }}>{title}</div>
+      {description && (
+        <div style={{ fontSize: 12, color: T.med, lineHeight: 1.5 }}>{description}</div>
+      )}
+    </div>
+    <div style={{ marginTop: 2 }}>
+      <SettingToggle enabled={enabled} onChange={onChange} disabled={disabled}/>
+    </div>
+  </div>
+)
+
+// Row label + value/arrow (clickable): "Cutoff time tạo đơn   22:00 >"
+// disabled=true → mờ + non-clickable (dùng khi parent toggle tắt)
+const SettingRow = ({ label, value, onClick, disabled, danger, leftIcon }: any) => (
+  <div onClick={() => !disabled && onClick?.()} style={{
+    display: 'flex', alignItems: 'center', padding: '12px 0',
+    cursor: (onClick && !disabled) ? 'pointer' : 'default',
+    opacity: disabled ? 0.45 : 1,
+  }}>
+    {leftIcon && <div style={{ marginRight: 12, display:'flex', alignItems:'center' }}>{leftIcon}</div>}
+    <div style={{ flex: 1, fontSize: 14, fontWeight: 500,
+      color: danger ? T.red : T.dark }}>{label}</div>
+    {value && <div style={{ fontSize: 14, color: T.med, marginRight: onClick ? 6 : 0 }}>{value}</div>}
+    {onClick && <ChevronRight/>}
+  </div>
+)
+
+// Toggle inline trong list: title + description + toggle (không phải header)
+// Dùng cho nhóm các toggle độc lập trong cùng 1 card (vd: Notification settings)
+const SettingToggleRow = ({ title, description, enabled, onChange, disabled }: any) => (
+  <div style={{
+    display: 'flex', alignItems: 'center', padding: '12px 0',
+    opacity: disabled ? 0.45 : 1, gap: 12,
+  }}>
+    <div style={{ flex: 1, minWidth: 0 }}>
+      <div style={{ fontSize: 14, fontWeight: 500, color: T.dark,
+        marginBottom: description ? 2 : 0 }}>{title}</div>
+      {description && <div style={{ fontSize: 12, color: T.med }}>{description}</div>}
+    </div>
+    <SettingToggle enabled={enabled} onChange={onChange} disabled={disabled}/>
+  </div>
+)
+
+// Slider có range labels + suffix line
+// suffix có thể là string hoặc function (value) => string
+const SettingSliderRow = ({ label, description, min, max, value, onChange,
+  suffix, step = 1, unit = '' }: any) => {
+  const pct = max === min ? 0 : ((value - min) / (max - min)) * 100
+  return (
+    <div style={{ padding: '14px 0' }}>
+      <div style={{ fontSize: 15, fontWeight: 500, color: T.dark, marginBottom: 4 }}>{label}</div>
+      {description && (
+        <div style={{ fontSize: 12, color: T.med, lineHeight: 1.5, marginBottom: 16 }}>
+          {description}
+        </div>
+      )}
+      <div style={{ position: 'relative', height: 24, marginBottom: 8 }}>
+        {/* Native input range — để hỗ trợ kéo trên mobile */}
+        <input type="range" min={min} max={max} value={value} step={step}
+          onChange={e => onChange?.(Number(e.target.value))}
+          style={{
+            position: 'absolute', top: 0, left: 0, width: '100%', height: 24,
+            margin: 0, padding: 0, opacity: 0, cursor: 'pointer', zIndex: 2,
+            WebkitAppearance: 'none', appearance: 'none', background: 'transparent',
+          }}/>
+        {/* Visual track — nền xám */}
+        <div style={{ position: 'absolute', top: 10, left: 0, right: 0,
+          height: 4, background: '#E5E1D6', borderRadius: 2 }}/>
+        {/* Visual track — phần đã tô gold */}
+        <div style={{ position: 'absolute', top: 10, left: 0,
+          width: `${pct}%`, height: 4, background: T.gold, borderRadius: 2 }}/>
+        {/* Thumb */}
+        <div style={{
+          position: 'absolute', top: 2, left: `${pct}%`,
+          transform: 'translateX(-50%)',
+          width: 20, height: 20, borderRadius: '50%',
+          background: '#fff', border: `2px solid ${T.gold}`,
+          boxShadow: '0 1px 3px rgba(0,0,0,0.1)',
+          pointerEvents: 'none',
+        }}/>
+      </div>
+      <div style={{ display: 'flex', justifyContent: 'space-between',
+        fontSize: 12, color: T.med, marginBottom: suffix ? 8 : 0 }}>
+        <span>{min}{unit}</span><span>{max}{unit}</span>
+      </div>
+      {suffix && (
+        <div style={{ textAlign: 'center', fontSize: 12, color: T.med }}>
+          {typeof suffix === 'function' ? suffix(value) : suffix}
+        </div>
+      )}
+    </div>
+  )
+}
+
+// Radio option — dùng trong list (vd: chọn khổ giấy A6/A7)
+const SettingRadioRow = ({ selected, onClick, title, description, disabled }: any) => (
+  <div onClick={() => !disabled && onClick?.()} style={{
+    display: 'flex', alignItems: 'center', padding: '12px 0',
+    cursor: disabled ? 'not-allowed' : 'pointer',
+    opacity: disabled ? 0.45 : 1,
+  }}>
+    <div style={{
+      width: 18, height: 18, borderRadius: '50%',
+      border: `2px solid ${selected ? T.gold : T.border}`,
+      marginRight: 12, flexShrink: 0,
+      display: 'flex', alignItems: 'center', justifyContent: 'center',
+    }}>
+      {selected && <div style={{ width: 10, height: 10, borderRadius: '50%', background: T.gold }}/>}
+    </div>
+    <div style={{ flex: 1, minWidth: 0 }}>
+      <div style={{ fontSize: 14, fontWeight: selected ? 500 : 400, color: T.dark }}>{title}</div>
+      {description && <div style={{ fontSize: 12, color: T.med }}>{description}</div>}
+    </div>
+  </div>
+)
+
+// Section title — hiển thị trên cùng group cards (vd: "Đơn vận chuyển")
+const SettingSectionTitle = ({ children }: any) => (
+  <div style={{
+    fontSize: 12, fontWeight: 600, color: T.med,
+    textTransform: 'uppercase', letterSpacing: 0.6,
+    padding: '0 14px', marginBottom: 8, marginTop: 8,
+  }}>{children}</div>
+)
+
+// ─── End Setting Components ───
 
 const Inp = ({ label, value, onChange, type='text', placeholder, min, max, disabled }: any) => {
   const [focused, setFocused] = useState(false)
