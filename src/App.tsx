@@ -15,7 +15,8 @@ const db = createClient(SUPABASE_URL, SUPABASE_KEY)
 // v158: hiển thị version badge ở góc dưới phải (cả desktop & mobile)
 // v159: fix bug GhtkModule không filter is_deleted → đơn đã xóa vẫn hiện
 // v160: fix silent fail update packing_workflow sau khi in mã VTP/GHTK dropship
-const APP_VERSION = '2026.04.29.v160'
+// v161: GhtkModule load cả đơn VTP dropship (is_ghtk_order=false, note có vtp/viettel)
+const APP_VERSION = '2026.04.29.v161'
 
 // ════════════════════════════════════════════════════════════════
 // v158: VersionBadge — Hiển thị APP_VERSION ở góc dưới phải
@@ -31089,7 +31090,7 @@ function GhtkModule({ user, allUsers, mobile }: any) {
 
       const { data, error } = await db.from('packing_workflow')
         .select('*')
-        .eq('is_ghtk_order', true)
+        .or('is_ghtk_order.eq.true,description_kv.ilike.%ghtk%,description_kv.ilike.%vtp%,description_kv.ilike.%viettel%')  // v161: bắt cả đơn VTP dropship (is_ghtk_order=false)
         .neq('is_deleted', true)                  // v159: filter đơn đã soft delete
         .gte('purchase_date', effectiveFrom)
         .order('purchase_date', { ascending: false })
