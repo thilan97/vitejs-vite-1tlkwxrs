@@ -13,7 +13,8 @@ const db = createClient(SUPABASE_URL, SUPABASE_KEY)
 // (ngăn bug quyền user bị "reset" do cache position cũ sau deploy)
 // ⚠️ MỖI LẦN DEPLOY FEATURE MỚI CÓ PERMISSION MỚI, BUMP SỐ NÀY:
 // v158: hiển thị version badge ở góc dưới phải (cả desktop & mobile)
-const APP_VERSION = '2026.04.29.v158'
+// v159: fix bug GhtkModule không filter is_deleted → đơn đã xóa vẫn hiện
+const APP_VERSION = '2026.04.29.v159'
 
 // ════════════════════════════════════════════════════════════════
 // v158: VersionBadge — Hiển thị APP_VERSION ở góc dưới phải
@@ -31088,6 +31089,7 @@ function GhtkModule({ user, allUsers, mobile }: any) {
       const { data, error } = await db.from('packing_workflow')
         .select('*')
         .eq('is_ghtk_order', true)
+        .neq('is_deleted', true)                  // v159: filter đơn đã soft delete
         .gte('purchase_date', effectiveFrom)
         .order('purchase_date', { ascending: false })
         .limit(500)
