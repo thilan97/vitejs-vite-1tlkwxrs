@@ -12,7 +12,7 @@ const db = createClient(SUPABASE_URL, SUPABASE_KEY)
 // APP_VERSION — dùng để invalidate cache localStorage mỗi khi deploy version mới
 // (ngăn bug quyền user bị "reset" do cache position cũ sau deploy)
 // ⚠️ MỖI LẦN DEPLOY FEATURE MỚI CÓ PERMISSION MỚI, BUMP SỐ NÀY:
-const APP_VERSION = '2026.04.25.v142'
+const APP_VERSION = '2026.04.25.v143'
 
 // ════════════════════════════════════════════════════════════════
 // AUDIT LOG — ghi nhận các hành động phá hoại data để trace lại
@@ -17206,6 +17206,33 @@ function PaymentModule({ user, mobile, allUsers }: any) {
       order_ref:        String(form.order_ref||''),
       status:           String(form.status||''),
     }
+    // v142: Bug fix — auto set timestamp + actor khi QM đổi status thủ công
+    // Trước: QM Sửa lệnh → đổi status sang "paid" mà paid_at không set
+    //        → bấm "Nhập KV" → is_history=true nhưng paid_at=null
+    //        → Tab Lịch sử filter theo paid_at → lệnh biến mất hoàn toàn!
+    const oldStatus = String(editOrder.status||'')
+    const newStatus = String(form.status||'')
+    if (newStatus !== oldStatus) {
+      const now = new Date().toISOString()
+      // Khi chuyển sang 'paid' và chưa có paid_at → set
+      if (newStatus === 'paid' && !editOrder.paid_at) {
+        ;(upd as any).paid_at = now
+        ;(upd as any).paid_by = user.id
+      }
+      // Khi chuyển sang 'completed' (đã nhập KV) và chưa có kiot_at → set + is_history
+      if (newStatus === 'completed') {
+        if (!editOrder.kiot_at) {
+          ;(upd as any).kiot_at = now
+          ;(upd as any).kiot_by = user.id
+        }
+        ;(upd as any).is_history = true
+        // Đảm bảo paid_at có (nếu skip step 'paid')
+        if (!editOrder.paid_at) {
+          ;(upd as any).paid_at = now
+          ;(upd as any).paid_by = user.id
+        }
+      }
+    }
     const { error } = await db.from('payment_orders').update(upd).eq('id', String(editOrder.id))
     if (error) { toast.error('Lỗi cập nhật: ' + error.message); return }
     setOrders(prev => prev.map(o => o.id===editOrder.id ? {...o,...upd} : o))
@@ -17228,12 +17255,18 @@ function PaymentModule({ user, mobile, allUsers }: any) {
 
   const tickKiot = async (o: any) => {
     const now = new Date().toISOString()
-    // Đánh dấu completed + chuyển sang history để không chiếm chỗ list active
-    const upd = { status:'completed', kiot_at:now, kiot_by:user.id, is_history:true }
+    // v142: Backfill paid_at nếu thiếu (case QM Sửa lệnh chuyển 'paid' mà paid_at=null)
+    // Tránh đơn biến mất khỏi tab Lịch sử do filter paid_at >= start
+    const upd: any = { status:'completed', kiot_at:now, kiot_by:user.id, is_history:true }
+    if (!o.paid_at) {
+      upd.paid_at = now
+      upd.paid_by = upd.paid_by || o.paid_by || user.id
+    }
     const { error } = await db.from('payment_orders').update(upd).eq('id', o.id)
     if (error) { toast.error('Lỗi: ' + error.message); return }
     // Xóa khỏi list active vì đã vào lịch sử
     setOrders(prev => prev.filter(x => x.id !== o.id))
+    toast.success('Đã chuyển vào lịch sử')
   }
 
   const [paymentConfirmDelete, setPaymentConfirmDelete] = useState<any>(null)
