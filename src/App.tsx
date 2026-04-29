@@ -12,7 +12,7 @@ const db = createClient(SUPABASE_URL, SUPABASE_KEY)
 // APP_VERSION — dùng để invalidate cache localStorage mỗi khi deploy version mới
 // (ngăn bug quyền user bị "reset" do cache position cũ sau deploy)
 // ⚠️ MỖI LẦN DEPLOY FEATURE MỚI CÓ PERMISSION MỚI, BUMP SỐ NÀY:
-const APP_VERSION = '2026.04.25.v152'
+const APP_VERSION = '2026.04.25.v153'
 
 // ════════════════════════════════════════════════════════════════
 // AUDIT LOG — ghi nhận các hành động phá hoại data để trace lại
@@ -32143,8 +32143,21 @@ function GhtkPackingSection({ ord, user, mobile }: any) {
         }
       }
 
+      // v152: Always log full response để debug
+      console.log('[GHTK Create Order] Full response:', json)
+      if (json.results) {
+        json.results.forEach((r: any) => {
+          if (!r.success) {
+            console.error('[GHTK] Box', r.box_no, 'FAILED:', r)
+            if (r.debug?.ghtk_response) {
+              console.error('[GHTK] GHTK API said:', r.debug.ghtk_response)
+            }
+          }
+        })
+      }
       setCreateResult(json)
     } catch (e: any) {
+      console.error('[GHTK Create Order] Exception:', e)
       setCreateResult({ success: false, error: e.message })
     } finally {
       setCreating(false)
@@ -32389,18 +32402,16 @@ function GhtkPackingSection({ ord, user, mobile }: any) {
                   <div style={{ fontSize:11, color:T.red, fontWeight:700 }}>
                     Thùng {r.box_no}: {r.error || r.message || 'Lỗi không xác định'}
                   </div>
-                  {r.debug && (
-                    <details style={{ marginTop:6 }}>
-                      <summary style={{ fontSize:10, color:T.med, cursor:'pointer' }}>
-                        🔍 Chi tiết debug (click để xem)
-                      </summary>
-                      <pre style={{ fontSize:9, color:T.dark, marginTop:4,
-                        padding:6, background:'#fff', borderRadius:4, overflow:'auto',
-                        maxHeight:300, fontFamily:'monospace', whiteSpace:'pre-wrap' }}>
-                        {JSON.stringify(r.debug, null, 2)}
-                      </pre>
-                    </details>
-                  )}
+                  {/* v152: Always show full debug để troubleshoot */}
+                  <div style={{ fontSize:10, color:T.med, marginTop:4 }}>
+                    📋 Chi tiết debug:
+                  </div>
+                  <pre style={{ fontSize:9, color:T.dark, marginTop:4,
+                    padding:6, background:'#fff', borderRadius:4, overflow:'auto',
+                    maxHeight:400, fontFamily:'monospace', whiteSpace:'pre-wrap',
+                    border:`1px dashed ${T.border}` }}>
+                    {JSON.stringify(r.debug || r, null, 2)}
+                  </pre>
                 </div>
               ))}
               {/* Legacy: createResult.failed[] (v6 trở về trước) */}
@@ -32409,6 +32420,15 @@ function GhtkPackingSection({ ord, user, mobile }: any) {
               ))}
               {createResult.error && (
                 <div style={{ fontSize:11, color:T.red }}>{createResult.error}</div>
+              )}
+              {/* v152: Always show raw response nếu chưa có results */}
+              {!createResult.results && (
+                <pre style={{ fontSize:9, color:T.dark, marginTop:6,
+                  padding:6, background:'#fff', borderRadius:4, overflow:'auto',
+                  maxHeight:300, fontFamily:'monospace', whiteSpace:'pre-wrap',
+                  border:`1px dashed ${T.border}` }}>
+                  {JSON.stringify(createResult, null, 2)}
+                </pre>
               )}
               <button onClick={retry}
                 style={{ marginTop:8, padding:'5px 14px', borderRadius:14, fontSize:11,
