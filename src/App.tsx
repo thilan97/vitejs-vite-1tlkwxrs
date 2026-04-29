@@ -32933,10 +32933,11 @@ function GhtkEditBoxesModal({ order: o, user, mobile, onClose, onSaved }: any) {
 
 
 // ══════════════════════════════════════════════════════════════════════
-// v122: VN Address Smart Fill Helpers
-// Dataset: provinces.open-api.vn (63 tỉnh × ~700 quận × ~11000 phường)
+// v157: VN Address Smart Fill Helpers — API v2 (cấu trúc 2 cấp 2025)
+// Dataset: provinces.open-api.vn/api/v2 (34 tỉnh × ~10000 xã/phường)
+// Sau cải cách 2 cấp 1/7/2025: TỈNH → XÃ/PHƯỜNG (không còn cấp Quận/Huyện)
 // ══════════════════════════════════════════════════════════════════════
-const VN_ADDR_CACHE_KEY = 'vn_addresses_tree_v1'
+const VN_ADDR_CACHE_KEY = 'vn_addresses_tree_v2_2cap'  // v157: bump để force reload sang v2
 const VN_ADDR_CACHE_TTL = 30 * 86400 * 1000 // 30 ngày
 
 async function loadVnAddressTree(): Promise<any[]> {
@@ -32951,7 +32952,8 @@ async function loadVnAddressTree(): Promise<any[]> {
   } catch {}
 
   try {
-    const res = await fetch('https://provinces.open-api.vn/api/?depth=3')
+    // v157: API v2 — cấu trúc 2 cấp (tỉnh → xã/phường), không còn districts
+    const res = await fetch('https://provinces.open-api.vn/api/v2/?depth=2')
     if (!res.ok) return []
     const data = await res.json()
     try {
@@ -32969,22 +32971,23 @@ const normAddr = (s: string) => (s||'').toLowerCase().normalize('NFD')
   .replace(/^(phuong|xa|thi tran|quan|huyen|thi xa|thanh pho|tp|tinh)\s+/i, '')
   .trim()
 
+// v157: findAddrByWard simplify cho cấu trúc 2 cấp (tỉnh → ward)
+// Hint district giữ trong signature để backward compat với caller cũ, nhưng IGNORE
+// (sau 1/7/2025 không còn cấp huyện trong API v2)
 function findAddrByWard(tree: any[], wardName: string, hints: { province?: string, district?: string } = {}) {
   const normQ = normAddr(wardName)
   if (!normQ || normQ.length < 2) return []
   const results: any[] = []
   for (const p of tree) {
     if (hints.province && normAddr(p.name) !== normAddr(hints.province)) continue
-    for (const d of (p.districts || [])) {
-      if (hints.district && normAddr(d.name) !== normAddr(hints.district)) continue
-      for (const w of (d.wards || [])) {
-        const normW = normAddr(w.name)
-        if (normW === normQ) {
-          results.push({ province: p.name, district: d.name, ward: w.name, score: 1.0 })
-        } else if (normW.includes(normQ) || normQ.includes(normW)) {
-          if (normQ.length >= 3) {
-            results.push({ province: p.name, district: d.name, ward: w.name, score: 0.7 })
-          }
+    for (const w of (p.wards || [])) {
+      const normW = normAddr(w.name)
+      if (normW === normQ) {
+        // v157: district='' vì sau 1/7/2025 không còn cấp huyện
+        results.push({ province: p.name, district: '', ward: w.name, score: 1.0 })
+      } else if (normW.includes(normQ) || normQ.includes(normW)) {
+        if (normQ.length >= 3) {
+          results.push({ province: p.name, district: '', ward: w.name, score: 0.7 })
         }
       }
     }
@@ -32998,28 +33001,10 @@ function findAddrByWard(tree: any[], wardName: string, hints: { province?: strin
   return results
 }
 
-function findAddrByDistrict(tree: any[], districtName: string, hints: { province?: string } = {}) {
-  const normQ = normAddr(districtName)
-  if (!normQ || normQ.length < 2) return []
-  const results: any[] = []
-  for (const p of tree) {
-    if (hints.province && normAddr(p.name) !== normAddr(hints.province)) continue
-    for (const d of (p.districts || [])) {
-      const normD = normAddr(d.name)
-      if (normD === normQ) {
-        results.push({ province: p.name, district: d.name, score: 1.0 })
-      } else if (normD.includes(normQ) || normQ.includes(normD)) {
-        if (normQ.length >= 3) {
-          results.push({ province: p.name, district: d.name, score: 0.7 })
-        }
-      }
-    }
-  }
-  results.sort((a, b) => b.score - a.score)
-  if (results.length > 0 && results[0].score === 1.0) {
-    return results.filter(r => r.score === 1.0)
-  }
-  return results
+// v157: findAddrByDistrict deprecated — sau 1/7/2025 không còn cấp huyện
+// Giữ stub để không phá callers nếu có. Trả [] để callers fall back qua findAddrByWard.
+function findAddrByDistrict(_tree: any[], _districtName: string, _hints: { province?: string } = {}) {
+  return [] as any[]
 }
 
 
