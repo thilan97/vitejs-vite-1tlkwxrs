@@ -19,7 +19,8 @@ const db = createClient(SUPABASE_URL, SUPABASE_KEY)
 // v162: thêm SettingComponents reusable (SettingCard, SettingToggle, SettingRow, SettingSlider...)
 // v163: refactor Settings page dùng SettingComponents — Modal đổi mật khẩu, slider thay input số
 // v164: fix bottom nav che drawer "Khác" + thêm icon ⚙️ Cài đặt ở user card
-const APP_VERSION = '2026.04.29.v164'
+// v165: fix bug "thêm thùng" mất sau khi blur — bỏ focusedIdx khỏi dep useEffect sync
+const APP_VERSION = '2026.04.29.v165'
 
 // ════════════════════════════════════════════════════════════════
 // v158: VersionBadge — Hiển thị APP_VERSION ở góc dưới phải
@@ -32208,10 +32209,17 @@ function BoxesSection({ ord, user, mobile, onChange }: any) {
 
   // v147: Sync state khi parent update ord.ghtk_boxes (sau finishPacking, refresh, etc.)
   // Tránh stale state khi user đóng panel rồi mở lại — gây error save với data cũ
+  // v165: BỎ focusedIdx khỏi dep — vì nó chỉ là gate, không phải trigger.
+  //   Bug cũ: user thêm thùng + blur → focusedIdx changes → effect fires NGAY (DB chưa kịp save)
+  //   → setBoxes về ord.ghtk_boxes cũ → mất thùng mới.
+  //   Fix: chỉ fire khi ord.ghtk_boxes thật sự đổi. Thêm safety: nếu local có MORE boxes
+  //   hơn external thì không override (user đang thêm thùng locally).
   React.useEffect(() => {
     // KHÔNG override nếu user đang focus 1 ô nhập (tránh wipe input đang gõ)
     if (focusedIdx !== null) return
     const newBoxes = ord.ghtk_boxes || []
+    // Safety: local có nhiều thùng hơn external → user đang thêm thùng, KHÔNG override
+    if (boxes.length > newBoxes.length) return
     if (newBoxes.length === 0) {
       setBoxes([{ box_no: 1, weight_kg: '' }])
     } else {
@@ -32220,7 +32228,8 @@ function BoxesSection({ ord, user, mobile, onChange }: any) {
         weight_kg: String(b.weight_kg ?? ''),
       })))
     }
-  }, [JSON.stringify(ord.ghtk_boxes), focusedIdx])
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [JSON.stringify(ord.ghtk_boxes)])
 
   const addBox = () => {
     if (hasLabels) return
@@ -32385,9 +32394,11 @@ function GhtkPackingSection({ ord, user, mobile }: any) {
   const [focusedIdx, setFocusedIdx] = useState<number | null>(null)
 
   // v147: Sync state khi parent update ord.ghtk_boxes
+  // v165: bỏ focusedIdx khỏi dep + safety check để tránh mất thùng mới (xem BoxesSection)
   React.useEffect(() => {
     if (focusedIdx !== null) return
     const newBoxes = ord.ghtk_boxes || []
+    if (boxes.length > newBoxes.length) return
     if (newBoxes.length === 0) {
       setBoxes([{ box_no: 1, weight_kg: '' }])
     } else {
@@ -32396,7 +32407,8 @@ function GhtkPackingSection({ ord, user, mobile }: any) {
         weight_kg: String(b.weight_kg ?? ''),
       })))
     }
-  }, [JSON.stringify(ord.ghtk_boxes), focusedIdx])
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [JSON.stringify(ord.ghtk_boxes)])
 
   const addBox = () => {
     if (hasLabels) return
