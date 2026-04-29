@@ -12,7 +12,7 @@ const db = createClient(SUPABASE_URL, SUPABASE_KEY)
 // APP_VERSION — dùng để invalidate cache localStorage mỗi khi deploy version mới
 // (ngăn bug quyền user bị "reset" do cache position cũ sau deploy)
 // ⚠️ MỖI LẦN DEPLOY FEATURE MỚI CÓ PERMISSION MỚI, BUMP SỐ NÀY:
-const APP_VERSION = '2026.04.25.v147'
+const APP_VERSION = '2026.04.25.v148'
 
 // ════════════════════════════════════════════════════════════════
 // AUDIT LOG — ghi nhận các hành động phá hoại data để trace lại
@@ -31326,6 +31326,23 @@ function BoxesSection({ ord, user, mobile, onChange }: any) {
   })
   const [saving, setSaving] = useState(false)
   const [savedJustNow, setSavedJustNow] = useState(false)
+  const [focusedIdx, setFocusedIdx] = useState<number | null>(null)
+
+  // v147: Sync state khi parent update ord.ghtk_boxes (sau finishPacking, refresh, etc.)
+  // Tránh stale state khi user đóng panel rồi mở lại — gây error save với data cũ
+  React.useEffect(() => {
+    // KHÔNG override nếu user đang focus 1 ô nhập (tránh wipe input đang gõ)
+    if (focusedIdx !== null) return
+    const newBoxes = ord.ghtk_boxes || []
+    if (newBoxes.length === 0) {
+      setBoxes([{ box_no: 1, weight_kg: '' }])
+    } else {
+      setBoxes(newBoxes.map((b: any) => ({
+        box_no: b.box_no,
+        weight_kg: String(b.weight_kg ?? ''),
+      })))
+    }
+  }, [JSON.stringify(ord.ghtk_boxes), focusedIdx])
 
   const addBox = () => {
     if (hasLabels) return
@@ -31347,7 +31364,8 @@ function BoxesSection({ ord, user, mobile, onChange }: any) {
   const totalWeight = boxes.reduce((s: number, b: any) => s + Number(b.weight_kg || 0), 0)
   const allValid = boxes.every((b: any) => Number(b.weight_kg || 0) > 0)
 
-  const handleBlurSave = async () => {
+  const handleBlurSave = async (idx?: number) => {
+    setFocusedIdx(null)
     if (hasLabels) return
     if (!allValid) return
     setSaving(true)
@@ -31355,9 +31373,13 @@ function BoxesSection({ ord, user, mobile, onChange }: any) {
       const cleanBoxes = boxes.map((b: any) => ({
         box_no: b.box_no, weight_kg: Number(b.weight_kg || 0),
       }))
-      await db.from('packing_workflow')
+      const { error } = await db.from('packing_workflow')
         .update({ ghtk_boxes: cleanBoxes, updated_at: new Date().toISOString() })
         .eq('order_code', ord.order_code)
+      if (error) {
+        toast.error('Lỗi lưu cân: ' + error.message)
+        return
+      }
       setSavedJustNow(true)
       setTimeout(() => setSavedJustNow(false), 2000)
       if (onChange) onChange(cleanBoxes)
@@ -31400,8 +31422,9 @@ function BoxesSection({ ord, user, mobile, onChange }: any) {
               min="0"
               value={b.weight_kg}
               disabled={hasLabels}
+              onFocus={() => setFocusedIdx(idx)}
               onChange={(e) => updateBoxWeight(idx, e.target.value)}
-              onBlur={handleBlurSave}
+              onBlur={() => handleBlurSave(idx)}
               placeholder="VD: 0.5"
               style={{ flex:1, padding:'7px 10px', border:`1px solid ${T.border}`,
                 borderRadius:6, fontSize:12, fontFamily:'inherit',
@@ -31474,6 +31497,22 @@ function GhtkPackingSection({ ord, user, mobile }: any) {
   // v122: Lưu cân độc lập (không tạo đơn)
   const [savingBoxes, setSavingBoxes] = useState(false)
   const [savedJustNow, setSavedJustNow] = useState(false)
+  // v147: Track focused input để tránh state bị wipe khi user đang gõ
+  const [focusedIdx, setFocusedIdx] = useState<number | null>(null)
+
+  // v147: Sync state khi parent update ord.ghtk_boxes
+  React.useEffect(() => {
+    if (focusedIdx !== null) return
+    const newBoxes = ord.ghtk_boxes || []
+    if (newBoxes.length === 0) {
+      setBoxes([{ box_no: 1, weight_kg: '' }])
+    } else {
+      setBoxes(newBoxes.map((b: any) => ({
+        box_no: b.box_no,
+        weight_kg: String(b.weight_kg ?? ''),
+      })))
+    }
+  }, [JSON.stringify(ord.ghtk_boxes), focusedIdx])
 
   const addBox = () => {
     if (hasLabels) return
@@ -31743,6 +31782,8 @@ function GhtkPackingSection({ ord, user, mobile }: any) {
                   </span>
                   <input type="number" min={0.1} step={0.1}
                     value={b.weight_kg}
+                    onFocus={() => setFocusedIdx(i)}
+                    onBlur={() => setFocusedIdx(null)}
                     onChange={e => updateBoxWeight(i, e.target.value)}
                     disabled={!canWeight || hasLabels}
                     placeholder="Cân (kg)"
