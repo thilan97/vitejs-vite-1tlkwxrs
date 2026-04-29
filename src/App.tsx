@@ -12,7 +12,7 @@ const db = createClient(SUPABASE_URL, SUPABASE_KEY)
 // APP_VERSION — dùng để invalidate cache localStorage mỗi khi deploy version mới
 // (ngăn bug quyền user bị "reset" do cache position cũ sau deploy)
 // ⚠️ MỖI LẦN DEPLOY FEATURE MỚI CÓ PERMISSION MỚI, BUMP SỐ NÀY:
-const APP_VERSION = '2026.04.25.v145'
+const APP_VERSION = '2026.04.25.v146'
 
 // ════════════════════════════════════════════════════════════════
 // AUDIT LOG — ghi nhận các hành động phá hoại data để trace lại
@@ -6977,6 +6977,8 @@ function ReturnItems({ user, allUsers, products, mobile }: any) {
   const [searchQ, setSearchQ] = React.useState('')
   // v118: Sort ngày
   const [dateSort, setDateSort] = React.useState<'desc'|'asc'>('desc')  // default: gần → xa (mới trước)
+  // v144: Filter chỉ phiếu có NV vi phạm
+  const [onlyViolator, setOnlyViolator] = React.useState(false)
   const p = mobile ? '16px' : '24px'
   const perm  = getPerm(user)
   const isKho  = user.dept_id === 'kho'
@@ -7032,6 +7034,11 @@ function ReturnItems({ user, allUsers, products, mobile }: any) {
     total_ship:  Number(rows[0].ship_fee)||0,
     lines: rows,
   })).filter((slip: any) => {
+    // v144: Filter chỉ phiếu có NV vi phạm — check trên cả slip-level + line-level
+    if (onlyViolator) {
+      const hasViolator = !!slip.violator_id || slip.lines.some((r: any) => !!r.violator_id)
+      if (!hasViolator) return false
+    }
     if (!searchQ.trim()) return true
     const q = norm(searchQ)
     return q.split(/\s+/).every((t: string) =>
@@ -7313,6 +7320,16 @@ function ReturnItems({ user, allUsers, products, mobile }: any) {
           <option value="desc">📅 Gần → Xa (mới trước)</option>
           <option value="asc">📅 Xa → Gần (cũ trước)</option>
         </select>
+        {/* v144: Toggle chỉ NV vi phạm */}
+        <button onClick={() => setOnlyViolator(v => !v)}
+          title="Chỉ hiện phiếu có nhân viên vi phạm"
+          style={{ padding:'6px 12px', borderRadius:8, cursor:'pointer',
+            border:`1.5px solid ${onlyViolator ? T.red : T.border}`,
+            background: onlyViolator ? '#FFF5F5' : '#fff',
+            color: onlyViolator ? T.red : T.med,
+            fontSize:11, fontFamily:'inherit', fontWeight: onlyViolator ? 700 : 500 }}>
+          {onlyViolator ? '☑' : '☐'} Chỉ NV vi phạm
+        </button>
       </div>
 
       {tab==='stats' ? (
@@ -12237,6 +12254,7 @@ function InventoryModule({ user, allUsers, products, invSessions, setInvSessions
   const [kvSyncing, setKvSyncing] = useState(false)
   const [newDate, setNewDate] = useState(new Date().toISOString().split('T')[0])
   const [newNote, setNewNote] = useState('')
+  const [newIsMonthClose, setNewIsMonthClose] = useState(false)  // v144: phiên chốt tháng
   const [importing, setImporting] = useState(false)
   const [diffFilter, setDiffFilter] = useState<'all'|'neg'|'pos'>('all')
   const [selectedChecks, setSelectedChecks] = useState<Set<string>>(new Set())
@@ -12304,11 +12322,61 @@ function InventoryModule({ user, allUsers, products, invSessions, setInvSessions
 
   const createSession = async () => {
     if (!newDate) return
-    const newS = { id:'sess_'+Date.now(), date:newDate, note:newNote, status:'open',
-      total_assigned:0, total_checked:0, created_by:user.id, created_at:new Date().toISOString() }
+    // v144: Nếu đánh dấu chốt tháng → auto-clear flag phiên chốt cũ cùng tháng (chỉ 1 phiên/tháng)
+    if (newIsMonthClose) {
+      const [yy, mm] = newDate.split('-')
+      const monthStart = `${yy}-${mm}-01`
+      const lastDay = new Date(Number(yy), Number(mm), 0).getDate()
+      const monthEnd = `${yy}-${mm}-${String(lastDay).padStart(2,'0')}`
+      // Clear flag of any existing month-close session in this month
+      await db.from('inventory_sessions')
+        .update({ is_month_close: false })
+        .eq('is_month_close', true)
+        .gte('date', monthStart).lte('date', monthEnd)
+      // Update local state
+      setInvSessions(prev => prev.map((s: any) => {
+        const d = new Date(s.date)
+        const sm = `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}`
+        const nm = `${yy}-${mm}`
+        return sm === nm ? {...s, is_month_close: false} : s
+      }))
+    }
+    const newS: any = { id:'sess_'+Date.now(), date:newDate, note:newNote, status:'open',
+      total_assigned:0, total_checked:0, is_month_close: newIsMonthClose,
+      created_by:user.id, created_at:new Date().toISOString() }
     setInvSessions(prev => [newS, ...prev])
     await db.from('inventory_sessions').insert(newS)
-    setShowCreate(false); setNewNote('')
+    setShowCreate(false); setNewNote(''); setNewIsMonthClose(false)
+  }
+
+  // v144: Toggle phiên chốt tháng (cho phiên đã tạo)
+  const toggleMonthClose = async (sid: string) => {
+    const sess = invSessions.find((s: any) => s.id===sid)
+    if (!sess) return
+    const newVal = !sess.is_month_close
+    if (newVal) {
+      // Clear flag của các phiên cùng tháng
+      const d = new Date(sess.date)
+      const yy = d.getFullYear()
+      const mm = String(d.getMonth()+1).padStart(2,'0')
+      const monthStart = `${yy}-${mm}-01`
+      const lastDay = new Date(yy, Number(mm), 0).getDate()
+      const monthEnd = `${yy}-${mm}-${String(lastDay).padStart(2,'0')}`
+      await db.from('inventory_sessions')
+        .update({ is_month_close: false })
+        .eq('is_month_close', true)
+        .gte('date', monthStart).lte('date', monthEnd)
+        .neq('id', sid)
+      setInvSessions(prev => prev.map((s: any) => {
+        if (s.id === sid) return s
+        const sd = new Date(s.date)
+        const sm = `${sd.getFullYear()}-${String(sd.getMonth()+1).padStart(2,'0')}`
+        return sm === `${yy}-${mm}` ? {...s, is_month_close: false} : s
+      }))
+    }
+    setInvSessions(prev => prev.map((s: any) => s.id===sid ? {...s, is_month_close:newVal} : s))
+    await db.from('inventory_sessions').update({ is_month_close: newVal }).eq('id', sid)
+    toast.success(newVal ? '✅ Đã đánh dấu phiên chốt tháng' : 'Đã bỏ đánh dấu chốt tháng')
   }
 
   const closeSession = async (sid: string) => {
@@ -12402,10 +12470,12 @@ function InventoryModule({ user, allUsers, products, invSessions, setInvSessions
   const myChecks      = openSession ? checks.filter((c: any) => c.session_id===openSession.id && c.assigned_to===user.id) : []
 
   const [fy, fm] = monthFilter.split('-').map(Number)
+  // v144: Chỉ tính phiên có is_month_close=true → tab "Cuối tháng" sẽ chỉ tính tiền mất hàng
+  // dựa trên phiên chốt tháng, không phải mọi phiên kiểm kê hàng ngày/tuần
   const monthChecks = checks.filter((c: any) => {
-    const sid = invSessions.find((s: any) => s.id===c.session_id)
-    if (!sid) return false
-    const d = new Date(sid.date)
+    const sess = invSessions.find((s: any) => s.id===c.session_id)
+    if (!sess || !sess.is_month_close) return false  // chỉ lấy phiên chốt tháng
+    const d = new Date(sess.date)
     return d.getFullYear()===fy && d.getMonth()+1===fm
   })
 
@@ -12534,6 +12604,12 @@ function InventoryModule({ user, allUsers, products, invSessions, setInvSessions
                   padding:'8px 0',borderBottom:i<4?`1px solid ${T.border}`:'none'}}>
                   <div style={{flex:1}}>
                     <span style={{fontSize:12,fontWeight:600,color:T.dark}}>{s.date}</span>
+                    {s.is_month_close && (
+                      <span style={{ marginLeft:6, padding:'1px 6px', borderRadius:8,
+                        background:T.gold, color:'#fff', fontSize:9, fontWeight:700 }}>
+                        📅 CHỐT THÁNG
+                      </span>
+                    )}
                     {s.note && <span style={{fontSize:11,color:T.light,marginLeft:8}}>{s.note}</span>}
                   </div>
                   <span style={{fontSize:11,color:T.blue}}>{sChecks.length} SP</span>
@@ -12676,7 +12752,16 @@ function InventoryModule({ user, allUsers, products, invSessions, setInvSessions
                         padding:'10px 12px',gap:8,alignItems:'center',cursor:'pointer',
                         background:isExp?T.goldBg:i%2===0?'#fff':T.rowAlt}}
                         onClick={() => setExpandedSession(isExp?null:s.id)}>
-                        <span style={{fontSize:12,fontWeight:700,color:T.dark}}>{s.date}</span>
+                        <span style={{fontSize:12,fontWeight:700,color:T.dark}}>
+                          {s.date}
+                          {s.is_month_close && (
+                            <span style={{ marginLeft:5, padding:'1px 5px', borderRadius:6,
+                              background:T.gold, color:'#fff', fontSize:8, fontWeight:700,
+                              verticalAlign:'middle' }}>
+                              📅
+                            </span>
+                          )}
+                        </span>
                         <span style={{fontSize:11,color:T.med}}>{s.note||'—'}</span>
                         <span style={{fontSize:12,textAlign:'center',color:T.blue}}>{sChecks.length}</span>
                         <span style={{fontSize:12,textAlign:'center',color:sLech>0?T.red:T.green,fontWeight:sLech>0?700:400}}>
@@ -12695,6 +12780,18 @@ function InventoryModule({ user, allUsers, products, invSessions, setInvSessions
                               style={{padding:'3px 10px',borderRadius:20,border:`1.5px solid ${T.amber}`,
                                 background:T.amberBg,cursor:'pointer',fontSize:10,fontFamily:'inherit',
                                 color:T.amber,fontWeight:700}}>Chốt</button>
+                          )}
+                          {/* v144: Toggle chốt tháng */}
+                          {canManage && (
+                            <button onClick={() => toggleMonthClose(s.id)}
+                              title={s.is_month_close ? 'Bỏ đánh dấu chốt tháng' : 'Đánh dấu phiên chốt tháng (dùng để tính tiền mất hàng tab Cuối tháng)'}
+                              style={{padding:'3px 10px',borderRadius:20,
+                                border:`1.5px solid ${s.is_month_close ? T.gold : T.border}`,
+                                background:s.is_month_close ? T.gold : 'transparent',
+                                color:s.is_month_close ? '#fff' : T.med,
+                                cursor:'pointer',fontSize:10,fontFamily:'inherit',fontWeight:700}}>
+                              📅 {s.is_month_close ? 'Đã chốt tháng' : 'Chốt tháng'}
+                            </button>
                           )}
                           {perm.deleteInvSession && (
                             <button onClick={() => {
@@ -13092,6 +13189,32 @@ function InventoryModule({ user, allUsers, products, invSessions, setInvSessions
                 fontSize:12,fontFamily:'inherit',color:T.dark,background:'#fff', colorScheme:'light'}}/>
             <span style={{fontSize:12,color:T.light}}>Chỉ tính mã có trạng thái "Không tìm được nguyên nhân"</span>
           </div>
+          {/* v144: Warning nếu chưa có phiên chốt tháng */}
+          {(() => {
+            const [fy2, fm2] = monthFilter.split('-').map(Number)
+            const monthCloseSessions = invSessions.filter((s: any) => {
+              if (!s.is_month_close) return false
+              const d = new Date(s.date)
+              return d.getFullYear()===fy2 && d.getMonth()+1===fm2
+            })
+            if (monthCloseSessions.length === 0) {
+              return (
+                <div style={{padding:'12px 16px', background:T.amberBg, borderRadius:10,
+                  border:`1.5px solid ${T.amber}`, fontSize:12, color:T.dark, lineHeight:1.6}}>
+                  <b style={{color:T.amber}}>⚠️ Chưa có phiên kiểm kê chốt tháng cho tháng {monthFilter}</b><br/>
+                  Vào tab "Phiên kiểm kê" → tìm phiên muốn dùng để chốt tháng → bấm <b>📅 Chốt tháng</b>.<br/>
+                  Phiên chốt tháng sẽ được dùng để tính tiền mất hàng cho NV Kho.
+                </div>
+              )
+            }
+            return (
+              <div style={{padding:'8px 14px', background:T.greenBg, borderRadius:8,
+                border:`1px solid ${T.green}55`, fontSize:11, color:T.dark}}>
+                ✓ Đang tính dựa trên phiên chốt tháng: <b>{monthCloseSessions[0].date}</b>
+                {monthCloseSessions[0].note && <span style={{color:T.med}}> — {monthCloseSessions[0].note}</span>}
+              </div>
+            )
+          })()}
           {(() => {
             const noReason = monthChecks.filter((c: any) => c.diff_status==='no_reason' && c.diff!=null && c.diff!==0)
             const totalCost = noReason.reduce((s: number, c: any) => {
@@ -13716,6 +13839,7 @@ function SessionCreateWizard({ products, checks, allUsers, user, excludedCodes, 
   const [step, setStep] = useState(1)
   const [date, setDate] = useState(new Date().toISOString().split('T')[0])
   const [note, setNote] = useState('')
+  const [isMonthClose, setIsMonthClose] = useState(false)  // v144: phiên chốt tháng
   const [selected, setSelected] = useState<Set<string>>(new Set())
   const [sortBy, setSortBy] = useState<'priority'|'stock_desc'|'stock_asc'|'alpha'>('priority')
   const [showFilter, setShowFilter] = useState<'all'|'selected'|'unselected'>('all')
@@ -13849,8 +13973,20 @@ function SessionCreateWizard({ products, checks, allUsers, user, excludedCodes, 
   const doCreate = async () => {
     const sid = 'sess_'+Date.now()
     const now = new Date().toISOString()
-    const newS = { id:sid, date, note, status:'open',
+    // v144: Nếu đánh dấu chốt tháng → clear flag phiên cũ cùng tháng
+    if (isMonthClose) {
+      const [yy, mm] = date.split('-')
+      const monthStart = `${yy}-${mm}-01`
+      const lastDay = new Date(Number(yy), Number(mm), 0).getDate()
+      const monthEnd = `${yy}-${mm}-${String(lastDay).padStart(2,'0')}`
+      await db.from('inventory_sessions')
+        .update({ is_month_close: false })
+        .eq('is_month_close', true)
+        .gte('date', monthStart).lte('date', monthEnd)
+    }
+    const newS: any = { id:sid, date, note, status:'open',
       total_assigned:selectedArr.length, total_checked:0,
+      is_month_close: isMonthClose,
       created_by:user.id, created_at:now }
     await db.from('inventory_sessions').insert(newS)
     // Build checks with assignment
@@ -13909,6 +14045,23 @@ function SessionCreateWizard({ products, checks, allUsers, user, excludedCodes, 
               <Inp label="Ngày kiểm kê *" type="date" value={date} onChange={(v) => setDate(v)}/>
               <Inp label="Ghi chú (tùy chọn)" value={note} onChange={(v) => setNote(v)}
                 placeholder="VD: Kiểm kê tuần 15 — nhóm A"/>
+              {/* v144: Checkbox phiên chốt tháng */}
+              <label style={{ display:'flex', alignItems:'flex-start', gap:8, marginTop:10,
+                padding:'10px 12px', borderRadius:8, cursor:'pointer',
+                background: isMonthClose ? T.goldBg : T.bg,
+                border: `1.5px solid ${isMonthClose ? T.gold : T.border}` }}>
+                <input type="checkbox" checked={isMonthClose}
+                  onChange={e => setIsMonthClose(e.target.checked)}
+                  style={{ marginTop:2, cursor:'pointer', width:16, height:16, accentColor:T.gold }}/>
+                <div style={{ flex:1 }}>
+                  <div style={{ fontSize:12, fontWeight:700, color: isMonthClose ? T.goldText : T.dark }}>
+                    📅 Phiên kiểm kê chốt tháng
+                  </div>
+                  <div style={{ fontSize:10, color: T.med, marginTop:2, lineHeight:1.4 }}>
+                    Đánh dấu nếu phiên này dùng để chốt số liệu cuối tháng. Tab "Cuối tháng" sẽ chỉ tính tiền mất hàng dựa trên phiên chốt tháng. Mỗi tháng chỉ 1 phiên được chốt — nếu đã có phiên chốt cũ trong tháng, hệ thống sẽ tự bỏ đánh dấu phiên cũ.
+                  </div>
+                </div>
+              </label>
               <div style={{padding:'12px',background:T.goldBg,borderRadius:10,fontSize:12,color:T.goldText,marginTop:8 }}>
                 💡 Bước tiếp theo hệ thống sẽ gợi ý 150 SP ưu tiên. Bạn có thể thêm/bớt trước khi xác nhận.
               </div>
