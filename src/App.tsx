@@ -18,7 +18,8 @@ const db = createClient(SUPABASE_URL, SUPABASE_KEY)
 // v161: GhtkModule load cả đơn VTP dropship (is_ghtk_order=false, note có vtp/viettel)
 // v162: thêm SettingComponents reusable (SettingCard, SettingToggle, SettingRow, SettingSlider...)
 // v163: refactor Settings page dùng SettingComponents — Modal đổi mật khẩu, slider thay input số
-const APP_VERSION = '2026.04.29.v163'
+// v164: fix bottom nav che drawer "Khác" + thêm icon ⚙️ Cài đặt ở user card
+const APP_VERSION = '2026.04.29.v164'
 
 // ════════════════════════════════════════════════════════════════
 // v158: VersionBadge — Hiển thị APP_VERSION ở góc dưới phải
@@ -2393,7 +2394,7 @@ function BottomNav({ page, setPage, user, pendingLeave, pendingOT, notifUnread, 
             background:'#fff', borderTopLeftRadius:16, borderTopRightRadius:16,
             maxHeight:'85vh', overflowY:'auto',
             boxShadow:'0 -4px 20px rgba(0,0,0,0.15)',
-            paddingBottom:'env(safe-area-inset-bottom,0px)',
+            paddingBottom:'calc(env(safe-area-inset-bottom,0px) + 72px)',  // v164: +72px tránh bottom nav (56px) che content cuối
             animation:'slideUp .25s ease-out' }}>
             {/* Grab handle */}
             <div style={{ display:'flex', justifyContent:'center', padding:'10px 0 4px' }}>
@@ -2401,21 +2402,32 @@ function BottomNav({ page, setPage, user, pendingLeave, pendingOT, notifUnread, 
             </div>
 
             {/* User card */}
-            <div style={{ display:'flex', alignItems:'center', gap:12,
+            <div style={{ display:'flex', alignItems:'center', gap:10,
               padding:'10px 18px 14px', borderBottom:`1px solid ${T.border}` }}>
               <div style={{ width:44, height:44, borderRadius:'50%',
                 background:DEPT_COLOR[user.dept_id]||T.gold,
                 display:'flex', alignItems:'center', justifyContent:'center',
                 color:'#fff', fontSize:14, fontWeight:700,
                 boxShadow:'0 2px 6px rgba(0,0,0,0.1)' }}>{user.ini}</div>
-              <div style={{ flex:1 }}>
-                <div style={{ color:T.dark, fontSize:FS.md, fontWeight:700 }}>{user.name}</div>
-                <div style={{ color:T.gold, fontSize:FS.xs, marginTop:2 }}>{user.position_name||user.dept_name}</div>
+              <div style={{ flex:1, minWidth:0 }}>
+                <div style={{ color:T.dark, fontSize:FS.md, fontWeight:700,
+                  whiteSpace:'nowrap', overflow:'hidden', textOverflow:'ellipsis' }}>{user.name}</div>
+                <div style={{ color:T.gold, fontSize:FS.xs, marginTop:2,
+                  whiteSpace:'nowrap', overflow:'hidden', textOverflow:'ellipsis' }}>{user.position_name||user.dept_name}</div>
               </div>
+              {/* v164: Icon ⚙️ Cài đặt — luôn nhìn thấy, không bị scroll che */}
+              <button onClick={() => { setPage('settings'); setDrawerOpen(false) }}
+                title="Cài đặt"
+                aria-label="Mở trang Cài đặt"
+                style={{ width:36, height:36, borderRadius:RD.md,
+                  border:`1px solid ${T.border}`, background:T.bg, color:T.med,
+                  fontSize:18, lineHeight:1, cursor:'pointer', fontFamily:'inherit',
+                  display:'flex', alignItems:'center', justifyContent:'center',
+                  flexShrink:0, padding:0 }}>⚙️</button>
               <button onClick={() => { if(confirm('Đăng xuất?')) onLogout() }}
-                style={{ padding:'7px 14px', borderRadius:RD.md, border:`1px solid ${T.redBg}`,
+                style={{ padding:'7px 12px', borderRadius:RD.md, border:`1px solid ${T.redBg}`,
                   background:T.redBg, color:T.red, fontSize:FS.sm, fontWeight:600,
-                  cursor:'pointer', fontFamily:'inherit' }}>
+                  cursor:'pointer', fontFamily:'inherit', flexShrink:0 }}>
                 Đăng xuất
               </button>
             </div>
