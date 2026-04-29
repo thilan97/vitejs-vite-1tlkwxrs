@@ -22,7 +22,8 @@ const db = createClient(SUPABASE_URL, SUPABASE_KEY)
 // v165: fix bug "thêm thùng" mất sau khi blur — bỏ focusedIdx khỏi dep useEffect sync
 // v166: refactor SlowMovingSettings dùng SettingComponents (5 sliders + 1 toggle, disable khi off)
 // v167: refactor GhtkSettingsPanel — bỏ Quận/Huyện theo cải cách 2 cấp 2025, test panel chuyển vào Modal
-const APP_VERSION = '2026.04.29.v167'
+// v168: fix bug visual GhtkManualOrderModal — bỏ nested scroll + sticky footer (footer normal flow ở cuối)
+const APP_VERSION = '2026.04.29.v168'
 
 // ════════════════════════════════════════════════════════════════
 // v158: VersionBadge — Hiển thị APP_VERSION ở góc dưới phải
@@ -34938,7 +34939,7 @@ function GhtkManualOrderModal({ user, mobile, onClose, onCreated }: any) {
 
   return (
     <Modal open wide title="✍️ Tạo đơn GHTK thủ công" onClose={onClose}>
-      <div style={{ maxHeight:'80vh', overflowY:'auto', padding: mobile ? '0 4px 80px' : '0 0 80px' }}>
+      <div style={{ padding: mobile ? '0 4px' : '0' }}>
 
         {/* Kết quả tạo đơn */}
         {createResult && (
@@ -35384,7 +35385,7 @@ function GhtkManualOrderModal({ user, mobile, onClose, onCreated }: any) {
         </div>
 
         {/* ── FOOTER ACTION ── */}
-        <div style={{ position:'sticky', bottom:0, background:'#fff', padding:'12px 0 4px',
+        <div style={{ marginTop:20, padding:'14px 0 4px',
           borderTop:`1px solid ${T.border}`, display:'flex', gap:10, justifyContent:'flex-end',
           flexWrap:'wrap' }}>
           <button onClick={onClose}
