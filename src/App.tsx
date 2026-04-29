@@ -21,7 +21,8 @@ const db = createClient(SUPABASE_URL, SUPABASE_KEY)
 // v164: fix bottom nav che drawer "Khác" + thêm icon ⚙️ Cài đặt ở user card
 // v165: fix bug "thêm thùng" mất sau khi blur — bỏ focusedIdx khỏi dep useEffect sync
 // v166: refactor SlowMovingSettings dùng SettingComponents (5 sliders + 1 toggle, disable khi off)
-const APP_VERSION = '2026.04.29.v166'
+// v167: refactor GhtkSettingsPanel — bỏ Quận/Huyện theo cải cách 2 cấp 2025, test panel chuyển vào Modal
+const APP_VERSION = '2026.04.29.v167'
 
 // ════════════════════════════════════════════════════════════════
 // v158: VersionBadge — Hiển thị APP_VERSION ở góc dưới phải
@@ -36645,15 +36646,17 @@ function GhtkSettingsPanel({ user, mobile }: any) {
     cust_name:    'Khách Test',
     cust_tel:     '0912345678',
     cust_address: 'Xóm 12',
-    cust_province:'Ninh Bình',
-    cust_district:'Kim Sơn',
-    cust_ward:    'Quang Thiện',
+    cust_province:'Bắc Ninh',  // v167: cập nhật theo cải cách 2025
+    cust_district:'',           // v167: bỏ district theo cải cách 2025
+    cust_ward:    'Hiệp Hòa',
     weight_kg:    '5',
     pick_money:   '0',
     order_value:  '500000',   // Giá trị hàng khai báo (VND), mặc định 500k
   })
   const [testing, setTesting]     = useState(false)
   const [testResult, setTestResult] = useState<any>(null)
+  // v167: Modal test panel — đỡ chen lấn UI chính
+  const [showTestModal, setShowTestModal] = useState(false)
 
   const [form, setForm] = useState({
     api_token: '', x_client_source: '',
@@ -36695,10 +36698,12 @@ function GhtkSettingsPanel({ user, mobile }: any) {
     setSaving(true)
     try {
       // v136: Không lưu api_token / x_client_source vào DB nữa (đã ở Secrets)
+      // v167: pick_district auto-set '' theo cải cách hành chính 2 cấp 2025
       const { api_token, x_client_source, ...formToSave } = form
       const { error } = await db.from('ghtk_settings').upsert({
         id: 1,
         ...formToSave,
+        pick_district: '',  // v167: bỏ Quận/Huyện
         ghtk_start_date: formToSave.ghtk_start_date || null,
         updated_at: new Date().toISOString(),
         updated_by: user.id,
@@ -36727,14 +36732,14 @@ function GhtkSettingsPanel({ user, mobile }: any) {
         pick_tel:       testForm.pick_tel || form.pick_tel,
         pick_address:   form.pick_address,
         pick_province:  form.pick_province,
-        pick_district:  form.pick_district,
+        pick_district:  '',  // v167: bỏ Quận/Huyện
         pick_ward:      form.pick_ward,
         customer_info: {
           name:       testForm.cust_name,
           tel:        testForm.cust_tel,
           address:    testForm.cust_address,
           province:   testForm.cust_province,
-          district:   testForm.cust_district,
+          district:   '',  // v167: bỏ Quận/Huyện
           ward:       testForm.cust_ward,
           hamlet:     'Khác',
           pick_money:  Number(testForm.pick_money || 0),
@@ -36764,145 +36769,128 @@ function GhtkSettingsPanel({ user, mobile }: any) {
 
   if (loading) return <div style={{ padding:'40px', textAlign:'center', color:T.light }}>⏳</div>
 
-  const fieldStyle: any = {
-    width:'100%', padding:'8px 12px', border:`1px solid ${T.border}`, borderRadius:6,
-    fontSize:12, fontFamily:'inherit', color:T.dark, background:'#fff', outline:'none',
-    boxSizing:'border-box',
-  }
-  const labelStyle: any = { display:'block', fontSize:11, color:T.med, marginBottom:4, fontWeight:600 }
-
   return (
-    <Card style={{ padding:16 }}>
-      <div style={{ fontSize:14, fontWeight:700, color:T.dark, marginBottom:14 }}>🔑 Credentials GHTK</div>
+    <div style={{ maxWidth: 720 }}>
 
-      {/* v136: Token + ClientSource giờ lưu ở Supabase Secrets (không qua app) */}
-      <div style={{ padding:'12px 14px', marginBottom:20, background:T.greenBg,
-        border:`1.5px solid ${T.green}55`, borderRadius:10, fontSize:12, color:T.dark, lineHeight:1.6 }}>
-        <div style={{ fontWeight:700, color:T.green, marginBottom:6 }}>
-          🔒 Token được lưu an toàn trong Supabase Secrets
+      {/* ── BẢO MẬT — Token info banner ── */}
+      <SettingSectionTitle>Bảo mật API</SettingSectionTitle>
+      <SettingCard style={{ padding:'14px', background:T.greenBg, border:`1px solid ${T.green}55` }}>
+        <div style={{ fontSize:13, fontWeight:600, color:T.green, marginBottom:6 }}>
+          🔒 Token đã được lưu trong Supabase Secrets
         </div>
-        <div>
-          API Token và X-Client-Source giờ được mã hoá trong <b>Supabase Secrets</b>, không lưu trong DB.
-          Chỉ có Admin Supabase mới đổi được.
+        <div style={{ fontSize:12, color:T.dark, lineHeight:1.6 }}>
+          API Token và X-Client-Source được mã hoá trong Supabase Secrets (không lưu trong DB).
+          Chỉ Admin Supabase mới đổi được — vào <b>Edge Functions → Secrets</b>, edit{' '}
+          <code style={{ padding:'1px 6px', background:'#fff', color:T.dark,
+            border:`1px solid ${T.border}`, borderRadius:3, fontFamily:'monospace', fontWeight:600 }}>GHTK_API_TOKEN</code>{' '}
+          hoặc{' '}
+          <code style={{ padding:'1px 6px', background:'#fff', color:T.dark,
+            border:`1px solid ${T.border}`, borderRadius:3, fontFamily:'monospace', fontWeight:600 }}>GHTK_X_CLIENT_SOURCE</code>.
         </div>
-        <div style={{ marginTop:8, fontSize:11, color:T.med }}>
-          <b>Để đổi token:</b><br/>
-          1. Mở <b>Supabase Dashboard</b> → Project<br/>
-          2. Sidebar trái → <b>Edge Functions</b> → tab <b>Secrets</b><br/>
-          3. Edit <code style={{ padding:'1px 6px', background:'#F3F4F6', color:'#1F2937', border:'1px solid #E5E7EB', borderRadius:3, fontFamily:'monospace', fontWeight:600 }}>GHTK_API_TOKEN</code> hoặc <code style={{ padding:'1px 6px', background:'#F3F4F6', color:'#1F2937', border:'1px solid #E5E7EB', borderRadius:3, fontFamily:'monospace', fontWeight:600 }}>GHTK_X_CLIENT_SOURCE</code><br/>
-          4. Save → các edge functions tự dùng token mới (không cần redeploy)
-        </div>
-      </div>
+      </SettingCard>
 
-      {/* v138: Auto-sync cron job status */}
+      {/* ── AUTO-SYNC CRON — giữ nguyên component cũ ── */}
+      <SettingSectionTitle>Cron auto-sync</SettingSectionTitle>
       <GhtkAutoSyncCard mobile={mobile}/>
 
-      <div style={{ fontSize:14, fontWeight:700, color:T.dark, marginBottom:14,
-        paddingTop:14, borderTop:`1px solid ${T.border}` }}>🏠 Địa chỉ kho lấy hàng</div>
-
-      <div style={{ display:'grid', gridTemplateColumns: mobile ? '1fr' : '1fr 1fr', gap:12, marginBottom:12 }}>
-        <div>
-          <label style={labelStyle}>Tên kho *</label>
-          <input value={form.pick_name}
-            onChange={e => setForm(f => ({...f, pick_name:e.target.value}))}
-            placeholder="VD: LA Global Beauty" style={fieldStyle}/>
+      {/* ── ĐỊA CHỈ KHO LẤY HÀNG ── */}
+      <SettingSectionTitle>Địa chỉ kho lấy hàng</SettingSectionTitle>
+      <SettingCard style={{ padding:'14px' }}>
+        <div style={{ fontSize:11, color:T.med, lineHeight:1.5, marginBottom:14,
+          padding:'8px 12px', background:T.blueBg, borderRadius:6 }}>
+          💡 <b>Cải cách hành chính 2 cấp (1/7/2025):</b> chỉ cần Tỉnh/TP + Xã/Phường,
+          không còn cấp Quận/Huyện.
         </div>
-        <div>
-          <label style={labelStyle}>Số điện thoại *</label>
-          <input value={form.pick_tel}
-            onChange={e => setForm(f => ({...f, pick_tel:e.target.value}))}
-            placeholder="0912345678" style={fieldStyle}/>
+        <div style={{ display:'grid', gridTemplateColumns: mobile ? '1fr' : '1fr 1fr', gap:10 }}>
+          <Inp label="Tên kho *" value={form.pick_name}
+            onChange={v => setForm(f => ({...f, pick_name:v}))}
+            placeholder="LA Global Beauty"/>
+          <Inp label="Số điện thoại *" value={form.pick_tel}
+            onChange={v => setForm(f => ({...f, pick_tel:v}))}
+            placeholder="0912345678"/>
         </div>
-      </div>
-
-      <div style={{ marginBottom:12 }}>
-        <label style={labelStyle}>Địa chỉ chi tiết (số nhà, đường) *</label>
-        <input value={form.pick_address}
-          onChange={e => setForm(f => ({...f, pick_address:e.target.value}))}
-          placeholder="123 Nguyễn Chí Thanh" style={fieldStyle}/>
-      </div>
-
-      <div style={{ display:'grid', gridTemplateColumns: mobile ? '1fr' : '1fr 1fr 1fr', gap:12, marginBottom:20 }}>
-        <div>
-          <label style={labelStyle}>Tỉnh/TP *</label>
-          <input value={form.pick_province}
-            onChange={e => setForm(f => ({...f, pick_province:e.target.value}))}
-            placeholder="Hà Nội" style={fieldStyle}/>
+        <Inp label="Địa chỉ chi tiết (số nhà, đường) *" value={form.pick_address}
+          onChange={v => setForm(f => ({...f, pick_address:v}))}
+          placeholder="123 Nguyễn Chí Thanh"/>
+        <div style={{ display:'grid', gridTemplateColumns: mobile ? '1fr' : '1fr 1fr', gap:10 }}>
+          <Inp label="Tỉnh/TP *" value={form.pick_province}
+            onChange={v => setForm(f => ({...f, pick_province:v}))}
+            placeholder="Bắc Ninh"/>
+          <Inp label="Xã/Phường *" value={form.pick_ward}
+            onChange={v => setForm(f => ({...f, pick_ward:v}))}
+            placeholder="Hiệp Hòa"/>
         </div>
-        <div>
-          <label style={labelStyle}>Quận/Huyện *</label>
-          <input value={form.pick_district}
-            onChange={e => setForm(f => ({...f, pick_district:e.target.value}))}
-            placeholder="Đống Đa" style={fieldStyle}/>
-        </div>
-        <div>
-          <label style={labelStyle}>Phường/Xã *</label>
-          <input value={form.pick_ward}
-            onChange={e => setForm(f => ({...f, pick_ward:e.target.value}))}
-            placeholder="Láng Thượng" style={fieldStyle}/>
-        </div>
-      </div>
+      </SettingCard>
 
-      <div style={{ fontSize:14, fontWeight:700, color:T.dark, marginBottom:14,
-        paddingTop:14, borderTop:`1px solid ${T.border}` }}>📅 Phạm vi quản lý đơn</div>
-
-      <div style={{ marginBottom:20 }}>
-        <label style={labelStyle}>
-          Ngày bắt đầu quản lý đơn GHTK
-          <span style={{ fontSize:10, color:T.light, marginLeft:6, fontWeight:400 }}>
-            (Đơn trước ngày này sẽ KHÔNG hiện trong module GHTK)
-          </span>
-        </label>
+      {/* ── PHẠM VI QUẢN LÝ ĐƠN ── */}
+      <SettingSectionTitle>Phạm vi quản lý đơn</SettingSectionTitle>
+      <SettingCard style={{ padding:'14px' }}>
+        <div style={{ fontSize:14, fontWeight:500, color:T.dark, marginBottom:4 }}>
+          📅 Ngày bắt đầu quản lý đơn GHTK
+        </div>
+        <div style={{ fontSize:12, color:T.med, lineHeight:1.5, marginBottom:12 }}>
+          Đơn KiotViet trước ngày này sẽ KHÔNG hiện trong module GHTK. Bỏ trống = quản lý mọi đơn.
+        </div>
         <div style={{ display:'flex', gap:8, alignItems:'center', flexWrap:'wrap' }}>
           <input type="date" value={form.ghtk_start_date}
             onChange={e => setForm(f => ({...f, ghtk_start_date:e.target.value}))}
-            style={{ ...fieldStyle, maxWidth:200 }}/>
+            style={{ padding:'9px 12px', border:`1.5px solid ${T.border}`,
+              borderRadius:6, fontSize:13, fontFamily:'inherit',
+              color:T.dark, background:'#fff', minWidth:160 }}/>
           {form.ghtk_start_date && (
             <button onClick={() => setForm(f => ({...f, ghtk_start_date:''}))}
-              style={{ padding:'6px 12px', borderRadius:6, border:`1px solid ${T.border}`,
+              style={{ padding:'7px 12px', borderRadius:6, border:`1px solid ${T.border}`,
                 background:'transparent', color:T.med, cursor:'pointer',
-                fontSize:11, fontFamily:'inherit' }}>
+                fontSize:12, fontFamily:'inherit' }}>
               🧹 Xóa
             </button>
           )}
         </div>
         {form.ghtk_start_date && (
-          <div style={{ marginTop:6, fontSize:11, color:T.blue,
-            padding:'6px 10px', background:T.blueBg, borderRadius:6 }}>
-            💡 Chỉ hiển thị đơn có ngày tạo KV từ <b>{form.ghtk_start_date.split('-').reverse().join('/')}</b> trở về sau.
+          <div style={{ marginTop:10, padding:'8px 12px', background:T.blueBg,
+            borderRadius:6, fontSize:12, color:T.blue }}>
+            💡 Chỉ hiển thị đơn từ <b>{form.ghtk_start_date.split('-').reverse().join('/')}</b> trở về sau.
           </div>
         )}
-      </div>
+      </SettingCard>
 
-      <div style={{ fontSize:14, fontWeight:700, color:T.dark, marginBottom:14,
-        paddingTop:14, borderTop:`1px solid ${T.border}` }}>⚙️ Mặc định</div>
-
-      <div style={{ marginBottom:12 }}>
-        <label style={labelStyle}>Policy ship mặc định</label>
-        <select value={form.default_is_freeship}
-          onChange={e => setForm(f => ({...f, default_is_freeship: Number(e.target.value)}))}
-          style={fieldStyle}>
-          <option value={0}>KH trả ship (mặc định)</option>
-          <option value={1}>Shop trả ship</option>
-        </select>
-      </div>
-
-      <label style={{ display:'flex', alignItems:'center', gap:8, fontSize:12, cursor:'pointer',
-        padding:'10px 12px', background:T.bg, borderRadius:6, marginBottom:20 }}>
-        <input type="checkbox" checked={form.enforce_ghtk_required}
-          onChange={e => setForm(f => ({...f, enforce_ghtk_required:e.target.checked}))}/>
-        <div>
-          <div style={{ color:T.dark, fontWeight:600 }}>Bắt buộc điền đủ info GHTK trước khi hoàn tất đơn</div>
-          <div style={{ fontSize:10, color:T.light, marginTop:2 }}>
-            Mặc định OFF (soft) — cho hoàn tất đơn kể cả chưa tạo GHTK. Bật ON khi đội ngũ đã quen flow.
+      {/* ── MẶC ĐỊNH ── */}
+      <SettingSectionTitle>Mặc định</SettingSectionTitle>
+      <SettingCard style={{ padding:'4px 14px' }}>
+        <div style={{ padding:'12px 0' }}>
+          <div style={{ fontSize:14, fontWeight:500, color:T.dark, marginBottom:8 }}>
+            💰 Policy ship mặc định
           </div>
+          <select value={form.default_is_freeship}
+            onChange={e => setForm(f => ({...f, default_is_freeship: Number(e.target.value)}))}
+            style={{ width:'100%', padding:'9px 12px', border:`1.5px solid ${T.border}`,
+              borderRadius:6, fontSize:13, fontFamily:'inherit',
+              color:T.dark, background:'#fff', cursor:'pointer' }}>
+            <option value={0}>KH trả ship (mặc định)</option>
+            <option value={1}>Shop trả ship</option>
+          </select>
         </div>
-      </label>
+        <SettingDivider/>
+        <SettingToggleRow
+          title="🔒 Bắt buộc điền đủ info GHTK"
+          description="Soft (OFF): cho hoàn tất đơn dù chưa tạo GHTK. Bật ON khi đội đã quen flow."
+          enabled={form.enforce_ghtk_required}
+          onChange={(v: boolean) => setForm(f => ({...f, enforce_ghtk_required: v}))}
+        />
+      </SettingCard>
 
-      <div style={{ display:'flex', gap:10, justifyContent:'flex-end' }}>
+      {/* ── ACTION FOOTER ── */}
+      <div style={{ display:'flex', gap:10, padding:'8px 14px 16px',
+        justifyContent:'flex-end', flexWrap:'wrap' }}>
+        <button onClick={() => setShowTestModal(true)}
+          style={{ padding:'9px 18px', borderRadius:8,
+            border:`1.5px solid ${T.blue}`, background:'transparent',
+            color:T.blue, cursor:'pointer',
+            fontFamily:'inherit', fontSize:13, fontWeight:600 }}>
+          🧪 Tạo đơn test
+        </button>
         <button onClick={save} disabled={saving}
-          style={{ padding:'8px 20px', borderRadius:20,
-            border:`1.5px solid ${T.gold}`,
+          style={{ padding:'9px 22px', borderRadius:8, border:'none',
             background: saving ? T.border : T.gold,
             color:'#fff', cursor: saving ? 'wait' : 'pointer',
             fontFamily:'inherit', fontSize:13, fontWeight:700 }}>
@@ -36910,159 +36898,116 @@ function GhtkSettingsPanel({ user, mobile }: any) {
         </button>
       </div>
 
-      {/* v119: Test Panel */}
-      <div style={{ marginTop:24, paddingTop:20, borderTop:`2px dashed ${T.border}` }}>
-        <div style={{ fontSize:14, fontWeight:700, color:T.dark, marginBottom:4 }}>
-          🧪 Tạo đơn test GHTK
-        </div>
-        <div style={{ fontSize:11, color:T.light, marginBottom:14 }}>
-          Tạo 1 đơn test để kiểm tra kết nối API. <b>Nhớ huỷ đơn trên GHTK sau khi test!</b>
-        </div>
+      {/* ── TEST MODAL ── */}
+      {showTestModal && (
+        <Modal open onClose={() => { setShowTestModal(false); setTestResult(null) }}
+          title="🧪 Tạo đơn test GHTK" wide>
+          <div style={{ padding:'10px 12px', background:'#FEF3C7',
+            border:'1px solid #FCD34D', borderRadius:6, marginBottom:14, fontSize:12, color:'#92400E' }}>
+            ⚠️ Tạo 1 đơn test để kiểm tra kết nối API. <b>Nhớ huỷ đơn trên GHTK sau khi test!</b>
+          </div>
 
-        <div style={{ display:'grid', gridTemplateColumns: mobile ? '1fr' : '1fr 1fr', gap:10, marginBottom:10 }}>
-          <div>
-            <label style={labelStyle}>SĐT kho lấy hàng *</label>
-            <input value={testForm.pick_tel || form.pick_tel}
-              onChange={e => setTestForm(f => ({...f, pick_tel:e.target.value}))}
-              placeholder="0912345678" style={fieldStyle}/>
+          <div style={{ display:'grid', gridTemplateColumns: mobile ? '1fr' : '1fr 1fr', gap:10 }}>
+            <Inp label="SĐT kho lấy hàng *" value={testForm.pick_tel || form.pick_tel}
+              onChange={v => setTestForm(f => ({...f, pick_tel:v}))}
+              placeholder="0912345678"/>
+            <Inp label="Cân nặng test (kg)" type="number" value={testForm.weight_kg}
+              onChange={v => setTestForm(f => ({...f, weight_kg:v}))}/>
           </div>
-          <div>
-            <label style={labelStyle}>Cân nặng test (kg)</label>
-            <input type="number" min={0.1} step={0.1} value={testForm.weight_kg}
-              onChange={e => setTestForm(f => ({...f, weight_kg:e.target.value}))}
-              style={fieldStyle}/>
-          </div>
-        </div>
 
-        <div style={{ fontSize:12, fontWeight:700, color:T.med, margin:'10px 0 8px' }}>
-          👤 Thông tin KH test
-        </div>
-        <div style={{ display:'grid', gridTemplateColumns: mobile ? '1fr' : '1fr 1fr', gap:10, marginBottom:10 }}>
-          <div>
-            <label style={labelStyle}>Tên KH *</label>
-            <input value={testForm.cust_name}
-              onChange={e => setTestForm(f => ({...f, cust_name:e.target.value}))}
-              placeholder="Nguyễn Văn A" style={fieldStyle}/>
+          <div style={{ fontSize:13, fontWeight:600, color:T.med, margin:'10px 0 6px' }}>
+            👤 Thông tin KH test
           </div>
-          <div>
-            <label style={labelStyle}>SĐT KH *</label>
-            <input value={testForm.cust_tel}
-              onChange={e => setTestForm(f => ({...f, cust_tel:e.target.value}))}
-              placeholder="0912345678" style={fieldStyle}/>
+          <div style={{ display:'grid', gridTemplateColumns: mobile ? '1fr' : '1fr 1fr', gap:10 }}>
+            <Inp label="Tên KH *" value={testForm.cust_name}
+              onChange={v => setTestForm(f => ({...f, cust_name:v}))}/>
+            <Inp label="SĐT KH *" value={testForm.cust_tel}
+              onChange={v => setTestForm(f => ({...f, cust_tel:v}))}/>
+            <Inp label="Địa chỉ chi tiết" value={testForm.cust_address}
+              onChange={v => setTestForm(f => ({...f, cust_address:v}))}/>
+            <Inp label="COD (đ) — 0 nếu không thu" type="number" value={testForm.pick_money}
+              onChange={v => setTestForm(f => ({...f, pick_money:v}))}/>
           </div>
-          <div>
-            <label style={labelStyle}>Địa chỉ chi tiết</label>
-            <input value={testForm.cust_address}
-              onChange={e => setTestForm(f => ({...f, cust_address:e.target.value}))}
-              placeholder="Xóm 12" style={fieldStyle}/>
+          <Inp label="Giá trị hàng khai báo (đ) — max 3.000.000đ" type="number"
+            value={testForm.order_value}
+            onChange={v => setTestForm(f => ({...f, order_value: String(Math.min(Number(v), 3000000))}))}/>
+          <div style={{ display:'grid', gridTemplateColumns: mobile ? '1fr' : '1fr 1fr', gap:10 }}>
+            <Inp label="Tỉnh/TP" value={testForm.cust_province}
+              onChange={v => setTestForm(f => ({...f, cust_province:v}))}/>
+            <Inp label="Xã/Phường" value={testForm.cust_ward}
+              onChange={v => setTestForm(f => ({...f, cust_ward:v}))}/>
           </div>
-          <div>
-            <label style={labelStyle}>COD (đ) — 0 nếu không thu</label>
-            <input type="number" min={0} value={testForm.pick_money}
-              onChange={e => setTestForm(f => ({...f, pick_money:e.target.value}))}
-              style={fieldStyle}/>
-          </div>
-          <div>
-            <label style={labelStyle}>
-              Giá trị hàng khai báo (đ)
-              <span style={{ fontSize:9, color:T.light, marginLeft:6 }}>max 3,000,000đ</span>
-            </label>
-            <input type="number" min={1} max={3000000} value={testForm.order_value}
-              onChange={e => setTestForm(f => ({...f, order_value: String(Math.min(Number(e.target.value), 3000000))}))}
-              style={{ ...fieldStyle, borderColor: Number(testForm.order_value) > 3000000 ? T.red : T.border }}/>
-            {Number(testForm.order_value) > 3000000 && (
-              <div style={{ fontSize:10, color:T.red, marginTop:2 }}>Tự động cap về 3,000,000đ</div>
-            )}
-          </div>
-        </div>
-        <div style={{ display:'grid', gridTemplateColumns: mobile ? '1fr' : '1fr 1fr 1fr', gap:10, marginBottom:14 }}>
-          <div>
-            <label style={labelStyle}>Tỉnh/TP</label>
-            <input value={testForm.cust_province}
-              onChange={e => setTestForm(f => ({...f, cust_province:e.target.value}))}
-              placeholder="Ninh Bình" style={fieldStyle}/>
-          </div>
-          <div>
-            <label style={labelStyle}>Quận/Huyện</label>
-            <input value={testForm.cust_district}
-              onChange={e => setTestForm(f => ({...f, cust_district:e.target.value}))}
-              placeholder="Kim Sơn" style={fieldStyle}/>
-          </div>
-          <div>
-            <label style={labelStyle}>Phường/Xã</label>
-            <input value={testForm.cust_ward}
-              onChange={e => setTestForm(f => ({...f, cust_ward:e.target.value}))}
-              placeholder="Quang Thiện" style={fieldStyle}/>
-          </div>
-        </div>
 
-        <button onClick={runTest} disabled={testing}
-          style={{ padding:'9px 24px', borderRadius:20,
-            border:`1.5px solid ${testing ? T.border : T.blue}`,
-            background: testing ? T.border : T.blueBg,
-            color: testing ? T.light : T.blue,
-            cursor: testing ? 'wait' : 'pointer',
-            fontFamily:'inherit', fontSize:13, fontWeight:700 }}>
-          {testing ? '⏳ Đang gọi GHTK...' : '🚀 Tạo đơn test'}
-        </button>
+          <div style={{ display:'flex', gap:10, marginTop:10 }}>
+            <button onClick={runTest} disabled={testing}
+              style={{ padding:'9px 22px', borderRadius:8,
+                border:`1.5px solid ${testing ? T.border : T.blue}`,
+                background: testing ? T.border : T.blue,
+                color: testing ? T.light : '#fff',
+                cursor: testing ? 'wait' : 'pointer',
+                fontFamily:'inherit', fontSize:13, fontWeight:700 }}>
+              {testing ? '⏳ Đang gọi GHTK...' : '🚀 Tạo đơn test'}
+            </button>
+            <button onClick={() => { setShowTestModal(false); setTestResult(null) }}
+              style={{ padding:'9px 18px', borderRadius:8, border:`1px solid ${T.border}`,
+                background:'transparent', color:T.med, cursor:'pointer',
+                fontFamily:'inherit', fontSize:13 }}>
+              Đóng
+            </button>
+          </div>
 
-        {/* Kết quả test */}
-        {testResult && (
-          <div style={{ marginTop:16, padding:14, borderRadius:10,
-            background: testResult.success ? T.greenBg : T.redBg,
-            border:`1px solid ${testResult.success ? T.green : T.red}` }}>
-            <div style={{ fontWeight:700, fontSize:13, marginBottom:10,
-              color: testResult.success ? T.green : T.red }}>
-              {testResult.success ? '✅ Tạo đơn thành công!' : '❌ Tạo đơn thất bại'}
-            </div>
+          {/* Kết quả test */}
+          {testResult && (
+            <div style={{ marginTop:16, padding:14, borderRadius:8,
+              background: testResult.success ? T.greenBg : T.redBg,
+              border:`1px solid ${testResult.success ? T.green : T.red}` }}>
+              <div style={{ fontWeight:700, fontSize:13, marginBottom:10,
+                color: testResult.success ? T.green : T.red }}>
+                {testResult.success ? '✅ Tạo đơn thành công!' : '❌ Tạo đơn thất bại'}
+              </div>
 
-            {testResult.results?.map((r: any) => (
-              <div key={r.box_no} style={{ marginBottom:10, padding:10, borderRadius:8,
-                background:'#fff', border:`1px solid ${r.success ? T.green : T.red}` }}>
-                <div style={{ fontWeight:700, color:T.dark, marginBottom:6 }}>
-                  📦 Thùng {r.box_no} — {r.weight_kg}kg {r.is_bigsize ? '(BIGSIZE)' : '(thường)'}
-                </div>
-                {r.success ? (
-                  <div style={{ display:'flex', gap:16, flexWrap:'wrap' }}>
-                    <span style={{ fontSize:12 }}>🏷 Label ID: <b style={{ color:T.blue }}>{r.label_id}</b></span>
-                    <span style={{ fontSize:12 }}>💰 Phí ship: <b>{Number(r.fee||0).toLocaleString('vi-VN')}đ</b></span>
-                    <span style={{ fontSize:12 }}>💵 COD: <b>{Number(r.cod||0).toLocaleString('vi-VN')}đ</b></span>
+              {testResult.results?.map((r: any) => (
+                <div key={r.box_no} style={{ marginBottom:10, padding:10, borderRadius:6,
+                  background:'#fff', border:`1px solid ${r.success ? T.green : T.red}` }}>
+                  <div style={{ fontWeight:700, color:T.dark, marginBottom:6 }}>
+                    📦 Thùng {r.box_no} — {r.weight_kg}kg {r.is_bigsize ? '(BIGSIZE)' : '(thường)'}
                   </div>
-                ) : (
-                  <div style={{ fontSize:12, color:T.red }}>{r.status_text || r.raw?.message || 'Lỗi không xác định'}</div>
-                )}
+                  {r.success ? (
+                    <div style={{ display:'flex', gap:16, flexWrap:'wrap' }}>
+                      <span style={{ fontSize:12 }}>🏷 Label ID: <b style={{ color:T.blue }}>{r.label_id}</b></span>
+                      <span style={{ fontSize:12 }}>💰 Phí ship: <b>{Number(r.fee||0).toLocaleString('vi-VN')}đ</b></span>
+                      <span style={{ fontSize:12 }}>💵 COD: <b>{Number(r.cod||0).toLocaleString('vi-VN')}đ</b></span>
+                    </div>
+                  ) : (
+                    <div style={{ fontSize:12, color:T.red }}>{r.status_text || r.raw?.message || 'Lỗi không xác định'}</div>
+                  )}
+                </div>
+              ))}
+
+              {testResult.error && (
+                <div style={{ fontSize:12, color:T.red, marginBottom:8 }}>{testResult.error}</div>
+              )}
+
+              <div style={{ marginTop:10 }}>
+                <div style={{ fontSize:11, fontWeight:700, color:T.med, marginBottom:4 }}>📋 Raw response:</div>
+                <pre style={{ fontSize:10, color:T.dark, background:'rgba(0,0,0,0.04)',
+                  padding:8, borderRadius:6, overflow:'auto', maxHeight:200,
+                  whiteSpace:'pre-wrap', wordBreak:'break-word', margin:0 }}>
+                  {JSON.stringify(testResult, null, 2)}
+                </pre>
               </div>
-            ))}
 
-            {testResult.error && (
-              <div style={{ fontSize:12, color:T.red }}>{testResult.error}</div>
-            )}
-
-            <div style={{ marginTop:10 }}>
-              <div style={{ fontSize:11, fontWeight:700, color:T.med, marginBottom:4 }}>📋 Raw response:</div>
-              <pre style={{ fontSize:10, color:T.dark, background:'rgba(0,0,0,0.04)',
-                padding:8, borderRadius:6, overflow:'auto', maxHeight:200,
-                whiteSpace:'pre-wrap', wordBreak:'break-word', margin:0 }}>
-                {JSON.stringify(testResult, null, 2)}
-              </pre>
+              {testResult.success && (
+                <div style={{ marginTop:10, padding:'8px 12px', borderRadius:6,
+                  background:'#FEF3C7', border:'1px solid #FCD34D', fontSize:12, color:'#92400E' }}>
+                  ⚠️ <b>Nhớ vào GHTK huỷ đơn test này!</b> Label ID: {testResult.results?.map((r: any) => r.label_id).join(', ')}
+                </div>
+              )}
             </div>
-
-            {testResult.success && (
-              <div style={{ marginTop:10, padding:'8px 12px', borderRadius:6,
-                background:'#FEF3C7', border:'1px solid #FCD34D', fontSize:12, color:'#92400E' }}>
-                ⚠️ <b>Nhớ vào GHTK huỷ đơn test này!</b> Label ID: {testResult.results?.map((r: any) => r.label_id).join(', ')}
-              </div>
-            )}
-
-            <button onClick={() => setTestResult(null)}
-              style={{ marginTop:10, padding:'4px 14px', borderRadius:20, fontSize:11, cursor:'pointer',
-                border:`1px solid ${testResult.success ? T.green : T.red}`,
-                background:'transparent', color: testResult.success ? T.green : T.red,
-                fontFamily:'inherit' }}>Đóng</button>
-          </div>
-        )}
-      </div>
-    </Card>
+          )}
+        </Modal>
+      )}
+    </div>
   )
 }
 
