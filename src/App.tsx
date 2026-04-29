@@ -12,7 +12,7 @@ const db = createClient(SUPABASE_URL, SUPABASE_KEY)
 // APP_VERSION — dùng để invalidate cache localStorage mỗi khi deploy version mới
 // (ngăn bug quyền user bị "reset" do cache position cũ sau deploy)
 // ⚠️ MỖI LẦN DEPLOY FEATURE MỚI CÓ PERMISSION MỚI, BUMP SỐ NÀY:
-const APP_VERSION = '2026.04.25.v146'
+const APP_VERSION = '2026.04.25.v147'
 
 // ════════════════════════════════════════════════════════════════
 // AUDIT LOG — ghi nhận các hành động phá hoại data để trace lại
@@ -18052,15 +18052,43 @@ async function compressImageV2(file: File, maxW = 1920, quality = 0.82): Promise
 // Ảnh gốc: dùng hiển thị + audit đơn nhầm
 // Ảnh AI: chỉ gửi OpenAI (tiết kiệm ~90% tokens)
 async function compressImageDual(file: File): Promise<{ fullBlob: Blob; aiBlob: Blob }> {
-  // Đọc ảnh 1 lần, resize 2 phiên bản
+  // v144: Đọc ảnh 1 lần, resize 2 phiên bản
+  // FIX: Ảnh chụp camera native iOS/Android thường ~3024×4032 (~12MP) → mobile canvas
+  // có thể fail với ảnh quá lớn. Step "pre-shrink" giảm xuống ≤3000px trước khi resize chính.
   return new Promise((resolve, reject) => {
     const img = new Image()
     const reader = new FileReader()
     reader.onload = () => {
       img.onload = async () => {
+        // Step 1 (v144): Pre-shrink ảnh quá lớn xuống canvas trung gian để tránh memory crash
+        // Threshold 3000px là an toàn cho iOS Safari (giới hạn ~16MP / 4096×4096)
+        let sourceImg: HTMLImageElement | HTMLCanvasElement = img
+        const PRE_SHRINK_LIMIT = 3000
+        if (img.width > PRE_SHRINK_LIMIT || img.height > PRE_SHRINK_LIMIT) {
+          try {
+            const ratio = Math.min(PRE_SHRINK_LIMIT / img.width, PRE_SHRINK_LIMIT / img.height)
+            const preW = Math.round(img.width * ratio)
+            const preH = Math.round(img.height * ratio)
+            const preCanvas = document.createElement('canvas')
+            preCanvas.width = preW
+            preCanvas.height = preH
+            const preCtx = preCanvas.getContext('2d')
+            if (preCtx) {
+              preCtx.drawImage(img, 0, 0, preW, preH)
+              sourceImg = preCanvas
+            }
+          } catch(e) {
+            // Pre-shrink fail → vẫn dùng img gốc, tiếp tục
+            console.warn('[compressImageDual] Pre-shrink failed, using original:', e)
+          }
+        }
+
+        const srcW = sourceImg instanceof HTMLCanvasElement ? sourceImg.width : sourceImg.width
+        const srcH = sourceImg instanceof HTMLCanvasElement ? sourceImg.height : sourceImg.height
+
         const makeBlob = (maxW: number, quality: number): Promise<Blob> => {
           return new Promise((res, rej) => {
-            let { width, height } = img
+            let width = srcW, height = srcH
             if (width > maxW) {
               height = Math.round((height * maxW) / width)
               width = maxW
@@ -18070,15 +18098,26 @@ async function compressImageDual(file: File): Promise<{ fullBlob: Blob; aiBlob: 
             canvas.height = height
             const ctx = canvas.getContext('2d')
             if (!ctx) { rej(new Error('canvas ctx')); return }
-            ctx.drawImage(img, 0, 0, width, height)
+            ctx.drawImage(sourceImg as any, 0, 0, width, height)
             canvas.toBlob(b => b ? res(b) : rej(new Error('blob fail')), 'image/jpeg', quality)
           })
         }
         try {
-          const [fullBlob, aiBlob] = await Promise.all([
-            makeBlob(2048, 0.85),  // Ảnh gốc: 2048px, quality 0.85 → ~500KB, đủ rõ để audit
-            makeBlob(1024, 0.78),  // Ảnh AI:  1024px, quality 0.78 → ~150KB, đủ rõ cho OpenAI
-          ])
+          // v144: Tạo full trước, sau đó AI — sequential (không Promise.all) để tránh memory peak
+          const fullBlob = await makeBlob(2048, 0.85)
+          // Try AI version với progressive fallback
+          let aiBlob: Blob
+          try {
+            aiBlob = await makeBlob(1024, 0.78)  // Primary: 1024px
+          } catch(e1) {
+            console.warn('[compressImageDual] 1024px fail, fallback 800px:', e1)
+            try {
+              aiBlob = await makeBlob(800, 0.75)   // Fallback 1: 800px
+            } catch(e2) {
+              console.warn('[compressImageDual] 800px also fail, using full as ai:', e2)
+              aiBlob = fullBlob                    // Fallback 2: dùng full (giống behavior cũ)
+            }
+          }
           resolve({ fullBlob, aiBlob })
         } catch(e) { reject(e) }
       }
