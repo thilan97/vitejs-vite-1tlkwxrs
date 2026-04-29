@@ -28,7 +28,9 @@ const db = createClient(SUPABASE_URL, SUPABASE_KEY)
 // v171: feature "Theo dõi đơn" Iteration 2 — modal chi tiết + sửa địa chỉ + huỷ đơn (call GHTK API)
 // v172: fix đơn manual không hiện — error check + auto navigate sang track + bỏ bug /1000 total_amount
 // v173: feature "Import đơn từ web GHTK" Iteration 3 — paste label_id + sync info + link với KV
-const APP_VERSION = '2026.04.29.v173'
+// v174: fix UX — placeholder textarea Import dùng text gợi ý hành động thay dữ liệu mẫu giả
+// v175: fix code badge S22.HN1.13.A99 trong banner Import bị blend trắng-trắng — set color+border đậm
+const APP_VERSION = '2026.04.29.v175'
 
 // ════════════════════════════════════════════════════════════════
 // v158: VersionBadge — Hiển thị APP_VERSION ở góc dưới phải
@@ -34426,7 +34428,8 @@ function GhtkImportExternalModal({ user, mobile, onClose, onImported }: any) {
           marginBottom:14, fontSize:12, color:T.dark, lineHeight:1.7 }}>
           <div style={{ fontWeight:700, color:T.blue, marginBottom:6 }}>📋 Cách dùng:</div>
           1. Mở web GHTK → copy <b>mã đơn</b> (vd: <code style={{ padding:'1px 6px',
-            background:'#fff', borderRadius:3, fontFamily:'monospace', fontSize:11 }}>S22.HN1.13.A99</code>)<br/>
+            background:'#fff', color:T.dark, border:`1px solid ${T.border}`,
+            borderRadius:3, fontFamily:'monospace', fontSize:11, fontWeight:600 }}>S22.HN1.13.A99</code>)<br/>
           2. Paste vào ô bên dưới (1 mã/dòng hoặc cách nhau bởi dấu phẩy/cách)<br/>
           3. Bấm "🔍 Sync info" → app gọi GHTK API để lấy thông tin đơn<br/>
           4. Review → bấm "📥 Import {ids.length > 0 ? `(${ids.length})` : ''}" để lưu vào app
@@ -34440,7 +34443,7 @@ function GhtkImportExternalModal({ user, mobile, onClose, onImported }: any) {
           </div>
           <textarea value={pasteText}
             onChange={e => setPasteText(e.target.value)}
-            placeholder={`S22.HN1.13.A99\nS22.HN1.13.B11\nS22.HN1.14.C22`}
+            placeholder="👉 Paste mã đơn GHTK vào đây — mỗi mã 1 dòng, hoặc cách nhau bởi dấu phẩy/cách"
             rows={5}
             style={{ width:'100%', padding:'10px 12px',
               border:`1.5px solid ${T.border}`, borderRadius:6,
