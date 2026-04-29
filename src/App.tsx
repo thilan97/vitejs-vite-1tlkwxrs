@@ -12,7 +12,7 @@ const db = createClient(SUPABASE_URL, SUPABASE_KEY)
 // APP_VERSION — dùng để invalidate cache localStorage mỗi khi deploy version mới
 // (ngăn bug quyền user bị "reset" do cache position cũ sau deploy)
 // ⚠️ MỖI LẦN DEPLOY FEATURE MỚI CÓ PERMISSION MỚI, BUMP SỐ NÀY:
-const APP_VERSION = '2026.04.25.v144'
+const APP_VERSION = '2026.04.25.v145'
 
 // ════════════════════════════════════════════════════════════════
 // AUDIT LOG — ghi nhận các hành động phá hoại data để trace lại
@@ -34768,8 +34768,11 @@ function GhtkFillCustomerModal({ order: o, user, mobile, onClose, onSaved }: any
     const telClean = form.tel.replace(/[^0-9]/g, '')
     if (telClean.length < 10 || telClean.length > 11) return 'SĐT phải có 10-11 số'
     if (!form.name.trim()) return 'Cần tên người nhận'
-    // v141: 3 ô bắt buộc giống GHTK web — Đường/Ấp/Khu, Phường/Xã, Tỉnh/TP
-    if (!form.hamlet.trim()) return 'Cần điền Đường/Ấp/Khu'
+    // v144: 3 ô bắt buộc giống GHTK web — Phường/Xã, Tỉnh/TP, và (Địa chỉ chi tiết HOẶC Đường/Ấp/Khu)
+    // Linh hoạt vì nhiều địa chỉ thành phố đã có số nhà + đường đủ trong ô "Địa chỉ chi tiết"
+    if (!form.address.trim() && !form.hamlet.trim()) {
+      return 'Cần điền "Địa chỉ chi tiết" hoặc "Đường/Xóm/Thôn/Ngõ"'
+    }
     if (!form.ward.trim()) return 'Cần điền Phường/Xã'
     if (!form.province.trim()) return 'Cần điền Tỉnh/TP'
     if (form.has_cod && (!form.pick_money || Number(form.pick_money) <= 0)) {
@@ -34988,7 +34991,12 @@ function GhtkFillCustomerModal({ order: o, user, mobile, onClose, onSaved }: any
       </div>
 
       <div style={{ marginBottom:10 }}>
-        <label style={labelStyle}>Địa chỉ chi tiết (số nhà, đường) *</label>
+        <label style={labelStyle}>
+          Địa chỉ chi tiết (số nhà, đường)
+          <span style={{ fontSize:9, color:T.amber, marginLeft:6, fontWeight:600 }}>
+            * cần điền ô này HOẶC ô "Đường/Xóm/Thôn/Ngõ" bên dưới
+          </span>
+        </label>
         <input value={form.address}
           onChange={e => setForm(f => ({...f, address:e.target.value}))}
           placeholder="35 Hoàng Quốc Việt" style={fieldStyle}/>
