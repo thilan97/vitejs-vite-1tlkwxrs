@@ -26,7 +26,9 @@ const db = createClient(SUPABASE_URL, SUPABASE_KEY)
 // v169: feature "📊 Theo dõi đơn" — tab mới track + sync status từ GHTK + filter theo trạng thái + sync tất cả
 // v170: fix Note FAB đè VersionBadge — dịch lên bottom:44 (desktop)
 // v171: feature "Theo dõi đơn" Iteration 2 — modal chi tiết + sửa địa chỉ + huỷ đơn (call GHTK API)
-const APP_VERSION = '2026.04.29.v171'
+// v172: fix đơn manual không hiện — error check + auto navigate sang track + bỏ bug /1000 total_amount
+// v173: feature "Import đơn từ web GHTK" Iteration 3 — paste label_id + sync info + link với KV
+const APP_VERSION = '2026.04.29.v173'
 
 // ════════════════════════════════════════════════════════════════
 // v158: VersionBadge — Hiển thị APP_VERSION ở góc dưới phải
@@ -31308,9 +31310,11 @@ function GhtkModule({ user, allUsers, mobile }: any) {
   const [loading, setLoading] = useState(true)
   const [searchQ, setSearchQ] = useState('')
   // v169: Filter status cho tab "Theo dõi đơn"
-  const [trackStatusFilter, setTrackStatusFilter] = useState<'all'|'pending'|'shipping'|'done'|'returned'|'cancelled'|'unsynced'>('all')
+  const [trackStatusFilter, setTrackStatusFilter] = useState<'all'|'pending'|'shipping'|'done'|'returned'|'cancelled'|'unsynced'|'manual'|'external'|'unlinked'>('all')
   // v169: State cho "Sync tất cả"
   const [syncingAll, setSyncingAll] = useState(false)
+  // v173: Modal Import external orders
+  const [showImportExternal, setShowImportExternal] = useState(false)
   // v121: Phase 2 - modal điền info KH
   const [fillInfoOrder, setFillInfoOrder] = useState<any>(null)
   // v122: Modal sửa cân thủ công
@@ -31467,8 +31471,11 @@ function GhtkModule({ user, allUsers, mobile }: any) {
     // v169: Filter status cho tab "Theo dõi đơn"
     if (tab === 'track' && trackStatusFilter !== 'all') {
       list = list.filter((o: any) => {
-        const status = o.ghtk_status || (o.ghtk_labels?.[0]?.status ?? '')
         if (trackStatusFilter === 'unsynced') return !o.ghtk_status_synced_at
+        if (trackStatusFilter === 'manual') return !!o.is_manual_order   // v172
+        if (trackStatusFilter === 'external') return !!o.is_external_order  // v173
+        if (trackStatusFilter === 'unlinked') return !!o.is_external_order && !o.linked_kv_code  // v173
+        const status = o.ghtk_status || (o.ghtk_labels?.[0]?.status ?? '')
         return ghtkStatusBucket(status) === trackStatusFilter
       })
     }
@@ -31706,6 +31713,9 @@ function GhtkModule({ user, allUsers, mobile }: any) {
                 {[
                   { id:'all',       label:'Tất cả',         count: categorized.track.length },
                   { id:'unsynced',  label:'⚠ Chưa sync',    count: categorized.track.filter((o: any) => !o.ghtk_status_synced_at).length },
+                  { id:'manual',    label:'🔧 Đơn thủ công', count: categorized.track.filter((o: any) => !!o.is_manual_order).length },
+                  { id:'external',  label:'🌐 Web GHTK',     count: categorized.track.filter((o: any) => !!o.is_external_order).length },
+                  { id:'unlinked',  label:'🔗 Chưa link KV', count: categorized.track.filter((o: any) => !!o.is_external_order && !o.linked_kv_code).length },
                   { id:'pending',   label:'⏳ Chưa lấy',     count: categorized.track.filter((o: any) => ghtkStatusBucket(o.ghtk_status || o.ghtk_labels?.[0]?.status) === 'pending').length },
                   { id:'shipping',  label:'🚚 Đang giao',   count: categorized.track.filter((o: any) => ghtkStatusBucket(o.ghtk_status || o.ghtk_labels?.[0]?.status) === 'shipping').length },
                   { id:'done',      label:'✅ Đã giao',     count: categorized.track.filter((o: any) => ghtkStatusBucket(o.ghtk_status || o.ghtk_labels?.[0]?.status) === 'done').length },
@@ -31725,6 +31735,18 @@ function GhtkModule({ user, allUsers, mobile }: any) {
                   </button>
                 ))}
                 <div style={{ flex:1 }}/>
+                {/* v173: Button Import từ web GHTK */}
+                {(perm.ghtkPrintLabel || perm.ghtkSettings) && (
+                  <button onClick={() => setShowImportExternal(true)}
+                    style={{
+                      padding:'6px 14px', borderRadius:14, fontSize:11, fontWeight:700,
+                      border: `1.5px solid ${T.blue}`,
+                      background: T.blueBg, color: T.blue,
+                      cursor:'pointer', fontFamily:'inherit',
+                    }}>
+                    📥 Import từ GHTK
+                  </button>
+                )}
                 {/* Sync tất cả button — chỉ Admin/QM, chỉ sync đơn đang lọc */}
                 {(perm.ghtkPrintLabel || perm.ghtkSettings) && filtered.length > 0 && (
                   <button onClick={async () => {
@@ -31813,6 +31835,7 @@ function GhtkModule({ user, allUsers, mobile }: any) {
             <div style={{ display:'flex', flexDirection:'column', gap:8 }}>
               {filtered.map((o: any) => (
                 <GhtkTrackCard key={o.order_code} order={o} user={user} mobile={mobile}
+                  allOrders={orders}
                   onRefresh={fetchOrders}/>
               ))}
             </div>
@@ -31892,7 +31915,22 @@ function GhtkModule({ user, allUsers, mobile }: any) {
         <GhtkManualOrderModal
           user={user} mobile={mobile}
           onClose={() => setShowManualOrder(false)}
-          onCreated={() => { setShowManualOrder(false); fetchOrders() }}/>
+          onCreated={() => {
+            setShowManualOrder(false)
+            setTab('track')                     // v172: navigate sang Theo dõi đơn để thấy đơn vừa tạo
+            setTrackStatusFilter('unsynced')    // v172: filter "Chưa sync" để đơn mới lên đầu
+            fetchOrders()
+          }}/>
+      )}
+      {showImportExternal && (
+        <GhtkImportExternalModal user={user} mobile={mobile}
+          onClose={() => setShowImportExternal(false)}
+          onImported={() => {
+            setShowImportExternal(false)
+            setTab('track')
+            setTrackStatusFilter('external')
+            fetchOrders()
+          }}/>
       )}
 
       {/* v150: Modal Admin xóa đơn */}
@@ -33674,7 +33712,7 @@ function GhtkSyncStatusButton({ order: o, user, onSynced, compact }: any) {
 // ══════════════════════════════════════════════════════════════════════
 // v169: GhtkTrackCard — Card 1 đơn cho tab "Theo dõi"
 // ══════════════════════════════════════════════════════════════════════
-function GhtkTrackCard({ order: o, user, mobile, onRefresh }: any) {
+function GhtkTrackCard({ order: o, user, mobile, allOrders, onRefresh }: any) {
   const labels = o.ghtk_labels || []
   const labelIds = labels.map((l: any) =>
     l.label_id || l.tracking_id || l.partner_id || ''
@@ -33694,6 +33732,8 @@ function GhtkTrackCard({ order: o, user, mobile, onRefresh }: any) {
   const [showDetail, setShowDetail] = useState(false)
   const [showEdit, setShowEdit] = useState(false)
   const [showCancel, setShowCancel] = useState(false)
+  // v173: modal link KV cho đơn external
+  const [showLinkKv, setShowLinkKv] = useState(false)
 
   // Permissions
   const perm = getPerm(user)
@@ -33706,14 +33746,50 @@ function GhtkTrackCard({ order: o, user, mobile, onRefresh }: any) {
   // Constraint: Huỷ đơn chỉ khi GHTK chưa lấy hàng (status 1, 2)
   const canCancel = canManage && (String(status) === '1' || String(status) === '2') && labelIds.length > 0
 
+  // v173: Link KV chỉ cho đơn external chưa link
+  const isExternal = !!o.is_external_order
+  const canLinkKv = canManage && isExternal && !o.linked_kv_code
+
   return (
-    <Card style={{ padding: mobile ? 10 : 14 }}>
+    <Card style={{ padding: mobile ? 10 : 14,
+      // v172/173: border màu khác cho đơn manual / external
+      borderLeft: o.is_manual_order ? `3px solid ${T.purple}`
+                : isExternal ? `3px solid ${T.blue}` : undefined }}>
       {/* Header: order_code + customer + amount */}
       <div style={{ display:'flex', justifyContent:'space-between', alignItems:'flex-start',
         gap:10, marginBottom:8, flexWrap:'wrap' }}>
         <div style={{ flex:1, minWidth:0 }}>
           <div style={{ fontSize:13, fontWeight:700, color:T.dark }}>
-            {o.order_code} <span style={{ color:T.med, fontWeight:400 }}>• {customerName}</span>
+            {o.order_code}
+            {o.is_manual_order && (
+              <span style={{ marginLeft:6, padding:'1px 6px', borderRadius:3,
+                background:T.purpleBg, color:T.purple, fontSize:9, fontWeight:700,
+                verticalAlign:'middle', letterSpacing:.3 }}>
+                🔧 THỦ CÔNG
+              </span>
+            )}
+            {isExternal && (
+              <span style={{ marginLeft:6, padding:'1px 6px', borderRadius:3,
+                background:T.blueBg, color:T.blue, fontSize:9, fontWeight:700,
+                verticalAlign:'middle', letterSpacing:.3 }}>
+                🌐 WEB GHTK
+              </span>
+            )}
+            {isExternal && o.linked_kv_code && (
+              <span style={{ marginLeft:6, padding:'1px 6px', borderRadius:3,
+                background:T.greenBg, color:T.green, fontSize:9, fontWeight:700,
+                verticalAlign:'middle' }}>
+                🔗 {o.linked_kv_code}
+              </span>
+            )}
+            {isExternal && !o.linked_kv_code && (
+              <span style={{ marginLeft:6, padding:'1px 6px', borderRadius:3,
+                background:T.amberBg, color:T.amber, fontSize:9, fontWeight:700,
+                verticalAlign:'middle' }}>
+                🔗 CHƯA LINK KV
+              </span>
+            )}
+            <span style={{ color:T.med, fontWeight:400 }}> • {customerName}</span>
             {totalAmount > 0 && (
               <span style={{ marginLeft:8, color:T.gold, fontWeight:700 }}>
                 {totalAmount.toLocaleString('vi-VN')}đ
@@ -33785,6 +33861,17 @@ function GhtkTrackCard({ order: o, user, mobile, onRefresh }: any) {
             ❌ Huỷ đơn
           </button>
         )}
+        {canLinkKv && (
+          <button onClick={() => setShowLinkKv(true)}
+            title="Link đơn external này với 1 đơn KV để theo dõi cùng"
+            style={{
+              padding:'6px 14px', borderRadius:6, border:`1px solid ${T.blue}`,
+              background:T.blueBg, color:T.blue,
+              cursor:'pointer', fontFamily:'inherit', fontSize:12, fontWeight:600,
+            }}>
+            🔗 Link với KV
+          </button>
+        )}
       </div>
 
       {/* Modals */}
@@ -33800,6 +33887,11 @@ function GhtkTrackCard({ order: o, user, mobile, onRefresh }: any) {
         <GhtkCancelOrderModal order={o} user={user} mobile={mobile}
           onClose={() => setShowCancel(false)}
           onCancelled={() => { setShowCancel(false); onRefresh && onRefresh() }}/>
+      )}
+      {showLinkKv && (
+        <GhtkLinkKvModal externalOrder={o} allOrders={allOrders} mobile={mobile}
+          onClose={() => setShowLinkKv(false)}
+          onLinked={() => { setShowLinkKv(false); onRefresh && onRefresh() }}/>
       )}
     </Card>
   )
@@ -34196,6 +34288,408 @@ function GhtkCancelOrderModal({ order: o, user, mobile, onClose, onCancelled }: 
               fontFamily:'inherit', fontSize:13, fontWeight:700,
               opacity: confirmText === expectedConfirm ? 1 : 0.5 }}>
             {confirming ? '⏳ Đang huỷ...' : '❌ Xác nhận huỷ'}
+          </button>
+        </div>
+      </div>
+    </Modal>
+  )
+}
+
+
+// ══════════════════════════════════════════════════════════════════════
+// v173: GhtkImportExternalModal — Import đơn từ web GHTK qua label_id
+// ══════════════════════════════════════════════════════════════════════
+function GhtkImportExternalModal({ user, mobile, onClose, onImported }: any) {
+  const [pasteText, setPasteText] = useState('')
+  const [syncing, setSyncing] = useState(false)
+  const [results, setResults] = useState<any[]>([])
+  const [importing, setImporting] = useState(false)
+  const [imported, setImported] = useState<string[]>([])
+
+  const parseIds = (text: string): string[] => {
+    return Array.from(new Set(
+      text.split(/[\s,;\n]+/).map(s => s.trim()).filter(s => s.length >= 5)
+    ))
+  }
+
+  const ids = parseIds(pasteText)
+
+  const handleSync = async () => {
+    if (ids.length === 0) { toast.error('Paste ít nhất 1 mã GHTK'); return }
+    if (ids.length > 50) { toast.error('Tối đa 50 mã/lần'); return }
+
+    setSyncing(true)
+    setResults([])
+    try {
+      const res = await fetch(`${SUPABASE_URL}/functions/v1/ghtk-track-status`, {
+        method: 'POST',
+        headers: { 'Content-Type':'application/json', 'Authorization':`Bearer ${SUPABASE_ANON}` },
+        body: JSON.stringify({ label_ids: ids }),
+      })
+      const json = await res.json()
+      setResults(json.results || [])
+      if (json.failed_count > 0) {
+        toast.warning(`${json.success_count}/${json.total} mã hợp lệ`)
+      }
+    } catch (e: any) {
+      toast.error('Lỗi sync: ' + (e.message || String(e)))
+    } finally {
+      setSyncing(false)
+    }
+  }
+
+  const handleImport = async () => {
+    const okResults = results.filter(r => r.success)
+    if (okResults.length === 0) { toast.error('Không có mã hợp lệ để import'); return }
+
+    setImporting(true)
+    const newImported: string[] = []
+    let errCount = 0
+
+    try {
+      for (const r of okResults) {
+        const raw = r.raw || {}
+        const orderCode = `EXT-${r.label_id}`
+
+        // Check duplicate (đã import rồi)
+        const { data: existing } = await db.from('packing_workflow')
+          .select('order_code').eq('order_code', orderCode).maybeSingle()
+        if (existing) {
+          newImported.push(`${r.label_id} (đã có)`)
+          continue
+        }
+
+        const insertPayload = {
+          id: `ext_${Date.now()}_${Math.random().toString(36).slice(2,5)}`,
+          order_code: orderCode,
+          customer_name: raw.name || raw.partner_name || raw.customer_fullname || 'KH GHTK',
+          purchase_date: new Date().toISOString(),
+          status: 'done',
+          is_deleted: false,
+          is_ghtk_order: true,
+          is_external_order: true,    // v173
+          linked_kv_code: null,        // v173
+          ghtk_customer_info: {
+            name:     raw.name || raw.partner_name || raw.customer_fullname || '',
+            tel:      raw.tel || raw.partner_tel || raw.customer_phone || '',
+            address:  raw.address || raw.address_full || '',
+            province: raw.province || raw.address_4 || '',
+            district: '',  // cải cách 2025
+            ward:     raw.ward || raw.address_2 || '',
+            hamlet:   raw.hamlet || 'Khác',
+          },
+          ghtk_labels: [{
+            label_id:    r.label_id,
+            partner_id:  r.partner_id || '',
+            tracking_id: r.partner_id || r.label_id,
+            box_no:      1,
+            status:      r.status,
+            status_text: r.status_text,
+            fee:         r.ship_money || 0,
+          }],
+          ghtk_boxes: [{ box_no: 1, weight_kg: Number(raw.weight || raw.pkg_weight || 0) }],
+          ghtk_status: r.status,
+          ghtk_status_text: r.status_text,
+          ghtk_status_details: [r],
+          ghtk_status_synced_at: new Date().toISOString(),
+          ghtk_status_synced_by: user?.id || null,
+          ghtk_created_at: raw.created || new Date().toISOString(),
+          sold_by: user?.id || null,
+          sold_by_name: user?.name || null,
+          description_kv: '🌐 Đơn tạo trực tiếp trên web GHTK',
+          total_amount: Number(r.pick_money || 0),
+        }
+
+        const { error: insErr } = await db.from('packing_workflow').insert(insertPayload)
+        if (insErr) {
+          console.error('[ImportExternal] Lỗi:', insErr, r.label_id)
+          errCount++
+        } else {
+          newImported.push(r.label_id)
+        }
+      }
+
+      setImported(newImported)
+      toast.success(`Đã import ${newImported.length} đơn` + (errCount > 0 ? ` (${errCount} lỗi)` : ''))
+      // Auto đóng sau 2s
+      setTimeout(() => onImported && onImported(), 2000)
+    } finally {
+      setImporting(false)
+    }
+  }
+
+  return (
+    <Modal open wide title="📥 Import đơn từ web GHTK" onClose={onClose}>
+      <div style={{ padding: mobile ? '0 4px' : '0' }}>
+        {/* Hướng dẫn */}
+        <div style={{ padding:'10px 12px', background:T.blueBg, borderRadius:6,
+          marginBottom:14, fontSize:12, color:T.dark, lineHeight:1.7 }}>
+          <div style={{ fontWeight:700, color:T.blue, marginBottom:6 }}>📋 Cách dùng:</div>
+          1. Mở web GHTK → copy <b>mã đơn</b> (vd: <code style={{ padding:'1px 6px',
+            background:'#fff', borderRadius:3, fontFamily:'monospace', fontSize:11 }}>S22.HN1.13.A99</code>)<br/>
+          2. Paste vào ô bên dưới (1 mã/dòng hoặc cách nhau bởi dấu phẩy/cách)<br/>
+          3. Bấm "🔍 Sync info" → app gọi GHTK API để lấy thông tin đơn<br/>
+          4. Review → bấm "📥 Import {ids.length > 0 ? `(${ids.length})` : ''}" để lưu vào app
+        </div>
+
+        {/* Paste box */}
+        <div style={{ marginBottom:14 }}>
+          <div style={{ fontSize:12, fontWeight:600, color:T.dark, marginBottom:6 }}>
+            Mã đơn GHTK (label_id)
+            {ids.length > 0 && <span style={{ marginLeft:8, color:T.blue }}>· {ids.length} mã</span>}
+          </div>
+          <textarea value={pasteText}
+            onChange={e => setPasteText(e.target.value)}
+            placeholder={`S22.HN1.13.A99\nS22.HN1.13.B11\nS22.HN1.14.C22`}
+            rows={5}
+            style={{ width:'100%', padding:'10px 12px',
+              border:`1.5px solid ${T.border}`, borderRadius:6,
+              fontSize:12, fontFamily:'monospace', color:T.dark, background:'#fff',
+              boxSizing:'border-box', resize:'vertical', outline:'none' }}/>
+        </div>
+
+        {/* Sync button */}
+        <div style={{ display:'flex', gap:10, marginBottom:14 }}>
+          <button onClick={handleSync} disabled={syncing || ids.length === 0}
+            style={{ padding:'9px 22px', borderRadius:6, border:`1.5px solid ${T.blue}`,
+              background: syncing ? T.bg : T.blueBg, color: T.blue,
+              cursor: syncing ? 'wait' : (ids.length === 0 ? 'not-allowed' : 'pointer'),
+              fontFamily:'inherit', fontSize:13, fontWeight:700,
+              opacity: ids.length === 0 ? 0.5 : 1 }}>
+            {syncing ? '⏳ Đang sync...' : `🔍 Sync info (${ids.length})`}
+          </button>
+          {results.length > 0 && (
+            <button onClick={handleImport}
+              disabled={importing || results.filter(r => r.success).length === 0}
+              style={{ padding:'9px 22px', borderRadius:6, border:'none',
+                background: importing ? T.border : T.green, color:'#fff',
+                cursor: importing ? 'wait' : 'pointer',
+                fontFamily:'inherit', fontSize:13, fontWeight:700 }}>
+              {importing ? '⏳ Đang import...' : `📥 Import ${results.filter(r => r.success).length} đơn`}
+            </button>
+          )}
+        </div>
+
+        {/* Results preview */}
+        {results.length > 0 && (
+          <div style={{ marginBottom:14 }}>
+            <div style={{ fontSize:12, fontWeight:600, color:T.dark, marginBottom:8 }}>
+              Kết quả sync ({results.filter(r => r.success).length}/{results.length} thành công)
+            </div>
+            <div style={{ display:'flex', flexDirection:'column', gap:6, maxHeight:300, overflowY:'auto' }}>
+              {results.map(r => {
+                const raw = r.raw || {}
+                const colors = ghtkStatusColor(r.status)
+                const isAlreadyImported = imported.includes(`${r.label_id} (đã có)`)
+                return (
+                  <div key={r.label_id} style={{
+                    padding:'8px 10px', borderRadius:6,
+                    background: r.success ? '#fff' : T.redBg,
+                    border: `1px solid ${r.success ? T.border : T.red}` }}>
+                    {r.success ? (
+                      <div>
+                        <div style={{ display:'flex', justifyContent:'space-between',
+                          gap:8, alignItems:'center', flexWrap:'wrap' }}>
+                          <code style={{ fontSize:11, fontFamily:'monospace', color:T.dark, fontWeight:700 }}>
+                            {r.label_id}
+                          </code>
+                          <div style={{ padding:'2px 8px', borderRadius:10,
+                            background: colors.bg, color: colors.text, fontSize:10, fontWeight:700 }}>
+                            {ghtkStatusEmoji(r.status)} {r.status_text}
+                          </div>
+                        </div>
+                        <div style={{ fontSize:11, color:T.med, marginTop:4 }}>
+                          👤 {raw.name || raw.partner_name || '—'} {raw.tel && `(${raw.tel})`}
+                        </div>
+                        {(raw.address || raw.ward || raw.province) && (
+                          <div style={{ fontSize:11, color:T.light }}>
+                            📍 {[raw.address, raw.ward, raw.province].filter(Boolean).join(', ')}
+                          </div>
+                        )}
+                        {isAlreadyImported && (
+                          <div style={{ fontSize:10, color:T.amber, marginTop:3 }}>
+                            ⚠ Đã có trong app rồi
+                          </div>
+                        )}
+                      </div>
+                    ) : (
+                      <div style={{ fontSize:11, color:T.red }}>
+                        <code style={{ fontFamily:'monospace' }}>{r.label_id}</code> — {r.error}
+                      </div>
+                    )}
+                  </div>
+                )
+              })}
+            </div>
+          </div>
+        )}
+
+        {/* Footer */}
+        <div style={{ display:'flex', justifyContent:'flex-end',
+          marginTop:14, paddingTop:12, borderTop:`1px solid ${T.border}` }}>
+          <button onClick={onClose}
+            style={{ padding:'8px 18px', borderRadius:6, border:`1px solid ${T.border}`,
+              background:'#fff', color:T.med, cursor:'pointer',
+              fontFamily:'inherit', fontSize:12 }}>
+            Đóng
+          </button>
+        </div>
+      </div>
+    </Modal>
+  )
+}
+
+
+// ══════════════════════════════════════════════════════════════════════
+// v173: GhtkLinkKvModal — Link đơn external với mã đơn KV
+// ══════════════════════════════════════════════════════════════════════
+function GhtkLinkKvModal({ externalOrder, allOrders, mobile, onClose, onLinked }: any) {
+  const [searchKv, setSearchKv] = useState('')
+  const [selected, setSelected] = useState<any>(null)
+  const [linking, setLinking] = useState(false)
+
+  // Filter: chỉ KV orders chưa có ghtk_labels (để tránh ghi đè)
+  const candidates = useMemo(() => {
+    const q = searchKv.trim().toLowerCase()
+    if (!q) return []
+    return (allOrders || []).filter((o: any) => {
+      // Loại các đơn không phải KV (không bắt đầu DH/HD)
+      if (!/^(DH|HD)/i.test(o.order_code)) return false
+      // Loại đơn external (đang đi tìm KV)
+      if (o.is_external_order) return false
+      // Match search
+      const hay = `${o.order_code} ${o.customer_name || ''} ${o.ghtk_customer_info?.name || ''} ${o.ghtk_customer_info?.tel || ''}`.toLowerCase()
+      return hay.includes(q)
+    }).slice(0, 10)
+  }, [searchKv, allOrders])
+
+  const handleLink = async () => {
+    if (!selected) { toast.error('Chọn đơn KV để link'); return }
+    if (selected.ghtk_labels && selected.ghtk_labels.length > 0) {
+      if (!confirm(`Đơn ${selected.order_code} đã có nhãn GHTK. Ghi đè?`)) return
+    }
+    setLinking(true)
+    try {
+      // 1. Copy ghtk_* từ external sang KV
+      await db.from('packing_workflow').update({
+        is_ghtk_order: true,
+        ghtk_customer_info: externalOrder.ghtk_customer_info,
+        ghtk_labels: externalOrder.ghtk_labels,
+        ghtk_boxes: externalOrder.ghtk_boxes,
+        ghtk_status: externalOrder.ghtk_status,
+        ghtk_status_text: externalOrder.ghtk_status_text,
+        ghtk_status_details: externalOrder.ghtk_status_details,
+        ghtk_status_synced_at: externalOrder.ghtk_status_synced_at,
+        ghtk_created_at: externalOrder.ghtk_created_at,
+        updated_at: new Date().toISOString(),
+      }).eq('order_code', selected.order_code)
+
+      // 2. Update external: mark linked
+      await db.from('packing_workflow').update({
+        linked_kv_code: selected.order_code,
+        updated_at: new Date().toISOString(),
+      }).eq('order_code', externalOrder.order_code)
+
+      toast.success(`Đã link ${externalOrder.order_code} → ${selected.order_code}`)
+      onLinked && onLinked()
+    } catch (e: any) {
+      toast.error('Lỗi: ' + (e.message || String(e)))
+    } finally {
+      setLinking(false)
+    }
+  }
+
+  return (
+    <Modal open wide title={`🔗 Link với đơn KV — ${externalOrder.order_code}`} onClose={onClose}>
+      <div style={{ padding: mobile ? '0 4px' : '0' }}>
+        <div style={{ padding:'10px 12px', background:T.blueBg, borderRadius:6,
+          marginBottom:14, fontSize:12, color:T.dark, lineHeight:1.7 }}>
+          💡 Link đơn external này với 1 đơn KV (DH...) → khi đó đơn KV sẽ có timeline GHTK đầy đủ.
+        </div>
+
+        {/* Info đơn external */}
+        <div style={{ padding:'10px 12px', background:T.bg, borderRadius:6, marginBottom:14 }}>
+          <div style={{ fontSize:11, color:T.med, marginBottom:4 }}>Đơn external:</div>
+          <div style={{ fontSize:13, fontWeight:700, color:T.dark }}>
+            {externalOrder.order_code}
+            <span style={{ marginLeft:8, color:T.med, fontWeight:400 }}>
+              • {externalOrder.ghtk_customer_info?.name || externalOrder.customer_name}
+              {externalOrder.ghtk_customer_info?.tel && ` (${externalOrder.ghtk_customer_info.tel})`}
+            </span>
+          </div>
+        </div>
+
+        {/* Search KV */}
+        <div style={{ marginBottom:10 }}>
+          <div style={{ fontSize:12, fontWeight:600, color:T.dark, marginBottom:6 }}>
+            🔍 Tìm đơn KV (mã đơn, tên KH, SĐT)
+          </div>
+          <input value={searchKv}
+            onChange={e => { setSearchKv(e.target.value); setSelected(null) }}
+            placeholder="DH008700 hoặc Nguyễn Văn A hoặc 0987..."
+            style={{ width:'100%', padding:'9px 12px', boxSizing:'border-box',
+              border:`1.5px solid ${T.border}`, borderRadius:6,
+              fontSize:13, fontFamily:'inherit', color:T.dark, background:'#fff' }}/>
+        </div>
+
+        {/* Candidates list */}
+        {searchKv.trim() && (
+          <div style={{ display:'flex', flexDirection:'column', gap:6,
+            maxHeight:250, overflowY:'auto', marginBottom:14 }}>
+            {candidates.length === 0 ? (
+              <div style={{ padding:'16px', textAlign:'center', color:T.light, fontSize:12 }}>
+                Không tìm thấy đơn KV nào match
+              </div>
+            ) : candidates.map((kv: any) => {
+              const isSelected = selected?.order_code === kv.order_code
+              const hasGhtk = kv.ghtk_labels && kv.ghtk_labels.length > 0
+              return (
+                <div key={kv.order_code} onClick={() => setSelected(kv)}
+                  style={{
+                    padding:'10px 12px', borderRadius:6, cursor:'pointer',
+                    background: isSelected ? T.goldBg : '#fff',
+                    border: `1.5px solid ${isSelected ? T.gold : T.border}`,
+                  }}>
+                  <div style={{ display:'flex', justifyContent:'space-between', flexWrap:'wrap', gap:6 }}>
+                    <div style={{ fontSize:13, fontWeight:700, color:T.dark }}>
+                      {kv.order_code}
+                      <span style={{ color:T.med, fontWeight:400 }}> · {kv.customer_name || '—'}</span>
+                    </div>
+                    {hasGhtk && (
+                      <span style={{ padding:'1px 6px', borderRadius:3, fontSize:9,
+                        background:T.amberBg, color:T.amber, fontWeight:700 }}>
+                        ⚠ Đã có nhãn GHTK
+                      </span>
+                    )}
+                  </div>
+                  {kv.total_amount && (
+                    <div style={{ fontSize:11, color:T.gold, marginTop:2 }}>
+                      {Number(kv.total_amount).toLocaleString('vi-VN')}đ
+                    </div>
+                  )}
+                </div>
+              )
+            })}
+          </div>
+        )}
+
+        {/* Footer */}
+        <div style={{ display:'flex', gap:10, justifyContent:'flex-end',
+          marginTop:14, paddingTop:12, borderTop:`1px solid ${T.border}` }}>
+          <button onClick={onClose}
+            style={{ padding:'8px 18px', borderRadius:6, border:`1px solid ${T.border}`,
+              background:'#fff', color:T.med, cursor:'pointer',
+              fontFamily:'inherit', fontSize:12 }}>
+            Huỷ
+          </button>
+          <button onClick={handleLink} disabled={linking || !selected}
+            style={{ padding:'9px 22px', borderRadius:6, border:'none',
+              background: linking ? T.border : (selected ? T.gold : T.border),
+              color:'#fff',
+              cursor: linking ? 'wait' : (selected ? 'pointer' : 'not-allowed'),
+              fontFamily:'inherit', fontSize:13, fontWeight:700,
+              opacity: selected ? 1 : 0.5 }}>
+            {linking ? '⏳ Đang link...' : '🔗 Xác nhận link'}
           </button>
         </div>
       </div>
@@ -35715,12 +36209,15 @@ function GhtkManualOrderModal({ user, mobile, onClose, onCreated }: any) {
             ghtk_created_at: new Date().toISOString(),
           }).eq('order_code', form.kv_order_code)
         } else {
-          await db.from('packing_workflow').insert({
+          // v172: Check error + log để biết khi insert fail
+          // Bỏ chia 1000 cho total_amount (đơn vị VND, không phải nghìn)
+          const insertPayload = {
             id: `manual_${Date.now()}`,
             order_code: manualCode,
             customer_name: form.name,
             purchase_date: new Date().toISOString(),
             status: 'done',
+            is_deleted: false,  // v172: explicit để filter pass
             is_ghtk_order: true,
             is_manual_order: true,
             ghtk_customer_info: payload.customer_info,
@@ -35730,8 +36227,21 @@ function GhtkManualOrderModal({ user, mobile, onClose, onCreated }: any) {
             sold_by: user?.id || null,
             sold_by_name: user?.name || null,
             description_kv: `Đơn thủ công${form.shop_order_id ? ' · Mã shop: '+form.shop_order_id : ''}`,
-            total_amount: Number(form.order_value || 0) / 1000,
-          })
+            total_amount: Number(form.order_value || 0),  // v172: bỏ /1000 (đơn vị VND nguyên)
+          }
+          const { error: insErr } = await db.from('packing_workflow').insert(insertPayload)
+          if (insErr) {
+            console.error('[ManualOrder] Insert DB lỗi:', insErr, insertPayload)
+            toast.error(`GHTK đã tạo đơn nhưng lưu DB lỗi: ${insErr.message}. Mã: ${manualCode}`)
+            // Vẫn show success (đơn đã có trên GHTK) nhưng cảnh báo
+            setCreateResult({
+              ...json,
+              db_error: insErr.message,
+              manual_code: manualCode,
+            })
+          } else {
+            console.log('[ManualOrder] ✓ Đã insert DB:', manualCode)
+          }
         }
       }
     } catch(e: any) {
