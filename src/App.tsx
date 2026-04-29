@@ -12,7 +12,7 @@ const db = createClient(SUPABASE_URL, SUPABASE_KEY)
 // APP_VERSION — dùng để invalidate cache localStorage mỗi khi deploy version mới
 // (ngăn bug quyền user bị "reset" do cache position cũ sau deploy)
 // ⚠️ MỖI LẦN DEPLOY FEATURE MỚI CÓ PERMISSION MỚI, BUMP SỐ NÀY:
-const APP_VERSION = '2026.04.25.v153'
+const APP_VERSION = '2026.04.25.v154'
 
 // ════════════════════════════════════════════════════════════════
 // AUDIT LOG — ghi nhận các hành động phá hoại data để trace lại
@@ -32541,6 +32541,18 @@ function GhtkCreateOrderModal({ order: ord, user, mobile, onClose, onCreated }: 
           toast.warning('Đơn đã tạo trên GHTK nhưng lưu DB lỗi. Reload trang.')
         }
       }
+      // v153: Always log full response để debug
+      console.log('[GHTK Create Order Modal] Full response:', json)
+      if (json.results) {
+        json.results.forEach((r: any) => {
+          if (!r.success) {
+            console.error('[GHTK Modal] Box', r.box_no, 'FAILED:', r)
+            if (r.debug?.ghtk_response) {
+              console.error('[GHTK Modal] GHTK API said:', r.debug.ghtk_response)
+            }
+          }
+        })
+      }
       setResult(json)
       if (json.success) {
         toast.success(`Đã tạo ${json.labels?.length || 1} nhãn GHTK`)
@@ -32548,6 +32560,7 @@ function GhtkCreateOrderModal({ order: ord, user, mobile, onClose, onCreated }: 
         setTimeout(() => { if (onCreated) onCreated() }, 1500)
       }
     } catch (e: any) {
+      console.error('[GHTK Create Order Modal] Exception:', e)
       setResult({ success: false, error: e.message })
     } finally {
       setCreating(false)
@@ -32644,6 +32657,33 @@ function GhtkCreateOrderModal({ order: ord, user, mobile, onClose, onCreated }: 
                   {result.failed && result.failed.map((f: string, i: number) => (
                     <div key={i} style={{ marginTop:4, fontSize:11, color:T.red }}>• {f}</div>
                   ))}
+                  {/* v153: Show detailed error per box từ results[] */}
+                  {result.results?.filter((r: any) => !r.success).map((r: any, i: number) => (
+                    <div key={i} style={{ marginTop:8, padding:'8px 10px',
+                      background:'#fff', borderRadius:6, border:`1px solid ${T.red}40` }}>
+                      <div style={{ fontSize:11, color:T.red, fontWeight:700 }}>
+                        Thùng {r.box_no}: {r.error || r.message || 'Lỗi không xác định'}
+                      </div>
+                      <div style={{ fontSize:10, color:T.med, marginTop:4 }}>
+                        📋 Chi tiết debug:
+                      </div>
+                      <pre style={{ fontSize:9, color:T.dark, marginTop:4,
+                        padding:6, background:T.bg, borderRadius:4, overflow:'auto',
+                        maxHeight:400, fontFamily:'monospace', whiteSpace:'pre-wrap',
+                        border:`1px dashed ${T.border}` }}>
+                        {JSON.stringify(r.debug || r, null, 2)}
+                      </pre>
+                    </div>
+                  ))}
+                  {/* Show raw response nếu không có results */}
+                  {!result.results && (
+                    <pre style={{ fontSize:9, color:T.dark, marginTop:6,
+                      padding:6, background:'#fff', borderRadius:4, overflow:'auto',
+                      maxHeight:300, fontFamily:'monospace', whiteSpace:'pre-wrap',
+                      border:`1px dashed ${T.border}` }}>
+                      {JSON.stringify(result, null, 2)}
+                    </pre>
+                  )}
                 </>
               )}
             </div>
