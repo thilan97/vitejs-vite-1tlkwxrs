@@ -92,6 +92,41 @@ function normalizeUnicode(input: string): string {
   return s.replace(/\s+/g, ' ').trim()
 }
 
+// ════════════════════════════════════════════════════════════════
+// v156: Extract labels[] từ response edge function ghtk-create-order
+// Edge function v9+ trả `results[]` (chi tiết từng box) thay vì `labels[]`.
+// Helper này dual-compat: chấp nhận cả format cũ (labels) lẫn mới (results),
+// để frontend không cần redeploy edge function vẫn hoạt động.
+// Trả về array labels có ít nhất 1 ID hợp lệ (label_id / tracking_id / partner_id).
+// ════════════════════════════════════════════════════════════════
+function extractLabelsFromResults(json: any): any[] {
+  // Format cũ (edge function v8 trở về trước) — đã trả sẵn labels[]
+  if (Array.isArray(json?.labels)) {
+    return json.labels.filter((l: any) =>
+      l && (l.label_id || l.tracking_id || l.trackingId || l.package_id || l.partner_id)
+    )
+  }
+  // Format mới (edge function v9+) — convert results[] → labels[]
+  if (Array.isArray(json?.results)) {
+    return json.results
+      .filter((r: any) => r && r.success && (r.label_id || r.tracking_id || r.partner_id))
+      .map((r: any) => ({
+        box_no: r.box_no,
+        label_id: r.label_id || '',
+        partner_id: r.partner_id || '',
+        tracking_id: r.tracking_id || '',
+        fee: r.fee || 0,
+        estimated_pick_time: r.estimated_pick_time || '',
+        estimated_deliver_time: r.estimated_deliver_time || '',
+        status: r.status || '1',
+        status_text: r.status_text || 'Chưa tiếp nhận',
+        weight_kg: r.weight_kg,
+        is_bigsize: r.is_bigsize || false,
+      }))
+  }
+  return []
+}
+
 // ── THEME ────────────────────────────────────────
 const T: any = {
   // ═══ BRAND ═══
@@ -32122,37 +32157,28 @@ function GhtkPackingSection({ ord, user, mobile }: any) {
       })
       const json = await res.json()
 
-      // v131: Validate labels từ edge function trước khi accept
-      // Edge function có thể return success=true nhưng labels[] thiếu ID hợp lệ
-      // → Refuse và treat như lỗi để user retry, tránh save data rác vào DB
-      if (json.success && json.labels && Array.isArray(json.labels)) {
-        const validLabels = json.labels.filter((l: any) =>
-          l && (l.label_id || l.tracking_id || l.trackingId || l.package_id)
-        )
-        if (validLabels.length === 0 && json.labels.length > 0) {
-          // Edge function trả labels nhưng không có ID nào hợp lệ
-          // Override response để hiển thị lỗi rõ ràng cho user
+      // v156: Edge function v9+ trả results[] thay vì labels[] — dùng helper dual-compat
+      // Helper extractLabelsFromResults() filter các box success + có ID hợp lệ
+      if (json.success) {
+        const labels = extractLabelsFromResults(json)
+        if (labels.length === 0) {
+          // Edge function nói success nhưng không có ID hợp lệ → treat như lỗi
           setCreateResult({
             success: false,
-            error: 'GHTK trả về nhãn nhưng thiếu mã ID. Vui lòng thử lại hoặc kiểm tra log GHTK.',
+            error: 'GHTK trả về thành công nhưng thiếu mã ID. Vui lòng thử lại hoặc kiểm tra log GHTK.',
             ghtk_response: json,
           })
           return
         }
-        // Filter chỉ giữ labels có ID, gắn vào response
-        if (validLabels.length < json.labels.length) {
-          console.warn(`[GHTK] ${json.labels.length - validLabels.length} label(s) bị thiếu ID, đã filter ra`)
-          json.labels = validLabels
-        }
+        json.labels = labels  // gắn vào response để UI hiển thị
 
-        // v131: Tự save labels vào DB (trước đây edge function tự save → có thể save sai)
-        // Save phía client đảm bảo structure đúng
+        // v156: Save labels vào DB (frontend tự save, không phụ thuộc edge function)
         try {
           await db.from('packing_workflow').update({
             is_ghtk_order: true,
             ghtk_customer_info: payload.customer_info,
             ghtk_boxes: boxes,
-            ghtk_labels: json.labels,
+            ghtk_labels: labels,
             ghtk_created_at: new Date().toISOString(),
             updated_at: new Date().toISOString(),
           }).eq('order_code', ord.order_code)
@@ -32535,16 +32561,14 @@ function GhtkCreateOrderModal({ order: ord, user, mobile, onClose, onCreated }: 
       })
       const json = await res.json()
 
-      // v131: Validate labels từ edge function
-      if (json.success && json.labels && Array.isArray(json.labels)) {
-        const validLabels = json.labels.filter((l: any) =>
-          l && (l.label_id || l.tracking_id || l.trackingId || l.package_id)
-        )
-        if (validLabels.length === 0 && json.labels.length > 0) {
-          setResult({ success: false, error: 'GHTK trả về nhãn nhưng thiếu mã ID. Thử lại sau.', ghtk_response: json })
+      // v156: Edge function v9+ trả results[] thay vì labels[] — dùng helper dual-compat
+      if (json.success) {
+        const labels = extractLabelsFromResults(json)
+        if (labels.length === 0) {
+          setResult({ success: false, error: 'GHTK trả về thành công nhưng thiếu mã ID. Thử lại sau.', ghtk_response: json })
           return
         }
-        if (validLabels.length < json.labels.length) json.labels = validLabels
+        json.labels = labels
 
         // Save labels phía client (đảm bảo structure đúng)
         try {
@@ -32552,7 +32576,7 @@ function GhtkCreateOrderModal({ order: ord, user, mobile, onClose, onCreated }: 
             is_ghtk_order: true,
             ghtk_customer_info: payload.customer_info,
             ghtk_boxes: boxes,
-            ghtk_labels: json.labels,
+            ghtk_labels: labels,
             ghtk_created_at: new Date().toISOString(),
             updated_at: new Date().toISOString(),
           }).eq('order_code', ord.order_code)
@@ -34527,13 +34551,23 @@ function GhtkManualOrderModal({ user, mobile, onClose, onCreated }: any) {
       const json = await res.json()
       setCreateResult(json)
 
-      if (json.success && json.labels) {
+      // v156: Edge function v9+ trả results[] thay vì labels[] — dùng helper dual-compat
+      if (json.success) {
+        const labels = extractLabelsFromResults(json)
+        if (labels.length === 0) {
+          toast.error('GHTK trả về thành công nhưng thiếu mã ID. Liên hệ admin để kiểm tra.')
+          setCreateResult({ ...json, success: false, error: 'Thiếu mã ID nhãn từ GHTK' })
+          return
+        }
+        json.labels = labels  // gắn vào response để UI hiển thị (line 34583 map qua labels)
+        setCreateResult(json)
+
         if (form.kv_order_code) {
           await db.from('packing_workflow').update({
             is_ghtk_order: true,
             ghtk_customer_info: payload.customer_info,
             ghtk_boxes: boxes,
-            ghtk_labels: json.labels,
+            ghtk_labels: labels,
             ghtk_created_at: new Date().toISOString(),
           }).eq('order_code', form.kv_order_code)
         } else {
@@ -34547,7 +34581,7 @@ function GhtkManualOrderModal({ user, mobile, onClose, onCreated }: any) {
             is_manual_order: true,
             ghtk_customer_info: payload.customer_info,
             ghtk_boxes: boxes,
-            ghtk_labels: json.labels,
+            ghtk_labels: labels,
             ghtk_created_at: new Date().toISOString(),
             sold_by: user?.id || null,
             sold_by_name: user?.name || null,
