@@ -88,7 +88,14 @@ const db = createClient(SUPABASE_URL, SUPABASE_KEY)
 //       (c) DS khách mới: vẫn load kv_invoices nhưng filter customer_code IN (approved_codes) → số ít, không bị limit.
 //       (d) Cảnh báo "X KV account chưa map" trên header để admin biết bổ sung.
 //       (e) Cột "KV names" trong bảng hiển thị các alias đã match.
-const APP_VERSION = '2026.04.30.v195.2'
+// v196: Tab MBO/Hiệu suất + Trợ cấp theo vị trí + BHXH:
+//       (1) Migration 60: bảng mbo_grades_config (5 mốc A/B+/B/B-/C → amount, default seed) + position_allowances (position_id → amount).
+//       (2) Tab "🎯 MBO/Hiệu suất" (đổi tên từ "MBO"): 2 sections — cấu hình mức tiền per grade + bảng NV với dropdown chọn grade. Default 'B'. 
+//           MBO amount lookup từ grade thay vì 0. Override per-NV vẫn dùng field 'mbo_bonus' (ưu tiên).
+//       (3) Tab "💝 Trợ cấp" — 2 sections: cấu hình per-position default + override per-NV per tháng.
+//       (4) Tab "🛡 BHXH" mới: list NV với checkbox toggle has_bhxh + edit mức BHXH chung (lưu vào payroll_config).
+//       (5) Phiếu lương: thêm dòng "💡 Đơn giá/ngày = LCB ÷ NETWORKDAYS" giải thích công thức ngày lễ.
+const APP_VERSION = '2026.04.30.v196'
 
 // ════════════════════════════════════════════════════════════════
 // v158: VersionBadge — Hiển thị APP_VERSION ở góc dưới phải
@@ -23954,6 +23961,9 @@ function computeMonthlyPayroll(opts: {
   manualAdjust: number,
   // v195: returnLossAuto từ return_items (sẽ bị override bởi payroll_overrides.return_loss nếu có)
   returnLossAuto?: number,
+  // v196: MBO grade lookup + Position allowance lookup
+  mboGradeAmount?: number,           // amount tra theo grade (B mặc định)
+  positionAllowanceAmount?: number,  // amount theo vị trí của NV
   // v191: overrides — Map<field_type, amount>
   overrides?: Map<string, number>,  // per-NV overrides cho NV này
   configOverrides?: Map<string, number>,  // override config chung tháng đó (user_id NULL)
@@ -24103,9 +24113,11 @@ function computeMonthlyPayroll(opts: {
   const effectiveBhxhAmount = getCfgOverride('cfg_bhxh_amount', opts.bhxhAmount)
   const bhxhDeduction = sc.has_bhxh ? effectiveBhxhAmount : 0
   
-  // v191: Per-NV override fields mới
-  const mboBonus = getOverride('mbo_bonus', 0)         // Thưởng MBO (mặc định 0, cần Admin set)
-  const allowance = getOverride('allowance', 0)        // Trợ cấp khác
+  // v191/v196: Per-NV override fields
+  // v196: MBO mặc định = grade 'B' lookup từ mbo_grades_config (qua mboGradeAmount opts)
+  //       Allowance mặc định = position_allowances của vị trí NV (qua positionAllowanceAmount opts)
+  const mboBonus = getOverride('mbo_bonus', Number(opts.mboGradeAmount || 0))
+  const allowance = getOverride('allowance', Number(opts.positionAllowanceAmount || 0))
   // v195: return_loss = override > auto từ return_items (truyền qua opts.returnLossAuto)
   const returnLoss = getOverride('return_loss', Number(opts.returnLossAuto || 0))
   const otherDeduction = getOverride('other_deduction', 0)  // Trừ khác
@@ -24292,16 +24304,19 @@ function PayrollModule({ user, allUsers, mobile }: any) {
   const [inventoryChecks, setInventoryChecks] = useState<any[]>([]) // Y/c 3
   const [inventorySessions, setInventorySessions] = useState<any[]>([]) // Y/c 3
   // v195.2: dùng kiotviet_sales_daily (đã rollup) thay vì kv_invoices full
-  const [kvSalesDaily, setKvSalesDaily] = useState<any[]>([])       // Y/c 2 — tổng DS từ daily rollup
-  const [kvInvoicesNewCust, setKvInvoicesNewCust] = useState<any[]>([])  // Y/c 2 — chỉ invoices của KH mới approved
-  const [customerNewClaims, setCustomerNewClaims] = useState<any[]>([]) // Y/c 2
+  const [kvSalesDaily, setKvSalesDaily] = useState<any[]>([])
+  const [kvInvoicesNewCust, setKvInvoicesNewCust] = useState<any[]>([])
+  const [customerNewClaims, setCustomerNewClaims] = useState<any[]>([])
+  // v196: MBO grades + Position allowances
+  const [mboGrades, setMboGrades] = useState<any[]>([])
+  const [positionAllowances, setPositionAllowances] = useState<any[]>([])
   // v191/v192: overrides + position config (LCB lưu trong bảng positions)
   const [overrides, setOverrides] = useState<any[]>([])  // payroll_overrides của tháng này
   const [positionsList, setPositionsList] = useState<any[]>([])  // v192: bảng positions từ Quản trị
   const [positionWorkSchedule, setPositionWorkSchedule] = useState<any[]>([])
   const [specialDays, setSpecialDays] = useState<any[]>([])  // v193: ngày lễ/đặc biệt
   // v191: tabs
-  const [adminTab, setAdminTab] = useState<'overview'|'shortage_loss'|'return_loss'|'mbo_bonus'|'inspection_bonus'|'allowance'|'base_salary'|'schedule'|'sales_revenue'>('overview')
+  const [adminTab, setAdminTab] = useState<'overview'|'shortage_loss'|'return_loss'|'mbo_bonus'|'inspection_bonus'|'allowance'|'base_salary'|'schedule'|'sales_revenue'|'bhxh'>('overview')
   const isAdmin = perm.viewAllDashboard
   // v191: Admin chọn NV xem phiếu lương
   const [viewSlipUserId, setViewSlipUserId] = useState<string>('')
@@ -24332,7 +24347,7 @@ function PayrollModule({ user, allUsers, mobile }: any) {
               .range(0, 9999)
           : Promise.resolve({ data: [] })
         
-        const [sc, pc, pr, oi, sl, rv, att, ovr, pos, pws, sd, ri, ic, is_, ksd, kviNc] = await Promise.all([
+        const [sc, pc, pr, oi, sl, rv, att, ovr, pos, pws, sd, ri, ic, is_, ksd, kviNc, mbg, pa] = await Promise.all([
           db.from('salary_config').select('*').is('effective_to', null),
           db.from('payroll_config').select('*').maybeSingle(),
           db.from('monthly_payroll').select('*').eq('month', month).eq('year', year),
@@ -24347,9 +24362,11 @@ function PayrollModule({ user, allUsers, mobile }: any) {
           db.from('return_items').select('*').gte('date', fromDate).lte('date', toDate).range(0, 9999),
           db.from('inventory_checks').select('*').range(0, 49999),
           db.from('inventory_sessions').select('*').range(0, 4999),
-          // v195.2: kiotviet_sales_daily (đã rollup, chính xác với KV report)
           db.from('kiotviet_sales_daily').select('*').gte('date', fromDate).lte('date', toDate).range(0, 9999),
           kviNewCustPromise,
+          // v196: MBO + Position allowances
+          db.from('mbo_grades_config').select('*').order('display_order'),
+          db.from('position_allowances').select('*'),
         ])
         setSalaryConfigs(sc.data || [])
         setPayrollConfig(pc.data || {})
@@ -24376,6 +24393,9 @@ function PayrollModule({ user, allUsers, mobile }: any) {
         setInventorySessions(is_.data || [])
         setKvSalesDaily(ksd.data || [])
         setKvInvoicesNewCust(kviNc.data || [])
+        // v196
+        setMboGrades(mbg.data || [])
+        setPositionAllowances(pa.data || [])
       } catch (e: any) {
         setError('Lỗi load data: ' + e.message)
       } finally {
@@ -24610,7 +24630,15 @@ function PayrollModule({ user, allUsers, mobile }: any) {
     const rev = getRevenue(u.id)  // legacy
     const existing = getPayroll(u.id)
     
-    // v192: Lấy LCB từ positions.base_salary nếu có (ưu tiên hơn salary_config.base_salary)
+    // v196: Lookup MBO grade + Position allowance defaults
+    const mboGradeOv = overrides.find((o: any) => o.user_id === u.id && o.field_type === 'mbo_grade')
+    const mboGrade = mboGradeOv?.note || 'B'
+    const mboGradeRow = mboGrades.find((g: any) => g.grade === mboGrade)
+    const mboGradeAmount = Number(mboGradeRow?.amount || 0)
+    const posAllowRow = positionAllowances.find((p: any) => p.position_id === u.position_id)
+    const positionAllowanceAmount = Number(posAllowRow?.amount || 0)
+    
+    // v192: Lấy LCB từ positions.base_salary nếu có
     const positionLcb = u.position_id 
       ? Number(positionsList.find((p: any) => p.id === u.position_id)?.base_salary || 0)
       : 0
@@ -24635,6 +24663,9 @@ function PayrollModule({ user, allUsers, mobile }: any) {
       manualAdjust: existing?.manual_adjust || 0,
       // v195: return loss auto từ return_items
       returnLossAuto,
+      // v196: MBO + Allowance lookup amounts
+      mboGradeAmount,
+      positionAllowanceAmount,
       // v191: pass overrides
       overrides: getUserOverrides(u.id),
       configOverrides: getConfigOverrides(),
@@ -24791,9 +24822,10 @@ function PayrollModule({ user, allUsers, mobile }: any) {
             { id:'sales_revenue',    label:'💰 DS Sale' },
             { id:'shortage_loss',    label:'💸 Mất hàng' },
             { id:'return_loss',      label:'🔄 Hoàn hàng' },
-            { id:'mbo_bonus',        label:'🎯 MBO' },
+            { id:'mbo_bonus',        label:'🎯 MBO/Hiệu suất' },
             { id:'inspection_bonus', label:'✅ Kiểm hàng' },
             { id:'allowance',        label:'💝 Trợ cấp' },
+            { id:'bhxh',             label:'🛡 BHXH' },
             { id:'base_salary',      label:'💼 LCB vị trí' },
             { id:'schedule',         label:'⏰ Giờ làm' },
           ] as Array<{ id: any, label: string }>).map(t => (
@@ -24839,6 +24871,31 @@ function PayrollModule({ user, allUsers, mobile }: any) {
             customerNewClaims={customerNewClaims}
             kvNameToAppUserMap={kvNameToAppUserMap}
             computeSaleRevenueForUser={computeSaleRevenueForUser}/>
+        ) : adminTab === 'mbo_bonus' ? (
+          <PayrollTabMboPerf user={user} mobile={mobile}
+            usersWithSalary={usersWithSalary}
+            month={month} year={year}
+            overrides={overrides}
+            mboGrades={mboGrades}
+            setMboGrades={setMboGrades}
+            onRefresh={refreshOverrides}/>
+        ) : adminTab === 'allowance' ? (
+          <PayrollTabAllowance user={user} mobile={mobile}
+            usersWithSalary={usersWithSalary}
+            month={month} year={year}
+            overrides={overrides}
+            positionsList={positionsList}
+            positionAllowances={positionAllowances}
+            setPositionAllowances={setPositionAllowances}
+            onRefresh={refreshOverrides}/>
+        ) : adminTab === 'bhxh' ? (
+          <PayrollTabBhxh user={user} mobile={mobile}
+            allUsers={allUsers}
+            usersWithSalary={usersWithSalary}
+            salaryConfigs={salaryConfigs}
+            setSalaryConfigs={setSalaryConfigs}
+            payrollConfig={payrollConfig}
+            setPayrollConfig={setPayrollConfig}/>
         ) : (
           <PayrollTabOverride user={user} mobile={mobile}
             usersWithSalary={usersWithSalary}
@@ -24853,7 +24910,6 @@ function PayrollModule({ user, allUsers, mobile }: any) {
               if (adminTab === 'return_loss')      return computed.return_loss
               if (adminTab === 'mbo_bonus')        return computed.mbo_bonus
               if (adminTab === 'inspection_bonus') return computed.inspection_bonus_amount
-              if (adminTab === 'allowance')        return computed.allowance
               return 0
             }}
             onRefresh={refreshOverrides}/>
@@ -26376,6 +26432,665 @@ function Row({ label, value, hl, bold }: any) {
 }
 
 
+// ══════════════════════════════════════════════════════════════════════
+// v196: PayrollTabMboPerf — MBO/Hiệu suất theo grade (A/B+/B/B-/C)
+// ══════════════════════════════════════════════════════════════════════
+function PayrollTabMboPerf({ user, mobile, usersWithSalary, month, year, overrides, mboGrades, setMboGrades, onRefresh }: any) {
+  const [editingGrade, setEditingGrade] = useState<string|null>(null)
+  const [editGradeAmount, setEditGradeAmount] = useState('')
+  const [working, setWorking] = useState(false)
+  const [editingUid, setEditingUid] = useState<string|null>(null)
+  const [editingNote, setEditingNote] = useState('')
+  
+  // Helper: lấy grade hiện tại của NV (default 'B')
+  const getUserGrade = (uid: string): string => {
+    const ov = overrides.find((o: any) => o.user_id === uid && o.field_type === 'mbo_grade')
+    return ov?.note || 'B'
+  }
+  const getGradeAmount = (grade: string): number => {
+    return Number(mboGrades.find((g: any) => g.grade === grade)?.amount || 0)
+  }
+  
+  // Save grade amount config
+  const saveGradeAmount = async (grade: string) => {
+    const amount = parseInt(editGradeAmount.replace(/[^0-9-]/g, ''), 10)
+    if (isNaN(amount)) { toast.error('Số không hợp lệ'); return }
+    setWorking(true)
+    try {
+      const { error } = await db.from('mbo_grades_config').update({
+        amount, updated_at: new Date().toISOString(), updated_by: user.id,
+      }).eq('grade', grade)
+      if (error) throw new Error(error.message)
+      const { data } = await db.from('mbo_grades_config').select('*').order('display_order')
+      setMboGrades(data || [])
+      setEditingGrade(null)
+      toast.success(`✓ Cập nhật grade ${grade}: ${amount.toLocaleString('vi-VN')}đ`)
+    } catch (e: any) {
+      toast.error('Lỗi: ' + e.message)
+    } finally {
+      setWorking(false)
+    }
+  }
+  
+  // Save user grade
+  const saveUserGrade = async (uid: string, newGrade: string) => {
+    setWorking(true)
+    try {
+      const existing = overrides.find((o: any) => o.user_id === uid && o.field_type === 'mbo_grade')
+      if (existing) {
+        const { error } = await db.from('payroll_overrides').update({
+          note: newGrade, updated_at: new Date().toISOString(), updated_by: user.id,
+        }).eq('id', existing.id)
+        if (error) throw new Error(error.message)
+      } else {
+        const { error } = await db.from('payroll_overrides').insert({
+          id: `ov_mbograde_${uid}_${year}_${String(month).padStart(2,'0')}`,
+          user_id: uid, month, year,
+          field_type: 'mbo_grade',
+          amount: 0, note: newGrade,
+          created_by: user.id, updated_at: new Date().toISOString(), updated_by: user.id,
+        })
+        if (error) throw new Error(error.message)
+      }
+      await onRefresh()
+      setEditingUid(null)
+      toast.success(`✓ Đã cập nhật grade: ${newGrade}`)
+    } catch (e: any) {
+      toast.error('Lỗi: ' + e.message)
+    } finally {
+      setWorking(false)
+    }
+  }
+  
+  // Save user MBO note (lý do)
+  const saveUserNote = async (uid: string) => {
+    setWorking(true)
+    try {
+      const grade = getUserGrade(uid)
+      const existing = overrides.find((o: any) => o.user_id === uid && o.field_type === 'mbo_grade')
+      if (existing) {
+        // Note is grade — không thể set note rõ ràng. Dùng field 'mbo_bonus' note thay
+        // Tạm: chỉ note grade. Lý do thì cần field khác. Skip cho v196.
+      }
+      setEditingUid(null)
+    } finally {
+      setWorking(false)
+    }
+  }
+  
+  return (
+    <div>
+      {/* Section 1: Cấu hình mức tiền cho mỗi grade */}
+      <Card style={{ padding:14, marginBottom:12, borderLeft:`4px solid ${T.purple}` }}>
+        <div style={{ fontSize:16, fontWeight:700, color:T.dark, marginBottom:6 }}>
+          🎯 Cấu hình mức MBO theo grade
+        </div>
+        <div style={{ fontSize:12, color:T.med, marginBottom:12 }}>
+          Mức tiền cho mỗi grade — áp dụng cho TOÀN bộ NV. Mặc định grade <b>B</b> nếu admin/QM chưa set.
+        </div>
+        <div style={{ display:'grid', gridTemplateColumns: mobile ? '1fr 1fr' : 'repeat(5, 1fr)', gap:10 }}>
+          {mboGrades.map((g: any) => {
+            const isEdit = editingGrade === g.grade
+            return (
+              <div key={g.grade} style={{ padding:'12px 10px', background:'#fff', border:`2px solid ${T.border}`,
+                borderRadius:8, textAlign:'center', position:'relative' }}>
+                <div style={{ fontSize:22, fontWeight:800, color:T.purple, marginBottom:2 }}>{g.grade}</div>
+                <div style={{ fontSize:10, color:T.light, marginBottom:8 }}>{g.description}</div>
+                {isEdit ? (
+                  <div>
+                    <input type="text" value={editGradeAmount}
+                      onChange={e => setEditGradeAmount(e.target.value)}
+                      placeholder="0" autoFocus
+                      style={{ width:'100%', padding:'6px', border:`1px solid ${T.border}`, borderRadius:4,
+                        background:'#fff', color:T.dark, fontSize:13, fontFamily:'inherit', textAlign:'center' }}/>
+                    <div style={{ display:'flex', gap:4, marginTop:6 }}>
+                      <button onClick={() => saveGradeAmount(g.grade)} disabled={working}
+                        style={{ flex:1, padding:'4px', borderRadius:4, border:'none',
+                          background:T.green, color:'#fff', cursor:'pointer', fontSize:10, fontWeight:600 }}>
+                        💾 Lưu
+                      </button>
+                      <button onClick={() => setEditingGrade(null)}
+                        style={{ flex:1, padding:'4px', borderRadius:4, border:`1px solid ${T.border}`,
+                          background:'#fff', color:T.med, cursor:'pointer', fontSize:10 }}>
+                        Huỷ
+                      </button>
+                    </div>
+                  </div>
+                ) : (
+                  <>
+                    <div style={{ fontSize:14, fontWeight:700, color:T.dark, fontVariantNumeric:'tabular-nums' }}>
+                      {Number(g.amount).toLocaleString('vi-VN')}đ
+                    </div>
+                    <button onClick={() => { setEditingGrade(g.grade); setEditGradeAmount(String(g.amount)) }}
+                      style={{ marginTop:6, padding:'3px 10px', borderRadius:4, border:`1px solid ${T.purple}`,
+                        background:'#fff', color:T.purple, cursor:'pointer', fontSize:10, fontWeight:600 }}>
+                      ✏ Sửa
+                    </button>
+                  </>
+                )}
+              </div>
+            )
+          })}
+        </div>
+      </Card>
+      
+      {/* Section 2: Bảng NV với dropdown chọn grade */}
+      <Card style={{ padding:14, marginBottom:12 }}>
+        <div style={{ fontSize:16, fontWeight:700, color:T.dark, marginBottom:6 }}>
+          👥 Grade MBO của từng NV — Tháng {month}/{year}
+        </div>
+        <div style={{ fontSize:12, color:T.med }}>
+          Admin/QM chấm grade cho từng NV. Grade quyết định số tiền MBO theo bảng cấu hình ở trên.
+        </div>
+      </Card>
+      
+      <Card style={{ padding:0, overflow:'auto' }}>
+        <table style={{ width:'100%', borderCollapse:'collapse', fontSize:12 }}>
+          <thead style={{ background:T.bg }}>
+            <tr>
+              <th style={_payrollThStyle}>NV</th>
+              <th style={_payrollThStyle}>Vị trí</th>
+              <th style={{ ..._payrollThStyle, textAlign:'center' }}>Grade hiện tại</th>
+              <th style={{ ..._payrollThStyle, textAlign:'right' }}>Tiền MBO</th>
+              <th style={{ ..._payrollThStyle, textAlign:'center' }}>Đổi grade</th>
+            </tr>
+          </thead>
+          <tbody>
+            {usersWithSalary.map((u: any) => {
+              const grade = getUserGrade(u.id)
+              const amount = getGradeAmount(grade)
+              const isEdit = editingUid === u.id
+              return (
+                <tr key={u.id} style={{ borderBottom:`1px solid ${T.border}` }}>
+                  <td style={{ padding:10, fontWeight:600, color:T.dark }}>{u.name}</td>
+                  <td style={{ padding:10, fontSize:11, color:T.med }}>{u._salary?.position_type}</td>
+                  <td style={{ padding:10, textAlign:'center' }}>
+                    <span style={{
+                      padding:'4px 12px', borderRadius:12,
+                      background: grade === 'A' ? '#D1FAE5' : grade === 'B+' ? '#DBEAFE' : grade === 'B' ? '#FEF3C7' : grade === 'B-' ? '#FED7AA' : '#FEE2E2',
+                      color: grade === 'A' ? '#065F46' : grade === 'B+' ? '#1E40AF' : grade === 'B' ? '#92400E' : grade === 'B-' ? '#9A3412' : '#991B1B',
+                      fontWeight:700, fontSize:13,
+                    }}>
+                      {grade}
+                    </span>
+                  </td>
+                  <td style={{ padding:10, textAlign:'right', fontWeight:600, fontVariantNumeric:'tabular-nums', color: amount > 0 ? T.green : T.light }}>
+                    {amount.toLocaleString('vi-VN')}đ
+                  </td>
+                  <td style={{ padding:10, textAlign:'center' }}>
+                    {isEdit ? (
+                      <div style={{ display:'inline-flex', gap:4, flexWrap:'wrap', justifyContent:'center' }}>
+                        {mboGrades.map((g: any) => (
+                          <button key={g.grade} onClick={() => saveUserGrade(u.id, g.grade)} disabled={working}
+                            style={{
+                              padding:'3px 10px', borderRadius:4,
+                              border:`1px solid ${grade === g.grade ? T.purple : T.border}`,
+                              background: grade === g.grade ? T.purple : '#fff',
+                              color: grade === g.grade ? '#fff' : T.dark,
+                              cursor:'pointer', fontSize:11, fontWeight:600,
+                            }}>
+                            {g.grade}
+                          </button>
+                        ))}
+                        <button onClick={() => setEditingUid(null)}
+                          style={{ padding:'3px 10px', borderRadius:4, border:`1px solid ${T.border}`,
+                            background:'#fff', color:T.med, cursor:'pointer', fontSize:11 }}>
+                          ✕
+                        </button>
+                      </div>
+                    ) : (
+                      <button onClick={() => setEditingUid(u.id)}
+                        style={{ padding:'4px 10px', borderRadius:4, border:`1px solid ${T.purple}`,
+                          background:'#fff', color:T.purple, cursor:'pointer', fontSize:11, fontWeight:600 }}>
+                        ✏ Đổi grade
+                      </button>
+                    )}
+                  </td>
+                </tr>
+              )
+            })}
+          </tbody>
+        </table>
+      </Card>
+    </div>
+  )
+}
+
+
+// ══════════════════════════════════════════════════════════════════════
+// v196: PayrollTabAllowance — Trợ cấp theo vị trí + override per-NV
+// ══════════════════════════════════════════════════════════════════════
+function PayrollTabAllowance({ user, mobile, usersWithSalary, month, year, overrides, positionsList, positionAllowances, setPositionAllowances, onRefresh }: any) {
+  const [editingPos, setEditingPos] = useState<string|null>(null)
+  const [editPosAmount, setEditPosAmount] = useState('')
+  const [editingUid, setEditingUid] = useState<string|null>(null)
+  const [editUidAmount, setEditUidAmount] = useState('')
+  const [editUidNote, setEditUidNote] = useState('')
+  const [working, setWorking] = useState(false)
+  
+  const getPosAllowance = (pid: string): number => {
+    return Number(positionAllowances.find((p: any) => p.position_id === pid)?.amount || 0)
+  }
+  const getUserOverride = (uid: string) => 
+    overrides.find((o: any) => o.user_id === uid && o.field_type === 'allowance')
+  
+  // Save position allowance
+  const savePosAllowance = async (pid: string) => {
+    const amount = parseInt(editPosAmount.replace(/[^0-9-]/g, ''), 10)
+    if (isNaN(amount)) { toast.error('Số không hợp lệ'); return }
+    setWorking(true)
+    try {
+      const existing = positionAllowances.find((p: any) => p.position_id === pid)
+      if (existing) {
+        const { error } = await db.from('position_allowances').update({
+          amount, updated_at: new Date().toISOString(), updated_by: user.id,
+        }).eq('position_id', pid)
+        if (error) throw new Error(error.message)
+      } else {
+        const { error } = await db.from('position_allowances').insert({
+          position_id: pid, amount, updated_by: user.id,
+        })
+        if (error) throw new Error(error.message)
+      }
+      const { data } = await db.from('position_allowances').select('*')
+      setPositionAllowances(data || [])
+      setEditingPos(null)
+      toast.success('✓ Cập nhật')
+    } catch (e: any) {
+      toast.error('Lỗi: ' + e.message)
+    } finally {
+      setWorking(false)
+    }
+  }
+  
+  // Save user override
+  const saveUserOverride = async (uid: string) => {
+    const amount = parseInt(editUidAmount.replace(/[^0-9-]/g, ''), 10)
+    if (isNaN(amount)) { toast.error('Số không hợp lệ'); return }
+    setWorking(true)
+    try {
+      const existing = getUserOverride(uid)
+      if (existing) {
+        const { error } = await db.from('payroll_overrides').update({
+          amount, note: editUidNote.trim() || null,
+          updated_at: new Date().toISOString(), updated_by: user.id,
+        }).eq('id', existing.id)
+        if (error) throw new Error(error.message)
+      } else {
+        const { error } = await db.from('payroll_overrides').insert({
+          id: `ov_allow_${uid}_${year}_${String(month).padStart(2,'0')}`,
+          user_id: uid, month, year,
+          field_type: 'allowance',
+          amount, note: editUidNote.trim() || null,
+          created_by: user.id, updated_at: new Date().toISOString(), updated_by: user.id,
+        })
+        if (error) throw new Error(error.message)
+      }
+      await onRefresh()
+      setEditingUid(null)
+      toast.success('✓ Đã lưu')
+    } catch (e: any) {
+      toast.error('Lỗi: ' + e.message)
+    } finally {
+      setWorking(false)
+    }
+  }
+  
+  const removeUserOverride = async (uid: string) => {
+    const existing = getUserOverride(uid)
+    if (!existing) return
+    if (!confirm('Xóa override này? Sẽ về dùng số mặc định theo vị trí.')) return
+    setWorking(true)
+    try {
+      const { error } = await db.from('payroll_overrides').delete().eq('id', existing.id)
+      if (error) throw new Error(error.message)
+      await onRefresh()
+      toast.success('✓ Đã xóa override')
+    } catch (e: any) {
+      toast.error('Lỗi: ' + e.message)
+    } finally {
+      setWorking(false)
+    }
+  }
+  
+  return (
+    <div>
+      {/* Section 1: Cấu hình trợ cấp theo vị trí */}
+      <Card style={{ padding:14, marginBottom:12, borderLeft:`4px solid ${T.gold}` }}>
+        <div style={{ fontSize:16, fontWeight:700, color:T.dark, marginBottom:6 }}>
+          💝 Trợ cấp theo vị trí (mặc định)
+        </div>
+        <div style={{ fontSize:12, color:T.med, marginBottom:8 }}>
+          Mỗi vị trí có 1 mức trợ cấp mặc định, áp cho tất cả NV ở vị trí đó. Có thể override per-NV ở bảng dưới.
+        </div>
+      </Card>
+      
+      <Card style={{ padding:0, overflow:'auto', marginBottom:14 }}>
+        <table style={{ width:'100%', borderCollapse:'collapse', fontSize:12 }}>
+          <thead style={{ background:T.bg }}>
+            <tr>
+              <th style={_payrollThStyle}>Vị trí</th>
+              <th style={{ ..._payrollThStyle, textAlign:'right' }}>Trợ cấp/tháng</th>
+              <th style={{ ..._payrollThStyle, textAlign:'center' }}>Hành động</th>
+            </tr>
+          </thead>
+          <tbody>
+            {positionsList.map((pos: any) => {
+              const amount = getPosAllowance(pos.id)
+              const isEdit = editingPos === pos.id
+              return (
+                <tr key={pos.id} style={{ borderBottom:`1px solid ${T.border}` }}>
+                  <td style={{ padding:10, fontWeight:600, color:T.dark }}>{pos.name}</td>
+                  <td style={{ padding:10, textAlign:'right', fontVariantNumeric:'tabular-nums' }}>
+                    {isEdit ? (
+                      <input type="text" value={editPosAmount}
+                        onChange={e => setEditPosAmount(e.target.value)}
+                        autoFocus placeholder="0"
+                        style={{ width:140, padding:'6px', border:`1px solid ${T.border}`, borderRadius:4,
+                          background:'#fff', color:T.dark, fontSize:13, fontFamily:'inherit', textAlign:'right' }}/>
+                    ) : (
+                      <span style={{ color: amount > 0 ? T.dark : T.light, fontWeight: amount > 0 ? 600 : 400 }}>
+                        {amount.toLocaleString('vi-VN')}đ
+                      </span>
+                    )}
+                  </td>
+                  <td style={{ padding:10, textAlign:'center' }}>
+                    {isEdit ? (
+                      <div style={{ display:'inline-flex', gap:4 }}>
+                        <button onClick={() => savePosAllowance(pos.id)} disabled={working}
+                          style={{ padding:'4px 10px', borderRadius:4, border:'none',
+                            background:T.green, color:'#fff', cursor:'pointer', fontSize:11, fontWeight:600 }}>
+                          💾 Lưu
+                        </button>
+                        <button onClick={() => setEditingPos(null)}
+                          style={{ padding:'4px 10px', borderRadius:4, border:`1px solid ${T.border}`,
+                            background:'#fff', color:T.med, cursor:'pointer', fontSize:11 }}>
+                          Huỷ
+                        </button>
+                      </div>
+                    ) : (
+                      <button onClick={() => { setEditingPos(pos.id); setEditPosAmount(String(amount)) }}
+                        style={{ padding:'4px 10px', borderRadius:4, border:`1px solid ${T.gold}`,
+                          background:'#fff', color:T.gold, cursor:'pointer', fontSize:11, fontWeight:600 }}>
+                        ✏ Sửa
+                      </button>
+                    )}
+                  </td>
+                </tr>
+              )
+            })}
+          </tbody>
+        </table>
+      </Card>
+      
+      {/* Section 2: Override per-NV */}
+      <Card style={{ padding:14, marginBottom:12 }}>
+        <div style={{ fontSize:14, fontWeight:700, color:T.dark, marginBottom:4 }}>
+          ✏ Override per-NV — Tháng {month}/{year}
+        </div>
+        <div style={{ fontSize:11, color:T.med }}>
+          Chỉ áp tháng này. Để trống → dùng default theo vị trí.
+        </div>
+      </Card>
+      
+      <Card style={{ padding:0, overflow:'auto' }}>
+        <table style={{ width:'100%', borderCollapse:'collapse', fontSize:12 }}>
+          <thead style={{ background:T.bg }}>
+            <tr>
+              <th style={_payrollThStyle}>NV</th>
+              <th style={_payrollThStyle}>Vị trí</th>
+              <th style={{ ..._payrollThStyle, textAlign:'right' }}>Default theo VT</th>
+              <th style={{ ..._payrollThStyle, textAlign:'right' }}>Override</th>
+              <th style={{ ..._payrollThStyle }}>Lý do</th>
+              <th style={{ ..._payrollThStyle, textAlign:'center' }}>Hành động</th>
+            </tr>
+          </thead>
+          <tbody>
+            {usersWithSalary.map((u: any) => {
+              const defAmount = getPosAllowance(u.position_id)
+              const ov = getUserOverride(u.id)
+              const isEdit = editingUid === u.id
+              return (
+                <tr key={u.id} style={{ borderBottom:`1px solid ${T.border}` }}>
+                  <td style={{ padding:10, fontWeight:600, color:T.dark }}>{u.name}</td>
+                  <td style={{ padding:10, fontSize:11, color:T.med }}>{u._salary?.position_type}</td>
+                  <td style={{ padding:10, textAlign:'right', fontVariantNumeric:'tabular-nums', color:T.med }}>
+                    {defAmount.toLocaleString('vi-VN')}đ
+                  </td>
+                  <td style={{ padding:10, textAlign:'right', fontVariantNumeric:'tabular-nums' }}>
+                    {isEdit ? (
+                      <input type="text" value={editUidAmount}
+                        onChange={e => setEditUidAmount(e.target.value)}
+                        autoFocus placeholder="0"
+                        style={{ width:120, padding:'6px', border:`1px solid ${T.border}`, borderRadius:4,
+                          background:'#fff', color:T.dark, fontSize:13, fontFamily:'inherit', textAlign:'right' }}/>
+                    ) : (
+                      <span style={{ color: ov ? T.gold : T.light, fontWeight: ov ? 700 : 400 }}>
+                        {ov ? Number(ov.amount).toLocaleString('vi-VN') + 'đ' : '—'}
+                      </span>
+                    )}
+                  </td>
+                  <td style={{ padding:10, fontSize:11, color:T.med, maxWidth:160 }}>
+                    {isEdit ? (
+                      <input type="text" value={editUidNote}
+                        onChange={e => setEditUidNote(e.target.value)}
+                        placeholder="Lý do..."
+                        style={{ width:'100%', padding:'6px', border:`1px solid ${T.border}`, borderRadius:4,
+                          background:'#fff', color:T.dark, fontSize:11, fontFamily:'inherit' }}/>
+                    ) : (ov?.note || '')}
+                  </td>
+                  <td style={{ padding:10, textAlign:'center' }}>
+                    {isEdit ? (
+                      <div style={{ display:'inline-flex', gap:4 }}>
+                        <button onClick={() => saveUserOverride(u.id)} disabled={working}
+                          style={{ padding:'4px 10px', borderRadius:4, border:'none',
+                            background:T.green, color:'#fff', cursor:'pointer', fontSize:11, fontWeight:600 }}>
+                          💾 Lưu
+                        </button>
+                        <button onClick={() => setEditingUid(null)}
+                          style={{ padding:'4px 10px', borderRadius:4, border:`1px solid ${T.border}`,
+                            background:'#fff', color:T.med, cursor:'pointer', fontSize:11 }}>
+                          Huỷ
+                        </button>
+                      </div>
+                    ) : (
+                      <div style={{ display:'inline-flex', gap:4 }}>
+                        <button onClick={() => {
+                          setEditingUid(u.id)
+                          setEditUidAmount(ov ? String(Math.round(Number(ov.amount))) : String(defAmount))
+                          setEditUidNote(ov?.note || '')
+                        }}
+                          style={{ padding:'4px 10px', borderRadius:4, border:`1px solid ${T.gold}`,
+                            background:'#fff', color:T.gold, cursor:'pointer', fontSize:11, fontWeight:600 }}>
+                          ✏ {ov ? 'Sửa' : 'Override'}
+                        </button>
+                        {ov && (
+                          <button onClick={() => removeUserOverride(u.id)}
+                            style={{ padding:'4px 10px', borderRadius:4, border:`1px solid ${T.red}`,
+                              background:'#fff', color:T.red, cursor:'pointer', fontSize:11 }}>
+                            🗑
+                          </button>
+                        )}
+                      </div>
+                    )}
+                  </td>
+                </tr>
+              )
+            })}
+          </tbody>
+        </table>
+      </Card>
+    </div>
+  )
+}
+
+
+// ══════════════════════════════════════════════════════════════════════
+// v196: PayrollTabBhxh — Cấu hình BHXH cho từng NV
+// ══════════════════════════════════════════════════════════════════════
+function PayrollTabBhxh({ user, mobile, allUsers, usersWithSalary, salaryConfigs, setSalaryConfigs, payrollConfig, setPayrollConfig }: any) {
+  const [working, setWorking] = useState(false)
+  const [editingAmount, setEditingAmount] = useState(false)
+  const [editAmountVal, setEditAmountVal] = useState(String(payrollConfig?.bhxh_deduction || 557550))
+  
+  const bhxhAmount = Number(payrollConfig?.bhxh_deduction || 557550)
+  
+  const toggleBhxh = async (uid: string, current: boolean) => {
+    setWorking(true)
+    try {
+      const sc = salaryConfigs.find((s: any) => s.user_id === uid)
+      if (!sc) { toast.error('Không tìm thấy salary_config'); return }
+      const { error } = await db.from('salary_config').update({
+        has_bhxh: !current,
+      }).eq('id', sc.id)
+      if (error) throw new Error(error.message)
+      setSalaryConfigs((prev: any[]) => prev.map((s: any) =>
+        s.id === sc.id ? { ...s, has_bhxh: !current } : s
+      ))
+      toast.success(`✓ ${!current ? 'Bật' : 'Tắt'} BHXH cho NV`)
+    } catch (e: any) {
+      toast.error('Lỗi: ' + e.message)
+    } finally {
+      setWorking(false)
+    }
+  }
+  
+  const saveBhxhAmount = async () => {
+    const amount = parseInt(editAmountVal.replace(/[^0-9-]/g, ''), 10)
+    if (isNaN(amount) || amount < 0) { toast.error('Số không hợp lệ'); return }
+    setWorking(true)
+    try {
+      const { error } = await db.from('payroll_config').update({
+        bhxh_deduction: amount,
+      }).eq('id', payrollConfig.id)
+      if (error) throw new Error(error.message)
+      setPayrollConfig({ ...payrollConfig, bhxh_deduction: amount })
+      setEditingAmount(false)
+      toast.success('✓ Cập nhật mức BHXH')
+    } catch (e: any) {
+      toast.error('Lỗi: ' + e.message)
+    } finally {
+      setWorking(false)
+    }
+  }
+  
+  const totalBhxhUsers = usersWithSalary.filter((u: any) => u._salary?.has_bhxh).length
+  const totalBhxhAmount = totalBhxhUsers * bhxhAmount
+  
+  return (
+    <div>
+      {/* Header config */}
+      <Card style={{ padding:14, marginBottom:12, borderLeft:`4px solid ${T.red}` }}>
+        <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', flexWrap:'wrap', gap:10 }}>
+          <div>
+            <div style={{ fontSize:16, fontWeight:700, color:T.dark }}>
+              🛡 Cấu hình BHXH
+            </div>
+            <div style={{ fontSize:12, color:T.med, marginTop:4 }}>
+              NV được tick BHXH sẽ bị TRỪ <b>{bhxhAmount.toLocaleString('vi-VN')}đ/tháng</b> trong lương cứng. 
+              Mức tiền là cố định cho mọi NV.
+            </div>
+          </div>
+        </div>
+        <div style={{ marginTop:12, display:'flex', gap:10, alignItems:'center', flexWrap:'wrap' }}>
+          <span style={{ fontSize:12, color:T.med, fontWeight:600 }}>Mức BHXH/tháng:</span>
+          {editingAmount ? (
+            <>
+              <input type="text" value={editAmountVal}
+                onChange={e => setEditAmountVal(e.target.value)}
+                autoFocus
+                style={{ width:160, padding:'6px 10px', border:`1.5px solid ${T.red}`, borderRadius:6,
+                  background:'#fff', color:T.dark, fontSize:13, fontFamily:'inherit', fontWeight:600 }}/>
+              <button onClick={saveBhxhAmount} disabled={working}
+                style={{ padding:'6px 14px', borderRadius:6, border:'none',
+                  background:T.green, color:'#fff', cursor:'pointer', fontSize:12, fontWeight:600 }}>
+                💾 Lưu
+              </button>
+              <button onClick={() => { setEditingAmount(false); setEditAmountVal(String(bhxhAmount)) }}
+                style={{ padding:'6px 14px', borderRadius:6, border:`1px solid ${T.border}`,
+                  background:'#fff', color:T.med, cursor:'pointer', fontSize:12 }}>
+                Huỷ
+              </button>
+            </>
+          ) : (
+            <>
+              <span style={{ fontSize:14, fontWeight:700, color:T.red }}>
+                {bhxhAmount.toLocaleString('vi-VN')}đ
+              </span>
+              <button onClick={() => setEditingAmount(true)}
+                style={{ padding:'4px 10px', borderRadius:4, border:`1px solid ${T.red}`,
+                  background:'#fff', color:T.red, cursor:'pointer', fontSize:11, fontWeight:600 }}>
+                ✏ Sửa mức
+              </button>
+            </>
+          )}
+        </div>
+      </Card>
+      
+      {/* Summary */}
+      <div style={{ display:'grid', gridTemplateColumns: mobile ? '1fr 1fr' : 'repeat(3, 1fr)',
+        gap:10, marginBottom:12 }}>
+        <Card style={{ padding:'12px 14px', textAlign:'center' }}>
+          <div style={{ fontSize:24, fontWeight:800, color:T.green }}>{totalBhxhUsers}</div>
+          <div style={{ fontSize:10, color:T.light, marginTop:3 }}>NV có BHXH</div>
+        </Card>
+        <Card style={{ padding:'12px 14px', textAlign:'center' }}>
+          <div style={{ fontSize:24, fontWeight:800, color:T.med }}>{usersWithSalary.length - totalBhxhUsers}</div>
+          <div style={{ fontSize:10, color:T.light, marginTop:3 }}>NV không BHXH</div>
+        </Card>
+        <Card style={{ padding:'12px 14px', textAlign:'center' }}>
+          <div style={{ fontSize:18, fontWeight:800, color:T.red }}>
+            {totalBhxhAmount.toLocaleString('vi-VN')}đ
+          </div>
+          <div style={{ fontSize:10, color:T.light, marginTop:3 }}>Tổng trừ BHXH/tháng</div>
+        </Card>
+      </div>
+      
+      {/* Bảng */}
+      <Card style={{ padding:0, overflow:'auto' }}>
+        <table style={{ width:'100%', borderCollapse:'collapse', fontSize:12 }}>
+          <thead style={{ background:T.bg }}>
+            <tr>
+              <th style={_payrollThStyle}>NV</th>
+              <th style={_payrollThStyle}>Vị trí</th>
+              <th style={{ ..._payrollThStyle, textAlign:'center' }}>Có BHXH</th>
+              <th style={{ ..._payrollThStyle, textAlign:'right' }}>Mức trừ</th>
+            </tr>
+          </thead>
+          <tbody>
+            {usersWithSalary.map((u: any) => {
+              const has = !!u._salary?.has_bhxh
+              return (
+                <tr key={u.id} style={{ borderBottom:`1px solid ${T.border}`,
+                  background: has ? '#FEF3C7' : '#fff' }}>
+                  <td style={{ padding:10, fontWeight:600, color:T.dark }}>{u.name}</td>
+                  <td style={{ padding:10, fontSize:11, color:T.med }}>{u._salary?.position_type}</td>
+                  <td style={{ padding:10, textAlign:'center' }}>
+                    <label style={{ display:'inline-flex', alignItems:'center', cursor:'pointer', gap:6 }}>
+                      <input type="checkbox" checked={has}
+                        onChange={() => toggleBhxh(u.id, has)}
+                        disabled={working}
+                        style={{ width:18, height:18, cursor:'pointer' }}/>
+                      <span style={{ fontSize:11, fontWeight:600, color: has ? T.red : T.light }}>
+                        {has ? '✓ Có' : '— Không'}
+                      </span>
+                    </label>
+                  </td>
+                  <td style={{ padding:10, textAlign:'right', fontVariantNumeric:'tabular-nums',
+                    color: has ? T.red : T.light, fontWeight: has ? 600 : 400 }}>
+                    {has ? `-${bhxhAmount.toLocaleString('vi-VN')}đ` : '—'}
+                  </td>
+                </tr>
+              )
+            })}
+          </tbody>
+        </table>
+      </Card>
+    </div>
+  )
+}
+
+
 // Detail modal — breakdown công thức + manual override + bảng chấm công full tháng (v192)
 function PayrollDetailModal({ user: nv, payroll, salaryConfig, otherIncomes, shortageLoss, revenue, paidLeaveDates, month, year, actor, onClose, onUpdate, attendanceMonth, positionWorkSchedule, positionsList, isAdmin, onAttendanceUpdate, specialDays }: any) {
   const [manualAdjust, setManualAdjust] = useState(payroll?.manual_adjust || 0)
@@ -26456,6 +27171,19 @@ function PayrollDetailModal({ user: nv, payroll, salaryConfig, otherIncomes, sho
           {(payroll.holiday_breakdown || []).length > 0 && (
             <div style={{ marginTop:8, padding:8, background:'#FEF3C7', borderRadius:6, fontSize:11 }}>
               <div style={{ fontWeight:700, color:'#92400E', marginBottom:4 }}>Chi tiết ngày lễ:</div>
+              {/* v196: Hiển thị công thức đơn giá/ngày */}
+              {(() => {
+                const totalWd = countWorkingDaysInMonth(month, year, paidLeaveDates)
+                const lcb = Number(payroll.base_salary || 0)
+                const dailyPay = totalWd > 0 ? Math.round(lcb / totalWd) : 0
+                return (
+                  <div style={{ marginBottom:6, padding:'4px 6px', background:'#FFF8DC', borderRadius:4, fontSize:10, color:'#78350F', fontStyle:'italic' }}>
+                    💡 Đơn giá/ngày = LCB ({lcb.toLocaleString('vi-VN')}đ) ÷ {totalWd} ngày làm việc = <b>{dailyPay.toLocaleString('vi-VN')}đ</b> · 
+                    Nghỉ ngày lễ paid → trả 100% × dailyPay = {dailyPay.toLocaleString('vi-VN')}đ · 
+                    Đi làm ngày lễ ×2 → bonus 100% × dailyPay = {dailyPay.toLocaleString('vi-VN')}đ
+                  </div>
+                )
+              })()}
               {(payroll.holiday_breakdown || []).map((h: any, idx: number) => (
                 <div key={idx} style={{ display:'flex', justifyContent:'space-between', color:'#78350F', padding:'2px 0' }}>
                   <span>
