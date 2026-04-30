@@ -42,7 +42,8 @@ const db = createClient(SUPABASE_URL, SUPABASE_KEY)
 // v185: (1) Helper fmtMoney() — format số tiền KV bỏ phần thập phân (KV trả 4649.75, hiển thị 4.650). Áp dụng 19 chỗ trong CustomersModule. (2) UploadExcel: hiển thị errors[] chi tiết + not_found_customer list + stack trace. Toast warning rõ ràng khi có vấn đề. Edge fn assign-from-excel v3: pre-load customers tồn tại để tách 'không tìm thấy KH' vs 'lỗi update'
 // v186: fix build error — fmtMoney trùng tên với global của payment module → đổi thành fmtMoneyKv
 // v187: fix alias không match — frontend normalize "Ngân Lan" → "ngân lan" còn dấu, edge function search "ngan lan" → KHÔNG match. Đổi frontend dùng cùng logic NFD+bỏ dấu+đ→d. Thêm check duplicate trước insert (tránh 409).
-const APP_VERSION = '2026.04.30.v187'
+// v188: fix bug zoom ảnh trên iOS — (1) safe-area-inset-top tránh notch che top bar, (2) thêm nút "← Đóng" rõ ràng phía trái thay nút ✕ phải có thể bị che, (3) touchAction:'none' tắt iOS Safari default page zoom, (4) pointerEvents:none cho img để div parent nhận touch event, (5) lock body scroll khi modal mở. Hint mobile: pinch 2 ngón để zoom.
+const APP_VERSION = '2026.04.30.v188'
 
 // ════════════════════════════════════════════════════════════════
 // v158: VersionBadge — Hiển thị APP_VERSION ở góc dưới phải
@@ -40295,6 +40296,17 @@ function PhotoZoomViewer({ photos, startIdx, mobile, onClose, onRotate }: any) {
     setPan({ x:0, y:0 })
   }, [idx])
 
+  // v188: Lock body scroll trên iOS khi modal mở
+  useEffect(() => {
+    const prevOverflow = document.body.style.overflow
+    const prevPosition = document.body.style.position
+    document.body.style.overflow = 'hidden'
+    return () => {
+      document.body.style.overflow = prevOverflow
+      document.body.style.position = prevPosition
+    }
+  }, [])
+
   // Keyboard nav
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
@@ -40382,14 +40394,31 @@ function PhotoZoomViewer({ photos, startIdx, mobile, onClose, onRotate }: any) {
 
   return (
     <div style={{ position:'fixed', inset:0, background:'rgba(0,0,0,0.95)', zIndex:9999,
-      display:'flex', flexDirection:'column' }}
+      display:'flex', flexDirection:'column',
+      // v188: Né notch/Dynamic Island trên iOS
+      paddingTop: 'env(safe-area-inset-top, 0px)',
+      paddingBottom: 'env(safe-area-inset-bottom, 0px)',
+      paddingLeft: 'env(safe-area-inset-left, 0px)',
+      paddingRight: 'env(safe-area-inset-right, 0px)',
+    }}
       onMouseMove={handleMouseMove} onMouseUp={handleMouseUp} onMouseLeave={handleMouseUp}>
 
       {/* Top bar */}
       <div style={{ display:'flex', alignItems:'center', justifyContent:'space-between',
-        padding:'10px 14px', color:'#fff', fontSize:13 }}>
-        <div>{idx + 1} / {photos.length}</div>
-        <div style={{ display:'flex', gap:8 }}>
+        padding:'10px 14px', color:'#fff', fontSize:13, gap:10 }}>
+        {/* v188: Nút ← Đóng phía trái rõ ràng (cho mobile, vì nút ✕ phải có thể bị che bởi notch) */}
+        <button onClick={onClose}
+          style={{ display:'flex', alignItems:'center', gap:6,
+            background:'rgba(255,255,255,0.2)', border:'none', color:'#fff',
+            padding:'8px 14px', borderRadius:20, cursor:'pointer',
+            fontSize:14, fontWeight:600, fontFamily:'inherit',
+            minHeight:36, whiteSpace:'nowrap' }}>
+          ← Đóng
+        </button>
+        <div style={{ flex:1, textAlign:'center', fontSize:13, fontWeight:600 }}>
+          {idx + 1} / {photos.length}
+        </div>
+        <div style={{ display:'flex', gap:6, flexWrap:'wrap', justifyContent:'flex-end' }}>
           {/* Zoom controls */}
           <button onClick={() => setZoom(z => Math.max(z / 1.3, 0.5))}
             style={{ background:'rgba(255,255,255,0.15)', border:'none', color:'#fff',
@@ -40412,26 +40441,29 @@ function PhotoZoomViewer({ photos, startIdx, mobile, onClose, onRotate }: any) {
             title="Mở ảnh gốc"
             style={{ background:'rgba(255,255,255,0.15)', border:'none', color:'#fff',
               width:36, height:36, borderRadius:18, cursor:'pointer', fontSize:14 }}>↗</button>
-          <button onClick={onClose}
-            style={{ background:'rgba(255,255,255,0.25)', border:'none', color:'#fff',
-              width:36, height:36, borderRadius:18, cursor:'pointer', fontSize:18 }}>✕</button>
         </div>
       </div>
 
       {/* Image area */}
       <div style={{ flex:1, position:'relative', overflow:'hidden',
-        display:'flex', alignItems:'center', justifyContent:'center' }}
+        display:'flex', alignItems:'center', justifyContent:'center',
+        // v188: critical cho iOS — tắt default touch behaviors (page zoom, scroll)
+        touchAction: 'none',
+        WebkitUserSelect: 'none' as any,
+        userSelect: 'none' }}
         onWheel={handleWheel}
+        onDoubleClick={handleDoubleClick}
+        onMouseDown={handleMouseDown}
         onTouchStart={handleTouchStart} onTouchMove={handleTouchMove} onTouchEnd={handleTouchEnd}>
         <ZoomableImg src={url} alt=""
           draggable={false}
-          onDoubleClick={handleDoubleClick}
-          onMouseDown={handleMouseDown}
           style={{ maxWidth:'100%', maxHeight:'100%', objectFit:'contain',
             transform:`translate(${pan.x}px, ${pan.y}px) scale(${zoom}) rotate(${rot}deg)`,
             transition: dragging ? 'none' : 'transform 0.2s ease',
             cursor: zoom > 1 ? (dragging ? 'grabbing' : 'grab') : 'zoom-in',
-            userSelect:'none', WebkitUserSelect:'none' as any }}/>
+            userSelect:'none', WebkitUserSelect:'none' as any,
+            // v188: pointer-events none để parent div nhận touch (iOS fix)
+            pointerEvents: 'none' as any }}/>
 
         {/* Nav arrows */}
         {idx > 0 && (
@@ -40462,6 +40494,9 @@ function PhotoZoomViewer({ photos, startIdx, mobile, onClose, onRotate }: any) {
         {getAt(photo) && <> • {new Date(getAt(photo)).toLocaleString('vi-VN')}</>}
         {!mobile && <div style={{ marginTop:4, fontSize:9, opacity:.6 }}>
           Scroll để zoom • Kéo để di chuyển • Double-click để zoom nhanh • ← → để chuyển ảnh • R để xoay 90° • Esc để thoát
+        </div>}
+        {mobile && <div style={{ marginTop:4, fontSize:9, opacity:.6 }}>
+          👆 Pinch 2 ngón để zoom • Kéo 1 ngón khi đã zoom • Tap đúp để zoom nhanh
         </div>}
       </div>
     </div>
