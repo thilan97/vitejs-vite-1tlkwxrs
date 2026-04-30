@@ -34,7 +34,9 @@ const db = createClient(SUPABASE_URL, SUPABASE_KEY)
 // v177: feature module "👥 Khách hàng" — sync KV + filter/sort + upload Excel người phụ trách + chi tiết KH
 // v178: fix code badge "Mã KH" trong CustomerDetailModal blend trắng-trắng — add background+border explicit
 // v179: fix MỌI input/select/date trong CustomersModule blend với dark mode — add background:'#fff' + color:T.dark cho hết. Thêm gợi ý range ngày khi filter không ra kết quả
-const APP_VERSION = '2026.04.29.v179'
+// v180: fix CustomersModule chỉ load 1000/2541 KH — Supabase cap response → dùng .range() pagination batch 1000. Cải tiến filter Doanh số: input số tự nhập thay dropdown cố định
+// v181: KV setup hiển thị tiền theo "đơn vị nghìn đồng" — toàn bộ Customer module hiển thị "nghìn đ" thay vì "đ", thêm chú thích đơn vị ở header bảng + summary + detail. Filter doanh số nhập theo nghìn (vd: 1000 = 1tr đ thực)
+const APP_VERSION = '2026.04.29.v181'
 
 // ════════════════════════════════════════════════════════════════
 // v158: VersionBadge — Hiển thị APP_VERSION ở góc dưới phải
@@ -31983,21 +31985,34 @@ function CustomersModule({ user, allUsers, mobile }: any) {
   const fetchCustomers = async () => {
     setLoading(true)
     try {
-      let q = db.from('customers').select('*').neq('is_deleted', true)
+      // v179 fix: Supabase cap response 1000 rows mặc dù .limit() cao hơn
+      // → dùng .range() pagination để fetch hết
+      const PAGE_SIZE = 1000
+      let allData: any[] = []
+      let from = 0
       
-      // RLS theo quyền: Sale chỉ thấy KH của mình
-      if (!isAdmin) {
-        q = q.eq('assigned_to_user_id', user.id)
+      while (true) {
+        let q = db.from('customers').select('*').neq('is_deleted', true)
+        if (!isAdmin) q = q.eq('assigned_to_user_id', user.id)
+        
+        const { data, error } = await q.range(from, from + PAGE_SIZE - 1)
+        if (error) {
+          console.error('[Customers] Fetch error:', error)
+          toast.error('Không tải được danh sách: ' + error.message)
+          setCustomers([])
+          return
+        }
+        
+        const rows = data || []
+        allData = allData.concat(rows)
+        
+        // Hết data hoặc đã đủ 10000 rows (safety)
+        if (rows.length < PAGE_SIZE || allData.length >= 10000) break
+        from += PAGE_SIZE
       }
       
-      const { data, error } = await q.limit(5000)
-      if (error) {
-        console.error('[Customers] Fetch error:', error)
-        toast.error('Không tải được danh sách: ' + error.message)
-        setCustomers([])
-      } else {
-        setCustomers(data || [])
-      }
+      console.log(`[Customers] Loaded ${allData.length} KH (admin=${isAdmin})`)
+      setCustomers(allData)
     } finally {
       setLoading(false)
     }
@@ -32145,17 +32160,28 @@ function CustomersModule({ user, allUsers, mobile }: any) {
       <Card style={{ padding:'14px 16px', marginBottom:12,
         background:`linear-gradient(135deg, ${T.goldBg}, ${T.bg})`,
         border:`1.5px solid ${T.gold}40` }}>
+        <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center',
+          marginBottom:10, flexWrap:'wrap', gap:6 }}>
+          <div style={{ fontSize:11, fontWeight:700, color:T.med, letterSpacing:.3 }}>
+            📊 TỔNG QUAN
+          </div>
+          <div style={{ fontSize:10, color:T.med, fontStyle:'italic',
+            padding:'2px 8px', background:'#fff', borderRadius:10,
+            border:`1px solid ${T.border}` }}>
+            💡 Đơn vị: <b style={{ color:T.dark }}>nghìn đồng</b> (giống KV)
+          </div>
+        </div>
         <div style={{ display:'grid',
           gridTemplateColumns: mobile ? 'repeat(2,1fr)' : 'repeat(4,1fr)',
           gap:14 }}>
-          <SummaryStat label="📊 Số KH" value={summary.count.toLocaleString('vi-VN')} color={T.dark}/>
+          <SummaryStat label="📊 Số KH" value={summary.count.toLocaleString('vi-VN')} unit="" color={T.dark}/>
           <SummaryStat label="💸 Tổng nợ"
-            value={`${summary.total_debt.toLocaleString('vi-VN')}đ`}
+            value={summary.total_debt.toLocaleString('vi-VN')} unit="nghìn đ"
             color={summary.total_debt > 0 ? T.red : T.green}/>
           <SummaryStat label="💰 Tổng bán"
-            value={`${summary.total_invoiced.toLocaleString('vi-VN')}đ`} color={T.gold}/>
+            value={summary.total_invoiced.toLocaleString('vi-VN')} unit="nghìn đ" color={T.gold}/>
           <SummaryStat label="✨ Tổng bán trừ trả hàng"
-            value={`${summary.total_revenue.toLocaleString('vi-VN')}đ`} color={T.gold}/>
+            value={summary.total_revenue.toLocaleString('vi-VN')} unit="nghìn đ" color={T.gold}/>
         </div>
       </Card>
 
@@ -32216,18 +32242,21 @@ function CustomersModule({ user, allUsers, mobile }: any) {
                 background:'#fff', color:T.dark }}/>
           </div>
           <div style={{ flex:'1 1 180px', minWidth:140 }}>
-            <SettingSectionTitle>💰 Doanh số ≥</SettingSectionTitle>
-            <select value={minRevenue} onChange={e => setMinRevenue(Number(e.target.value))}
+            <SettingSectionTitle>💰 Doanh số ≥ <span style={{ fontSize:9, color:T.light, fontWeight:500 }}>(nghìn đ)</span></SettingSectionTitle>
+            <input type="number" value={minRevenue || ''}
+              onChange={e => setMinRevenue(Number(e.target.value) || 0)}
+              placeholder="vd: 1000 = 1tr đ"
+              min={0} step={100}
               style={{ width:'100%', padding:'8px 10px', border:`1px solid ${T.border}`,
-                borderRadius:6, fontSize:13, fontFamily:'inherit', boxSizing:'border-box', background:'#fff', color:T.dark }}>
-              <option value={0}>Không lọc</option>
-              <option value={100000}>100K</option>
-              <option value={500000}>500K</option>
-              <option value={1000000}>1 triệu</option>
-              <option value={5000000}>5 triệu</option>
-              <option value={10000000}>10 triệu</option>
-              <option value={50000000}>50 triệu</option>
-            </select>
+                borderRadius:6, fontSize:13, fontFamily:'inherit', boxSizing:'border-box',
+                background:'#fff', color:T.dark }}/>
+            {minRevenue > 0 && (
+              <div style={{ fontSize:10, color:T.med, marginTop:4 }}>
+                ≥ {minRevenue.toLocaleString('vi-VN')} nghìn đ
+                {' = '}
+                <b style={{ color:T.gold }}>{(minRevenue * 1000).toLocaleString('vi-VN')}đ</b>
+              </div>
+            )}
           </div>
           <div style={{ flex:'1 1 180px', minWidth:140 }}>
             <SettingSectionTitle>↕ Sắp xếp</SettingSectionTitle>
@@ -32301,9 +32330,18 @@ function CustomersModule({ user, allUsers, mobile }: any) {
                   <th style={thStyle}>Nhóm</th>
                   <th style={thStyle}>Người phụ trách</th>
                   <th style={thStyle}>Ngày tạo</th>
-                  <th style={{ ...thStyle, textAlign:'right' }}>Nợ hiện tại</th>
-                  <th style={{ ...thStyle, textAlign:'right' }}>Tổng bán</th>
-                  <th style={{ ...thStyle, textAlign:'right' }}>Tổng bán trừ trả</th>
+                  <th style={{ ...thStyle, textAlign:'right' }}>
+                    Nợ hiện tại<br/>
+                    <span style={{ fontSize:9, fontWeight:500, color:T.light, textTransform:'none' }}>(nghìn đ)</span>
+                  </th>
+                  <th style={{ ...thStyle, textAlign:'right' }}>
+                    Tổng bán<br/>
+                    <span style={{ fontSize:9, fontWeight:500, color:T.light, textTransform:'none' }}>(nghìn đ)</span>
+                  </th>
+                  <th style={{ ...thStyle, textAlign:'right' }}>
+                    Tổng bán trừ trả<br/>
+                    <span style={{ fontSize:9, fontWeight:500, color:T.light, textTransform:'none' }}>(nghìn đ)</span>
+                  </th>
                 </tr>
               </thead>
               <tbody>
@@ -32375,11 +32413,14 @@ function getDateRangeFromData(customers: any[]): { min: string, max: string } {
   return { min: fmt(dates[0]), max: fmt(dates[dates.length - 1]) }
 }
 
-function SummaryStat({ label, value, color }: any) {
+function SummaryStat({ label, value, unit, color }: any) {
   return (
     <div>
       <div style={{ fontSize:10, color:T.med, fontWeight:600, letterSpacing:.3, marginBottom:2 }}>{label}</div>
-      <div style={{ fontSize:16, fontWeight:800, color }}>{value}</div>
+      <div style={{ fontSize:16, fontWeight:800, color, display:'flex', alignItems:'baseline', gap:4 }}>
+        <span>{value}</span>
+        {unit && <span style={{ fontSize:10, fontWeight:600, color:T.med }}>{unit}</span>}
+      </div>
     </div>
   )
 }
@@ -32467,9 +32508,15 @@ function CustomerCardMobile({ customer: c, onClick }: any) {
       </div>
       <div style={{ display:'flex', gap:14, fontSize:12, fontVariantNumeric:'tabular-nums' }}>
         {debt > 0 && (
-          <span><span style={{ color:T.med }}>Nợ:</span> <b style={{ color:T.red }}>{debt.toLocaleString('vi-VN')}đ</b></span>
+          <span><span style={{ color:T.med }}>Nợ:</span>{' '}
+            <b style={{ color:T.red }}>{debt.toLocaleString('vi-VN')}</b>
+            <span style={{ color:T.light, fontSize:10 }}> nghìn đ</span>
+          </span>
         )}
-        <span><span style={{ color:T.med }}>DS:</span> <b style={{ color:T.gold }}>{revenue.toLocaleString('vi-VN')}đ</b></span>
+        <span><span style={{ color:T.med }}>DS:</span>{' '}
+          <b style={{ color:T.gold }}>{revenue.toLocaleString('vi-VN')}</b>
+          <span style={{ color:T.light, fontSize:10 }}> nghìn đ</span>
+        </span>
       </div>
     </Card>
   )
@@ -32525,7 +32572,7 @@ function CustomerSyncModal({ user, onClose, onDone }: any) {
                 <div style={{ fontWeight:700, color:T.green, marginBottom:6 }}>✅ Sync thành công</div>
                 <div>📊 Đã đồng bộ: <b>{result.upserted}/{result.kv_total_reported}</b> KH</div>
                 <div>💸 Có công nợ: <b>{result.debt_count}</b> KH</div>
-                <div>💰 Tổng doanh số: <b>{Number(result.total_revenue_sum || 0).toLocaleString('vi-VN')}đ</b></div>
+                <div>💰 Tổng doanh số: <b>{Number(result.total_revenue_sum || 0).toLocaleString('vi-VN')}</b> <span style={{ color:T.light, fontSize:10 }}>nghìn đ</span></div>
                 <div style={{ color:T.light, marginTop:4 }}>⏱ {result.total_time_sec}s · {result.pages_fetched} pages</div>
               </>
             ) : (
@@ -32872,25 +32919,47 @@ function CustomerDetailModal({ customer: c, mobile, user, onClose, onRefresh }: 
         </Card>
 
         {/* Financial */}
+        <div style={{ marginBottom:6, fontSize:10, color:T.med, fontStyle:'italic',
+          textAlign:'right' }}>
+          💡 Đơn vị: <b style={{ color:T.dark }}>nghìn đồng</b> (như KV)
+        </div>
         <div style={{ display:'grid',
           gridTemplateColumns: mobile ? 'repeat(2,1fr)' : 'repeat(3,1fr)', gap:10, marginBottom:14 }}>
           <Card style={{ padding:12, textAlign:'center' }}>
             <div style={{ fontSize:10, color:T.med, fontWeight:600, marginBottom:4 }}>💸 Nợ hiện tại</div>
             <div style={{ fontSize:18, fontWeight:800, color: debt > 0 ? T.red : T.green }}>
-              {debt.toLocaleString('vi-VN')}đ
+              {debt.toLocaleString('vi-VN')}
+              <span style={{ fontSize:10, fontWeight:600, color:T.med, marginLeft:4 }}>nghìn đ</span>
             </div>
+            {debt > 0 && (
+              <div style={{ fontSize:10, color:T.light, marginTop:2 }}>
+                ≈ {(debt * 1000).toLocaleString('vi-VN')}đ
+              </div>
+            )}
           </Card>
           <Card style={{ padding:12, textAlign:'center' }}>
             <div style={{ fontSize:10, color:T.med, fontWeight:600, marginBottom:4 }}>💰 Tổng bán</div>
             <div style={{ fontSize:18, fontWeight:800, color:T.dark }}>
-              {invoiced.toLocaleString('vi-VN')}đ
+              {invoiced.toLocaleString('vi-VN')}
+              <span style={{ fontSize:10, fontWeight:600, color:T.med, marginLeft:4 }}>nghìn đ</span>
             </div>
+            {invoiced > 0 && (
+              <div style={{ fontSize:10, color:T.light, marginTop:2 }}>
+                ≈ {(invoiced * 1000).toLocaleString('vi-VN')}đ
+              </div>
+            )}
           </Card>
           <Card style={{ padding:12, textAlign:'center' }}>
             <div style={{ fontSize:10, color:T.med, fontWeight:600, marginBottom:4 }}>✨ Trừ trả hàng</div>
             <div style={{ fontSize:18, fontWeight:800, color:T.gold }}>
-              {revenue.toLocaleString('vi-VN')}đ
+              {revenue.toLocaleString('vi-VN')}
+              <span style={{ fontSize:10, fontWeight:600, color:T.med, marginLeft:4 }}>nghìn đ</span>
             </div>
+            {revenue > 0 && (
+              <div style={{ fontSize:10, color:T.light, marginTop:2 }}>
+                ≈ {(revenue * 1000).toLocaleString('vi-VN')}đ
+              </div>
+            )}
           </Card>
         </div>
 
