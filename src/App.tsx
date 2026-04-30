@@ -39,7 +39,8 @@ const db = createClient(SUPABASE_URL, SUPABASE_KEY)
 // v182: fix header bảng KH lệch — đơn vị "(nghìn đ)" inline thay vì xuống dòng, vertical-align middle. Standby cho feature "Tab KH mới"
 // v183: Phase B — Tab "✨ KH mới" trong CustomersModule. Sale claim KH mới của tháng → Admin duyệt → tính hoa hồng 1% DS tháng. Migration 50 (claims) + 51 (kv_invoices) + edge function customer-month-revenue
 // v184: (1) Migration 52 user_aliases — sale Ngân Trần có nhiều account KV (Ngân Lan, Ngân Trần (P)) → map về 1 user. Edge fn assign-from-excel v2 check alias trước. UI thêm alias trực tiếp từ Upload Excel modal khi không tìm thấy user. (2) Refactor NewCustomersTab: table view + checkbox bulk action (claim/duyệt/từ chối hàng loạt) + sort theo người phụ trách + bỏ commission column
-const APP_VERSION = '2026.04.30.v184'
+// v185: (1) Helper fmtMoney() — format số tiền KV bỏ phần thập phân (KV trả 4649.75, hiển thị 4.650). Áp dụng 19 chỗ trong CustomersModule. (2) UploadExcel: hiển thị errors[] chi tiết + not_found_customer list + stack trace. Toast warning rõ ràng khi có vấn đề. Edge fn assign-from-excel v3: pre-load customers tồn tại để tách 'không tìm thấy KH' vs 'lỗi update'
+const APP_VERSION = '2026.04.30.v185'
 
 // ════════════════════════════════════════════════════════════════
 // v158: VersionBadge — Hiển thị APP_VERSION ở góc dưới phải
@@ -31963,6 +31964,12 @@ function GhtkModule({ user, allUsers, mobile }: any) {
 // ══════════════════════════════════════════════════════════════════════
 // v177: CustomersModule — Danh sách KH + công nợ + doanh số (sync KV)
 // ══════════════════════════════════════════════════════════════════════
+// v185: Helper format số tiền KV — bỏ phần thập phân (KV trả số có .xx nhưng nghìn đ ko cần)
+const fmtMoney = (n: number | string | null | undefined): string => {
+  const num = Math.round(Number(n || 0))
+  return num.toLocaleString('vi-VN', { maximumFractionDigits: 0 })
+}
+
 function CustomersModule({ user, allUsers, mobile }: any) {
   const perm = getPerm(user)
   const isAdmin = perm.viewAllDashboard || perm.manageCustomers
@@ -32216,12 +32223,12 @@ function CustomersModule({ user, allUsers, mobile }: any) {
           gap:14 }}>
           <SummaryStat label="📊 Số KH" value={summary.count.toLocaleString('vi-VN')} unit="" color={T.dark}/>
           <SummaryStat label="💸 Tổng nợ"
-            value={summary.total_debt.toLocaleString('vi-VN')} unit="nghìn đ"
+            value={fmtMoney(summary.total_debt)} unit="nghìn đ"
             color={summary.total_debt > 0 ? T.red : T.green}/>
           <SummaryStat label="💰 Tổng bán"
-            value={summary.total_invoiced.toLocaleString('vi-VN')} unit="nghìn đ" color={T.gold}/>
+            value={fmtMoney(summary.total_invoiced)} unit="nghìn đ" color={T.gold}/>
           <SummaryStat label="✨ Tổng bán trừ trả hàng"
-            value={summary.total_revenue.toLocaleString('vi-VN')} unit="nghìn đ" color={T.gold}/>
+            value={fmtMoney(summary.total_revenue)} unit="nghìn đ" color={T.gold}/>
         </div>
       </Card>
 
@@ -32292,9 +32299,9 @@ function CustomersModule({ user, allUsers, mobile }: any) {
                 background:'#fff', color:T.dark }}/>
             {minRevenue > 0 && (
               <div style={{ fontSize:10, color:T.med, marginTop:4 }}>
-                ≥ {minRevenue.toLocaleString('vi-VN')} nghìn đ
+                ≥ {fmtMoney(minRevenue)} nghìn đ
                 {' = '}
-                <b style={{ color:T.gold }}>{(minRevenue * 1000).toLocaleString('vi-VN')}đ</b>
+                <b style={{ color:T.gold }}>{fmtMoney(minRevenue * 1000)}đ</b>
               </div>
             )}
           </div>
@@ -32507,15 +32514,15 @@ function CustomerTableRow({ customer: c, onClick }: any) {
       </td>
       <td style={{ padding:'10px 12px', textAlign:'right', fontWeight:700,
         color: debt > 0 ? T.red : T.med, fontVariantNumeric:'tabular-nums' }}>
-        {debt > 0 ? debt.toLocaleString('vi-VN') : '—'}
+        {debt > 0 ? fmtMoney(debt) : '—'}
       </td>
       <td style={{ padding:'10px 12px', textAlign:'right', fontWeight:600, color:T.dark,
         fontVariantNumeric:'tabular-nums' }}>
-        {invoiced > 0 ? invoiced.toLocaleString('vi-VN') : '—'}
+        {invoiced > 0 ? fmtMoney(invoiced) : '—'}
       </td>
       <td style={{ padding:'10px 12px', textAlign:'right', fontWeight:700, color:T.gold,
         fontVariantNumeric:'tabular-nums' }}>
-        {revenue > 0 ? revenue.toLocaleString('vi-VN') : '—'}
+        {revenue > 0 ? fmtMoney(revenue) : '—'}
       </td>
     </tr>
   )
@@ -32553,12 +32560,12 @@ function CustomerCardMobile({ customer: c, onClick }: any) {
       <div style={{ display:'flex', gap:14, fontSize:12, fontVariantNumeric:'tabular-nums' }}>
         {debt > 0 && (
           <span><span style={{ color:T.med }}>Nợ:</span>{' '}
-            <b style={{ color:T.red }}>{debt.toLocaleString('vi-VN')}</b>
+            <b style={{ color:T.red }}>{fmtMoney(debt)}</b>
             <span style={{ color:T.light, fontSize:10 }}> nghìn đ</span>
           </span>
         )}
         <span><span style={{ color:T.med }}>DS:</span>{' '}
-          <b style={{ color:T.gold }}>{revenue.toLocaleString('vi-VN')}</b>
+          <b style={{ color:T.gold }}>{fmtMoney(revenue)}</b>
           <span style={{ color:T.light, fontSize:10 }}> nghìn đ</span>
         </span>
       </div>
@@ -32616,7 +32623,7 @@ function CustomerSyncModal({ user, onClose, onDone }: any) {
                 <div style={{ fontWeight:700, color:T.green, marginBottom:6 }}>✅ Sync thành công</div>
                 <div>📊 Đã đồng bộ: <b>{result.upserted}/{result.kv_total_reported}</b> KH</div>
                 <div>💸 Có công nợ: <b>{result.debt_count}</b> KH</div>
-                <div>💰 Tổng doanh số: <b>{Number(result.total_revenue_sum || 0).toLocaleString('vi-VN')}</b> <span style={{ color:T.light, fontSize:10 }}>nghìn đ</span></div>
+                <div>💰 Tổng doanh số: <b>{fmtMoney(result.total_revenue_sum || 0)}</b> <span style={{ color:T.light, fontSize:10 }}>nghìn đ</span></div>
                 <div style={{ color:T.light, marginTop:4 }}>⏱ {result.total_time_sec}s · {result.pages_fetched} pages</div>
               </>
             ) : (
@@ -32753,14 +32760,32 @@ function CustomerUploadExcelModal({ user, mobile, onClose, onDone }: any) {
         }),
       })
       const json = await res.json()
+      console.log('[UploadExcel] Response:', json)  // v185: debug
       setResult(json)
+      
       if (json.success) {
-        toast.success(`✅ Đã gán ${json.matched} KH`)
+        const errCount = (json.errors?.length || 0)
+        const notFoundUser = (json.not_found_user?.length || 0)
+        const notFoundCust = (json.not_found_customer?.length || 0)
+        
+        if (errCount > 0 || notFoundUser > 0 || notFoundCust > 0) {
+          // Có vấn đề — toast warning với chi tiết
+          toast.warning(
+            `⚠ Gán ${json.matched}/${json.total} KH. ` +
+            (notFoundUser > 0 ? `${notFoundUser} không tìm user. ` : '') +
+            (notFoundCust > 0 ? `${notFoundCust} mã KH chưa sync. ` : '') +
+            (errCount > 0 ? `${errCount} lỗi DB.` : '')
+          )
+        } else {
+          toast.success(`✅ Đã gán ${json.matched} KH`)
+        }
       } else {
-        toast.error('Lỗi: ' + (json.error || 'không rõ'))
+        toast.error('Lỗi: ' + (json.error || 'không rõ — xem chi tiết bên dưới'))
       }
     } catch (e: any) {
-      toast.error('Lỗi: ' + e.message)
+      console.error('[UploadExcel] Error:', e)
+      setResult({ success: false, error: e.message || String(e), stack: e.stack })
+      toast.error('Lỗi network: ' + e.message)
     } finally {
       setUploading(false)
     }
@@ -32878,20 +32903,64 @@ function CustomerUploadExcelModal({ user, mobile, onClose, onDone }: any) {
                 {result.cleared > 0 && <div>🔄 Bỏ gán: <b>{result.cleared}</b> KH (cột phụ trách trống)</div>}
                 {result.not_found_user?.length > 0 && (
                   <NotFoundUserSection result={result} user={user} onAliasAdded={() => {
-                    // Re-run upload sau khi add alias
                     handleUpload && handleUpload()
                   }}/>
                 )}
                 {result.not_found_customer?.length > 0 && (
-                  <div style={{ marginTop:6, color:T.amber }}>
-                    ⚠ Không tìm thấy KH (mã chưa sync): <b>{result.not_found_customer.length}</b>
-                  </div>
+                  <details style={{ marginTop:6 }}>
+                    <summary style={{ color:T.amber, cursor:'pointer', fontSize:12 }}>
+                      ⚠ Không tìm thấy KH (mã chưa sync): <b>{result.not_found_customer.length}</b>
+                      <span style={{ color:T.light, fontSize:10, marginLeft:6 }}>(click xem chi tiết)</span>
+                    </summary>
+                    <div style={{ maxHeight:200, overflowY:'auto', marginTop:6,
+                      padding:8, background:'#fff', borderRadius:4, fontSize:10, color:T.med }}>
+                      {result.not_found_customer.slice(0, 100).map((x: any, i: number) => (
+                        <div key={i}>
+                          <code style={{ fontFamily:'monospace', color:T.dark }}>{x.code}</code> · {x.assignee_name}
+                        </div>
+                      ))}
+                      {result.not_found_customer.length > 100 && (
+                        <div style={{ marginTop:4, color:T.light }}>... và {result.not_found_customer.length - 100} dòng nữa</div>
+                      )}
+                    </div>
+                  </details>
+                )}
+                {result.errors?.length > 0 && (
+                  <details style={{ marginTop:6 }} open>
+                    <summary style={{ color:T.red, cursor:'pointer', fontSize:12, fontWeight:700 }}>
+                      ❌ Lỗi DB: <b>{result.errors.length}</b> KH (click xem)
+                    </summary>
+                    <div style={{ maxHeight:200, overflowY:'auto', marginTop:6,
+                      padding:8, background:'#fff', borderRadius:4, fontSize:10 }}>
+                      {result.errors.slice(0, 50).map((x: any, i: number) => (
+                        <div key={i} style={{ marginBottom:4, borderBottom:`1px solid ${T.border}`, paddingBottom:4 }}>
+                          <code style={{ fontFamily:'monospace', color:T.dark }}>{x.code}</code>
+                          <div style={{ color:T.red, marginTop:2 }}>{x.error}</div>
+                        </div>
+                      ))}
+                      {result.errors.length > 50 && (
+                        <div style={{ color:T.light }}>... và {result.errors.length - 50} lỗi nữa</div>
+                      )}
+                    </div>
+                  </details>
                 )}
               </>
             ) : (
               <>
-                <div style={{ fontWeight:700, color:T.red, marginBottom:6 }}>❌ Lỗi</div>
-                <div>{result.error}</div>
+                <div style={{ fontWeight:700, color:T.red, marginBottom:6 }}>❌ Lỗi tổng quát</div>
+                <div style={{ marginBottom:8 }}>{result.error || 'Không rõ lỗi'}</div>
+                {result.stack && (
+                  <details>
+                    <summary style={{ cursor:'pointer', fontSize:10, color:T.med }}>Stack trace</summary>
+                    <pre style={{ fontSize:9, padding:6, background:'#fff', borderRadius:4, overflow:'auto',
+                      marginTop:4, color:T.dark, maxHeight:150 }}>
+                      {result.stack}
+                    </pre>
+                  </details>
+                )}
+                <div style={{ fontSize:10, color:T.med, marginTop:6 }}>
+                  💡 Mở DevTools (F12) → Console → xem chi tiết lỗi
+                </div>
               </>
             )}
           </div>
@@ -33090,36 +33159,36 @@ function CustomerDetailModal({ customer: c, mobile, user, onClose, onRefresh }: 
           <Card style={{ padding:12, textAlign:'center' }}>
             <div style={{ fontSize:10, color:T.med, fontWeight:600, marginBottom:4 }}>💸 Nợ hiện tại</div>
             <div style={{ fontSize:18, fontWeight:800, color: debt > 0 ? T.red : T.green }}>
-              {debt.toLocaleString('vi-VN')}
+              {fmtMoney(debt)}
               <span style={{ fontSize:10, fontWeight:600, color:T.med, marginLeft:4 }}>nghìn đ</span>
             </div>
             {debt > 0 && (
               <div style={{ fontSize:10, color:T.light, marginTop:2 }}>
-                ≈ {(debt * 1000).toLocaleString('vi-VN')}đ
+                ≈ {fmtMoney(debt * 1000)}đ
               </div>
             )}
           </Card>
           <Card style={{ padding:12, textAlign:'center' }}>
             <div style={{ fontSize:10, color:T.med, fontWeight:600, marginBottom:4 }}>💰 Tổng bán</div>
             <div style={{ fontSize:18, fontWeight:800, color:T.dark }}>
-              {invoiced.toLocaleString('vi-VN')}
+              {fmtMoney(invoiced)}
               <span style={{ fontSize:10, fontWeight:600, color:T.med, marginLeft:4 }}>nghìn đ</span>
             </div>
             {invoiced > 0 && (
               <div style={{ fontSize:10, color:T.light, marginTop:2 }}>
-                ≈ {(invoiced * 1000).toLocaleString('vi-VN')}đ
+                ≈ {fmtMoney(invoiced * 1000)}đ
               </div>
             )}
           </Card>
           <Card style={{ padding:12, textAlign:'center' }}>
             <div style={{ fontSize:10, color:T.med, fontWeight:600, marginBottom:4 }}>✨ Trừ trả hàng</div>
             <div style={{ fontSize:18, fontWeight:800, color:T.gold }}>
-              {revenue.toLocaleString('vi-VN')}
+              {fmtMoney(revenue)}
               <span style={{ fontSize:10, fontWeight:600, color:T.med, marginLeft:4 }}>nghìn đ</span>
             </div>
             {revenue > 0 && (
               <div style={{ fontSize:10, color:T.light, marginTop:2 }}>
-                ≈ {(revenue * 1000).toLocaleString('vi-VN')}đ
+                ≈ {fmtMoney(revenue * 1000)}đ
               </div>
             )}
           </Card>
@@ -33483,7 +33552,7 @@ function NewCustomersTab({ user, mobile, customers, isAdmin, onRefreshCustomers 
               💰 DS đã duyệt
             </div>
             <div style={{ fontSize:14, fontWeight:800, color:T.gold }}>
-              {Math.round(stats.approvedRevenue).toLocaleString('vi-VN')}
+              {fmtMoney(stats.approvedRevenue)}
               <span style={{ fontSize:9, fontWeight:600, color:T.med, marginLeft:3 }}>nghìn đ</span>
             </div>
           </div>
@@ -33774,7 +33843,7 @@ function NewCustomerRow({ row, user, isAdmin, selected, canSelect, onToggle, mon
       <td style={{ padding:'8px 12px', textAlign:'right', fontVariantNumeric:'tabular-nums' }}>
         <div style={{ fontSize:10, color:T.med }}>{orders_count} đơn</div>
         <div style={{ fontSize:13, fontWeight:700, color:T.gold }}>
-          {revenue.toLocaleString('vi-VN')}
+          {fmtMoney(revenue)}
         </div>
       </td>
       <td style={{ padding:'8px 12px' }}>
