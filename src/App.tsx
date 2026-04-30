@@ -40,7 +40,8 @@ const db = createClient(SUPABASE_URL, SUPABASE_KEY)
 // v183: Phase B — Tab "✨ KH mới" trong CustomersModule. Sale claim KH mới của tháng → Admin duyệt → tính hoa hồng 1% DS tháng. Migration 50 (claims) + 51 (kv_invoices) + edge function customer-month-revenue
 // v184: (1) Migration 52 user_aliases — sale Ngân Trần có nhiều account KV (Ngân Lan, Ngân Trần (P)) → map về 1 user. Edge fn assign-from-excel v2 check alias trước. UI thêm alias trực tiếp từ Upload Excel modal khi không tìm thấy user. (2) Refactor NewCustomersTab: table view + checkbox bulk action (claim/duyệt/từ chối hàng loạt) + sort theo người phụ trách + bỏ commission column
 // v185: (1) Helper fmtMoney() — format số tiền KV bỏ phần thập phân (KV trả 4649.75, hiển thị 4.650). Áp dụng 19 chỗ trong CustomersModule. (2) UploadExcel: hiển thị errors[] chi tiết + not_found_customer list + stack trace. Toast warning rõ ràng khi có vấn đề. Edge fn assign-from-excel v3: pre-load customers tồn tại để tách 'không tìm thấy KH' vs 'lỗi update'
-const APP_VERSION = '2026.04.30.v185'
+// v186: fix build error — fmtMoney trùng tên với global của payment module → đổi thành fmtMoneyKv
+const APP_VERSION = '2026.04.30.v186'
 
 // ════════════════════════════════════════════════════════════════
 // v158: VersionBadge — Hiển thị APP_VERSION ở góc dưới phải
@@ -31965,7 +31966,8 @@ function GhtkModule({ user, allUsers, mobile }: any) {
 // v177: CustomersModule — Danh sách KH + công nợ + doanh số (sync KV)
 // ══════════════════════════════════════════════════════════════════════
 // v185: Helper format số tiền KV — bỏ phần thập phân (KV trả số có .xx nhưng nghìn đ ko cần)
-const fmtMoney = (n: number | string | null | undefined): string => {
+// Tên fmtMoneyKv để không xung đột với fmtMoney global của payment module (line 16898)
+const fmtMoneyKv = (n: number | string | null | undefined): string => {
   const num = Math.round(Number(n || 0))
   return num.toLocaleString('vi-VN', { maximumFractionDigits: 0 })
 }
@@ -32223,12 +32225,12 @@ function CustomersModule({ user, allUsers, mobile }: any) {
           gap:14 }}>
           <SummaryStat label="📊 Số KH" value={summary.count.toLocaleString('vi-VN')} unit="" color={T.dark}/>
           <SummaryStat label="💸 Tổng nợ"
-            value={fmtMoney(summary.total_debt)} unit="nghìn đ"
+            value={fmtMoneyKv(summary.total_debt)} unit="nghìn đ"
             color={summary.total_debt > 0 ? T.red : T.green}/>
           <SummaryStat label="💰 Tổng bán"
-            value={fmtMoney(summary.total_invoiced)} unit="nghìn đ" color={T.gold}/>
+            value={fmtMoneyKv(summary.total_invoiced)} unit="nghìn đ" color={T.gold}/>
           <SummaryStat label="✨ Tổng bán trừ trả hàng"
-            value={fmtMoney(summary.total_revenue)} unit="nghìn đ" color={T.gold}/>
+            value={fmtMoneyKv(summary.total_revenue)} unit="nghìn đ" color={T.gold}/>
         </div>
       </Card>
 
@@ -32299,9 +32301,9 @@ function CustomersModule({ user, allUsers, mobile }: any) {
                 background:'#fff', color:T.dark }}/>
             {minRevenue > 0 && (
               <div style={{ fontSize:10, color:T.med, marginTop:4 }}>
-                ≥ {fmtMoney(minRevenue)} nghìn đ
+                ≥ {fmtMoneyKv(minRevenue)} nghìn đ
                 {' = '}
-                <b style={{ color:T.gold }}>{fmtMoney(minRevenue * 1000)}đ</b>
+                <b style={{ color:T.gold }}>{fmtMoneyKv(minRevenue * 1000)}đ</b>
               </div>
             )}
           </div>
@@ -32514,15 +32516,15 @@ function CustomerTableRow({ customer: c, onClick }: any) {
       </td>
       <td style={{ padding:'10px 12px', textAlign:'right', fontWeight:700,
         color: debt > 0 ? T.red : T.med, fontVariantNumeric:'tabular-nums' }}>
-        {debt > 0 ? fmtMoney(debt) : '—'}
+        {debt > 0 ? fmtMoneyKv(debt) : '—'}
       </td>
       <td style={{ padding:'10px 12px', textAlign:'right', fontWeight:600, color:T.dark,
         fontVariantNumeric:'tabular-nums' }}>
-        {invoiced > 0 ? fmtMoney(invoiced) : '—'}
+        {invoiced > 0 ? fmtMoneyKv(invoiced) : '—'}
       </td>
       <td style={{ padding:'10px 12px', textAlign:'right', fontWeight:700, color:T.gold,
         fontVariantNumeric:'tabular-nums' }}>
-        {revenue > 0 ? fmtMoney(revenue) : '—'}
+        {revenue > 0 ? fmtMoneyKv(revenue) : '—'}
       </td>
     </tr>
   )
@@ -32560,12 +32562,12 @@ function CustomerCardMobile({ customer: c, onClick }: any) {
       <div style={{ display:'flex', gap:14, fontSize:12, fontVariantNumeric:'tabular-nums' }}>
         {debt > 0 && (
           <span><span style={{ color:T.med }}>Nợ:</span>{' '}
-            <b style={{ color:T.red }}>{fmtMoney(debt)}</b>
+            <b style={{ color:T.red }}>{fmtMoneyKv(debt)}</b>
             <span style={{ color:T.light, fontSize:10 }}> nghìn đ</span>
           </span>
         )}
         <span><span style={{ color:T.med }}>DS:</span>{' '}
-          <b style={{ color:T.gold }}>{fmtMoney(revenue)}</b>
+          <b style={{ color:T.gold }}>{fmtMoneyKv(revenue)}</b>
           <span style={{ color:T.light, fontSize:10 }}> nghìn đ</span>
         </span>
       </div>
@@ -32623,7 +32625,7 @@ function CustomerSyncModal({ user, onClose, onDone }: any) {
                 <div style={{ fontWeight:700, color:T.green, marginBottom:6 }}>✅ Sync thành công</div>
                 <div>📊 Đã đồng bộ: <b>{result.upserted}/{result.kv_total_reported}</b> KH</div>
                 <div>💸 Có công nợ: <b>{result.debt_count}</b> KH</div>
-                <div>💰 Tổng doanh số: <b>{fmtMoney(result.total_revenue_sum || 0)}</b> <span style={{ color:T.light, fontSize:10 }}>nghìn đ</span></div>
+                <div>💰 Tổng doanh số: <b>{fmtMoneyKv(result.total_revenue_sum || 0)}</b> <span style={{ color:T.light, fontSize:10 }}>nghìn đ</span></div>
                 <div style={{ color:T.light, marginTop:4 }}>⏱ {result.total_time_sec}s · {result.pages_fetched} pages</div>
               </>
             ) : (
@@ -33159,36 +33161,36 @@ function CustomerDetailModal({ customer: c, mobile, user, onClose, onRefresh }: 
           <Card style={{ padding:12, textAlign:'center' }}>
             <div style={{ fontSize:10, color:T.med, fontWeight:600, marginBottom:4 }}>💸 Nợ hiện tại</div>
             <div style={{ fontSize:18, fontWeight:800, color: debt > 0 ? T.red : T.green }}>
-              {fmtMoney(debt)}
+              {fmtMoneyKv(debt)}
               <span style={{ fontSize:10, fontWeight:600, color:T.med, marginLeft:4 }}>nghìn đ</span>
             </div>
             {debt > 0 && (
               <div style={{ fontSize:10, color:T.light, marginTop:2 }}>
-                ≈ {fmtMoney(debt * 1000)}đ
+                ≈ {fmtMoneyKv(debt * 1000)}đ
               </div>
             )}
           </Card>
           <Card style={{ padding:12, textAlign:'center' }}>
             <div style={{ fontSize:10, color:T.med, fontWeight:600, marginBottom:4 }}>💰 Tổng bán</div>
             <div style={{ fontSize:18, fontWeight:800, color:T.dark }}>
-              {fmtMoney(invoiced)}
+              {fmtMoneyKv(invoiced)}
               <span style={{ fontSize:10, fontWeight:600, color:T.med, marginLeft:4 }}>nghìn đ</span>
             </div>
             {invoiced > 0 && (
               <div style={{ fontSize:10, color:T.light, marginTop:2 }}>
-                ≈ {fmtMoney(invoiced * 1000)}đ
+                ≈ {fmtMoneyKv(invoiced * 1000)}đ
               </div>
             )}
           </Card>
           <Card style={{ padding:12, textAlign:'center' }}>
             <div style={{ fontSize:10, color:T.med, fontWeight:600, marginBottom:4 }}>✨ Trừ trả hàng</div>
             <div style={{ fontSize:18, fontWeight:800, color:T.gold }}>
-              {fmtMoney(revenue)}
+              {fmtMoneyKv(revenue)}
               <span style={{ fontSize:10, fontWeight:600, color:T.med, marginLeft:4 }}>nghìn đ</span>
             </div>
             {revenue > 0 && (
               <div style={{ fontSize:10, color:T.light, marginTop:2 }}>
-                ≈ {fmtMoney(revenue * 1000)}đ
+                ≈ {fmtMoneyKv(revenue * 1000)}đ
               </div>
             )}
           </Card>
@@ -33552,7 +33554,7 @@ function NewCustomersTab({ user, mobile, customers, isAdmin, onRefreshCustomers 
               💰 DS đã duyệt
             </div>
             <div style={{ fontSize:14, fontWeight:800, color:T.gold }}>
-              {fmtMoney(stats.approvedRevenue)}
+              {fmtMoneyKv(stats.approvedRevenue)}
               <span style={{ fontSize:9, fontWeight:600, color:T.med, marginLeft:3 }}>nghìn đ</span>
             </div>
           </div>
@@ -33843,7 +33845,7 @@ function NewCustomerRow({ row, user, isAdmin, selected, canSelect, onToggle, mon
       <td style={{ padding:'8px 12px', textAlign:'right', fontVariantNumeric:'tabular-nums' }}>
         <div style={{ fontSize:10, color:T.med }}>{orders_count} đơn</div>
         <div style={{ fontSize:13, fontWeight:700, color:T.gold }}>
-          {fmtMoney(revenue)}
+          {fmtMoneyKv(revenue)}
         </div>
       </td>
       <td style={{ padding:'8px 12px' }}>
