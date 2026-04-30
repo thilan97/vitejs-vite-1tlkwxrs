@@ -31,7 +31,8 @@ const db = createClient(SUPABASE_URL, SUPABASE_KEY)
 // v174: fix UX — placeholder textarea Import dùng text gợi ý hành động thay dữ liệu mẫu giả
 // v175: fix code badge S22.HN1.13.A99 trong banner Import bị blend trắng-trắng — set color+border đậm
 // v176: fix logo bị corrupt (base64 lệch 1 ký tự, thiếu IEND chunk) — encode lại logo gốc, bỏ nền đen, transparent
-const APP_VERSION = '2026.04.29.v176'
+// v177: feature module "👥 Khách hàng" — sync KV + filter/sort + upload Excel người phụ trách + chi tiết KH
+const APP_VERSION = '2026.04.29.v177'
 
 // ════════════════════════════════════════════════════════════════
 // v158: VersionBadge — Hiển thị APP_VERSION ở góc dưới phải
@@ -374,6 +375,9 @@ const getPerm = (user: any) => {
     ghtkFillCustomer:   isAdmin || (pos.perm_ghtk_fill_customer ?? false) || (user?.dept_id === 'sale'),
     ghtkWeight:         isAdmin || (pos.perm_ghtk_weight ?? false) || (pos.perm_manage_inventory ?? false),
     ghtkPrintLabel:     isAdmin || (pos.perm_ghtk_print_label ?? false),
+    // v177: Module Khách hàng
+    viewCustomers:      isAdmin || (pos.perm_view_customers ?? false) || (user?.dept_id === 'sale'),  // Sale xem KH của mình
+    manageCustomers:    isAdmin || (pos.perm_manage_customers ?? false),  // Sync + upload Excel
   }
 }
 
@@ -2030,6 +2034,7 @@ const NAV_GROUPS = (perm: any, deptId = '') => {
       id:'sales', icon:Ico.briefcase, emoji:'💼', label:'Bán hàng',
       pages:[
         (perm.trackOrders) && { id:'trackorders', icon:Ico.truck, emoji:'🚚', label:'Theo dõi đơn' },
+        perm.viewCustomers && { id:'customers', icon:Ico.users, emoji:'👥', label:'Khách hàng' },
         perm.viewGallery && { id:'gallery', icon:Ico.camera, emoji:'🖼️', label:'Gallery ảnh' },
         (deptId==='sale' || perm.viewAllDashboard || perm.editPrice || perm.managePrograms) && { id:'pricelist', icon:Ico.tag, emoji:'💰', label:'Báo giá & CTKM' },
         { id:'shortage', icon:Ico.alertTri, emoji:'⚠️', label:'Hàng thiếu' },
@@ -11667,6 +11672,7 @@ export default function App() {
           {validPage==='errreport'  && <ErrorReportModule {...pp}/>}
           {validPage==='invsync'    && <InventorySyncModule {...pp}/>}
           {validPage==='ghtk'       && <GhtkModule {...pp}/>}
+          {validPage==='customers'  && <CustomersModule {...pp}/>}
           {validPage==='schedule'   && <WarehouseScheduleModule {...pp} leaveRequests={leaveRequests} attendance={attendance}/>}
           {validPage==='whstats'    && <WarehouseStatsModule {...pp}/>}
           {validPage==='priority'   && <PriorityRequestModule {...pp}/>}
@@ -31943,6 +31949,930 @@ function GhtkModule({ user, allUsers, mobile }: any) {
           onDeleted={() => { setAdminDeleteOrder(null); fetchOrders() }}/>
       )}
     </PageContainer>
+  )
+}
+
+
+// ══════════════════════════════════════════════════════════════════════
+// v177: CustomersModule — Danh sách KH + công nợ + doanh số (sync KV)
+// ══════════════════════════════════════════════════════════════════════
+function CustomersModule({ user, allUsers, mobile }: any) {
+  const perm = getPerm(user)
+  const isAdmin = perm.viewAllDashboard || perm.manageCustomers
+  
+  const [customers, setCustomers] = useState<any[]>([])
+  const [loading, setLoading] = useState(false)
+  const [search, setSearch] = useState('')
+  const [filterAssignee, setFilterAssignee] = useState<string>('all')  // 'all' | 'unassigned' | user_id
+  const [filterGroup, setFilterGroup] = useState<string>('all')
+  const [filterDebt, setFilterDebt] = useState<'all'|'with_debt'|'no_debt'>('all')
+  const [dateFrom, setDateFrom] = useState('')
+  const [dateTo, setDateTo] = useState('')
+  const [minRevenue, setMinRevenue] = useState(0)
+  const [sortBy, setSortBy] = useState<'debt_desc'|'debt_asc'|'revenue_desc'|'revenue_asc'|'created_desc'|'created_asc'>('debt_desc')
+  const [page, setPage] = useState(0)
+  const PAGE_SIZE = 50
+  
+  // Modals
+  const [showSync, setShowSync] = useState(false)
+  const [showUploadExcel, setShowUploadExcel] = useState(false)
+  const [showDetail, setShowDetail] = useState<any>(null)
+
+  const fetchCustomers = async () => {
+    setLoading(true)
+    try {
+      let q = db.from('customers').select('*').neq('is_deleted', true)
+      
+      // RLS theo quyền: Sale chỉ thấy KH của mình
+      if (!isAdmin) {
+        q = q.eq('assigned_to_user_id', user.id)
+      }
+      
+      const { data, error } = await q.limit(5000)
+      if (error) {
+        console.error('[Customers] Fetch error:', error)
+        toast.error('Không tải được danh sách: ' + error.message)
+        setCustomers([])
+      } else {
+        setCustomers(data || [])
+      }
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  useEffect(() => { fetchCustomers() }, [user?.id])
+
+  // Filter + sort
+  const filtered = useMemo(() => {
+    let list = [...customers]
+    
+    if (search.trim()) {
+      const q = normalizeUnicode(search.trim().toLowerCase())
+      list = list.filter((c: any) => {
+        const hay = normalizeUnicode(`${c.code} ${c.name} ${c.phone || ''} ${c.assigned_to_user_name || ''}`.toLowerCase())
+        return hay.includes(q)
+      })
+    }
+    
+    if (filterAssignee === 'unassigned') {
+      list = list.filter((c: any) => !c.assigned_to_user_id)
+    } else if (filterAssignee !== 'all') {
+      list = list.filter((c: any) => c.assigned_to_user_id === filterAssignee)
+    }
+    
+    if (filterGroup !== 'all') {
+      list = list.filter((c: any) => c.groups === filterGroup)
+    }
+    
+    if (filterDebt === 'with_debt') {
+      list = list.filter((c: any) => Number(c.debt || 0) > 0)
+    } else if (filterDebt === 'no_debt') {
+      list = list.filter((c: any) => Number(c.debt || 0) === 0)
+    }
+    
+    if (dateFrom) {
+      list = list.filter((c: any) => c.kv_created_at && c.kv_created_at >= dateFrom)
+    }
+    if (dateTo) {
+      list = list.filter((c: any) => c.kv_created_at && c.kv_created_at <= dateTo + 'T23:59:59')
+    }
+    
+    if (minRevenue > 0) {
+      list = list.filter((c: any) => Number(c.total_revenue || 0) >= minRevenue)
+    }
+    
+    // Sort
+    list.sort((a: any, b: any) => {
+      switch (sortBy) {
+        case 'debt_desc':    return Number(b.debt || 0) - Number(a.debt || 0)
+        case 'debt_asc':     return Number(a.debt || 0) - Number(b.debt || 0)
+        case 'revenue_desc': return Number(b.total_revenue || 0) - Number(a.total_revenue || 0)
+        case 'revenue_asc':  return Number(a.total_revenue || 0) - Number(b.total_revenue || 0)
+        case 'created_desc': return (b.kv_created_at || '').localeCompare(a.kv_created_at || '')
+        case 'created_asc':  return (a.kv_created_at || '').localeCompare(b.kv_created_at || '')
+        default: return 0
+      }
+    })
+    
+    return list
+  }, [customers, search, filterAssignee, filterGroup, filterDebt, dateFrom, dateTo, minRevenue, sortBy])
+
+  // Summary stats (theo filtered)
+  const summary = useMemo(() => ({
+    count: filtered.length,
+    total_debt: filtered.reduce((s: number, c: any) => s + Number(c.debt || 0), 0),
+    total_invoiced: filtered.reduce((s: number, c: any) => s + Number(c.total_invoiced || 0), 0),
+    total_revenue: filtered.reduce((s: number, c: any) => s + Number(c.total_revenue || 0), 0),
+  }), [filtered])
+
+  // Distinct groups + assignees từ data
+  const groups = useMemo(() => {
+    const set = new Set<string>()
+    customers.forEach((c: any) => { if (c.groups) set.add(c.groups) })
+    return Array.from(set).sort()
+  }, [customers])
+
+  const assignees = useMemo(() => {
+    const map = new Map<string, string>()
+    customers.forEach((c: any) => {
+      if (c.assigned_to_user_id && c.assigned_to_user_name) {
+        map.set(c.assigned_to_user_id, c.assigned_to_user_name)
+      }
+    })
+    return Array.from(map.entries()).map(([id, name]) => ({ id, name })).sort((a, b) => a.name.localeCompare(b.name))
+  }, [customers])
+
+  // Pagination
+  const totalPages = Math.ceil(filtered.length / PAGE_SIZE)
+  const pageStart = page * PAGE_SIZE
+  const pageItems = filtered.slice(pageStart, pageStart + PAGE_SIZE)
+  
+  // Reset page khi filter thay đổi
+  useEffect(() => { setPage(0) }, [search, filterAssignee, filterGroup, filterDebt, dateFrom, dateTo, minRevenue, sortBy])
+
+  return (
+    <PageContainer mobile={mobile}>
+      {/* Header */}
+      <div style={{ display:'flex', alignItems:'center', justifyContent:'space-between',
+        gap:10, flexWrap:'wrap', marginBottom:14 }}>
+        <div>
+          <div style={{ fontSize:20, fontWeight:800, color:T.dark, display:'flex', alignItems:'center', gap:8 }}>
+            👥 Khách hàng
+            {!isAdmin && (
+              <span style={{ padding:'2px 8px', borderRadius:10, background:T.blueBg,
+                color:T.blue, fontSize:10, fontWeight:700 }}>
+                Chỉ KH của bạn
+              </span>
+            )}
+          </div>
+          <div style={{ fontSize:11, color:T.med, marginTop:2 }}>
+            Đồng bộ từ KiotViet · {customers.length} KH · Cập nhật{' '}
+            {customers[0]?.last_synced_at
+              ? formatAgo(customers[0].last_synced_at)
+              : 'chưa từng'}
+          </div>
+        </div>
+        <div style={{ display:'flex', gap:8, flexWrap:'wrap' }}>
+          {isAdmin && (
+            <>
+              <button onClick={() => setShowSync(true)}
+                style={{ padding:'8px 16px', borderRadius:8, border:`1.5px solid ${T.gold}`,
+                  background:T.goldBg, color:T.gold, cursor:'pointer',
+                  fontFamily:'inherit', fontSize:12, fontWeight:700 }}>
+                🔄 Sync từ KV
+              </button>
+              <button onClick={() => setShowUploadExcel(true)}
+                style={{ padding:'8px 16px', borderRadius:8, border:`1.5px solid ${T.blue}`,
+                  background:T.blueBg, color:T.blue, cursor:'pointer',
+                  fontFamily:'inherit', fontSize:12, fontWeight:700 }}>
+                📥 Upload Excel phụ trách
+              </button>
+            </>
+          )}
+          <button onClick={fetchCustomers} disabled={loading}
+            style={{ padding:'8px 16px', borderRadius:8, border:`1px solid ${T.border}`,
+              background:'#fff', color:T.med, cursor: loading ? 'wait' : 'pointer',
+              fontFamily:'inherit', fontSize:12, fontWeight:600 }}>
+            {loading ? '⏳' : '🔄 Refresh'}
+          </button>
+        </div>
+      </div>
+
+      {/* Summary stats — sticky tổng */}
+      <Card style={{ padding:'14px 16px', marginBottom:12,
+        background:`linear-gradient(135deg, ${T.goldBg}, ${T.bg})`,
+        border:`1.5px solid ${T.gold}40` }}>
+        <div style={{ display:'grid',
+          gridTemplateColumns: mobile ? 'repeat(2,1fr)' : 'repeat(4,1fr)',
+          gap:14 }}>
+          <SummaryStat label="📊 Số KH" value={summary.count.toLocaleString('vi-VN')} color={T.dark}/>
+          <SummaryStat label="💸 Tổng nợ"
+            value={`${summary.total_debt.toLocaleString('vi-VN')}đ`}
+            color={summary.total_debt > 0 ? T.red : T.green}/>
+          <SummaryStat label="💰 Tổng bán"
+            value={`${summary.total_invoiced.toLocaleString('vi-VN')}đ`} color={T.gold}/>
+          <SummaryStat label="✨ Tổng bán trừ trả hàng"
+            value={`${summary.total_revenue.toLocaleString('vi-VN')}đ`} color={T.gold}/>
+        </div>
+      </Card>
+
+      {/* Filters */}
+      <Card style={{ padding:14, marginBottom:12 }}>
+        <div style={{ display:'flex', gap:10, flexWrap:'wrap', alignItems:'flex-end' }}>
+          <div style={{ flex:'1 1 220px', minWidth:200 }}>
+            <SettingSectionTitle>🔍 Tìm kiếm</SettingSectionTitle>
+            <input value={search} onChange={e => setSearch(e.target.value)}
+              placeholder="Tên / SĐT / Mã KH / Người phụ trách"
+              style={{ width:'100%', padding:'8px 10px', border:`1px solid ${T.border}`,
+                borderRadius:6, fontSize:13, fontFamily:'inherit', boxSizing:'border-box' }}/>
+          </div>
+          {isAdmin && (
+            <div style={{ flex:'1 1 180px', minWidth:160 }}>
+              <SettingSectionTitle>👤 Người phụ trách</SettingSectionTitle>
+              <select value={filterAssignee} onChange={e => setFilterAssignee(e.target.value)}
+                style={{ width:'100%', padding:'8px 10px', border:`1px solid ${T.border}`,
+                  borderRadius:6, fontSize:13, fontFamily:'inherit', boxSizing:'border-box', background:'#fff' }}>
+                <option value="all">Tất cả</option>
+                <option value="unassigned">⚠ Chưa gán</option>
+                {assignees.map(a => <option key={a.id} value={a.id}>{a.name}</option>)}
+              </select>
+            </div>
+          )}
+          <div style={{ flex:'1 1 140px', minWidth:120 }}>
+            <SettingSectionTitle>🏷 Nhóm</SettingSectionTitle>
+            <select value={filterGroup} onChange={e => setFilterGroup(e.target.value)}
+              style={{ width:'100%', padding:'8px 10px', border:`1px solid ${T.border}`,
+                borderRadius:6, fontSize:13, fontFamily:'inherit', boxSizing:'border-box', background:'#fff' }}>
+              <option value="all">Tất cả</option>
+              {groups.map(g => <option key={g} value={g}>{g}</option>)}
+            </select>
+          </div>
+          <div style={{ flex:'1 1 140px', minWidth:120 }}>
+            <SettingSectionTitle>💸 Công nợ</SettingSectionTitle>
+            <select value={filterDebt} onChange={e => setFilterDebt(e.target.value as any)}
+              style={{ width:'100%', padding:'8px 10px', border:`1px solid ${T.border}`,
+                borderRadius:6, fontSize:13, fontFamily:'inherit', boxSizing:'border-box', background:'#fff' }}>
+              <option value="all">Tất cả</option>
+              <option value="with_debt">Có nợ</option>
+              <option value="no_debt">Đã trả hết</option>
+            </select>
+          </div>
+          <div style={{ flex:'1 1 140px', minWidth:120 }}>
+            <SettingSectionTitle>📅 Tạo từ</SettingSectionTitle>
+            <input type="date" value={dateFrom} onChange={e => setDateFrom(e.target.value)}
+              style={{ width:'100%', padding:'7px 10px', border:`1px solid ${T.border}`,
+                borderRadius:6, fontSize:13, fontFamily:'inherit', boxSizing:'border-box' }}/>
+          </div>
+          <div style={{ flex:'1 1 140px', minWidth:120 }}>
+            <SettingSectionTitle>đến</SettingSectionTitle>
+            <input type="date" value={dateTo} onChange={e => setDateTo(e.target.value)}
+              style={{ width:'100%', padding:'7px 10px', border:`1px solid ${T.border}`,
+                borderRadius:6, fontSize:13, fontFamily:'inherit', boxSizing:'border-box' }}/>
+          </div>
+          <div style={{ flex:'1 1 180px', minWidth:140 }}>
+            <SettingSectionTitle>💰 Doanh số ≥</SettingSectionTitle>
+            <select value={minRevenue} onChange={e => setMinRevenue(Number(e.target.value))}
+              style={{ width:'100%', padding:'8px 10px', border:`1px solid ${T.border}`,
+                borderRadius:6, fontSize:13, fontFamily:'inherit', boxSizing:'border-box', background:'#fff' }}>
+              <option value={0}>Không lọc</option>
+              <option value={100000}>100K</option>
+              <option value={500000}>500K</option>
+              <option value={1000000}>1 triệu</option>
+              <option value={5000000}>5 triệu</option>
+              <option value={10000000}>10 triệu</option>
+              <option value={50000000}>50 triệu</option>
+            </select>
+          </div>
+          <div style={{ flex:'1 1 180px', minWidth:140 }}>
+            <SettingSectionTitle>↕ Sắp xếp</SettingSectionTitle>
+            <select value={sortBy} onChange={e => setSortBy(e.target.value as any)}
+              style={{ width:'100%', padding:'8px 10px', border:`1px solid ${T.border}`,
+                borderRadius:6, fontSize:13, fontFamily:'inherit', boxSizing:'border-box', background:'#fff' }}>
+              <option value="debt_desc">Nợ cao → thấp</option>
+              <option value="debt_asc">Nợ thấp → cao</option>
+              <option value="revenue_desc">Doanh số cao → thấp</option>
+              <option value="revenue_asc">Doanh số thấp → cao</option>
+              <option value="created_desc">Mới nhất</option>
+              <option value="created_asc">Cũ nhất</option>
+            </select>
+          </div>
+        </div>
+        {(search || filterAssignee !== 'all' || filterGroup !== 'all' || filterDebt !== 'all'
+          || dateFrom || dateTo || minRevenue > 0) && (
+          <button onClick={() => {
+            setSearch(''); setFilterAssignee('all'); setFilterGroup('all')
+            setFilterDebt('all'); setDateFrom(''); setDateTo(''); setMinRevenue(0)
+          }}
+            style={{ marginTop:10, padding:'5px 12px', borderRadius:6, border:`1px solid ${T.border}`,
+              background:'#fff', color:T.med, cursor:'pointer',
+              fontFamily:'inherit', fontSize:11, fontWeight:600 }}>
+            ✕ Xoá bộ lọc
+          </button>
+        )}
+      </Card>
+
+      {/* Bảng KH */}
+      {loading ? (
+        <Card style={{ padding:30, textAlign:'center', color:T.med }}>
+          ⏳ Đang tải...
+        </Card>
+      ) : filtered.length === 0 ? (
+        <Card style={{ padding:30, textAlign:'center', color:T.light }}>
+          {customers.length === 0
+            ? '📭 Chưa có KH nào. Bấm "🔄 Sync từ KV" để đồng bộ.'
+            : '🔍 Không có KH nào khớp bộ lọc.'}
+        </Card>
+      ) : mobile ? (
+        // ── MOBILE: card view ──
+        <div style={{ display:'flex', flexDirection:'column', gap:8 }}>
+          {pageItems.map((c: any) => (
+            <CustomerCardMobile key={c.id} customer={c} onClick={() => setShowDetail(c)}/>
+          ))}
+        </div>
+      ) : (
+        // ── DESKTOP: table view ──
+        <Card style={{ padding:0, overflow:'hidden' }}>
+          <div style={{ overflowX:'auto' }}>
+            <table style={{ width:'100%', borderCollapse:'collapse', fontSize:13 }}>
+              <thead style={{ background:T.bg, position:'sticky', top:0 }}>
+                <tr>
+                  <th style={thStyle}>Mã KH</th>
+                  <th style={thStyle}>Tên KH</th>
+                  <th style={thStyle}>Nhóm</th>
+                  <th style={thStyle}>Người phụ trách</th>
+                  <th style={thStyle}>Ngày tạo</th>
+                  <th style={{ ...thStyle, textAlign:'right' }}>Nợ hiện tại</th>
+                  <th style={{ ...thStyle, textAlign:'right' }}>Tổng bán</th>
+                  <th style={{ ...thStyle, textAlign:'right' }}>Tổng bán trừ trả</th>
+                </tr>
+              </thead>
+              <tbody>
+                {pageItems.map((c: any) => (
+                  <CustomerTableRow key={c.id} customer={c} onClick={() => setShowDetail(c)}/>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </Card>
+      )}
+
+      {/* Pagination */}
+      {totalPages > 1 && (
+        <div style={{ display:'flex', justifyContent:'center', alignItems:'center', gap:10, marginTop:14 }}>
+          <button onClick={() => setPage(0)} disabled={page === 0}
+            style={pageBtnStyle(page === 0)}>«</button>
+          <button onClick={() => setPage(p => Math.max(0, p - 1))} disabled={page === 0}
+            style={pageBtnStyle(page === 0)}>‹</button>
+          <div style={{ fontSize:13, color:T.med }}>
+            Trang {page + 1} / {totalPages} · Hiển thị {pageStart + 1}-{Math.min(pageStart + PAGE_SIZE, filtered.length)} / {filtered.length}
+          </div>
+          <button onClick={() => setPage(p => Math.min(totalPages - 1, p + 1))} disabled={page >= totalPages - 1}
+            style={pageBtnStyle(page >= totalPages - 1)}>›</button>
+          <button onClick={() => setPage(totalPages - 1)} disabled={page >= totalPages - 1}
+            style={pageBtnStyle(page >= totalPages - 1)}>»</button>
+        </div>
+      )}
+
+      {/* Modals */}
+      {showSync && (
+        <CustomerSyncModal user={user} onClose={() => setShowSync(false)}
+          onDone={() => { setShowSync(false); fetchCustomers() }}/>
+      )}
+      {showUploadExcel && (
+        <CustomerUploadExcelModal user={user} mobile={mobile}
+          onClose={() => setShowUploadExcel(false)}
+          onDone={() => { setShowUploadExcel(false); fetchCustomers() }}/>
+      )}
+      {showDetail && (
+        <CustomerDetailModal customer={showDetail} mobile={mobile} user={user}
+          onClose={() => setShowDetail(null)}
+          onRefresh={fetchCustomers}/>
+      )}
+    </PageContainer>
+  )
+}
+
+// ── Helper styles ──
+const thStyle: any = {
+  padding:'10px 12px', textAlign:'left', fontSize:11, fontWeight:700,
+  color:T.med, borderBottom:`2px solid ${T.border}`, whiteSpace:'nowrap',
+}
+const pageBtnStyle = (disabled: boolean): any => ({
+  padding:'6px 12px', borderRadius:6, border:`1px solid ${T.border}`,
+  background:'#fff', color: disabled ? T.light : T.med,
+  cursor: disabled ? 'not-allowed' : 'pointer',
+  fontFamily:'inherit', fontSize:13, fontWeight:600, opacity: disabled ? 0.5 : 1,
+})
+
+function SummaryStat({ label, value, color }: any) {
+  return (
+    <div>
+      <div style={{ fontSize:10, color:T.med, fontWeight:600, letterSpacing:.3, marginBottom:2 }}>{label}</div>
+      <div style={{ fontSize:16, fontWeight:800, color }}>{value}</div>
+    </div>
+  )
+}
+
+// ── Table row (desktop) ──
+function CustomerTableRow({ customer: c, onClick }: any) {
+  const debt = Number(c.debt || 0)
+  const invoiced = Number(c.total_invoiced || 0)
+  const revenue = Number(c.total_revenue || 0)
+  const dateStr = c.kv_created_at ? new Date(c.kv_created_at).toLocaleDateString('vi-VN') : '—'
+  const groupColor = c.groups === 'SVIP' ? T.gold : c.groups === 'VIP' ? T.purple : T.med
+  
+  return (
+    <tr onClick={onClick}
+      style={{ cursor:'pointer', borderBottom:`1px solid ${T.border}` }}
+      onMouseEnter={e => (e.currentTarget.style.background = T.bg)}
+      onMouseLeave={e => (e.currentTarget.style.background = '')}>
+      <td style={{ padding:'10px 12px', color:T.med, fontFamily:'monospace', fontSize:12 }}>
+        {c.code}
+      </td>
+      <td style={{ padding:'10px 12px', color:T.dark, fontWeight:600 }}>
+        {c.name}
+        {c.phone && <div style={{ fontSize:10, color:T.light, marginTop:2 }}>📞 {c.phone}</div>}
+      </td>
+      <td style={{ padding:'10px 12px' }}>
+        {c.groups && (
+          <span style={{ padding:'2px 7px', borderRadius:10, fontSize:10, fontWeight:700,
+            background: groupColor + '22', color: groupColor }}>
+            {c.groups}
+          </span>
+        )}
+      </td>
+      <td style={{ padding:'10px 12px', fontSize:12 }}>
+        {c.assigned_to_user_name || (
+          <span style={{ color:T.light, fontStyle:'italic' }}>— Chưa gán —</span>
+        )}
+      </td>
+      <td style={{ padding:'10px 12px', fontSize:12, color:T.med, whiteSpace:'nowrap' }}>
+        {dateStr}
+      </td>
+      <td style={{ padding:'10px 12px', textAlign:'right', fontWeight:700,
+        color: debt > 0 ? T.red : T.med, fontVariantNumeric:'tabular-nums' }}>
+        {debt > 0 ? debt.toLocaleString('vi-VN') : '—'}
+      </td>
+      <td style={{ padding:'10px 12px', textAlign:'right', fontWeight:600, color:T.dark,
+        fontVariantNumeric:'tabular-nums' }}>
+        {invoiced > 0 ? invoiced.toLocaleString('vi-VN') : '—'}
+      </td>
+      <td style={{ padding:'10px 12px', textAlign:'right', fontWeight:700, color:T.gold,
+        fontVariantNumeric:'tabular-nums' }}>
+        {revenue > 0 ? revenue.toLocaleString('vi-VN') : '—'}
+      </td>
+    </tr>
+  )
+}
+
+// ── Card view (mobile) ──
+function CustomerCardMobile({ customer: c, onClick }: any) {
+  const debt = Number(c.debt || 0)
+  const revenue = Number(c.total_revenue || 0)
+  const groupColor = c.groups === 'SVIP' ? T.gold : c.groups === 'VIP' ? T.purple : T.med
+  
+  return (
+    <Card onClick={onClick} style={{ padding:12, cursor:'pointer' }}>
+      <div style={{ display:'flex', justifyContent:'space-between', gap:10, marginBottom:6 }}>
+        <div style={{ flex:1, minWidth:0 }}>
+          <div style={{ fontSize:13, fontWeight:700, color:T.dark }}>{c.name}</div>
+          <div style={{ fontSize:10, color:T.med, fontFamily:'monospace', marginTop:2 }}>
+            {c.code}
+            {c.phone && <span> · 📞 {c.phone}</span>}
+          </div>
+        </div>
+        {c.groups && (
+          <span style={{ padding:'2px 7px', borderRadius:10, fontSize:9, fontWeight:700,
+            background: groupColor + '22', color: groupColor, alignSelf:'flex-start',
+            whiteSpace:'nowrap' }}>
+            {c.groups}
+          </span>
+        )}
+      </div>
+      <div style={{ display:'flex', justifyContent:'space-between', fontSize:11,
+        color:T.med, marginBottom:6 }}>
+        <span>👤 {c.assigned_to_user_name || <i style={{ color:T.light }}>chưa gán</i>}</span>
+        <span>📅 {c.kv_created_at ? new Date(c.kv_created_at).toLocaleDateString('vi-VN') : '—'}</span>
+      </div>
+      <div style={{ display:'flex', gap:14, fontSize:12, fontVariantNumeric:'tabular-nums' }}>
+        {debt > 0 && (
+          <span><span style={{ color:T.med }}>Nợ:</span> <b style={{ color:T.red }}>{debt.toLocaleString('vi-VN')}đ</b></span>
+        )}
+        <span><span style={{ color:T.med }}>DS:</span> <b style={{ color:T.gold }}>{revenue.toLocaleString('vi-VN')}đ</b></span>
+      </div>
+    </Card>
+  )
+}
+
+
+// ══════════════════════════════════════════════════════════════════════
+// CustomerSyncModal — chạy edge function sync
+// ══════════════════════════════════════════════════════════════════════
+function CustomerSyncModal({ user, onClose, onDone }: any) {
+  const [syncing, setSyncing] = useState(false)
+  const [result, setResult] = useState<any>(null)
+
+  const handleSync = async () => {
+    setSyncing(true)
+    setResult(null)
+    try {
+      const res = await fetch(`${SUPABASE_URL}/functions/v1/kiotviet-sync-customers?mode=sync`, {
+        headers: { 'Authorization':`Bearer ${SUPABASE_ANON}` },
+      })
+      const json = await res.json()
+      setResult(json)
+      if (json.success) {
+        toast.success(`✅ Đã sync ${json.upserted} KH`)
+      } else {
+        toast.error(`❌ Lỗi: ${json.error || 'không rõ'}`)
+      }
+    } catch (e: any) {
+      setResult({ success: false, error: e.message })
+      toast.error('Lỗi: ' + e.message)
+    } finally {
+      setSyncing(false)
+    }
+  }
+
+  return (
+    <Modal open title="🔄 Sync khách hàng từ KiotViet" onClose={onClose}>
+      <div>
+        <div style={{ padding:'12px 14px', background:T.amberBg, border:`1px solid ${T.amber}55`,
+          borderRadius:6, marginBottom:14, fontSize:12, color:'#92400E', lineHeight:1.6 }}>
+          ⚠️ Sẽ đồng bộ <b>tất cả ~2.500 KH</b> từ KiotViet về app.<br/>
+          • Mất 30-60 giây<br/>
+          • KHÔNG ghi đè cột "Người phụ trách" đã gán manual<br/>
+          • An toàn — chỉ cập nhật, không xóa data
+        </div>
+
+        {result && (
+          <div style={{ padding:12, borderRadius:8, marginBottom:14,
+            background: result.success ? T.greenBg : T.redBg,
+            border: `1px solid ${result.success ? T.green : T.red}`, fontSize:12 }}>
+            {result.success ? (
+              <>
+                <div style={{ fontWeight:700, color:T.green, marginBottom:6 }}>✅ Sync thành công</div>
+                <div>📊 Đã đồng bộ: <b>{result.upserted}/{result.kv_total_reported}</b> KH</div>
+                <div>💸 Có công nợ: <b>{result.debt_count}</b> KH</div>
+                <div>💰 Tổng doanh số: <b>{Number(result.total_revenue_sum || 0).toLocaleString('vi-VN')}đ</b></div>
+                <div style={{ color:T.light, marginTop:4 }}>⏱ {result.total_time_sec}s · {result.pages_fetched} pages</div>
+              </>
+            ) : (
+              <>
+                <div style={{ fontWeight:700, color:T.red, marginBottom:6 }}>❌ Sync thất bại</div>
+                <div>{result.error}</div>
+              </>
+            )}
+          </div>
+        )}
+
+        <div style={{ display:'flex', gap:10, justifyContent:'flex-end',
+          paddingTop:12, borderTop:`1px solid ${T.border}` }}>
+          <button onClick={onClose} disabled={syncing}
+            style={{ padding:'8px 18px', borderRadius:6, border:`1px solid ${T.border}`,
+              background:'#fff', color:T.med, cursor: syncing ? 'wait' : 'pointer',
+              fontFamily:'inherit', fontSize:12 }}>
+            {result?.success ? 'Đóng' : 'Huỷ'}
+          </button>
+          {!result?.success && (
+            <button onClick={handleSync} disabled={syncing}
+              style={{ padding:'9px 22px', borderRadius:6, border:'none',
+                background: syncing ? T.border : T.gold, color:'#fff',
+                cursor: syncing ? 'wait' : 'pointer',
+                fontFamily:'inherit', fontSize:13, fontWeight:700 }}>
+              {syncing ? '⏳ Đang sync...' : '🔄 Bắt đầu sync'}
+            </button>
+          )}
+          {result?.success && (
+            <button onClick={onDone}
+              style={{ padding:'9px 22px', borderRadius:6, border:'none',
+                background: T.green, color:'#fff', cursor:'pointer',
+                fontFamily:'inherit', fontSize:13, fontWeight:700 }}>
+              ✓ Xem danh sách
+            </button>
+          )}
+        </div>
+      </div>
+    </Modal>
+  )
+}
+
+
+// ══════════════════════════════════════════════════════════════════════
+// CustomerUploadExcelModal — upload Excel gán người phụ trách
+// ══════════════════════════════════════════════════════════════════════
+function CustomerUploadExcelModal({ user, mobile, onClose, onDone }: any) {
+  const [file, setFile] = useState<File | null>(null)
+  const [parsing, setParsing] = useState(false)
+  const [parsed, setParsed] = useState<Array<{ code: string, assignee_name: string, customer_name?: string }> | null>(null)
+  const [uploading, setUploading] = useState(false)
+  const [result, setResult] = useState<any>(null)
+  const [colCode, setColCode] = useState<string>('')
+  const [colAssignee, setColAssignee] = useState<string>('')
+  const [headers, setHeaders] = useState<string[]>([])
+  const [rawRows, setRawRows] = useState<any[]>([])
+
+  const handleFileSelect = async (f: File) => {
+    setFile(f)
+    setParsing(true)
+    setParsed(null)
+    setResult(null)
+    
+    try {
+      // Dùng SheetJS để đọc xlsx
+      const XLSX = (window as any).XLSX
+      if (!XLSX) {
+        // Load lazy
+        await new Promise<void>((resolve, reject) => {
+          const script = document.createElement('script')
+          script.src = 'https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js'
+          script.onload = () => resolve()
+          script.onerror = () => reject(new Error('Không tải được thư viện đọc Excel'))
+          document.head.appendChild(script)
+        })
+      }
+      const XLSX2 = (window as any).XLSX
+      
+      const arrayBuffer = await f.arrayBuffer()
+      const wb = XLSX2.read(arrayBuffer, { type:'array' })
+      const ws = wb.Sheets[wb.SheetNames[0]]
+      const rows: any[] = XLSX2.utils.sheet_to_json(ws, { defval: '', raw: false })
+      
+      if (rows.length === 0) {
+        toast.error('File rỗng')
+        setParsing(false)
+        return
+      }
+      
+      const cols = Object.keys(rows[0])
+      setHeaders(cols)
+      setRawRows(rows)
+      
+      // Auto-detect cột
+      const codeCol = cols.find(c => /mã.*kh|kh.*code|code|mã khách/i.test(c)) || cols[0]
+      const assigneeCol = cols.find(c => /phụ trách|phu trach|assigned|sales/i.test(c)) || cols[1] || ''
+      setColCode(codeCol)
+      setColAssignee(assigneeCol)
+      
+      toast.success(`✓ Đọc được ${rows.length} dòng từ Excel`)
+    } catch (e: any) {
+      toast.error('Lỗi đọc file: ' + e.message)
+    } finally {
+      setParsing(false)
+    }
+  }
+
+  // Re-parse khi đổi cột
+  useEffect(() => {
+    if (rawRows.length === 0 || !colCode || !colAssignee) {
+      setParsed(null)
+      return
+    }
+    const items = rawRows.map((r: any) => ({
+      code: String(r[colCode] || '').trim(),
+      assignee_name: String(r[colAssignee] || '').trim(),
+      customer_name: '',  // chỉ để preview
+    })).filter(x => x.code)
+    setParsed(items)
+  }, [rawRows, colCode, colAssignee])
+
+  const handleUpload = async () => {
+    if (!parsed || parsed.length === 0) { toast.error('Chưa có data'); return }
+    
+    setUploading(true)
+    setResult(null)
+    try {
+      const res = await fetch(`${SUPABASE_URL}/functions/v1/customers-assign-from-excel`, {
+        method: 'POST',
+        headers: { 'Content-Type':'application/json', 'Authorization':`Bearer ${SUPABASE_ANON}` },
+        body: JSON.stringify({
+          assignments: parsed,
+          assigned_by: user?.id || 'admin',
+        }),
+      })
+      const json = await res.json()
+      setResult(json)
+      if (json.success) {
+        toast.success(`✅ Đã gán ${json.matched} KH`)
+      } else {
+        toast.error('Lỗi: ' + (json.error || 'không rõ'))
+      }
+    } catch (e: any) {
+      toast.error('Lỗi: ' + e.message)
+    } finally {
+      setUploading(false)
+    }
+  }
+
+  const previewCount = parsed?.length || 0
+  const withAssigneeCount = parsed?.filter(p => p.assignee_name).length || 0
+
+  return (
+    <Modal open wide title="📥 Upload Excel — Gán người phụ trách" onClose={onClose}>
+      <div style={{ padding: mobile ? '0 4px' : '0' }}>
+        {/* Hướng dẫn */}
+        <div style={{ padding:'10px 12px', background:T.blueBg, borderRadius:6,
+          marginBottom:14, fontSize:12, color:T.dark, lineHeight:1.7 }}>
+          <div style={{ fontWeight:700, color:T.blue, marginBottom:6 }}>📋 Cách dùng:</div>
+          1. Vào KV web → Báo cáo KH → Export Excel<br/>
+          2. Upload file Excel ở đây<br/>
+          3. App tự nhận diện cột "Mã KH" + "Người phụ trách"<br/>
+          4. Bấm <b>📤 Upload</b> → app match tên với users + cập nhật
+        </div>
+
+        {/* File input */}
+        <div style={{ marginBottom:14 }}>
+          <input type="file" accept=".xlsx,.xls"
+            onChange={e => e.target.files?.[0] && handleFileSelect(e.target.files[0])}
+            disabled={parsing || uploading}
+            style={{ display:'block', padding:8, border:`1.5px dashed ${T.border}`,
+              borderRadius:6, fontSize:13, fontFamily:'inherit', background:'#fff',
+              width:'100%', boxSizing:'border-box', cursor:'pointer' }}/>
+          {file && (
+            <div style={{ fontSize:11, color:T.med, marginTop:6 }}>
+              📎 {file.name} · {(file.size / 1024).toFixed(1)} KB
+            </div>
+          )}
+        </div>
+
+        {/* Column mapping */}
+        {headers.length > 0 && (
+          <div style={{ display:'grid', gridTemplateColumns: mobile ? '1fr' : '1fr 1fr', gap:10, marginBottom:14 }}>
+            <div>
+              <SettingSectionTitle>Cột Mã KH</SettingSectionTitle>
+              <select value={colCode} onChange={e => setColCode(e.target.value)}
+                style={{ width:'100%', padding:'8px 10px', border:`1px solid ${T.border}`,
+                  borderRadius:6, fontSize:13, fontFamily:'inherit', boxSizing:'border-box', background:'#fff' }}>
+                {headers.map(h => <option key={h} value={h}>{h}</option>)}
+              </select>
+            </div>
+            <div>
+              <SettingSectionTitle>Cột Người phụ trách</SettingSectionTitle>
+              <select value={colAssignee} onChange={e => setColAssignee(e.target.value)}
+                style={{ width:'100%', padding:'8px 10px', border:`1px solid ${T.border}`,
+                  borderRadius:6, fontSize:13, fontFamily:'inherit', boxSizing:'border-box', background:'#fff' }}>
+                <option value="">— Chọn cột —</option>
+                {headers.map(h => <option key={h} value={h}>{h}</option>)}
+              </select>
+            </div>
+          </div>
+        )}
+
+        {/* Preview */}
+        {parsed && parsed.length > 0 && (
+          <div style={{ marginBottom:14 }}>
+            <div style={{ fontSize:12, fontWeight:600, color:T.dark, marginBottom:6 }}>
+              👀 Preview ({previewCount} dòng, {withAssigneeCount} có người phụ trách):
+            </div>
+            <div style={{ maxHeight:200, overflowY:'auto', border:`1px solid ${T.border}`,
+              borderRadius:6, fontSize:11 }}>
+              <table style={{ width:'100%', borderCollapse:'collapse' }}>
+                <thead style={{ background:T.bg, position:'sticky', top:0 }}>
+                  <tr>
+                    <th style={{ padding:'6px 10px', textAlign:'left', fontSize:10, color:T.med }}>Mã KH</th>
+                    <th style={{ padding:'6px 10px', textAlign:'left', fontSize:10, color:T.med }}>Người phụ trách</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {parsed.slice(0, 50).map((p, i) => (
+                    <tr key={i} style={{ borderTop:`1px solid ${T.border}` }}>
+                      <td style={{ padding:'5px 10px', fontFamily:'monospace', color:T.dark }}>{p.code}</td>
+                      <td style={{ padding:'5px 10px', color: p.assignee_name ? T.dark : T.light }}>
+                        {p.assignee_name || <i>(trống)</i>}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+              {parsed.length > 50 && (
+                <div style={{ padding:8, textAlign:'center', fontSize:10, color:T.light,
+                  borderTop:`1px solid ${T.border}` }}>
+                  ... và {parsed.length - 50} dòng nữa
+                </div>
+              )}
+            </div>
+          </div>
+        )}
+
+        {/* Result */}
+        {result && (
+          <div style={{ padding:12, borderRadius:8, marginBottom:14,
+            background: result.success ? T.greenBg : T.redBg,
+            border: `1px solid ${result.success ? T.green : T.red}`, fontSize:12 }}>
+            {result.success ? (
+              <>
+                <div style={{ fontWeight:700, color:T.green, marginBottom:6 }}>✅ Hoàn tất</div>
+                <div>✓ Đã gán: <b>{result.matched}</b> KH</div>
+                {result.cleared > 0 && <div>🔄 Bỏ gán: <b>{result.cleared}</b> KH (cột phụ trách trống)</div>}
+                {result.not_found_user?.length > 0 && (
+                  <div style={{ marginTop:6, color:T.amber }}>
+                    ⚠ Không tìm thấy user: <b>{result.not_found_user.length}</b><br/>
+                    <span style={{ fontSize:10 }}>
+                      {result.not_found_user.slice(0, 5).map((x: any) => `"${x.assignee_name}"`).join(', ')}
+                      {result.not_found_user.length > 5 && ` ... (+${result.not_found_user.length - 5})`}
+                    </span>
+                  </div>
+                )}
+                {result.not_found_customer?.length > 0 && (
+                  <div style={{ marginTop:6, color:T.amber }}>
+                    ⚠ Không tìm thấy KH (mã chưa sync): <b>{result.not_found_customer.length}</b>
+                  </div>
+                )}
+              </>
+            ) : (
+              <>
+                <div style={{ fontWeight:700, color:T.red, marginBottom:6 }}>❌ Lỗi</div>
+                <div>{result.error}</div>
+              </>
+            )}
+          </div>
+        )}
+
+        {/* Footer */}
+        <div style={{ display:'flex', gap:10, justifyContent:'flex-end',
+          paddingTop:12, borderTop:`1px solid ${T.border}` }}>
+          <button onClick={onClose} disabled={uploading}
+            style={{ padding:'8px 18px', borderRadius:6, border:`1px solid ${T.border}`,
+              background:'#fff', color:T.med, cursor: uploading ? 'wait' : 'pointer',
+              fontFamily:'inherit', fontSize:12 }}>
+            {result?.success ? 'Đóng' : 'Huỷ'}
+          </button>
+          {parsed && parsed.length > 0 && !result?.success && (
+            <button onClick={handleUpload} disabled={uploading || !colCode || !colAssignee}
+              style={{ padding:'9px 22px', borderRadius:6, border:'none',
+                background: uploading ? T.border : T.blue, color:'#fff',
+                cursor: uploading ? 'wait' : 'pointer',
+                fontFamily:'inherit', fontSize:13, fontWeight:700 }}>
+              {uploading ? '⏳ Đang gán...' : `📤 Gán ${withAssigneeCount} KH`}
+            </button>
+          )}
+          {result?.success && (
+            <button onClick={onDone}
+              style={{ padding:'9px 22px', borderRadius:6, border:'none',
+                background: T.green, color:'#fff', cursor:'pointer',
+                fontFamily:'inherit', fontSize:13, fontWeight:700 }}>
+              ✓ Xem danh sách
+            </button>
+          )}
+        </div>
+      </div>
+    </Modal>
+  )
+}
+
+
+// ══════════════════════════════════════════════════════════════════════
+// CustomerDetailModal — chi tiết 1 KH
+// ══════════════════════════════════════════════════════════════════════
+function CustomerDetailModal({ customer: c, mobile, user, onClose, onRefresh }: any) {
+  const debt = Number(c.debt || 0)
+  const invoiced = Number(c.total_invoiced || 0)
+  const revenue = Number(c.total_revenue || 0)
+
+  return (
+    <Modal open wide title={`👤 ${c.name}`} onClose={onClose}>
+      <div style={{ padding: mobile ? '0 4px' : '0' }}>
+        {/* Info card */}
+        <Card style={{ padding:14, marginBottom:14, background:T.bg }}>
+          <div style={{ display:'grid',
+            gridTemplateColumns: mobile ? '1fr' : 'repeat(2,1fr)', gap:8, fontSize:12 }}>
+            <div><b>Mã KH:</b> <code style={{ fontFamily:'monospace', color:T.dark }}>{c.code}</code></div>
+            <div><b>Nhóm:</b> {c.groups || '—'}</div>
+            <div><b>SĐT:</b> {c.phone || '—'}</div>
+            {c.sub_phone && <div><b>SĐT phụ:</b> {c.sub_phone}</div>}
+            <div><b>Địa chỉ:</b> {c.address || '—'}</div>
+            <div><b>Khu vực:</b> {[c.ward, c.location].filter(Boolean).join(', ') || '—'}</div>
+            {c.organization && <div><b>Tổ chức:</b> {c.organization}</div>}
+            {c.tax_code && <div><b>MST:</b> {c.tax_code}</div>}
+            <div><b>Người phụ trách:</b>{' '}
+              {c.assigned_to_user_name
+                ? <b style={{ color:T.blue }}>{c.assigned_to_user_name}</b>
+                : <i style={{ color:T.light }}>chưa gán</i>}
+            </div>
+            <div><b>Ngày tạo (KV):</b> {c.kv_created_at ? new Date(c.kv_created_at).toLocaleString('vi-VN') : '—'}</div>
+          </div>
+          {c.comments && (
+            <div style={{ marginTop:10, padding:8, background:'#fff', borderRadius:4, fontSize:11, color:T.med }}>
+              💬 {c.comments}
+            </div>
+          )}
+        </Card>
+
+        {/* Financial */}
+        <div style={{ display:'grid',
+          gridTemplateColumns: mobile ? 'repeat(2,1fr)' : 'repeat(3,1fr)', gap:10, marginBottom:14 }}>
+          <Card style={{ padding:12, textAlign:'center' }}>
+            <div style={{ fontSize:10, color:T.med, fontWeight:600, marginBottom:4 }}>💸 Nợ hiện tại</div>
+            <div style={{ fontSize:18, fontWeight:800, color: debt > 0 ? T.red : T.green }}>
+              {debt.toLocaleString('vi-VN')}đ
+            </div>
+          </Card>
+          <Card style={{ padding:12, textAlign:'center' }}>
+            <div style={{ fontSize:10, color:T.med, fontWeight:600, marginBottom:4 }}>💰 Tổng bán</div>
+            <div style={{ fontSize:18, fontWeight:800, color:T.dark }}>
+              {invoiced.toLocaleString('vi-VN')}đ
+            </div>
+          </Card>
+          <Card style={{ padding:12, textAlign:'center' }}>
+            <div style={{ fontSize:10, color:T.med, fontWeight:600, marginBottom:4 }}>✨ Trừ trả hàng</div>
+            <div style={{ fontSize:18, fontWeight:800, color:T.gold }}>
+              {revenue.toLocaleString('vi-VN')}đ
+            </div>
+          </Card>
+        </div>
+
+        <div style={{ display:'flex', justifyContent:'flex-end',
+          paddingTop:12, borderTop:`1px solid ${T.border}` }}>
+          <button onClick={onClose}
+            style={{ padding:'8px 18px', borderRadius:6, border:`1px solid ${T.border}`,
+              background:'#fff', color:T.med, cursor:'pointer',
+              fontFamily:'inherit', fontSize:12 }}>
+            Đóng
+          </button>
+        </div>
+      </div>
+    </Modal>
   )
 }
 
