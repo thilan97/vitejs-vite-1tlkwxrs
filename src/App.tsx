@@ -38,7 +38,8 @@ const db = createClient(SUPABASE_URL, SUPABASE_KEY)
 // v181: KV setup hiển thị tiền theo "đơn vị nghìn đồng" — toàn bộ Customer module hiển thị "nghìn đ" thay vì "đ", thêm chú thích đơn vị ở header bảng + summary + detail. Filter doanh số nhập theo nghìn (vd: 1000 = 1tr đ thực)
 // v182: fix header bảng KH lệch — đơn vị "(nghìn đ)" inline thay vì xuống dòng, vertical-align middle. Standby cho feature "Tab KH mới"
 // v183: Phase B — Tab "✨ KH mới" trong CustomersModule. Sale claim KH mới của tháng → Admin duyệt → tính hoa hồng 1% DS tháng. Migration 50 (claims) + 51 (kv_invoices) + edge function customer-month-revenue
-const APP_VERSION = '2026.04.29.v183'
+// v184: (1) Migration 52 user_aliases — sale Ngân Trần có nhiều account KV (Ngân Lan, Ngân Trần (P)) → map về 1 user. Edge fn assign-from-excel v2 check alias trước. UI thêm alias trực tiếp từ Upload Excel modal khi không tìm thấy user. (2) Refactor NewCustomersTab: table view + checkbox bulk action (claim/duyệt/từ chối hàng loạt) + sort theo người phụ trách + bỏ commission column
+const APP_VERSION = '2026.04.30.v184'
 
 // ════════════════════════════════════════════════════════════════
 // v158: VersionBadge — Hiển thị APP_VERSION ở góc dưới phải
@@ -32864,15 +32865,22 @@ function CustomerUploadExcelModal({ user, mobile, onClose, onDone }: any) {
               <>
                 <div style={{ fontWeight:700, color:T.green, marginBottom:6 }}>✅ Hoàn tất</div>
                 <div>✓ Đã gán: <b>{result.matched}</b> KH</div>
+                {result.matched_via_alias > 0 && (
+                  <div style={{ fontSize:11, color:T.med, marginLeft:14 }}>
+                    🏷 Trong đó {result.matched_via_alias} match qua alias
+                  </div>
+                )}
+                {result.matched_via_substring > 0 && (
+                  <div style={{ fontSize:11, color:T.med, marginLeft:14 }}>
+                    🔍 Trong đó {result.matched_via_substring} match qua tên gần đúng
+                  </div>
+                )}
                 {result.cleared > 0 && <div>🔄 Bỏ gán: <b>{result.cleared}</b> KH (cột phụ trách trống)</div>}
                 {result.not_found_user?.length > 0 && (
-                  <div style={{ marginTop:6, color:T.amber }}>
-                    ⚠ Không tìm thấy user: <b>{result.not_found_user.length}</b><br/>
-                    <span style={{ fontSize:10 }}>
-                      {result.not_found_user.slice(0, 5).map((x: any) => `"${x.assignee_name}"`).join(', ')}
-                      {result.not_found_user.length > 5 && ` ... (+${result.not_found_user.length - 5})`}
-                    </span>
-                  </div>
+                  <NotFoundUserSection result={result} user={user} onAliasAdded={() => {
+                    // Re-run upload sau khi add alias
+                    handleUpload && handleUpload()
+                  }}/>
                 )}
                 {result.not_found_customer?.length > 0 && (
                   <div style={{ marginTop:6, color:T.amber }}>
@@ -32918,6 +32926,117 @@ function CustomerUploadExcelModal({ user, mobile, onClose, onDone }: any) {
         </div>
       </div>
     </Modal>
+  )
+}
+
+
+// ══════════════════════════════════════════════════════════════════════
+// v184: NotFoundUserSection — UI thêm alias cho tên KV không match user
+// ══════════════════════════════════════════════════════════════════════
+function NotFoundUserSection({ result, user, onAliasAdded }: any) {
+  const [allUsers, setAllUsers] = useState<any[]>([])
+  const [aliasInputs, setAliasInputs] = useState<Map<string, string>>(new Map())  // assigneeName → selectedUserId
+  const [adding, setAdding] = useState<string | null>(null)
+  
+  // Group by tên unique
+  const uniqueNames = useMemo(() => {
+    const counts = new Map<string, number>()
+    for (const x of result.not_found_user || []) {
+      counts.set(x.assignee_name, (counts.get(x.assignee_name) || 0) + 1)
+    }
+    return Array.from(counts.entries()).sort((a, b) => b[1] - a[1])
+  }, [result])
+
+  useEffect(() => {
+    db.from('users').select('id, name').neq('is_test_account', true)
+      .then(({ data }) => setAllUsers(data || []))
+  }, [])
+
+  const handleAddAlias = async (assigneeName: string, userId: string) => {
+    if (!userId) { toast.error('Chọn user trước'); return }
+    const u = allUsers.find(x => x.id === userId)
+    if (!u) return
+    
+    setAdding(assigneeName)
+    try {
+      const id = `alias_${Date.now()}_${Math.random().toString(36).slice(2,7)}`
+      const { error } = await db.from('user_aliases').insert({
+        id,
+        user_id: userId,
+        user_name: u.name,
+        alias: assigneeName,
+        alias_normalized: normalizeUnicode(assigneeName.toLowerCase()).replace(/\s+/g, ' ').trim(),
+        source: 'excel_upload',
+        note: 'Tạo từ upload Excel',
+        created_by: user?.id || 'admin',
+      })
+      if (error) {
+        if (error.code === '23505') {
+          toast.error(`Alias "${assigneeName}" đã tồn tại`)
+        } else {
+          toast.error('Lỗi: ' + error.message)
+        }
+      } else {
+        toast.success(`✓ Đã thêm "${assigneeName}" → ${u.name}. Bấm Upload lại để áp dụng.`)
+        onAliasAdded && onAliasAdded()
+      }
+    } finally {
+      setAdding(null)
+    }
+  }
+
+  return (
+    <div style={{ marginTop:10, padding:10, background:T.amberBg, border:`1px solid ${T.amber}55`,
+      borderRadius:6 }}>
+      <div style={{ fontSize:12, fontWeight:700, color:'#92400E', marginBottom:6 }}>
+        ⚠ Không tìm thấy user cho {uniqueNames.length} tên ({result.not_found_user.length} dòng)
+      </div>
+      <div style={{ fontSize:11, color:'#92400E', marginBottom:8, lineHeight:1.5 }}>
+        💡 KV có thể dùng tên khác với app (vd: "Ngân Lan" thay cho "Ngân Trần").<br/>
+        Chọn user app tương ứng → bấm "+ Thêm alias" để app match lần sau.
+      </div>
+      <div style={{ display:'flex', flexDirection:'column', gap:6, maxHeight:300, overflowY:'auto' }}>
+        {uniqueNames.map(([name, count]) => (
+          <div key={name} style={{ padding:8, background:'#fff', borderRadius:4,
+            display:'flex', gap:6, flexWrap:'wrap', alignItems:'center' }}>
+            <div style={{ flex:'1 1 180px', minWidth:140 }}>
+              <code style={{ padding:'2px 8px', background:'#FEF3C7', color:T.dark,
+                border:`1px solid ${T.amber}`, borderRadius:3,
+                fontFamily:'monospace', fontSize:11, fontWeight:600 }}>
+                {name}
+              </code>
+              <span style={{ marginLeft:6, fontSize:10, color:T.med }}>×{count} KH</span>
+            </div>
+            <select 
+              value={aliasInputs.get(name) || ''}
+              onChange={e => {
+                const m = new Map(aliasInputs)
+                m.set(name, e.target.value)
+                setAliasInputs(m)
+              }}
+              style={{ flex:'1 1 160px', padding:'5px 8px', border:`1px solid ${T.border}`,
+                borderRadius:4, fontSize:11, fontFamily:'inherit',
+                background:'#fff', color:T.dark, minWidth:140 }}>
+              <option value="">— Chọn user app —</option>
+              {allUsers.map(u => (
+                <option key={u.id} value={u.id}>{u.name}</option>
+              ))}
+            </select>
+            <button 
+              onClick={() => handleAddAlias(name, aliasInputs.get(name) || '')}
+              disabled={!aliasInputs.get(name) || adding === name}
+              style={{ padding:'5px 10px', borderRadius:4, border:'none',
+                background: aliasInputs.get(name) ? T.gold : T.border,
+                color:'#fff',
+                cursor: aliasInputs.get(name) ? 'pointer' : 'not-allowed',
+                fontFamily:'inherit', fontSize:11, fontWeight:600,
+                opacity: aliasInputs.get(name) ? 1 : 0.5 }}>
+              {adding === name ? '⏳' : '+ Thêm alias'}
+            </button>
+          </div>
+        ))}
+      </div>
+    </div>
   )
 }
 
@@ -33023,9 +33142,9 @@ function CustomerDetailModal({ customer: c, mobile, user, onClose, onRefresh }: 
 
 // ══════════════════════════════════════════════════════════════════════
 // v183: NewCustomersTab — KH mới tháng X (sale claim, admin duyệt)
+// v184: Refactor table view + checkbox bulk + sort by phụ trách + bỏ commission column
 // ══════════════════════════════════════════════════════════════════════
 function NewCustomersTab({ user, mobile, customers, isAdmin, onRefreshCustomers }: any) {
-  // Default tháng = tháng trước (vì cuối tháng sale claim cho tháng đang qua)
   const defaultMonth = (() => {
     const d = new Date()
     return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`
@@ -33037,9 +33156,15 @@ function NewCustomersTab({ user, mobile, customers, isAdmin, onRefreshCustomers 
   const [loadingClaims, setLoadingClaims] = useState(false)
   const [loadingRevenue, setLoadingRevenue] = useState(false)
   const [statusFilter, setStatusFilter] = useState<'all'|'unclaimed'|'pending'|'approved'|'rejected'>('all')
+  
+  // v184: bulk selection
+  const [selectedCodes, setSelectedCodes] = useState<Set<string>>(new Set())
+  const [bulkWorking, setBulkWorking] = useState(false)
+  
+  // v184: admin bulk reject reason
+  const [showBulkReject, setShowBulkReject] = useState(false)
+  const [bulkRejectReason, setBulkRejectReason] = useState('')
 
-  // Compute "KH mới tháng X" cho user hiện tại
-  // Logic: kv_created_at trong tháng + (sale: assigned_to_user_id = user.id, admin: all)
   const eligibleNewCustomers = useMemo(() => {
     const [year, m] = month.split('-').map(Number)
     const monthStart = new Date(Date.UTC(year, m - 1, 1)).getTime()
@@ -33049,12 +33174,9 @@ function NewCustomersTab({ user, mobile, customers, isAdmin, onRefreshCustomers 
       if (!c.kv_created_at) return false
       const createdMs = new Date(c.kv_created_at).getTime()
       if (createdMs < monthStart || createdMs >= monthEnd) return false
-      
-      // Sale: chỉ KH có assigned_to_user_id = mình (Admin upload Excel)
       if (!isAdmin) {
         if (c.assigned_to_user_id !== user.id) return false
       }
-      
       return true
     })
   }, [customers, month, isAdmin, user.id])
@@ -33064,12 +33186,10 @@ function NewCustomersTab({ user, mobile, customers, isAdmin, onRefreshCustomers 
     [eligibleNewCustomers]
   )
 
-  // Load claims tháng này
   const fetchClaims = async () => {
     setLoadingClaims(true)
     try {
       let q = db.from('customer_new_claims').select('*').eq('claim_month', month)
-      // Sale: chỉ thấy claim của mình. Admin: all
       if (!isAdmin) q = q.eq('claimed_by', user.id)
       const { data, error } = await q.order('created_at', { ascending: false })
       if (error) {
@@ -33082,7 +33202,6 @@ function NewCustomersTab({ user, mobile, customers, isAdmin, onRefreshCustomers 
     }
   }
 
-  // Load revenue cho tất cả KH trong tháng
   const fetchRevenue = async () => {
     if (customerCodes.length === 0) {
       setRevenueMap(new Map())
@@ -33113,11 +33232,12 @@ function NewCustomersTab({ user, mobile, customers, isAdmin, onRefreshCustomers 
   useEffect(() => { fetchClaims() }, [month, user.id, isAdmin])
   useEffect(() => { fetchRevenue() }, [customerCodes.join(',')])
 
-  // Map: customer_code → claim
+  // Reset selection khi đổi tháng/filter
+  useEffect(() => { setSelectedCodes(new Set()) }, [month, statusFilter])
+
   const claimByCode = useMemo(() => {
     const m = new Map()
     for (const cl of claims) {
-      // Nếu Admin: 1 KH có thể có nhiều claim, lưu cả mảng
       if (isAdmin) {
         const arr = m.get(cl.customer_code) || []
         arr.push(cl)
@@ -33129,12 +33249,11 @@ function NewCustomersTab({ user, mobile, customers, isAdmin, onRefreshCustomers 
     return m
   }, [claims, isAdmin])
 
-  // Filter rows theo status
   const rows = useMemo(() => {
     let list = eligibleNewCustomers.map((c: any) => {
       const claim = claimByCode.get(c.code)
-      const claimSingle = isAdmin ? null : claim   // sale view
-      const claimList = isAdmin ? (claim || []) : []  // admin view
+      const claimSingle = isAdmin ? null : claim
+      const claimList = isAdmin ? (claim || []) : []
       const stats = revenueMap.get(c.code) || { revenue: 0, orders: 0 }
       return {
         customer: c,
@@ -33149,7 +33268,6 @@ function NewCustomersTab({ user, mobile, customers, isAdmin, onRefreshCustomers 
     if (statusFilter !== 'all') {
       list = list.filter((r: any) => {
         if (isAdmin) {
-          // Admin filter theo any claim status
           if (statusFilter === 'unclaimed') return r.claims.length === 0
           return r.claims.some((cl: any) => cl.status === statusFilter)
         } else {
@@ -33159,38 +33277,160 @@ function NewCustomersTab({ user, mobile, customers, isAdmin, onRefreshCustomers 
       })
     }
     
-    // Sort: chưa claim lên đầu, rồi theo doanh số desc
+    // v184: sort theo người phụ trách (rồi theo DS desc)
     list.sort((a: any, b: any) => {
-      const aClaimed = isAdmin ? a.claims.length > 0 : !!a.claim
-      const bClaimed = isAdmin ? b.claims.length > 0 : !!b.claim
-      if (aClaimed !== bClaimed) return aClaimed ? 1 : -1
+      const aAssigned = a.customer.assigned_to_user_name || 'zzz'  // chưa gán xuống cuối
+      const bAssigned = b.customer.assigned_to_user_name || 'zzz'
+      if (aAssigned !== bAssigned) return aAssigned.localeCompare(bAssigned, 'vi')
       return b.revenue - a.revenue
     })
     
     return list
   }, [eligibleNewCustomers, claimByCode, revenueMap, statusFilter, isAdmin])
 
-  // Stats summary
   const stats = useMemo(() => {
     const totalNew = eligibleNewCustomers.length
-    const totalClaimed = isAdmin
-      ? claims.length
-      : claims.filter((c: any) => c.claimed_by === user.id).length
     const totalApproved = claims.filter((c: any) => c.status === 'approved').length
     const totalPending = claims.filter((c: any) => c.status === 'pending').length
     const totalRejected = claims.filter((c: any) => c.status === 'rejected').length
-    
-    // Total commission (sale: của mình, admin: tổng)
     const myClaims = isAdmin ? claims : claims.filter((c: any) => c.claimed_by === user.id)
     const approvedRevenue = myClaims
       .filter((c: any) => c.status === 'approved')
       .reduce((s: number, c: any) => s + Number(c.month_revenue || 0), 0)
-    const approvedCommission = myClaims
-      .filter((c: any) => c.status === 'approved')
-      .reduce((s: number, c: any) => s + Number(c.commission_amount || 0), 0)
-    
-    return { totalNew, totalClaimed, totalApproved, totalPending, totalRejected, approvedRevenue, approvedCommission }
+    return { totalNew, totalApproved, totalPending, totalRejected, approvedRevenue }
   }, [eligibleNewCustomers, claims, isAdmin, user.id])
+
+  // v184: rows that can be selected (depends on current view + filter)
+  const selectableRows = useMemo(() => {
+    if (!isAdmin) {
+      // Sale: chỉ chọn được KH chưa claim + có revenue > 0
+      return rows.filter((r: any) => !r.claim && r.revenue > 0)
+    } else {
+      // Admin: chỉ chọn pending claims để bulk duyệt/từ chối
+      return rows.filter((r: any) => r.claims.some((cl: any) => cl.status === 'pending'))
+    }
+  }, [rows, isAdmin])
+
+  const toggleAll = () => {
+    if (selectedCodes.size === selectableRows.length) {
+      setSelectedCodes(new Set())
+    } else {
+      setSelectedCodes(new Set(selectableRows.map((r: any) => r.customer.code)))
+    }
+  }
+
+  const toggleOne = (code: string) => {
+    const m = new Set(selectedCodes)
+    if (m.has(code)) m.delete(code)
+    else m.add(code)
+    setSelectedCodes(m)
+  }
+
+  // v184: bulk claim (sale)
+  const handleBulkClaim = async () => {
+    if (selectedCodes.size === 0) { toast.error('Chưa chọn KH'); return }
+    setBulkWorking(true)
+    try {
+      const inserts: any[] = []
+      for (const code of selectedCodes) {
+        const row = rows.find((r: any) => r.customer.code === code)
+        if (!row) continue
+        inserts.push({
+          id: `claim_${Date.now()}_${Math.random().toString(36).slice(2,7)}`,
+          customer_code: row.customer.code,
+          customer_name: row.customer.name,
+          customer_kv_id: row.customer.kv_id,
+          claimed_by: user.id,
+          claimed_by_name: user.name,
+          claim_month: month,
+          status: 'pending',
+          month_revenue: row.revenue,
+          month_orders_count: row.orders_count,
+          commission_rate: 0.01,
+          commission_amount: row.commission,
+        })
+      }
+      
+      let inserted = 0, errors = 0
+      for (const ins of inserts) {
+        const { error } = await db.from('customer_new_claims').insert(ins)
+        if (error) errors++
+        else inserted++
+      }
+      
+      toast.success(`✓ Đã claim ${inserted} KH${errors > 0 ? ` (${errors} lỗi)` : ''}`)
+      setSelectedCodes(new Set())
+      fetchClaims()
+    } finally {
+      setBulkWorking(false)
+    }
+  }
+
+  // v184: bulk approve (admin)
+  const handleBulkApprove = async () => {
+    if (selectedCodes.size === 0) { toast.error('Chưa chọn KH'); return }
+    if (!confirm(`Duyệt ${selectedCodes.size} claim đã chọn?`)) return
+    
+    setBulkWorking(true)
+    try {
+      let approved = 0
+      for (const code of selectedCodes) {
+        const row = rows.find((r: any) => r.customer.code === code)
+        if (!row) continue
+        const pendingClaims = row.claims.filter((cl: any) => cl.status === 'pending')
+        for (const cl of pendingClaims) {
+          const { error } = await db.from('customer_new_claims').update({
+            status: 'approved',
+            reviewed_by: user.id,
+            reviewed_by_name: user.name,
+            reviewed_at: new Date().toISOString(),
+            month_revenue: row.revenue,
+            month_orders_count: row.orders_count,
+            commission_amount: row.commission,
+            rejected_reason: null,
+            updated_at: new Date().toISOString(),
+          }).eq('id', cl.id)
+          if (!error) approved++
+        }
+      }
+      toast.success(`✓ Đã duyệt ${approved} claim`)
+      setSelectedCodes(new Set())
+      fetchClaims()
+    } finally {
+      setBulkWorking(false)
+    }
+  }
+
+  const handleBulkReject = async () => {
+    if (!bulkRejectReason.trim()) { toast.error('Cần nhập lý do'); return }
+    setBulkWorking(true)
+    try {
+      let rejected = 0
+      for (const code of selectedCodes) {
+        const row = rows.find((r: any) => r.customer.code === code)
+        if (!row) continue
+        const pendingClaims = row.claims.filter((cl: any) => cl.status === 'pending')
+        for (const cl of pendingClaims) {
+          const { error } = await db.from('customer_new_claims').update({
+            status: 'rejected',
+            reviewed_by: user.id,
+            reviewed_by_name: user.name,
+            reviewed_at: new Date().toISOString(),
+            rejected_reason: bulkRejectReason.trim(),
+            updated_at: new Date().toISOString(),
+          }).eq('id', cl.id)
+          if (!error) rejected++
+        }
+      }
+      toast.success(`✓ Đã từ chối ${rejected} claim`)
+      setSelectedCodes(new Set())
+      setShowBulkReject(false)
+      setBulkRejectReason('')
+      fetchClaims()
+    } finally {
+      setBulkWorking(false)
+    }
+  }
 
   return (
     <div>
@@ -33205,7 +33445,7 @@ function NewCustomersTab({ user, mobile, customers, isAdmin, onRefreshCustomers 
             <div style={{ fontSize:11, color:T.med, marginTop:2 }}>
               {isAdmin
                 ? `Admin xem tất cả KH mới + claim từ sale + duyệt`
-                : `Sale: KH được Admin gán cho bạn (Excel) trong tháng. Claim để được tính hoa hồng 1% DS tháng.`}
+                : `Sale: KH được Admin gán cho bạn (Excel) trong tháng. Chọn KH để claim.`}
             </div>
           </div>
           <div style={{ display:'flex', gap:8, flexWrap:'wrap', alignItems:'center' }}>
@@ -33240,10 +33480,10 @@ function NewCustomersTab({ user, mobile, customers, isAdmin, onRefreshCustomers 
           </div>
           <div style={{ padding:10, background:T.goldBg, borderRadius:6, textAlign:'center' }}>
             <div style={{ fontSize:9, color:T.gold, fontWeight:600 }}>
-              💰 Hoa hồng {isAdmin ? 'tổng' : 'của bạn'}
+              💰 DS đã duyệt
             </div>
             <div style={{ fontSize:14, fontWeight:800, color:T.gold }}>
-              {Math.round(stats.approvedCommission).toLocaleString('vi-VN')}
+              {Math.round(stats.approvedRevenue).toLocaleString('vi-VN')}
               <span style={{ fontSize:9, fontWeight:600, color:T.med, marginLeft:3 }}>nghìn đ</span>
             </div>
           </div>
@@ -33270,7 +33510,76 @@ function NewCustomersTab({ user, mobile, customers, isAdmin, onRefreshCustomers 
         </div>
       </Card>
 
-      {/* List */}
+      {/* v184: Bulk action bar */}
+      {selectedCodes.size > 0 && (
+        <Card style={{ padding:'10px 14px', marginBottom:8,
+          background:T.goldBg, border:`1.5px solid ${T.gold}` }}>
+          <div style={{ display:'flex', justifyContent:'space-between',
+            alignItems:'center', gap:10, flexWrap:'wrap' }}>
+            <div style={{ fontSize:13, fontWeight:700, color:T.dark }}>
+              ✓ Đã chọn <b>{selectedCodes.size}</b> KH
+            </div>
+            <div style={{ display:'flex', gap:8 }}>
+              <button onClick={() => setSelectedCodes(new Set())}
+                style={{ padding:'6px 14px', borderRadius:6, border:`1px solid ${T.border}`,
+                  background:'#fff', color:T.med, cursor:'pointer',
+                  fontFamily:'inherit', fontSize:12, fontWeight:600 }}>
+                Bỏ chọn
+              </button>
+              {!isAdmin && (
+                <button onClick={handleBulkClaim} disabled={bulkWorking}
+                  style={{ padding:'6px 16px', borderRadius:6, border:'none',
+                    background: T.gold, color:'#fff',
+                    cursor: bulkWorking ? 'wait' : 'pointer',
+                    fontFamily:'inherit', fontSize:12, fontWeight:700 }}>
+                  {bulkWorking ? '⏳' : `➕ Claim ${selectedCodes.size} KH`}
+                </button>
+              )}
+              {isAdmin && (
+                <>
+                  <button onClick={handleBulkApprove} disabled={bulkWorking}
+                    style={{ padding:'6px 16px', borderRadius:6, border:'none',
+                      background: T.green, color:'#fff',
+                      cursor: bulkWorking ? 'wait' : 'pointer',
+                      fontFamily:'inherit', fontSize:12, fontWeight:700 }}>
+                    {bulkWorking ? '⏳' : `✓ Duyệt ${selectedCodes.size}`}
+                  </button>
+                  <button onClick={() => setShowBulkReject(true)}
+                    style={{ padding:'6px 16px', borderRadius:6, border:`1px solid ${T.red}`,
+                      background:'#fff', color:T.red, cursor:'pointer',
+                      fontFamily:'inherit', fontSize:12, fontWeight:700 }}>
+                    ✕ Từ chối {selectedCodes.size}
+                  </button>
+                </>
+              )}
+            </div>
+          </div>
+          {showBulkReject && (
+            <div style={{ marginTop:10, display:'flex', gap:6 }}>
+              <input value={bulkRejectReason} onChange={e => setBulkRejectReason(e.target.value)}
+                placeholder="Lý do từ chối hàng loạt..."
+                style={{ flex:1, padding:'6px 10px', border:`1px solid ${T.border}`,
+                  borderRadius:4, fontSize:12, fontFamily:'inherit',
+                  background:'#fff', color:T.dark }}/>
+              <button onClick={handleBulkReject} disabled={bulkWorking || !bulkRejectReason.trim()}
+                style={{ padding:'6px 12px', borderRadius:4, border:'none',
+                  background: bulkRejectReason.trim() ? T.red : T.border, color:'#fff',
+                  cursor: bulkRejectReason.trim() ? 'pointer' : 'not-allowed',
+                  fontFamily:'inherit', fontSize:12, fontWeight:600 }}>
+                Confirm
+              </button>
+              <button onClick={() => { setShowBulkReject(false); setBulkRejectReason('') }}
+                style={{ padding:'6px 12px', borderRadius:4, border:`1px solid ${T.border}`,
+                  background:'#fff', color:T.med, cursor:'pointer',
+                  fontFamily:'inherit', fontSize:12 }}>
+                Hủy
+              </button>
+            </div>
+          )}
+        </Card>
+      )}
+
+      {/* List table */}
       {loadingClaims || loadingRevenue ? (
         <Card style={{ padding:30, textAlign:'center', color:T.med }}>⏳ Đang tải...</Card>
       ) : rows.length === 0 ? (
@@ -33280,13 +33589,43 @@ function NewCustomersTab({ user, mobile, customers, isAdmin, onRefreshCustomers 
             : '🔍 Không có KH nào khớp filter.'}
         </Card>
       ) : (
-        <div style={{ display:'flex', flexDirection:'column', gap:8 }}>
-          {rows.map((row: any) => (
-            <NewCustomerCard key={row.customer.code} row={row}
-              user={user} mobile={mobile} isAdmin={isAdmin} month={month}
-              onRefresh={() => { fetchClaims(); fetchRevenue() }}/>
-          ))}
-        </div>
+        <Card style={{ padding:0, overflow:'hidden' }}>
+          <div style={{ overflowX:'auto' }}>
+            <table style={{ width:'100%', borderCollapse:'collapse', fontSize:12 }}>
+              <thead style={{ background:T.bg, position:'sticky', top:0 }}>
+                <tr>
+                  <th style={{ ...thStyle, width:36, textAlign:'center', padding:'8px 6px' }}>
+                    {selectableRows.length > 0 && (
+                      <input type="checkbox"
+                        checked={selectedCodes.size > 0 && selectedCodes.size === selectableRows.length}
+                        onChange={toggleAll}
+                        style={{ cursor:'pointer', width:16, height:16 }}/>
+                    )}
+                  </th>
+                  <th style={thStyle}>Người phụ trách</th>
+                  <th style={thStyle}>Mã KH</th>
+                  <th style={thStyle}>Tên KH</th>
+                  <th style={thStyle}>Ngày tạo</th>
+                  <th style={{ ...thStyle, textAlign:'right' }}>
+                    Đơn / DS tháng <span style={thUnitStyle}>(nghìn đ)</span>
+                  </th>
+                  <th style={thStyle}>Trạng thái</th>
+                </tr>
+              </thead>
+              <tbody>
+                {rows.map((row: any) => (
+                  <NewCustomerRow key={row.customer.code} row={row}
+                    user={user} isAdmin={isAdmin}
+                    selected={selectedCodes.has(row.customer.code)}
+                    canSelect={selectableRows.some((r: any) => r.customer.code === row.customer.code)}
+                    onToggle={() => toggleOne(row.customer.code)}
+                    month={month}
+                    onRefresh={() => { fetchClaims(); fetchRevenue() }}/>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </Card>
       )}
     </div>
   )
@@ -33294,15 +33633,15 @@ function NewCustomersTab({ user, mobile, customers, isAdmin, onRefreshCustomers 
 
 
 // ══════════════════════════════════════════════════════════════════════
-// NewCustomerCard — 1 KH mới (sale claim hoặc admin duyệt)
+// v184: NewCustomerRow — 1 KH mới, dạng row trong table
 // ══════════════════════════════════════════════════════════════════════
-function NewCustomerCard({ row, user, mobile, isAdmin, month, onRefresh }: any) {
-  const { customer: c, claim, claims: claimList, revenue, orders_count, commission } = row
+function NewCustomerRow({ row, user, isAdmin, selected, canSelect, onToggle, month, onRefresh }: any) {
+  const { customer: c, claim, claims: claimList, revenue, orders_count } = row
   const [working, setWorking] = useState(false)
-  const [showRejectReason, setShowRejectReason] = useState(false)
-  const [rejectReason, setRejectReason] = useState('')
+  const [showDetail, setShowDetail] = useState(false)
 
-  const handleClaim = async () => {
+  const handleClaim = async (e: any) => {
+    e.stopPropagation()
     setWorking(true)
     try {
       const id = `claim_${Date.now()}_${Math.random().toString(36).slice(2,7)}`
@@ -33315,85 +33654,27 @@ function NewCustomerCard({ row, user, mobile, isAdmin, month, onRefresh }: any) 
         claimed_by_name: user.name,
         claim_month: month,
         status: 'pending',
-        month_revenue: revenue,        // snapshot
+        month_revenue: revenue,
         month_orders_count: orders_count,
         commission_rate: 0.01,
-        commission_amount: commission,
+        commission_amount: revenue * 0.01,
       })
-      if (error) {
-        toast.error('Lỗi: ' + error.message)
-      } else {
-        toast.success(`✓ Đã claim ${c.name}`)
-        onRefresh && onRefresh()
-      }
+      if (error) toast.error('Lỗi: ' + error.message)
+      else { toast.success(`✓ Đã claim ${c.name}`); onRefresh && onRefresh() }
     } finally {
       setWorking(false)
     }
   }
 
-  const handleUnclaim = async () => {
+  const handleUnclaim = async (e: any) => {
+    e.stopPropagation()
     if (!claim) return
     if (!confirm(`Hủy claim KH "${c.name}"?`)) return
     setWorking(true)
     try {
       const { error } = await db.from('customer_new_claims').delete().eq('id', claim.id)
-      if (error) {
-        toast.error('Lỗi: ' + error.message)
-      } else {
-        toast.success(`✓ Đã hủy claim`)
-        onRefresh && onRefresh()
-      }
-    } finally {
-      setWorking(false)
-    }
-  }
-
-  const handleApprove = async (claimItem: any) => {
-    setWorking(true)
-    try {
-      // Refresh revenue snapshot khi duyệt
-      const { error } = await db.from('customer_new_claims').update({
-        status: 'approved',
-        reviewed_by: user.id,
-        reviewed_by_name: user.name,
-        reviewed_at: new Date().toISOString(),
-        month_revenue: revenue,        // refresh
-        month_orders_count: orders_count,
-        commission_amount: commission,
-        rejected_reason: null,
-        updated_at: new Date().toISOString(),
-      }).eq('id', claimItem.id)
-      if (error) {
-        toast.error('Lỗi: ' + error.message)
-      } else {
-        toast.success(`✓ Đã duyệt claim của ${claimItem.claimed_by_name}`)
-        onRefresh && onRefresh()
-      }
-    } finally {
-      setWorking(false)
-    }
-  }
-
-  const handleReject = async (claimItem: any) => {
-    if (!rejectReason.trim()) { toast.error('Cần nhập lý do từ chối'); return }
-    setWorking(true)
-    try {
-      const { error } = await db.from('customer_new_claims').update({
-        status: 'rejected',
-        reviewed_by: user.id,
-        reviewed_by_name: user.name,
-        reviewed_at: new Date().toISOString(),
-        rejected_reason: rejectReason.trim(),
-        updated_at: new Date().toISOString(),
-      }).eq('id', claimItem.id)
-      if (error) {
-        toast.error('Lỗi: ' + error.message)
-      } else {
-        toast.success(`✓ Đã từ chối`)
-        setShowRejectReason(false)
-        setRejectReason('')
-        onRefresh && onRefresh()
-      }
+      if (error) toast.error('Lỗi: ' + error.message)
+      else { toast.success(`✓ Đã hủy claim`); onRefresh && onRefresh() }
     } finally {
       setWorking(false)
     }
@@ -33404,160 +33685,102 @@ function NewCustomerCard({ row, user, mobile, isAdmin, month, onRefresh }: any) 
   const statusEmoji = (s: string) => 
     s === 'approved' ? '✅' : s === 'rejected' ? '❌' : '⏳'
 
-  return (
-    <Card style={{ padding:12, borderLeft: claim ? `3px solid ${statusColor(claim.status)}` : `3px solid ${T.border}` }}>
-      <div style={{ display:'flex', justifyContent:'space-between', gap:10, flexWrap:'wrap', marginBottom:8 }}>
-        <div style={{ flex:1, minWidth:0 }}>
-          <div style={{ fontSize:13, fontWeight:700, color:T.dark }}>
-            <code style={{ padding:'2px 6px', background:'#fff', color:T.dark,
-              border:`1px solid ${T.border}`, borderRadius:4,
-              fontFamily:'monospace', fontSize:11, fontWeight:600, marginRight:6 }}>
-              {c.code}
-            </code>
-            {c.name}
-            {c.groups && (
-              <span style={{ marginLeft:6, padding:'1px 7px', borderRadius:10, fontSize:9, fontWeight:700,
-                background: T.gold + '22', color: T.gold }}>
-                {c.groups}
-              </span>
-            )}
-          </div>
-          <div style={{ fontSize:11, color:T.med, marginTop:3 }}>
-            📞 {c.phone || '—'} · 📅 Tạo: {c.kv_created_at ? new Date(c.kv_created_at).toLocaleDateString('vi-VN') : '—'}
-            {c.assigned_to_user_name && <span> · 👤 Phụ trách: <b>{c.assigned_to_user_name}</b></span>}
-          </div>
-        </div>
-        
-        {/* Status badge */}
-        {!isAdmin && claim && (
-          <span style={{ padding:'3px 10px', borderRadius:12, fontSize:11, fontWeight:700,
-            background: statusColor(claim.status) + '22', color: statusColor(claim.status),
-            alignSelf:'flex-start' }}>
+  // Status text cho cell
+  const renderStatus = () => {
+    if (!isAdmin) {
+      // Sale view
+      if (!claim) {
+        if (revenue === 0) return <span style={{ color:T.light, fontStyle:'italic', fontSize:11 }}>Chưa có đơn</span>
+        return (
+          <button onClick={handleClaim} disabled={working}
+            style={{ padding:'4px 10px', borderRadius:4, border:'none',
+              background: T.gold, color:'#fff',
+              cursor: working ? 'wait' : 'pointer',
+              fontFamily:'inherit', fontSize:11, fontWeight:600 }}>
+            {working ? '⏳' : '➕ Claim'}
+          </button>
+        )
+      }
+      return (
+        <div>
+          <span style={{ padding:'2px 8px', borderRadius:10, fontSize:10, fontWeight:700,
+            background: statusColor(claim.status) + '22', color: statusColor(claim.status) }}>
             {statusEmoji(claim.status)} {claim.status === 'approved' ? 'Đã duyệt' : claim.status === 'rejected' ? 'Bị từ chối' : 'Chờ duyệt'}
           </span>
-        )}
-      </div>
-
-      {/* Revenue + commission */}
-      <div style={{ display:'flex', gap:14, flexWrap:'wrap', fontSize:11, marginBottom:8,
-        padding:'6px 10px', background:T.bg, borderRadius:6 }}>
-        <span><b style={{ color:T.med }}>📊 Đơn:</b> {orders_count}</span>
-        <span><b style={{ color:T.med }}>💰 DS tháng:</b> <b style={{ color:T.gold }}>{revenue.toLocaleString('vi-VN')}</b> <span style={{ color:T.light, fontSize:10 }}>nghìn đ</span></span>
-        <span><b style={{ color:T.med }}>✨ Hoa hồng 1%:</b> <b style={{ color:T.green }}>{Math.round(commission).toLocaleString('vi-VN')}</b> <span style={{ color:T.light, fontSize:10 }}>nghìn đ</span></span>
-      </div>
-
-      {/* SALE VIEW: claim button */}
-      {!isAdmin && (
-        <div>
-          {!claim && revenue > 0 && (
-            <button onClick={handleClaim} disabled={working}
-              style={{ padding:'7px 16px', borderRadius:6, border:'none',
-                background: T.gold, color:'#fff',
-                cursor: working ? 'wait' : 'pointer',
-                fontFamily:'inherit', fontSize:12, fontWeight:700 }}>
-              {working ? '⏳' : '➕ Claim KH này'}
-            </button>
-          )}
-          {!claim && revenue === 0 && (
-            <div style={{ fontSize:11, color:T.light, fontStyle:'italic' }}>
-              💡 KH chưa có đơn nào trong tháng → chưa thể claim
-            </div>
-          )}
-          {claim?.status === 'pending' && (
+          {claim.status === 'pending' && (
             <button onClick={handleUnclaim} disabled={working}
-              style={{ padding:'6px 14px', borderRadius:6, border:`1px solid ${T.red}`,
-                background:'#fff', color:T.red,
-                cursor: working ? 'wait' : 'pointer',
-                fontFamily:'inherit', fontSize:11, fontWeight:600 }}>
-              ✕ Hủy claim
+              style={{ marginLeft:6, padding:'2px 8px', borderRadius:4, border:`1px solid ${T.red}`,
+                background:'#fff', color:T.red, cursor:'pointer',
+                fontFamily:'inherit', fontSize:10 }}>
+              ✕ Hủy
             </button>
           )}
-          {claim?.status === 'rejected' && claim.rejected_reason && (
-            <div style={{ padding:8, background:T.redBg, borderRadius:4, fontSize:11, color:T.red }}>
-              ❌ <b>Lý do từ chối:</b> {claim.rejected_reason}
-            </div>
-          )}
-          {claim?.status === 'approved' && (
-            <div style={{ fontSize:11, color:T.green, fontWeight:600 }}>
-              ✅ Đã được {claim.reviewed_by_name} duyệt {claim.reviewed_at ? formatAgo(claim.reviewed_at) : ''}
-            </div>
-          )}
         </div>
-      )}
+      )
+    }
+    // Admin view
+    if (claimList.length === 0) {
+      return <span style={{ color:T.light, fontSize:11 }}>⚪ Chưa ai claim</span>
+    }
+    return (
+      <div style={{ display:'flex', flexDirection:'column', gap:2 }}>
+        {claimList.map((cl: any) => (
+          <span key={cl.id} style={{ fontSize:10, color: statusColor(cl.status) }}>
+            {statusEmoji(cl.status)} <b>{cl.claimed_by_name}</b>
+            {cl.status === 'rejected' && cl.rejected_reason && 
+              <i style={{ color:T.light, marginLeft:4 }}>({cl.rejected_reason})</i>}
+          </span>
+        ))}
+      </div>
+    )
+  }
 
-      {/* ADMIN VIEW: list claims + duyệt/từ chối */}
-      {isAdmin && (
-        <div>
-          {claimList.length === 0 ? (
-            <div style={{ fontSize:11, color:T.light, fontStyle:'italic' }}>
-              ⚪ Chưa có sale nào claim KH này
-            </div>
-          ) : (
-            <div style={{ display:'flex', flexDirection:'column', gap:6 }}>
-              {claimList.map((cl: any) => (
-                <div key={cl.id} style={{ padding:'8px 10px', borderRadius:6,
-                  background: statusColor(cl.status) + '11',
-                  border: `1px solid ${statusColor(cl.status)}55` }}>
-                  <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', flexWrap:'wrap', gap:6 }}>
-                    <div style={{ fontSize:12 }}>
-                      <span style={{ marginRight:6 }}>{statusEmoji(cl.status)}</span>
-                      <b>{cl.claimed_by_name}</b>
-                      <span style={{ color:T.light, marginLeft:6, fontSize:10 }}>
-                        claim {formatAgo(cl.created_at)}
-                      </span>
-                    </div>
-                    {cl.status === 'pending' && (
-                      <div style={{ display:'flex', gap:6 }}>
-                        <button onClick={() => handleApprove(cl)} disabled={working}
-                          style={{ padding:'4px 10px', borderRadius:4, border:'none',
-                            background:T.green, color:'#fff',
-                            cursor: working ? 'wait' : 'pointer',
-                            fontFamily:'inherit', fontSize:11, fontWeight:600 }}>
-                          ✓ Duyệt
-                        </button>
-                        <button onClick={() => setShowRejectReason(showRejectReason === cl.id ? false : cl.id)}
-                          style={{ padding:'4px 10px', borderRadius:4, border:`1px solid ${T.red}`,
-                            background:'#fff', color:T.red, cursor:'pointer',
-                            fontFamily:'inherit', fontSize:11, fontWeight:600 }}>
-                          ✕ Từ chối
-                        </button>
-                      </div>
-                    )}
-                  </div>
-                  {cl.status === 'rejected' && cl.rejected_reason && (
-                    <div style={{ fontSize:10, color:T.red, marginTop:3 }}>
-                      ❌ {cl.rejected_reason} <i style={{ color:T.light }}>(by {cl.reviewed_by_name})</i>
-                    </div>
-                  )}
-                  {cl.status === 'approved' && (
-                    <div style={{ fontSize:10, color:T.green, marginTop:3 }}>
-                      ✅ Duyệt bởi {cl.reviewed_by_name} {formatAgo(cl.reviewed_at)}
-                      {' · Hoa hồng: '}<b>{Math.round(Number(cl.commission_amount || 0)).toLocaleString('vi-VN')} nghìn đ</b>
-                    </div>
-                  )}
-                  {showRejectReason === cl.id && (
-                    <div style={{ marginTop:6, display:'flex', gap:6 }}>
-                      <input value={rejectReason} onChange={e => setRejectReason(e.target.value)}
-                        placeholder="Lý do từ chối..."
-                        style={{ flex:1, padding:'5px 8px', border:`1px solid ${T.border}`,
-                          borderRadius:4, fontSize:11, fontFamily:'inherit',
-                          background:'#fff', color:T.dark }}/>
-                      <button onClick={() => handleReject(cl)} disabled={working || !rejectReason.trim()}
-                        style={{ padding:'5px 10px', borderRadius:4, border:'none',
-                          background: rejectReason.trim() ? T.red : T.border, color:'#fff',
-                          cursor: working ? 'wait' : (rejectReason.trim() ? 'pointer' : 'not-allowed'),
-                          fontFamily:'inherit', fontSize:11, fontWeight:600 }}>
-                        OK
-                      </button>
-                    </div>
-                  )}
-                </div>
-              ))}
-            </div>
-          )}
+  return (
+    <tr onClick={() => canSelect && onToggle()}
+      style={{ borderBottom:`1px solid ${T.border}`, cursor: canSelect ? 'pointer' : 'default',
+        background: selected ? T.goldBg : (claim?.status === 'approved' ? T.greenBg + '40' : 'transparent') }}>
+      <td style={{ padding:'8px 6px', textAlign:'center' }}>
+        {canSelect && (
+          <input type="checkbox" checked={selected}
+            onChange={onToggle}
+            onClick={e => e.stopPropagation()}
+            style={{ cursor:'pointer', width:16, height:16 }}/>
+        )}
+      </td>
+      <td style={{ padding:'8px 12px', fontSize:11, fontWeight:600, color:T.dark }}>
+        {c.assigned_to_user_name || (
+          <span style={{ color:T.light, fontStyle:'italic', fontWeight:400 }}>— Chưa gán —</span>
+        )}
+      </td>
+      <td style={{ padding:'8px 12px' }}>
+        <code style={{ padding:'2px 6px', background:'#fff', color:T.dark,
+          border:`1px solid ${T.border}`, borderRadius:3,
+          fontFamily:'monospace', fontSize:10, fontWeight:600 }}>
+          {c.code}
+        </code>
+      </td>
+      <td style={{ padding:'8px 12px', color:T.dark, fontWeight:600 }}>
+        {c.name}
+        {c.groups && (
+          <span style={{ marginLeft:6, padding:'1px 6px', borderRadius:8, fontSize:9, fontWeight:700,
+            background: T.gold + '22', color: T.gold }}>
+            {c.groups}
+          </span>
+        )}
+      </td>
+      <td style={{ padding:'8px 12px', fontSize:11, color:T.med, whiteSpace:'nowrap' }}>
+        {c.kv_created_at ? new Date(c.kv_created_at).toLocaleDateString('vi-VN') : '—'}
+      </td>
+      <td style={{ padding:'8px 12px', textAlign:'right', fontVariantNumeric:'tabular-nums' }}>
+        <div style={{ fontSize:10, color:T.med }}>{orders_count} đơn</div>
+        <div style={{ fontSize:13, fontWeight:700, color:T.gold }}>
+          {revenue.toLocaleString('vi-VN')}
         </div>
-      )}
-    </Card>
+      </td>
+      <td style={{ padding:'8px 12px' }}>
+        {renderStatus()}
+      </td>
+    </tr>
   )
 }
 
