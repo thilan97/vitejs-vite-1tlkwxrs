@@ -74,7 +74,13 @@ const db = createClient(SUPABASE_URL, SUPABASE_KEY)
 //       (4) Y/c 4 — Cải tiến Unlock: warning rõ hơn (3 dòng cảnh báo) + field was_unlocked + badge cam "🔓 Đã mở khoá" trên row.
 //       Migration 59: was_unlocked + monthly_revenue thêm cols (hh_khach_cu, hh_khach_moi, hh_tuyen_duoi, source, synced_at).
 //       Note: phát hiện bug legacy 2 chỗ db.from('return_slips') trong code (line ~2692, ~28358) — bảng thật là `return_items`, code đó đang fail silent. Chưa fix vì ngoài scope.
-const APP_VERSION = '2026.04.30.v195'
+// v195.1: Bug fix DS Sale tab:
+//       (a) user_aliases schema THỰC TẾ là (user_id, alias, alias_normalized) — match qua TÊN, không phải kv_employee_id. Build aliasNameMap với normalizeName + fallback users.name.
+//       (b) total_payment trong kv_invoices = 0 cho mọi rows → dùng `total - discount` thay thế.
+//       (c) KV currency rút gọn → tất cả số tiền KV phải × 1000.
+//       (d) Supabase default limit 1000 → dùng .range(0, 19999) cho kv_invoices, .range(0, 49999) cho inventory_checks.
+//       (e) Modal Detail thêm section "🔧 Debug match" hiển thị số đơn KV match cho NV để verify mapping.
+const APP_VERSION = '2026.04.30.v195.1'
 
 // ════════════════════════════════════════════════════════════════
 // v158: VersionBadge — Hiển thị APP_VERSION ở góc dưới phải
@@ -24314,14 +24320,15 @@ function PayrollModule({ user, allUsers, mobile }: any) {
           db.from('position_work_schedule').select('*'),
           db.from('payroll_special_days').select('*').order('date'),
           // v195: Y/c 1 — return_items (TÊN ĐÚNG, không phải return_slips)
-          db.from('return_items').select('*').gte('date', fromDate).lte('date', toDate).limit(5000),
+          db.from('return_items').select('*').gte('date', fromDate).lte('date', toDate).range(0, 9999),
           // v195: Y/c 3 — inventory checks (load all - filter session is_month_close trên client)
-          db.from('inventory_checks').select('*').limit(10000),
-          db.from('inventory_sessions').select('*').limit(2000),
+          db.from('inventory_checks').select('*').range(0, 49999),
+          db.from('inventory_sessions').select('*').range(0, 4999),
           // v195: Y/c 2 — KV invoices của tháng + aliases + claims
-          db.from('kv_invoices').select('*').gte('purchase_date', fromISO).lte('purchase_date', toISO).limit(10000),
-          db.from('user_aliases').select('*'),
-          db.from('customer_new_claims').select('*').eq('claim_month', `${year}-${String(month).padStart(2,'0')}`),
+          // v195.1 FIX: Supabase default limit 1000 — phải dùng .range để vượt
+          db.from('kv_invoices').select('*').gte('purchase_date', fromISO).lte('purchase_date', toISO).range(0, 19999),
+          db.from('user_aliases').select('*').range(0, 4999),
+          db.from('customer_new_claims').select('*').eq('claim_month', `${year}-${String(month).padStart(2,'0')}`).range(0, 9999),
         ])
         setSalaryConfigs(sc.data || [])
         setPayrollConfig(pc.data || {})
@@ -24429,25 +24436,48 @@ function PayrollModule({ user, allUsers, mobile }: any) {
     return Math.round(inventoryLossInfo.totalLoss / inventoryLossInfo.khoUsersCount)
   }
   
-  // Y/c 2: Map sold_by_id (KV bigint) → app user_id qua user_aliases
-  const getSaleAppId = (kvSoldById: number): string | null => {
-    if (!kvSoldById) return null
-    const alias = userAliases.find((a: any) => Number(a.kv_employee_id) === Number(kvSoldById))
-    return alias?.app_user_id || null
+  // Y/c 2: Map sold_by_name (KV string) → app user_id qua user_aliases hoặc trực tiếp users.name
+  // v195.1: BUG FIX — user_aliases có schema (user_id, alias, alias_normalized) — match qua TÊN, không phải ID
+  const normName = (s: string) => (s || '').toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g,'').replace(/đ/g,'d').replace(/\s+/g,' ').trim()
+  
+  const aliasNameMap = useMemo(() => {
+    const m = new Map<string, string>()  // normalized_name → user_id
+    // 1. Map từ user_aliases (alias_normalized hoặc normalize của alias)
+    for (const a of userAliases) {
+      const k = a.alias_normalized || normName(a.alias || '')
+      if (k && a.user_id) m.set(k, a.user_id)
+    }
+    // 2. Bổ sung map từ user.name (trực tiếp) — fallback cho NV không có alias
+    for (const u of allUsers) {
+      const k = normName(u.name || '')
+      if (k && !m.has(k)) m.set(k, u.id)
+    }
+    return m
+  }, [userAliases, allUsers])
+  
+  const getSaleAppId = (kvSoldByName: string): string | null => {
+    if (!kvSoldByName) return null
+    return aliasNameMap.get(normName(kvSoldByName)) || null
   }
   
   // Y/c 2: Compute DS sale của NV trong tháng (realtime từ KV)
-  // Trả về: { totalDs, dsKhachCu, dsKhachMoi, hh: {...} }
+  // v195.1 FIX: dùng `total` × 1000 (currency rút gọn) thay vì total_payment
   const computeSaleRevenueForUser = (uid: string): any => {
     const sc = getSalaryConfig(uid)
     if (!sc) return { totalDs: 0, dsKhachCu: 0, dsKhachMoi: 0, hh: { tyLeLcb: 0, lcbDat: 0, hhKhachCu: 0, hhKhachMoi: 0, hhTuyenDuoi: 0, hhTotal: 0 } }
     
-    // Tổng DS = SUM(total_payment) của invoices có sold_by_id map về uid, is_returned=false
+    // Helper: amount cho 1 invoice (KV currency rút gọn → ×1000)
+    const invoiceAmount = (inv: any): number => {
+      const raw = Number(inv.total || 0) - Number(inv.discount || 0)
+      return raw * 1000
+    }
+    
+    // Tổng DS = SUM amount của invoices có sold_by_name match → uid, is_returned=false
     let totalDs = 0
     for (const inv of kvInvoices) {
       if (inv.is_returned) continue
-      const saleId = getSaleAppId(inv.sold_by_id)
-      if (saleId === uid) totalDs += Number(inv.total_payment || 0)
+      const saleId = getSaleAppId(inv.sold_by_name)
+      if (saleId === uid) totalDs += invoiceAmount(inv)
     }
     
     // DS khách mới = invoices có customer_code IN (KH approved cho sale này tháng này)
@@ -24460,9 +24490,9 @@ function PayrollModule({ user, allUsers, mobile }: any) {
     if (myApprovedCustomers.size > 0) {
       for (const inv of kvInvoices) {
         if (inv.is_returned) continue
-        const saleId = getSaleAppId(inv.sold_by_id)
+        const saleId = getSaleAppId(inv.sold_by_name)
         if (saleId === uid && myApprovedCustomers.has(inv.customer_code)) {
-          dsKhachMoi += Number(inv.total_payment || 0)
+          dsKhachMoi += invoiceAmount(inv)
         }
       }
     }
@@ -24470,13 +24500,11 @@ function PayrollModule({ user, allUsers, mobile }: any) {
     const dsKhachCu = Math.max(0, totalDs - dsKhachMoi)
     
     // HH compute — dùng computeCommission đã có
-    // Tính cho QL Sale: cần tổng DS của tất cả Sale
     let allSaleRevenues: Array<{ ds_khach_cu: number, ds_khach_moi: number }> | undefined
     if (sc.is_sale_manager) {
       allSaleRevenues = []
       for (const otherSc of salaryConfigs) {
         if (otherSc.position_type !== 'Sales' && otherSc.position_type !== 'Quản lý Sale') continue
-        // Tính DS của otherSc.user_id
         let othDs = 0, othDsKhachMoi = 0
         const othCustomers = new Set(
           customerNewClaims
@@ -24485,10 +24513,10 @@ function PayrollModule({ user, allUsers, mobile }: any) {
         )
         for (const inv of kvInvoices) {
           if (inv.is_returned) continue
-          const sid = getSaleAppId(inv.sold_by_id)
+          const sid = getSaleAppId(inv.sold_by_name)
           if (sid === otherSc.user_id) {
-            othDs += Number(inv.total_payment || 0)
-            if (othCustomers.has(inv.customer_code)) othDsKhachMoi += Number(inv.total_payment || 0)
+            othDs += invoiceAmount(inv)
+            if (othCustomers.has(inv.customer_code)) othDsKhachMoi += invoiceAmount(inv)
           }
         }
         allSaleRevenues.push({
@@ -26231,11 +26259,51 @@ function PayrollTabSalesRevenue({ user, mobile, allUsers, usersWithSalary, month
                 </div>
               )}
               
+              {/* v195.1: Debug — danh sách invoices đã match (để verify) */}
+              {(() => {
+                const matched = kvInvoices.filter((inv: any) => {
+                  if (inv.is_returned) return false
+                  const k = (inv.sold_by_name || '').toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g,'').replace(/đ/g,'d').replace(/\s+/g,' ').trim()
+                  // Lookup trong aliasNameMap không thể từ đây — tìm thủ công
+                  const alias = userAliases.find((a: any) => (a.alias_normalized || '') === k)
+                  if (alias?.user_id === detailUser.id) return true
+                  // Fallback: match user.name
+                  const u = allUsers.find((au: any) => au.id === detailUser.id)
+                  const uk = (u?.name || '').toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g,'').replace(/đ/g,'d').replace(/\s+/g,' ').trim()
+                  return uk === k
+                })
+                return (
+                  <div style={{ marginTop:14 }}>
+                    <div style={{ fontSize:12, fontWeight:700, color:T.blue, marginBottom:6 }}>
+                      🔧 Debug match: {matched.length} đơn KV match với "{detailUser.name}"
+                    </div>
+                    {matched.length === 0 && (
+                      <div style={{ fontSize:11, color:T.red, padding:10, background:'#FEF2F2', borderRadius:6 }}>
+                        ⚠ KHÔNG có invoice nào match! Kiểm tra:<br/>
+                        1. Tên trong KV (sold_by_name) có khớp với <code>user_aliases.alias</code> hoặc <code>users.name</code> không?<br/>
+                        2. Có thể NV này dùng tên khác trên KV — cần thêm alias.
+                      </div>
+                    )}
+                    {matched.length > 0 && matched.length < 10 && (
+                      <div style={{ fontSize:10, color:T.med, padding:8, background:T.bg, borderRadius:6, maxHeight:150, overflow:'auto' }}>
+                        {matched.slice(0, 10).map((inv: any, idx: number) => (
+                          <div key={idx} style={{ borderBottom:`1px dashed ${T.border}`, padding:'2px 0' }}>
+                            {inv.code} · {inv.sold_by_name} · 
+                            total={Number(inv.total).toLocaleString('vi-VN')} (×1000 = {(Number(inv.total) * 1000).toLocaleString('vi-VN')}đ)
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                )
+              })()}
+              
               {/* Source note */}
               <div style={{ marginTop:16, padding:10, background:T.bg, borderRadius:6, fontSize:11, color:T.med }}>
-                💡 Compute từ <b>{kvInvoices.length}</b> KV invoices tháng này. 
-                Map sale qua bảng <code>user_aliases</code> ({userAliases.length} mapping). 
-                HH theo công thức Excel: tier LCB ({'{'}500M, 350M, 200M, 100M{'}'}) + progressive khách cũ ({'{'}500M-1.5B: 0.2%, 1.5B-3B: 0.3%, 3B+: 0.5%{'}'}) + 1% khách mới.
+                💡 Compute từ <b>{kvInvoices.length}</b> KV invoices tháng này (loại {kvInvoices.filter((i: any) => i.is_returned).length} returned). 
+                Map qua user_aliases ({userAliases.length} alias) + match trực tiếp users.name. <br/>
+                💰 KV currency rút gọn: <code>total × 1000 = số thực</code>. 
+                HH: tier LCB + progressive KH cũ + 1% KH mới + HH tuyến dưới (QL).
               </div>
             </div>
           </div>
