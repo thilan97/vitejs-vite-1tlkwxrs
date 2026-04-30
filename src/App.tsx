@@ -51,7 +51,10 @@ const db = createClient(SUPABASE_URL, SUPABASE_KEY)
 //       LCB có 2 lớp: mặc định theo vị trí + override theo NV. Cấu hình giờ làm (start/end/lunch) theo VT. 
 //       Compute logic update: getOverride priority → fallback default. NV xem phiếu lương không biết bị override (transparent). 
 //       Admin chọn NV xem phiếu lương từ dropdown trong tab Tổng quan.
-const APP_VERSION = '2026.04.30.v191'
+// v192: (1) LCB lưu trong bảng `positions` thay vì `position_base_salary` (tích hợp với module Quản trị → Vị trí). Migration 56 thêm column base_salary. PayrollTabBaseSalary refactor dùng positions table.
+//       (2) Phiếu lương admin có bảng chấm công full tháng (giờ vào/giờ ra/BT/OT/trạng thái/ăn trưa) + nút "✏ Sửa chấm công". 
+//       (3) AttendanceEditModal: admin nhập giờ vào/ra → auto-recompute work_hours_regular + ot_150 + ot_200 + lunch_eligible theo schedule của vị trí. Audit log monthly_payroll_audit (action=attendance_edit).
+const APP_VERSION = '2026.04.30.v192'
 
 // ════════════════════════════════════════════════════════════════
 // v158: VersionBadge — Hiển thị APP_VERSION ở góc dưới phải
@@ -24163,9 +24166,9 @@ function PayrollModule({ user, allUsers, mobile }: any) {
   const [revenues, setRevenues]     = useState<any[]>([])
   const [attendanceMonth, setAttendanceMonth] = useState<any[]>([])
   const [detailModalUser, setDetailModalUser] = useState<any>(null)
-  // v191: overrides + position config
+  // v191/v192: overrides + position config (LCB lưu trong bảng positions)
   const [overrides, setOverrides] = useState<any[]>([])  // payroll_overrides của tháng này
-  const [positionBaseSalary, setPositionBaseSalary] = useState<any[]>([])
+  const [positionsList, setPositionsList] = useState<any[]>([])  // v192: bảng positions từ Quản trị
   const [positionWorkSchedule, setPositionWorkSchedule] = useState<any[]>([])
   // v191: tabs
   const [adminTab, setAdminTab] = useState<'overview'|'shortage_loss'|'return_loss'|'mbo_bonus'|'inspection_bonus'|'allowance'|'base_salary'|'schedule'>('overview')
@@ -24178,7 +24181,7 @@ function PayrollModule({ user, allUsers, mobile }: any) {
     (async () => {
       setLoading(true)
       try {
-        const [sc, pc, pr, oi, sl, rv, att, ovr, pbs, pws] = await Promise.all([
+        const [sc, pc, pr, oi, sl, rv, att, ovr, pos, pws] = await Promise.all([
           db.from('salary_config').select('*').is('effective_to', null),
           db.from('payroll_config').select('*').maybeSingle(),
           db.from('monthly_payroll').select('*').eq('month', month).eq('year', year),
@@ -24190,7 +24193,7 @@ function PayrollModule({ user, allUsers, mobile }: any) {
             .lte('date', `${year}-${String(month).padStart(2,'0')}-31`),
           // v191: Load overrides + position config
           db.from('payroll_overrides').select('*').eq('month', month).eq('year', year),
-          db.from('position_base_salary').select('*'),
+          db.from('positions').select('*').order('name'),  // v192: load positions thay vì position_base_salary
           db.from('position_work_schedule').select('*'),
         ])
         setSalaryConfigs(sc.data || [])
@@ -24209,7 +24212,7 @@ function PayrollModule({ user, allUsers, mobile }: any) {
         setAttendanceMonth(att.data || [])
         // v191
         setOverrides(ovr.data || [])
-        setPositionBaseSalary(pbs.data || [])
+        setPositionsList(pos.data || [])
         setPositionWorkSchedule(pws.data || [])
       } catch (e: any) {
         setError('Lỗi load data: ' + e.message)
@@ -24267,10 +24270,19 @@ function PayrollModule({ user, allUsers, mobile }: any) {
     const shortage = getShortageLoss(u.id)
     const rev = getRevenue(u.id)
     const existing = getPayroll(u.id)
+    
+    // v192: Lấy LCB từ positions.base_salary nếu có (ưu tiên hơn salary_config.base_salary)
+    // payroll_overrides.base_salary vẫn override cao nhất (xử lý trong computeMonthlyPayroll)
+    const positionLcb = u.position_id 
+      ? Number(positionsList.find((p: any) => p.id === u.position_id)?.base_salary || 0)
+      : 0
+    const effectiveSc = positionLcb > 0
+      ? { ...sc, base_salary: positionLcb }
+      : sc
 
     return computeMonthlyPayroll({
       user: u,
-      salaryConfig: sc,
+      salaryConfig: effectiveSc,
       attendanceRecords: attRecords,
       month, year,
       paidLeaveDates,
@@ -24424,12 +24436,12 @@ function PayrollModule({ user, allUsers, mobile }: any) {
       {/* v191: Render theo tab */}
       {adminTab !== 'overview' && isAdmin ? (
         adminTab === 'base_salary' ? (
-          <PayrollTabBaseSalary user={user} mobile={mobile}
+          <PayrollTabBaseSalary user={user} mobile={mobile} allUsers={allUsers}
             usersWithSalary={usersWithSalary}
             month={month} year={year}
             overrides={overrides}
-            positionBaseSalary={positionBaseSalary}
-            setPositionBaseSalary={setPositionBaseSalary}
+            positionsList={positionsList}
+            setPositionsList={setPositionsList}
             onRefresh={refreshOverrides}/>
         ) : adminTab === 'schedule' ? (
           <PayrollTabSchedule user={user} mobile={mobile}
@@ -24608,7 +24620,20 @@ function PayrollModule({ user, allUsers, mobile }: any) {
           paidLeaveDates={paidLeaveDates}
           month={month} year={year}
           actor={user}
-          onClose={() => setDetailModalUser(null)}
+          // v192: pass attendance + work schedule + isAdmin + refresh callback
+          attendanceMonth={attendanceMonth.filter((a: any) => a.user_id === detailModalUser.id)}
+          positionWorkSchedule={positionWorkSchedule}
+          positionsList={positionsList}
+          isAdmin={isAdmin}
+          onAttendanceUpdate={async () => {
+            // Refresh attendance + recompute payroll for this user
+            const fromDate = `${year}-${String(month).padStart(2,'0')}-01`
+            const toDate = new Date(year, month, 0).toISOString().slice(0, 10)
+            const { data } = await db.from('attendance').select('*')
+              .gte('date', fromDate).lte('date', toDate)
+            setAttendanceMonth(data || [])
+          }}
+          onClose={() => { setDetailModalUser(null); setViewSlipUserId('') }}
           onUpdate={async (updates: any) => {
             // Manual override
             const existing = getPayroll(detailModalUser.id)
@@ -24917,8 +24942,8 @@ function PayrollTabOverride({ user, mobile, usersWithSalary, month, year, overri
 // ══════════════════════════════════════════════════════════════════════
 // v191: PayrollTabBaseSalary — LCB theo vị trí + override per-NV
 // ══════════════════════════════════════════════════════════════════════
-function PayrollTabBaseSalary({ user, mobile, usersWithSalary, month, year, overrides, positionBaseSalary, setPositionBaseSalary, onRefresh }: any) {
-  const [editingPos, setEditingPos] = useState<string|null>(null)
+function PayrollTabBaseSalary({ user, mobile, allUsers, usersWithSalary, month, year, overrides, positionsList, setPositionsList, onRefresh }: any) {
+  const [editingPosId, setEditingPosId] = useState<string|null>(null)
   const [editPosValue, setEditPosValue] = useState('')
   const [editingNvUid, setEditingNvUid] = useState<string|null>(null)
   const [editNvValue, setEditNvValue] = useState('')
@@ -24927,27 +24952,30 @@ function PayrollTabBaseSalary({ user, mobile, usersWithSalary, month, year, over
 
   const userOverride = (uid: string) => overrides.find((o: any) => o.user_id === uid && o.field_type === 'base_salary')
 
-  const handleSavePos = async (positionType: string) => {
+  // v192: Helper — lấy LCB position cho 1 user (qua position_id)
+  const getPositionLcb = (u: any): number => {
+    if (!u.position_id) return 0
+    const pos = positionsList.find((p: any) => p.id === u.position_id)
+    return Number(pos?.base_salary || 0)
+  }
+
+  const handleSavePos = async (positionId: string) => {
     const numVal = parseInt(editPosValue.replace(/[^0-9]/g, ''), 10)
-    if (isNaN(numVal) || numVal <= 0) { toast.error('LCB không hợp lệ'); return }
+    if (isNaN(numVal) || numVal < 0) { toast.error('LCB không hợp lệ'); return }
     setWorking(true)
     try {
-      const existing = positionBaseSalary.find((p: any) => p.position_type === positionType)
-      if (existing) {
-        await db.from('position_base_salary').update({
-          base_salary: numVal, updated_at: new Date().toISOString(), updated_by: user.id,
-        }).eq('position_type', positionType)
-      } else {
-        await db.from('position_base_salary').insert({
-          position_type: positionType, base_salary: numVal,
-          updated_at: new Date().toISOString(), updated_by: user.id,
-        })
-      }
-      // refresh local
-      const { data } = await db.from('position_base_salary').select('*')
-      setPositionBaseSalary(data || [])
-      setEditingPos(null)
-      toast.success(`✓ Cập nhật LCB ${positionType}`)
+      const { error } = await db.from('positions').update({
+        base_salary: numVal,
+      }).eq('id', positionId)
+      if (error) throw new Error(error.message)
+      
+      // Refresh local positions
+      const { data } = await db.from('positions').select('*').order('name')
+      setPositionsList(data || [])
+      setEditingPosId(null)
+      toast.success(`✓ Cập nhật LCB`)
+    } catch (e: any) {
+      toast.error('Lỗi: ' + e.message)
     } finally {
       setWorking(false)
     }
@@ -24955,7 +24983,7 @@ function PayrollTabBaseSalary({ user, mobile, usersWithSalary, month, year, over
 
   const handleSaveNv = async (u: any) => {
     const numVal = parseInt(editNvValue.replace(/[^0-9]/g, ''), 10)
-    if (isNaN(numVal) || numVal <= 0) { toast.error('LCB không hợp lệ'); return }
+    if (isNaN(numVal) || numVal < 0) { toast.error('LCB không hợp lệ'); return }
     setWorking(true)
     try {
       const existing = userOverride(u.id)
@@ -24977,6 +25005,8 @@ function PayrollTabBaseSalary({ user, mobile, usersWithSalary, month, year, over
       setEditingNvUid(null); setEditNvValue(''); setEditNvNote('')
       toast.success(`✓ Override LCB ${u.name}`)
       onRefresh && onRefresh()
+    } catch (e: any) {
+      toast.error('Lỗi: ' + e.message)
     } finally {
       setWorking(false)
     }
@@ -24996,17 +25026,6 @@ function PayrollTabBaseSalary({ user, mobile, usersWithSalary, month, year, over
     }
   }
 
-  // Group users by position
-  const usersByPos = useMemo(() => {
-    const m = new Map<string, any[]>()
-    for (const u of usersWithSalary) {
-      const pt = u._salary?.position_type || '—'
-      if (!m.has(pt)) m.set(pt, [])
-      m.get(pt)!.push(u)
-    }
-    return m
-  }, [usersWithSalary])
-
   return (
     <div>
       <Card style={{ padding:14, marginBottom:12, borderLeft:`4px solid ${T.gold}` }}>
@@ -25014,60 +25033,74 @@ function PayrollTabBaseSalary({ user, mobile, usersWithSalary, month, year, over
           💼 Lương cơ bản theo vị trí — Tháng {month}/{year}
         </div>
         <div style={{ fontSize:12, color:T.med, marginTop:4 }}>
-          LCB mặc định áp dụng cho mọi NV cùng vị trí. Có thể override LCB cho từng NV (hiệu lực tháng được chọn).
+          LCB lưu trong bảng <b>Vị trí</b> (Quản trị → Vị trí). Mỗi vị trí có 1 LCB mặc định, áp dụng cho mọi NV thuộc vị trí đó.
+          Có thể override LCB cho từng NV cụ thể (hiệu lực tháng được chọn).
         </div>
       </Card>
 
       {/* Bảng LCB theo VT */}
       <Card style={{ padding:0, overflow:'auto', marginBottom:14 }}>
         <div style={{ padding:'10px 14px', background:T.bg, fontSize:12, fontWeight:700, color:T.dark, borderBottom:`1px solid ${T.border}` }}>
-          🏷 LCB mặc định theo vị trí (toàn công ty)
+          🏷 LCB mặc định theo vị trí ({positionsList.length} vị trí)
         </div>
         <table style={{ width:'100%', borderCollapse:'collapse', fontSize:12 }}>
           <thead style={{ background:T.bg }}>
             <tr>
               <th style={_payrollThStyle}>Vị trí</th>
+              <th style={_payrollThStyle}>Phòng ban</th>
+              <th style={{ ..._payrollThStyle, textAlign:'right' }}>Số NV</th>
               <th style={{ ..._payrollThStyle, textAlign:'right' }}>LCB mặc định</th>
-              <th style={_payrollThStyle}>Mô tả</th>
               <th style={{ ..._payrollThStyle, textAlign:'center' }}>Hành động</th>
             </tr>
           </thead>
           <tbody>
-            {positionBaseSalary.map((p: any) => {
-              const isEditing = editingPos === p.position_type
+            {positionsList.length === 0 ? (
+              <tr>
+                <td colSpan={5} style={{ padding:20, textAlign:'center', color:T.light }}>
+                  📭 Chưa có vị trí nào. Vào "Quản trị → Vị trí" để tạo.
+                </td>
+              </tr>
+            ) : positionsList.map((p: any) => {
+              const isEditing = editingPosId === p.id
+              const nvCount = (allUsers || []).filter((u: any) => u.position_id === p.id).length
               return (
-                <tr key={p.position_type} style={{ borderBottom:`1px solid ${T.border}` }}>
-                  <td style={{ padding:10, fontWeight:600, color:T.dark }}>{p.position_type}</td>
+                <tr key={p.id} style={{ borderBottom:`1px solid ${T.border}` }}>
+                  <td style={{ padding:10, fontWeight:600, color:T.dark }}>{p.name}</td>
+                  <td style={{ padding:10, fontSize:11, color:T.med }}>
+                    {p.dept_id === 'all' ? 'Toàn cty' : (DEPT_NAME[p.dept_id] || p.dept_id || '—')}
+                  </td>
+                  <td style={{ padding:10, textAlign:'right', fontSize:11, color:T.med }}>{nvCount}</td>
                   <td style={{ padding:10, textAlign:'right', fontVariantNumeric:'tabular-nums' }}>
                     {isEditing ? (
                       <input value={editPosValue} onChange={e => setEditPosValue(e.target.value)}
                         autoFocus
                         style={{ width:140, padding:'4px 8px', border:`1px solid ${T.border}`, borderRadius:4,
                           background:'#fff', color:T.dark, fontSize:12, textAlign:'right', fontFamily:'inherit' }}/>
-                    ) : (
+                    ) : Number(p.base_salary || 0) > 0 ? (
                       <b style={{ color:T.gold }}>{Math.round(Number(p.base_salary)).toLocaleString('vi-VN')}đ</b>
+                    ) : (
+                      <span style={{ color:T.light, fontStyle:'italic' }}>chưa thiết lập</span>
                     )}
                   </td>
-                  <td style={{ padding:10, fontSize:11, color:T.med }}>{p.description || ''}</td>
                   <td style={{ padding:10, textAlign:'center' }}>
                     {isEditing ? (
                       <div style={{ display:'inline-flex', gap:4 }}>
-                        <button onClick={() => handleSavePos(p.position_type)} disabled={working}
+                        <button onClick={() => handleSavePos(p.id)} disabled={working}
                           style={{ padding:'4px 10px', borderRadius:4, border:'none',
                             background:T.gold, color:'#fff', cursor:'pointer', fontFamily:'inherit', fontSize:11, fontWeight:600 }}>
                           Lưu
                         </button>
-                        <button onClick={() => setEditingPos(null)}
+                        <button onClick={() => setEditingPosId(null)}
                           style={{ padding:'4px 10px', borderRadius:4, border:`1px solid ${T.border}`,
                             background:'#fff', color:T.med, cursor:'pointer', fontFamily:'inherit', fontSize:11 }}>
                           Hủy
                         </button>
                       </div>
                     ) : (
-                      <button onClick={() => { setEditingPos(p.position_type); setEditPosValue(String(Math.round(Number(p.base_salary)))) }}
+                      <button onClick={() => { setEditingPosId(p.id); setEditPosValue(String(Math.round(Number(p.base_salary || 0)))) }}
                         style={{ padding:'4px 10px', borderRadius:4, border:`1px solid ${T.gold}`,
                           background:'#fff', color:T.gold, cursor:'pointer', fontFamily:'inherit', fontSize:11, fontWeight:600 }}>
-                        ✏ Sửa
+                        ✏ Sửa LCB
                       </button>
                     )}
                   </td>
@@ -25088,7 +25121,7 @@ function PayrollTabBaseSalary({ user, mobile, usersWithSalary, month, year, over
             <tr>
               <th style={_payrollThStyle}>NV</th>
               <th style={_payrollThStyle}>Vị trí</th>
-              <th style={{ ..._payrollThStyle, textAlign:'right' }}>LCB hệ thống</th>
+              <th style={{ ..._payrollThStyle, textAlign:'right' }}>LCB từ vị trí</th>
               <th style={{ ..._payrollThStyle, textAlign:'right' }}>LCB override</th>
               <th style={_payrollThStyle}>Ghi chú</th>
               <th style={{ ..._payrollThStyle, textAlign:'center' }}>Hành động</th>
@@ -25098,14 +25131,14 @@ function PayrollTabBaseSalary({ user, mobile, usersWithSalary, month, year, over
             {usersWithSalary.map((u: any) => {
               const ov = userOverride(u.id)
               const isEditing = editingNvUid === u.id
-              // v191: LCB hệ thống = LCB theo vị trí (từ position_base_salary), fallback về salary_config
-              const positionLcb = positionBaseSalary.find((p: any) => p.position_type === u._salary?.position_type)?.base_salary
-              const baseSalary = positionLcb ?? u._salary?.base_salary ?? 0
+              const positionLcb = getPositionLcb(u)
+              const baseSalary = positionLcb || u._salary?.base_salary || 0
+              const positionName = positionsList.find((p: any) => p.id === u.position_id)?.name || u._salary?.position_type || '—'
               return (
                 <tr key={u.id} style={{ borderBottom:`1px solid ${T.border}`,
                   background: ov ? T.goldBg : 'transparent' }}>
                   <td style={{ padding:10, fontWeight:600, color:T.dark }}>{u.name}</td>
-                  <td style={{ padding:10, fontSize:11, color:T.med }}>{u._salary?.position_type}</td>
+                  <td style={{ padding:10, fontSize:11, color:T.med }}>{positionName}</td>
                   <td style={{ padding:10, textAlign:'right', fontVariantNumeric:'tabular-nums' }}>
                     {Math.round(Number(baseSalary)).toLocaleString('vi-VN')}đ
                   </td>
@@ -25332,12 +25365,15 @@ function PayrollTabSchedule({ user, mobile, positionWorkSchedule, setPositionWor
 }
 
 
-// Detail modal — breakdown công thức + manual override
-function PayrollDetailModal({ user: nv, payroll, salaryConfig, otherIncomes, shortageLoss, revenue, paidLeaveDates, month, year, actor, onClose, onUpdate }: any) {
+// Detail modal — breakdown công thức + manual override + bảng chấm công full tháng (v192)
+function PayrollDetailModal({ user: nv, payroll, salaryConfig, otherIncomes, shortageLoss, revenue, paidLeaveDates, month, year, actor, onClose, onUpdate, attendanceMonth, positionWorkSchedule, positionsList, isAdmin, onAttendanceUpdate }: any) {
   const [manualAdjust, setManualAdjust] = useState(payroll?.manual_adjust || 0)
   const [manualReason, setManualReason] = useState(payroll?.manual_adjust_reason || '')
   const totalWorkingDays = countWorkingDaysInMonth(month, year, paidLeaveDates)
   const stdHoursPerDay = (salaryConfig.position_type === 'Kho' || salaryConfig.position_type === 'Quản lý kho') ? 8 : 7.5
+  
+  // v192: Modal sửa chấm công
+  const [showAttendanceEdit, setShowAttendanceEdit] = useState(false)
 
   return (
     <div style={{
@@ -25448,9 +25484,393 @@ function PayrollDetailModal({ user: nv, payroll, salaryConfig, otherIncomes, sho
           </div>
         )}
 
+        {/* v192: Bảng chấm công full tháng */}
+        {Array.isArray(attendanceMonth) && (
+          <div style={{ background:'#FFF', border:`1px solid ${T.border}`, borderRadius: RD.md,
+            marginBottom:10, overflow:'hidden' }}>
+            <div style={{ padding:'10px 14px', background:T.bg,
+              display:'flex', justifyContent:'space-between', alignItems:'center',
+              borderBottom:`1px solid ${T.border}` }}>
+              <div style={{ fontWeight:700, color:T.dark, fontSize:13 }}>
+                📅 Bảng chấm công tháng {month}/{year}
+              </div>
+              {isAdmin && (
+                <button onClick={() => setShowAttendanceEdit(true)}
+                  style={{ padding:'5px 12px', borderRadius:6, border:`1px solid ${T.gold}`,
+                    background:'#fff', color:T.gold, cursor:'pointer',
+                    fontFamily:'inherit', fontSize:11, fontWeight:600 }}>
+                  ✏ Sửa chấm công
+                </button>
+              )}
+            </div>
+            <div style={{ overflowX:'auto', maxHeight:400, overflowY:'auto' }}>
+              <table style={{ width:'100%', borderCollapse:'collapse', fontSize:11 }}>
+                <thead style={{ background:'#f0f4f8', position:'sticky', top:0 }}>
+                  <tr>
+                    <th style={{ padding:'6px 8px', textAlign:'center', fontWeight:700, color:T.med, borderBottom:`1px solid ${T.border}` }}>Ngày</th>
+                    <th style={{ padding:'6px 8px', textAlign:'center', fontWeight:700, color:T.med, borderBottom:`1px solid ${T.border}` }}>Thứ</th>
+                    <th style={{ padding:'6px 8px', textAlign:'center', fontWeight:700, color:T.med, borderBottom:`1px solid ${T.border}` }}>Vào</th>
+                    <th style={{ padding:'6px 8px', textAlign:'center', fontWeight:700, color:T.med, borderBottom:`1px solid ${T.border}` }}>Ra</th>
+                    <th style={{ padding:'6px 8px', textAlign:'right', fontWeight:700, color:T.med, borderBottom:`1px solid ${T.border}` }}>Giờ BT</th>
+                    <th style={{ padding:'6px 8px', textAlign:'right', fontWeight:700, color:T.med, borderBottom:`1px solid ${T.border}` }}>OT 150%</th>
+                    <th style={{ padding:'6px 8px', textAlign:'right', fontWeight:700, color:T.med, borderBottom:`1px solid ${T.border}` }}>OT 200%</th>
+                    <th style={{ padding:'6px 8px', textAlign:'center', fontWeight:700, color:T.med, borderBottom:`1px solid ${T.border}` }}>Trạng thái</th>
+                    <th style={{ padding:'6px 8px', textAlign:'center', fontWeight:700, color:T.med, borderBottom:`1px solid ${T.border}` }}>Ăn trưa</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {(() => {
+                    const daysInMonth = new Date(year, month, 0).getDate()
+                    const dayLabels = ['CN','Thứ 2','Thứ 3','Thứ 4','Thứ 5','Thứ 6','Thứ 7']
+                    const rows: any[] = []
+                    let totalBt = 0, totalOt150 = 0, totalOt200 = 0, totalLunch = 0
+                    for (let d = 1; d <= daysInMonth; d++) {
+                      const dateStr = `${year}-${String(month).padStart(2,'0')}-${String(d).padStart(2,'0')}`
+                      const att = attendanceMonth.find((a: any) => a.date === dateStr)
+                      const dayOfWeek = new Date(year, month-1, d).getDay()
+                      const isWeekend = dayOfWeek === 0
+                      const cIn  = att?.check_in_final  || att?.check_in_machine  || ''
+                      const cOut = att?.check_out_final || att?.check_out_machine || ''
+                      const bt = Number(att?.work_hours_regular || 0)
+                      const ot150 = Number(att?.ot_150_hours || 0)
+                      const ot200 = Number(att?.ot_200_hours || 0)
+                      totalBt += bt; totalOt150 += ot150; totalOt200 += ot200
+                      if (att?.lunch_eligible) totalLunch++
+                      const status = att?.status || (isWeekend ? '' : 'Nghỉ')
+                      rows.push(
+                        <tr key={d} style={{ borderBottom:`1px solid ${T.border}`,
+                          background: status === 'Đi làm' ? '#E6F4EA' : (isWeekend ? '#F8FAFB' : '#fff') }}>
+                          <td style={{ padding:'5px 8px', textAlign:'center', color:T.dark }}>{String(d).padStart(2,'0')}/{String(month).padStart(2,'0')}</td>
+                          <td style={{ padding:'5px 8px', textAlign:'center', color: isWeekend ? T.red : T.med }}>{dayLabels[dayOfWeek]}</td>
+                          <td style={{ padding:'5px 8px', textAlign:'center', fontVariantNumeric:'tabular-nums', color:T.dark }}>{cIn ? cIn.slice(0,5) : '—'}</td>
+                          <td style={{ padding:'5px 8px', textAlign:'center', fontVariantNumeric:'tabular-nums', color:T.dark }}>{cOut ? cOut.slice(0,5) : '—'}</td>
+                          <td style={{ padding:'5px 8px', textAlign:'right', fontVariantNumeric:'tabular-nums', color:T.dark }}>{bt > 0 ? bt.toFixed(2) : '—'}</td>
+                          <td style={{ padding:'5px 8px', textAlign:'right', fontVariantNumeric:'tabular-nums', color: ot150 > 0 ? T.green : T.light }}>{ot150 > 0 ? ot150.toFixed(2) : '—'}</td>
+                          <td style={{ padding:'5px 8px', textAlign:'right', fontVariantNumeric:'tabular-nums', color: ot200 > 0 ? T.green : T.light }}>{ot200 > 0 ? ot200.toFixed(2) : '—'}</td>
+                          <td style={{ padding:'5px 8px', textAlign:'center', fontSize:10, color: status === 'Đi làm' ? T.green : status === 'Nghỉ không phép' || status === 'NKP' ? T.red : T.med }}>{status}</td>
+                          <td style={{ padding:'5px 8px', textAlign:'center', color:T.med }}>{att?.lunch_eligible ? '✓' : ''}</td>
+                        </tr>
+                      )
+                    }
+                    rows.push(
+                      <tr key="total" style={{ borderTop:`2px solid ${T.dark}`, background:'#fff8e1' }}>
+                        <td colSpan={4} style={{ padding:'8px', textAlign:'right', fontWeight:700, color:T.dark }}>TỔNG THÁNG</td>
+                        <td style={{ padding:'8px', textAlign:'right', fontWeight:700, color:T.dark, fontVariantNumeric:'tabular-nums' }}>{totalBt.toFixed(2)}</td>
+                        <td style={{ padding:'8px', textAlign:'right', fontWeight:700, color:T.green, fontVariantNumeric:'tabular-nums' }}>{totalOt150.toFixed(2)}</td>
+                        <td style={{ padding:'8px', textAlign:'right', fontWeight:700, color:T.green, fontVariantNumeric:'tabular-nums' }}>{totalOt200.toFixed(2)}</td>
+                        <td></td>
+                        <td style={{ padding:'8px', textAlign:'center', fontWeight:700, color:T.dark }}>{totalLunch}</td>
+                      </tr>
+                    )
+                    return rows
+                  })()}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        )}
+
         <div style={{ background: T.gold + '22', padding: 16, borderRadius: RD.md, textAlign: 'center' }}>
           <div style={{ fontSize: FS.sm, color: T.med }}>THỰC NHẬN</div>
           <div style={{ fontSize: 28, fontWeight: 700, color: T.dark }}>{fmtVND(payroll.final_salary || 0)}đ</div>
+        </div>
+        
+        {/* v192: Modal sửa chấm công (chỉ Admin) */}
+        {showAttendanceEdit && isAdmin && (
+          <AttendanceEditModal
+            user={nv}
+            month={month} year={year}
+            actor={actor}
+            attendanceMonth={attendanceMonth}
+            positionWorkSchedule={positionWorkSchedule}
+            positionsList={positionsList}
+            onClose={() => setShowAttendanceEdit(false)}
+            onSaved={async () => {
+              await onAttendanceUpdate?.()
+              setShowAttendanceEdit(false)
+            }}/>
+        )}
+      </div>
+    </div>
+  )
+}
+
+
+// ══════════════════════════════════════════════════════════════════════
+// v192: AttendanceEditModal — Admin sửa giờ chấm công của 1 NV cho 1 tháng
+// ══════════════════════════════════════════════════════════════════════
+function AttendanceEditModal({ user: nv, month, year, actor, attendanceMonth, positionWorkSchedule, positionsList, onClose, onSaved }: any) {
+  // Local edit state cho từng ngày — dạng map: date -> { check_in, check_out, status, lunch }
+  const [edits, setEdits] = useState<Map<string, any>>(() => {
+    const m = new Map()
+    for (const a of attendanceMonth) {
+      m.set(a.date, {
+        check_in_final: (a.check_in_final || a.check_in_machine || '').slice(0, 5),
+        check_out_final: (a.check_out_final || a.check_out_machine || '').slice(0, 5),
+        status: a.status || 'Đi làm',
+        lunch_eligible: !!a.lunch_eligible,
+      })
+    }
+    return m
+  })
+  const [working, setWorking] = useState(false)
+  const [dirty, setDirty] = useState(false)
+  
+  const daysInMonth = new Date(year, month, 0).getDate()
+  const dayLabels = ['CN','T2','T3','T4','T5','T6','T7']
+  
+  // Xác định position của NV này → lấy work_schedule
+  // Tìm position_id của user nv
+  const userPosition = positionsList?.find((p: any) => p.id === nv.position_id)
+  // Map position name → position_type cho work_schedule (vì work_schedule key bằng position_type text)
+  // Nếu không có schedule khớp, fallback default
+  const userSchedule = positionWorkSchedule?.find((s: any) => 
+    s.position_type === userPosition?.name ||
+    s.position_type === nv._salary?.position_type ||
+    s.position_type === userPosition?.dept_id
+  ) || positionWorkSchedule?.[0] || {
+    start_time: '08:00:00', end_time: '17:30:00',
+    lunch_start_time: '12:00:00', lunch_end_time: '13:00:00',
+    std_hours_per_day: 8,
+  }
+
+  // v192: Helper compute work_hours từ check_in + check_out theo schedule
+  // Trả về { work_hours_regular, ot_150, ot_200, lunch_eligible }
+  const computeHoursFromCheckInOut = (checkInStr: string, checkOutStr: string, status: string): any => {
+    if (status !== 'Đi làm' || !checkInStr || !checkOutStr) {
+      return { work_hours_regular: 0, ot_150_hours: 0, ot_200_hours: 0, lunch_eligible: false }
+    }
+    
+    const toMin = (hm: string) => {
+      const [h, m] = hm.split(':').map(Number)
+      return (h || 0) * 60 + (m || 0)
+    }
+    const inMin = toMin(checkInStr)
+    const outMin = toMin(checkOutStr)
+    if (outMin <= inMin) return { work_hours_regular: 0, ot_150_hours: 0, ot_200_hours: 0, lunch_eligible: false }
+    
+    const schedStartMin = toMin((userSchedule.start_time || '08:00').slice(0, 5))
+    const schedEndMin   = toMin((userSchedule.end_time || '17:30').slice(0, 5))
+    const lunchStartMin = userSchedule.lunch_start_time ? toMin((userSchedule.lunch_start_time).slice(0, 5)) : 0
+    const lunchEndMin   = userSchedule.lunch_end_time   ? toMin((userSchedule.lunch_end_time).slice(0, 5))   : 0
+    const lunchDuration = (lunchEndMin > lunchStartMin) ? (lunchEndMin - lunchStartMin) : 0
+    
+    // Giờ làm thực = min(out, schedEnd) - max(in, schedStart) - lunch (nếu vắt qua trưa)
+    const effectiveIn  = Math.max(inMin, schedStartMin)
+    const effectiveOut = Math.min(outMin, schedEndMin)
+    let regularMin = Math.max(0, effectiveOut - effectiveIn)
+    
+    // Trừ nghỉ trưa nếu khoảng làm vắt qua nghỉ trưa
+    if (lunchDuration > 0 && effectiveIn < lunchEndMin && effectiveOut > lunchStartMin) {
+      const overlapStart = Math.max(effectiveIn, lunchStartMin)
+      const overlapEnd = Math.min(effectiveOut, lunchEndMin)
+      regularMin -= Math.max(0, overlapEnd - overlapStart)
+    }
+    
+    // OT = giờ ngoài schedule (sau giờ tan + trước giờ vào)
+    const otBeforeMin = Math.max(0, schedStartMin - inMin)
+    const otAfterMin = Math.max(0, outMin - schedEndMin)
+    const otTotalMin = otBeforeMin + otAfterMin
+    
+    // Eligible ăn trưa: làm cả buổi sáng + chiều (vắt qua giờ nghỉ trưa)
+    const lunchEligible = lunchDuration > 0 && effectiveIn <= lunchStartMin && effectiveOut >= lunchEndMin
+    
+    return {
+      work_hours_regular: Math.max(0, regularMin / 60),
+      ot_150_hours: otTotalMin / 60,
+      ot_200_hours: 0,  // Default 0 (CN bù vào ot_200, nhưng modal này không phân biệt)
+      lunch_eligible: lunchEligible,
+    }
+  }
+
+  const updateEdit = (date: string, field: string, value: any) => {
+    const m = new Map(edits)
+    const cur = m.get(date) || { check_in_final: '', check_out_final: '', status: 'Đi làm', lunch_eligible: false }
+    cur[field] = value
+    m.set(date, cur)
+    setEdits(m)
+    setDirty(true)
+  }
+
+  const handleSave = async () => {
+    if (!confirm(`Lưu thay đổi chấm công cho ${nv.name} tháng ${month}/${year}? Hệ thống sẽ tính lại giờ làm tự động.`)) return
+    
+    setWorking(true)
+    try {
+      const upserts: any[] = []
+      for (const [date, e] of edits.entries()) {
+        const checkIn = e.check_in_final && e.check_in_final.length === 5 ? e.check_in_final + ':00' : null
+        const checkOut = e.check_out_final && e.check_out_final.length === 5 ? e.check_out_final + ':00' : null
+        const computed = computeHoursFromCheckInOut(e.check_in_final || '', e.check_out_final || '', e.status)
+        
+        upserts.push({
+          id: `att_${nv.id}_${date.replace(/-/g, '')}`,
+          user_id: nv.id,
+          dept_id: nv.dept_id || 'vp',
+          date,
+          status: e.status,
+          check_in_final: checkIn,
+          check_out_final: checkOut,
+          work_hours_regular: computed.work_hours_regular,
+          ot_150_hours: computed.ot_150_hours,
+          ot_200_hours: computed.ot_200_hours,
+          total_hours: computed.work_hours_regular + computed.ot_150_hours + computed.ot_200_hours,
+          lunch_eligible: e.lunch_eligible,
+          import_source: 'admin_edit',
+        })
+      }
+      
+      // Batch upsert
+      const batchSize = 100
+      for (let i = 0; i < upserts.length; i += batchSize) {
+        const batch = upserts.slice(i, i + batchSize)
+        const { error } = await db.from('attendance').upsert(batch, { onConflict: 'user_id,date' })
+        if (error) throw new Error(error.message)
+      }
+      
+      // Audit log
+      await db.from('monthly_payroll_audit').insert({
+        user_id: nv.id, month, year,
+        action: 'attendance_edit',
+        reason: `Admin sửa chấm công ${month}/${year}`,
+        actor_id: actor.id, actor_name: actor.name,
+      })
+      
+      toast.success(`✓ Đã lưu chấm công ${nv.name}`)
+      onSaved && onSaved()
+    } catch (e: any) {
+      toast.error('Lỗi: ' + e.message)
+    } finally {
+      setWorking(false)
+    }
+  }
+
+  return (
+    <div style={{
+      position:'fixed', inset:0, background:'rgba(0,0,0,0.6)', zIndex:1100,
+      display:'flex', alignItems:'center', justifyContent:'center', padding:20,
+    }} onClick={onClose}>
+      <div onClick={(e: any) => e.stopPropagation()} style={{
+        background:'#fff', borderRadius:12, maxWidth:900, width:'100%',
+        maxHeight:'90vh', overflow:'auto',
+      }}>
+        {/* Header */}
+        <div style={{ padding:'14px 20px', borderBottom:`1px solid ${T.border}`,
+          display:'flex', justifyContent:'space-between', alignItems:'center',
+          position:'sticky', top:0, background:'#fff', zIndex:1 }}>
+          <div>
+            <div style={{ fontSize:16, fontWeight:700, color:T.dark }}>
+              ✏ Sửa chấm công — {nv.name}
+            </div>
+            <div style={{ fontSize:12, color:T.med, marginTop:2 }}>
+              Tháng {month}/{year} · Schedule: {(userSchedule.start_time||'').slice(0,5)} → {(userSchedule.end_time||'').slice(0,5)}
+              {userSchedule.lunch_start_time && ` (nghỉ trưa ${userSchedule.lunch_start_time.slice(0,5)}-${userSchedule.lunch_end_time.slice(0,5)})`}
+            </div>
+          </div>
+          <button onClick={onClose}
+            style={{ background:'none', border:'none', fontSize:22, cursor:'pointer', color:T.med }}>✕</button>
+        </div>
+
+        {/* Hint */}
+        <div style={{ padding:'8px 14px', background:'#FEF3C7', fontSize:11, color:'#92400E' }}>
+          💡 Chỉnh giờ vào/ra → giờ làm BT/OT sẽ tự tính lại theo schedule. Đổi trạng thái "Nghỉ" để bỏ ngày đó.
+        </div>
+
+        {/* Table */}
+        <div style={{ padding:14 }}>
+          <table style={{ width:'100%', borderCollapse:'collapse', fontSize:11 }}>
+            <thead style={{ background:T.bg }}>
+              <tr>
+                <th style={{ padding:'6px 8px', textAlign:'center', borderBottom:`1px solid ${T.border}` }}>Ngày</th>
+                <th style={{ padding:'6px 8px', textAlign:'center', borderBottom:`1px solid ${T.border}` }}>Thứ</th>
+                <th style={{ padding:'6px 8px', textAlign:'center', borderBottom:`1px solid ${T.border}` }}>Giờ vào</th>
+                <th style={{ padding:'6px 8px', textAlign:'center', borderBottom:`1px solid ${T.border}` }}>Giờ ra</th>
+                <th style={{ padding:'6px 8px', textAlign:'center', borderBottom:`1px solid ${T.border}` }}>Trạng thái</th>
+                <th style={{ padding:'6px 8px', textAlign:'center', borderBottom:`1px solid ${T.border}` }}>Ăn trưa</th>
+                <th style={{ padding:'6px 8px', textAlign:'right', borderBottom:`1px solid ${T.border}` }}>Giờ BT (preview)</th>
+              </tr>
+            </thead>
+            <tbody>
+              {Array.from({ length: daysInMonth }).map((_, i) => {
+                const d = i + 1
+                const dateStr = `${year}-${String(month).padStart(2,'0')}-${String(d).padStart(2,'0')}`
+                const dow = new Date(year, month-1, d).getDay()
+                const isWeekend = dow === 0
+                const e = edits.get(dateStr) || { check_in_final:'', check_out_final:'', status:'Đi làm', lunch_eligible:false }
+                const previewHours = computeHoursFromCheckInOut(e.check_in_final || '', e.check_out_final || '', e.status)
+                
+                return (
+                  <tr key={dateStr} style={{ borderBottom:`1px solid ${T.border}`,
+                    background: isWeekend ? '#F8FAFB' : '#fff' }}>
+                    <td style={{ padding:'5px 8px', textAlign:'center', color:T.dark }}>
+                      {String(d).padStart(2,'0')}/{String(month).padStart(2,'0')}
+                    </td>
+                    <td style={{ padding:'5px 8px', textAlign:'center', color: isWeekend ? T.red : T.med }}>
+                      {dayLabels[dow]}
+                    </td>
+                    <td style={{ padding:'5px 4px', textAlign:'center' }}>
+                      <input type="time" value={e.check_in_final || ''}
+                        onChange={ev => updateEdit(dateStr, 'check_in_final', ev.target.value)}
+                        style={{ padding:'3px 6px', border:`1px solid ${T.border}`, borderRadius:4,
+                          background:'#fff', color:T.dark, fontSize:11, fontFamily:'inherit' }}/>
+                    </td>
+                    <td style={{ padding:'5px 4px', textAlign:'center' }}>
+                      <input type="time" value={e.check_out_final || ''}
+                        onChange={ev => updateEdit(dateStr, 'check_out_final', ev.target.value)}
+                        style={{ padding:'3px 6px', border:`1px solid ${T.border}`, borderRadius:4,
+                          background:'#fff', color:T.dark, fontSize:11, fontFamily:'inherit' }}/>
+                    </td>
+                    <td style={{ padding:'5px 4px', textAlign:'center' }}>
+                      <select value={e.status || 'Đi làm'}
+                        onChange={ev => updateEdit(dateStr, 'status', ev.target.value)}
+                        style={{ padding:'3px 6px', border:`1px solid ${T.border}`, borderRadius:4,
+                          background:'#fff', color:T.dark, fontSize:11, fontFamily:'inherit' }}>
+                        <option value="Đi làm">Đi làm</option>
+                        <option value="Nghỉ">Nghỉ (có phép)</option>
+                        <option value="Nghỉ không phép">NKP</option>
+                      </select>
+                    </td>
+                    <td style={{ padding:'5px 8px', textAlign:'center' }}>
+                      <input type="checkbox" checked={!!e.lunch_eligible}
+                        onChange={ev => updateEdit(dateStr, 'lunch_eligible', ev.target.checked)}
+                        style={{ cursor:'pointer' }}/>
+                    </td>
+                    <td style={{ padding:'5px 8px', textAlign:'right',
+                      fontVariantNumeric:'tabular-nums', color: previewHours.work_hours_regular > 0 ? T.green : T.light }}>
+                      {previewHours.work_hours_regular > 0 
+                        ? `${previewHours.work_hours_regular.toFixed(2)}h`
+                        : '—'}
+                      {previewHours.ot_150_hours > 0 && (
+                        <span style={{ marginLeft:4, fontSize:10, color:T.amber }}>
+                          (+{previewHours.ot_150_hours.toFixed(2)} OT)
+                        </span>
+                      )}
+                    </td>
+                  </tr>
+                )
+              })}
+            </tbody>
+          </table>
+        </div>
+
+        {/* Footer */}
+        <div style={{ padding:'12px 20px', borderTop:`1px solid ${T.border}`,
+          display:'flex', justifyContent:'flex-end', gap:8,
+          position:'sticky', bottom:0, background:'#fff' }}>
+          <button onClick={onClose}
+            style={{ padding:'8px 16px', borderRadius:6, border:`1px solid ${T.border}`,
+              background:'#fff', color:T.med, cursor:'pointer',
+              fontFamily:'inherit', fontSize:13 }}>
+            Hủy
+          </button>
+          <button onClick={handleSave} disabled={working || !dirty}
+            style={{ padding:'8px 20px', borderRadius:6, border:'none',
+              background: dirty ? T.gold : T.border, color:'#fff',
+              cursor: working ? 'wait' : (dirty ? 'pointer' : 'not-allowed'),
+              fontFamily:'inherit', fontSize:13, fontWeight:700,
+              opacity: dirty ? 1 : 0.5 }}>
+            {working ? '⏳ Đang lưu...' : `💾 Lưu thay đổi`}
+          </button>
         </div>
       </div>
     </div>
