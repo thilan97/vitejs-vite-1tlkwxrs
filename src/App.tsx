@@ -41,7 +41,8 @@ const db = createClient(SUPABASE_URL, SUPABASE_KEY)
 // v184: (1) Migration 52 user_aliases — sale Ngân Trần có nhiều account KV (Ngân Lan, Ngân Trần (P)) → map về 1 user. Edge fn assign-from-excel v2 check alias trước. UI thêm alias trực tiếp từ Upload Excel modal khi không tìm thấy user. (2) Refactor NewCustomersTab: table view + checkbox bulk action (claim/duyệt/từ chối hàng loạt) + sort theo người phụ trách + bỏ commission column
 // v185: (1) Helper fmtMoney() — format số tiền KV bỏ phần thập phân (KV trả 4649.75, hiển thị 4.650). Áp dụng 19 chỗ trong CustomersModule. (2) UploadExcel: hiển thị errors[] chi tiết + not_found_customer list + stack trace. Toast warning rõ ràng khi có vấn đề. Edge fn assign-from-excel v3: pre-load customers tồn tại để tách 'không tìm thấy KH' vs 'lỗi update'
 // v186: fix build error — fmtMoney trùng tên với global của payment module → đổi thành fmtMoneyKv
-const APP_VERSION = '2026.04.30.v186'
+// v187: fix alias không match — frontend normalize "Ngân Lan" → "ngân lan" còn dấu, edge function search "ngan lan" → KHÔNG match. Đổi frontend dùng cùng logic NFD+bỏ dấu+đ→d. Thêm check duplicate trước insert (tránh 409).
+const APP_VERSION = '2026.04.30.v187'
 
 // ════════════════════════════════════════════════════════════════
 // v158: VersionBadge — Hiển thị APP_VERSION ở góc dưới phải
@@ -33030,13 +33031,35 @@ function NotFoundUserSection({ result, user, onAliasAdded }: any) {
     
     setAdding(assigneeName)
     try {
+      // v186 fix: normalize cùng logic với edge function (NFD + bỏ dấu + đ→d + lowercase)
+      // Trước: chỉ NFKC + lowercase → "ngân lan" → không match với edge fn search "ngan lan"
+      const normalizeForAlias = (s: string): string => {
+        if (!s) return ''
+        return String(s)
+          .normalize('NFD').replace(/[\u0300-\u036f]/g, '')
+          .replace(/đ/g, 'd').replace(/Đ/g, 'd')
+          .toLowerCase()
+          .replace(/\s+/g, ' ')
+          .trim()
+      }
+      const aliasNorm = normalizeForAlias(assigneeName)
+      
+      // Check trùng trước khi insert (tránh 409 conflict)
+      const { data: existing } = await db.from('user_aliases')
+        .select('id, user_name').eq('alias_normalized', aliasNorm).maybeSingle()
+      
+      if (existing) {
+        toast.warning(`Alias "${assigneeName}" đã được gán cho ${existing.user_name}. Xóa cũ trước nếu muốn đổi.`)
+        return
+      }
+      
       const id = `alias_${Date.now()}_${Math.random().toString(36).slice(2,7)}`
       const { error } = await db.from('user_aliases').insert({
         id,
         user_id: userId,
         user_name: u.name,
         alias: assigneeName,
-        alias_normalized: normalizeUnicode(assigneeName.toLowerCase()).replace(/\s+/g, ' ').trim(),
+        alias_normalized: aliasNorm,
         source: 'excel_upload',
         note: 'Tạo từ upload Excel',
         created_by: user?.id || 'admin',
