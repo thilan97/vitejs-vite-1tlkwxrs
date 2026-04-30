@@ -63,7 +63,18 @@ const db = createClient(SUPABASE_URL, SUPABASE_KEY)
 // v194: Thêm option thứ 3 cho ngày lễ — "200% Cty cho nghỉ tùy chọn" (làm gấp đôi, nghỉ KHÔNG có lương). 
 //       Migration 58 thêm column pay_when_absent. Compute logic phân biệt: pay_when_absent=true → trả 100% khi nghỉ, =false → 0. 
 //       3 option dropdown: 🟡 Lễ Tết chính thức / 🟢 Paid leave / 🟠 Tùy chọn. Badge phân biệt 3 màu riêng trong bảng chấm công.
-const APP_VERSION = '2026.04.30.v194'
+// v195: 4 y/c lớn:
+//       (1) Y/c 1 — Link tiền ship hàng hoàn → "Hoàn hàng": getReturnShipForUser SUM(ship_fee) GROUP BY violator_id từ bảng `return_items`. 
+//                   Tự động fill vào tab "🔄 Hoàn hàng" (override per-NV vẫn hoạt động bình thường).
+//       (2) Y/c 2 — Tab MỚI "💰 DS Sale": auto compute DS từ KV invoices (loại return) + tách KH mới/cũ qua customer_new_claims approved. 
+//                   HH theo công thức Excel (tier LCB + progressive KH cũ + 1% KH mới + HH tuyến dưới cho QL Sale).
+//                   Modal chi tiết per-NV, nút 💾 Snapshot lưu vào monthly_revenue. computeForUser ưu tiên hh từ KV thay vì rev.hh_total legacy.
+//       (3) Y/c 3 — Link tiền mất kho → "Mất hàng": getInventoryLossForUser từ inventory_checks (no_reason + session.is_month_close). 
+//                   Tự động chia đều cho NV kho. Override per-NV vẫn hoạt động bình thường.
+//       (4) Y/c 4 — Cải tiến Unlock: warning rõ hơn (3 dòng cảnh báo) + field was_unlocked + badge cam "🔓 Đã mở khoá" trên row.
+//       Migration 59: was_unlocked + monthly_revenue thêm cols (hh_khach_cu, hh_khach_moi, hh_tuyen_duoi, source, synced_at).
+//       Note: phát hiện bug legacy 2 chỗ db.from('return_slips') trong code (line ~2692, ~28358) — bảng thật là `return_items`, code đó đang fail silent. Chưa fix vì ngoài scope.
+const APP_VERSION = '2026.04.30.v195'
 
 // ════════════════════════════════════════════════════════════════
 // v158: VersionBadge — Hiển thị APP_VERSION ở góc dưới phải
@@ -23927,6 +23938,8 @@ function computeMonthlyPayroll(opts: {
   shortageLossTotal: number,
   commissionTotal: number,
   manualAdjust: number,
+  // v195: returnLossAuto từ return_items (sẽ bị override bởi payroll_overrides.return_loss nếu có)
+  returnLossAuto?: number,
   // v191: overrides — Map<field_type, amount>
   overrides?: Map<string, number>,  // per-NV overrides cho NV này
   configOverrides?: Map<string, number>,  // override config chung tháng đó (user_id NULL)
@@ -24079,7 +24092,8 @@ function computeMonthlyPayroll(opts: {
   // v191: Per-NV override fields mới
   const mboBonus = getOverride('mbo_bonus', 0)         // Thưởng MBO (mặc định 0, cần Admin set)
   const allowance = getOverride('allowance', 0)        // Trợ cấp khác
-  const returnLoss = getOverride('return_loss', 0)     // Tiền hoàn hàng do đóng sai
+  // v195: return_loss = override > auto từ return_items (truyền qua opts.returnLossAuto)
+  const returnLoss = getOverride('return_loss', Number(opts.returnLossAuto || 0))
   const otherDeduction = getOverride('other_deduction', 0)  // Trừ khác
   
   // shortage_loss có thể override (trước tự động từ monthly_shortage_loss)
@@ -24259,13 +24273,20 @@ function PayrollModule({ user, allUsers, mobile }: any) {
   const [revenues, setRevenues]     = useState<any[]>([])
   const [attendanceMonth, setAttendanceMonth] = useState<any[]>([])
   const [detailModalUser, setDetailModalUser] = useState<any>(null)
+  // v195: data sync cho Y/c 1, 2, 3
+  const [returnItems, setReturnItems] = useState<any[]>([])         // Y/c 1
+  const [inventoryChecks, setInventoryChecks] = useState<any[]>([]) // Y/c 3
+  const [inventorySessions, setInventorySessions] = useState<any[]>([]) // Y/c 3
+  const [kvInvoices, setKvInvoices] = useState<any[]>([])           // Y/c 2
+  const [userAliases, setUserAliases] = useState<any[]>([])         // Y/c 2 — map KV→app
+  const [customerNewClaims, setCustomerNewClaims] = useState<any[]>([]) // Y/c 2 — DS khách mới
   // v191/v192: overrides + position config (LCB lưu trong bảng positions)
   const [overrides, setOverrides] = useState<any[]>([])  // payroll_overrides của tháng này
   const [positionsList, setPositionsList] = useState<any[]>([])  // v192: bảng positions từ Quản trị
   const [positionWorkSchedule, setPositionWorkSchedule] = useState<any[]>([])
   const [specialDays, setSpecialDays] = useState<any[]>([])  // v193: ngày lễ/đặc biệt
   // v191: tabs
-  const [adminTab, setAdminTab] = useState<'overview'|'shortage_loss'|'return_loss'|'mbo_bonus'|'inspection_bonus'|'allowance'|'base_salary'|'schedule'>('overview')
+  const [adminTab, setAdminTab] = useState<'overview'|'shortage_loss'|'return_loss'|'mbo_bonus'|'inspection_bonus'|'allowance'|'base_salary'|'schedule'|'sales_revenue'>('overview')
   const isAdmin = perm.viewAllDashboard
   // v191: Admin chọn NV xem phiếu lương
   const [viewSlipUserId, setViewSlipUserId] = useState<string>('')
@@ -24275,22 +24296,32 @@ function PayrollModule({ user, allUsers, mobile }: any) {
     (async () => {
       setLoading(true)
       try {
-        const [sc, pc, pr, oi, sl, rv, att, ovr, pos, pws, sd] = await Promise.all([
+        const fromDate = `${year}-${String(month).padStart(2,'0')}-01`
+        const toDate = new Date(year, month, 0).toISOString().slice(0, 10)
+        const fromISO = `${fromDate}T00:00:00.000Z`
+        const toISO = `${toDate}T23:59:59.999Z`
+        
+        const [sc, pc, pr, oi, sl, rv, att, ovr, pos, pws, sd, ri, ic, is_, kvi, ua, cnc] = await Promise.all([
           db.from('salary_config').select('*').is('effective_to', null),
           db.from('payroll_config').select('*').maybeSingle(),
           db.from('monthly_payroll').select('*').eq('month', month).eq('year', year),
           db.from('monthly_other_income').select('*').eq('month', month).eq('year', year),
           db.from('monthly_shortage_loss').select('*').eq('month', month).eq('year', year),
           db.from('monthly_revenue').select('*').eq('month', month).eq('year', year),
-          db.from('attendance').select('*')
-            .gte('date', `${year}-${String(month).padStart(2,'0')}-01`)
-            .lte('date', `${year}-${String(month).padStart(2,'0')}-31`),
-          // v191: Load overrides + position config
+          db.from('attendance').select('*').gte('date', fromDate).lte('date', toDate),
           db.from('payroll_overrides').select('*').eq('month', month).eq('year', year),
-          db.from('positions').select('*').order('name'),  // v192: load positions thay vì position_base_salary
+          db.from('positions').select('*').order('name'),
           db.from('position_work_schedule').select('*'),
-          // v193: Load tất cả ngày lễ (để PayrollTabSchedule hiển thị) — filter theo tháng/năm khi compute
           db.from('payroll_special_days').select('*').order('date'),
+          // v195: Y/c 1 — return_items (TÊN ĐÚNG, không phải return_slips)
+          db.from('return_items').select('*').gte('date', fromDate).lte('date', toDate).limit(5000),
+          // v195: Y/c 3 — inventory checks (load all - filter session is_month_close trên client)
+          db.from('inventory_checks').select('*').limit(10000),
+          db.from('inventory_sessions').select('*').limit(2000),
+          // v195: Y/c 2 — KV invoices của tháng + aliases + claims
+          db.from('kv_invoices').select('*').gte('purchase_date', fromISO).lte('purchase_date', toISO).limit(10000),
+          db.from('user_aliases').select('*'),
+          db.from('customer_new_claims').select('*').eq('claim_month', `${year}-${String(month).padStart(2,'0')}`),
         ])
         setSalaryConfigs(sc.data || [])
         setPayrollConfig(pc.data || {})
@@ -24311,6 +24342,13 @@ function PayrollModule({ user, allUsers, mobile }: any) {
         setPositionsList(pos.data || [])
         setPositionWorkSchedule(pws.data || [])
         setSpecialDays(sd.data || [])  // v193
+        // v195
+        setReturnItems(ri.data || [])
+        setInventoryChecks(ic.data || [])
+        setInventorySessions(is_.data || [])
+        setKvInvoices(kvi.data || [])
+        setUserAliases(ua.data || [])
+        setCustomerNewClaims(cnc.data || [])
       } catch (e: any) {
         setError('Lỗi load data: ' + e.message)
       } finally {
@@ -24348,6 +24386,139 @@ function PayrollModule({ user, allUsers, mobile }: any) {
   const getRevenue = (uid: string) => revenues.find(r => r.user_id === uid)
   const getAttendance = (uid: string) => attendanceMonth.filter(a => a.user_id === uid)
 
+  // ═════ v195: Helpers cho Y/c 1, 2, 3 ═════
+  
+  // Y/c 1: Tổng tiền ship hoàn của NV violator trong tháng
+  const getReturnShipForUser = (uid: string): number => {
+    return returnItems
+      .filter(r => r.violator_id === uid)
+      .reduce((sum, r) => sum + Number(r.ship_fee || 0), 0)
+  }
+  
+  // Y/c 3: Tiền mất kho phân bổ cho NV (chỉ kho)
+  // Logic: tổng mất từ phiên chốt tháng / số NV kho
+  const inventoryLossInfo = useMemo(() => {
+    // Sessions chốt tháng trong tháng/năm này
+    const monthCloseSessions = inventorySessions.filter((s: any) => {
+      if (!s.is_month_close) return false
+      const d = (s.date || '').slice(0, 7)
+      return d === `${year}-${String(month).padStart(2,'0')}`
+    })
+    const sessionIds = new Set(monthCloseSessions.map((s: any) => s.id))
+    
+    // Tính tổng mất từ checks
+    const noReason = inventoryChecks.filter((c: any) =>
+      sessionIds.has(c.session_id) && c.diff_status === 'no_reason' &&
+      Number(c.diff || 0) !== 0
+    )
+    const totalLoss = noReason.reduce((s: number, c: any) => {
+      const price = Number(c.price_override ?? c.base_price ?? 0)
+      return s + Math.abs(Number(c.diff || 0)) * price
+    }, 0)
+    
+    // Số NV kho (active)
+    const khoUsers = allUsers.filter((u: any) => u.dept_id === 'kho' && u.active !== false)
+    
+    return { totalLoss, khoUsersCount: khoUsers.length, monthCloseSessions, noReasonCount: noReason.length }
+  }, [inventoryChecks, inventorySessions, allUsers, month, year])
+  
+  const getInventoryLossForUser = (uid: string): number => {
+    const u = allUsers.find((au: any) => au.id === uid)
+    if (!u || u.dept_id !== 'kho' || u.active === false) return 0
+    if (inventoryLossInfo.khoUsersCount === 0) return 0
+    return Math.round(inventoryLossInfo.totalLoss / inventoryLossInfo.khoUsersCount)
+  }
+  
+  // Y/c 2: Map sold_by_id (KV bigint) → app user_id qua user_aliases
+  const getSaleAppId = (kvSoldById: number): string | null => {
+    if (!kvSoldById) return null
+    const alias = userAliases.find((a: any) => Number(a.kv_employee_id) === Number(kvSoldById))
+    return alias?.app_user_id || null
+  }
+  
+  // Y/c 2: Compute DS sale của NV trong tháng (realtime từ KV)
+  // Trả về: { totalDs, dsKhachCu, dsKhachMoi, hh: {...} }
+  const computeSaleRevenueForUser = (uid: string): any => {
+    const sc = getSalaryConfig(uid)
+    if (!sc) return { totalDs: 0, dsKhachCu: 0, dsKhachMoi: 0, hh: { tyLeLcb: 0, lcbDat: 0, hhKhachCu: 0, hhKhachMoi: 0, hhTuyenDuoi: 0, hhTotal: 0 } }
+    
+    // Tổng DS = SUM(total_payment) của invoices có sold_by_id map về uid, is_returned=false
+    let totalDs = 0
+    for (const inv of kvInvoices) {
+      if (inv.is_returned) continue
+      const saleId = getSaleAppId(inv.sold_by_id)
+      if (saleId === uid) totalDs += Number(inv.total_payment || 0)
+    }
+    
+    // DS khách mới = invoices có customer_code IN (KH approved cho sale này tháng này)
+    const myApprovedCustomers = new Set(
+      customerNewClaims
+        .filter((c: any) => c.sale_user_id === uid && c.status === 'approved')
+        .map((c: any) => c.customer_code)
+    )
+    let dsKhachMoi = 0
+    if (myApprovedCustomers.size > 0) {
+      for (const inv of kvInvoices) {
+        if (inv.is_returned) continue
+        const saleId = getSaleAppId(inv.sold_by_id)
+        if (saleId === uid && myApprovedCustomers.has(inv.customer_code)) {
+          dsKhachMoi += Number(inv.total_payment || 0)
+        }
+      }
+    }
+    
+    const dsKhachCu = Math.max(0, totalDs - dsKhachMoi)
+    
+    // HH compute — dùng computeCommission đã có
+    // Tính cho QL Sale: cần tổng DS của tất cả Sale
+    let allSaleRevenues: Array<{ ds_khach_cu: number, ds_khach_moi: number }> | undefined
+    if (sc.is_sale_manager) {
+      allSaleRevenues = []
+      for (const otherSc of salaryConfigs) {
+        if (otherSc.position_type !== 'Sales' && otherSc.position_type !== 'Quản lý Sale') continue
+        // Tính DS của otherSc.user_id
+        let othDs = 0, othDsKhachMoi = 0
+        const othCustomers = new Set(
+          customerNewClaims
+            .filter((c: any) => c.sale_user_id === otherSc.user_id && c.status === 'approved')
+            .map((c: any) => c.customer_code)
+        )
+        for (const inv of kvInvoices) {
+          if (inv.is_returned) continue
+          const sid = getSaleAppId(inv.sold_by_id)
+          if (sid === otherSc.user_id) {
+            othDs += Number(inv.total_payment || 0)
+            if (othCustomers.has(inv.customer_code)) othDsKhachMoi += Number(inv.total_payment || 0)
+          }
+        }
+        allSaleRevenues.push({
+          ds_khach_cu: Math.max(0, othDs - othDsKhachMoi),
+          ds_khach_moi: othDsKhachMoi,
+        })
+      }
+    }
+    
+    // v192: LCB từ positions
+    const positionLcb = (() => {
+      const u = allUsers.find((au: any) => au.id === uid)
+      if (u?.position_id) {
+        const pos = positionsList.find((p: any) => p.id === u.position_id)
+        if (pos?.base_salary) return Number(pos.base_salary)
+      }
+      return Number(sc.base_salary) || 0
+    })()
+    
+    const hh = computeCommission({
+      dsKhachCu, dsKhachMoi,
+      baseSalary: positionLcb,
+      isSaleManager: !!sc.is_sale_manager,
+      allSaleRevenues,
+      ownTotalDs: totalDs,
+    })
+    
+    return { totalDs, dsKhachCu, dsKhachMoi, hh }
+  }
+
   // Users có salary_config (19 NV)
   const usersWithSalary = useMemo(() => {
     return salaryConfigs
@@ -24364,12 +24535,19 @@ function PayrollModule({ user, allUsers, mobile }: any) {
     const sc = u._salary
     const attRecords = getAttendance(u.id)
     const otherIncome = getOtherIncome(u.id)
-    const shortage = getShortageLoss(u.id)
-    const rev = getRevenue(u.id)
+    // v195: shortage_loss ưu tiên auto từ inventory_checks (chốt tháng), fallback monthly_shortage_loss legacy
+    const shortageAuto = getInventoryLossForUser(u.id)
+    const shortageLegacy = getShortageLoss(u.id)
+    const shortage = shortageAuto > 0 ? shortageAuto : shortageLegacy
+    // v195: return_loss auto từ return_items
+    const returnLossAuto = getReturnShipForUser(u.id)
+    // v195: hh_total từ KV revenue thay vì monthly_revenue legacy
+    const saleRev = computeSaleRevenueForUser(u.id)
+    const hhFromKv = saleRev.hh.hhTotal
+    const rev = getRevenue(u.id)  // legacy
     const existing = getPayroll(u.id)
     
     // v192: Lấy LCB từ positions.base_salary nếu có (ưu tiên hơn salary_config.base_salary)
-    // payroll_overrides.base_salary vẫn override cao nhất (xử lý trong computeMonthlyPayroll)
     const positionLcb = u.position_id 
       ? Number(positionsList.find((p: any) => p.id === u.position_id)?.base_salary || 0)
       : 0
@@ -24389,8 +24567,11 @@ function PayrollModule({ user, allUsers, mobile }: any) {
       inspectionBonusAmount: Number(payrollConfig?.inspection_bonus_monthly || 300000),
       otherIncomeTotal: otherIncome,
       shortageLossTotal: shortage,
-      commissionTotal: rev?.hh_total || 0,
+      // v195: HH ưu tiên từ KV, fallback legacy
+      commissionTotal: hhFromKv > 0 ? hhFromKv : (rev?.hh_total || 0),
       manualAdjust: existing?.manual_adjust || 0,
+      // v195: return loss auto từ return_items
+      returnLossAuto,
       // v191: pass overrides
       overrides: getUserOverrides(u.id),
       configOverrides: getConfigOverrides(),
@@ -24403,7 +24584,7 @@ function PayrollModule({ user, allUsers, mobile }: any) {
               label: sd.label,
               multiplier: Number(sd.multiplier),
               attendance_immunity: !!sd.attendance_immunity,
-              pay_when_absent: sd.pay_when_absent !== false,  // v194: default true
+              pay_when_absent: sd.pay_when_absent !== false,
             })
           }
         }
@@ -24478,12 +24659,25 @@ function PayrollModule({ user, allUsers, mobile }: any) {
     })
   }
 
-  // Unlock
+  // Unlock — v195: Cảnh báo rõ hơn về risk số sẽ thay đổi
   const unlockOne = async (u: any) => {
     const existing = getPayroll(u.id)
     if (!existing) return
-    if (!(await confirmDialog({ title: `Mở khoá lương ${u.name}?`, message: `Tháng ${month}/${year} — sẽ quay về trạng thái DRAFT.`, confirmText: 'Mở khoá', tone: 'warning' }))) return
-    const upd: any = { status: 'draft', approved_by: null, approved_at: null }
+    if (!(await confirmDialog({
+      title: `⚠ Mở khoá lương ${u.name}?`,
+      message: `Tháng ${month}/${year} — record đã được CHỐT (status=${existing.status}).\n\n` +
+        `⚠ Sau khi mở khoá:\n` +
+        `• Trạng thái về DRAFT\n` +
+        `• Có thể tính lại với LCB / config / chấm công HIỆN TẠI\n` +
+        `• Số sau khi tính lại CÓ THỂ KHÁC số đã chốt!\n\n` +
+        `Chỉ mở khoá nếu thực sự cần điều chỉnh.`,
+      confirmText: 'Tôi hiểu — Mở khoá',
+      tone: 'warning',
+    }))) return
+    const upd: any = {
+      status: 'draft', approved_by: null, approved_at: null,
+      was_unlocked: true,  // v195: đánh dấu đã từng bị mở khoá
+    }
     await db.from('monthly_payroll').update(upd).eq('id', existing.id)
     setPayrolls(prev => prev.map(p => p.id === existing.id ? { ...p, ...upd } : p))
     await db.from('monthly_payroll_audit').insert({
@@ -24531,6 +24725,7 @@ function PayrollModule({ user, allUsers, mobile }: any) {
           flexWrap:'wrap', overflowX:'auto' }}>
           {([
             { id:'overview',         label:'📊 Tổng quan' },
+            { id:'sales_revenue',    label:'💰 DS Sale' },
             { id:'shortage_loss',    label:'💸 Mất hàng' },
             { id:'return_loss',      label:'🔄 Hoàn hàng' },
             { id:'mbo_bonus',        label:'🎯 MBO' },
@@ -24571,6 +24766,15 @@ function PayrollModule({ user, allUsers, mobile }: any) {
             specialDays={specialDays}
             setSpecialDays={setSpecialDays}
             year={year}/>
+        ) : adminTab === 'sales_revenue' ? (
+          <PayrollTabSalesRevenue user={user} mobile={mobile}
+            allUsers={allUsers}
+            usersWithSalary={usersWithSalary}
+            month={month} year={year}
+            kvInvoices={kvInvoices}
+            userAliases={userAliases}
+            customerNewClaims={customerNewClaims}
+            computeSaleRevenueForUser={computeSaleRevenueForUser}/>
         ) : (
           <PayrollTabOverride user={user} mobile={mobile}
             usersWithSalary={usersWithSalary}
@@ -24671,6 +24875,7 @@ function PayrollModule({ user, allUsers, mobile }: any) {
               const pr = existing || computeForUser(u)  // Show preview nếu chưa tính
               const statusLabel = existing ? (existing.status === 'approved' ? '✅ Đã duyệt' : existing.status === 'paid' ? '💰 Đã trả' : '📝 Draft') : '— Chưa tính'
               const statusColor = existing ? (existing.status === 'approved' ? T.green : existing.status === 'paid' ? T.blue : T.amber) : T.med
+              const wasUnlocked = !!existing?.was_unlocked  // v195
               return (
                 <tr key={u.id} style={{ borderBottom: `1px solid ${T.border}`, background: idx % 2 === 0 ? '#FFF' : T.bg }}>
                   <td style={{ padding: 10, fontWeight: 600 }}>{u.name}</td>
@@ -24687,7 +24892,15 @@ function PayrollModule({ user, allUsers, mobile }: any) {
                   <td style={{ padding: 10, textAlign: 'right', fontWeight: 700, fontSize: FS.md, color: T.dark }}>
                     {fmtVND(pr.final_salary || 0)}
                   </td>
-                  <td style={{ padding: 10, color: statusColor, fontWeight: 600 }}>{statusLabel}</td>
+                  <td style={{ padding: 10, color: statusColor, fontWeight: 600 }}>
+                    {statusLabel}
+                    {wasUnlocked && existing?.status === 'draft' && (
+                      <div style={{ fontSize:9, color:'#9A3412', fontWeight:700, marginTop:2,
+                        padding:'2px 6px', background:'#FED7AA', borderRadius:8, display:'inline-block' }}>
+                        🔓 Đã mở khoá
+                      </div>
+                    )}
+                  </td>
                   <td style={{ padding: 10 }}>
                     <div style={{ display: 'flex', gap: 4, flexWrap: 'wrap' }}>
                       <button onClick={() => setDetailModalUser(u)}
@@ -24814,8 +25027,8 @@ function PayrollTabOverride({ user, mobile, usersWithSalary, month, year, overri
   const [cfgEditValue, setCfgEditValue] = useState('')
   
   const titles: any = {
-    'shortage_loss':    { emoji: '💸', name: 'Tiền mất hàng', desc: 'Tiền NV đền bù cho mất hàng (trừ vào lương)', color: T.red },
-    'return_loss':      { emoji: '🔄', name: 'Tiền hoàn hàng', desc: 'Đóng sai → khách trả lại → trừ NV (trừ vào lương)', color: T.red },
+    'shortage_loss':    { emoji: '💸', name: 'Tiền mất hàng', desc: 'Auto sync từ phiên kiểm kê chốt tháng (mất không rõ nguyên nhân) ÷ số NV kho. Override chỉ áp tháng này.', color: T.red },
+    'return_loss':      { emoji: '🔄', name: 'Tiền hoàn hàng', desc: 'Auto sync từ báo cáo hàng hoàn (tiền ship của các đơn có NV vi phạm = NV này). Override chỉ áp tháng này.', color: T.red },
     'mbo_bonus':        { emoji: '🎯', name: 'Thưởng MBO', desc: 'Thưởng đạt mục tiêu MBO tháng', color: T.green },
     'inspection_bonus': { emoji: '✅', name: 'Thưởng kiểm hàng', desc: 'Thưởng kiểm hàng — config chung mặc định, có thể override per-NV', color: T.green },
     'allowance':        { emoji: '💝', name: 'Trợ cấp', desc: 'Trợ cấp khác (xăng xe, điện thoại, v.v.)', color: T.blue },
@@ -25763,6 +25976,286 @@ function PayrollTabSchedule({ user, mobile, positionWorkSchedule, setPositionWor
           </div>
         </div>
       )}
+    </div>
+  )
+}
+
+
+// ══════════════════════════════════════════════════════════════════════
+// v195: PayrollTabSalesRevenue — Doanh số NV Sale (từ KV)
+// ══════════════════════════════════════════════════════════════════════
+function PayrollTabSalesRevenue({ user, mobile, allUsers, usersWithSalary, month, year, kvInvoices, userAliases, customerNewClaims, computeSaleRevenueForUser }: any) {
+  const [working, setWorking] = useState(false)
+  const [showDetailUid, setShowDetailUid] = useState<string|null>(null)
+  
+  // Lọc Sales + QL Sale
+  const salesUsers = useMemo(() => {
+    return usersWithSalary.filter((u: any) => 
+      u._salary?.position_type === 'Sales' || u._salary?.position_type === 'Quản lý Sale'
+    )
+  }, [usersWithSalary])
+  
+  // Compute toàn bộ
+  const computedAll = useMemo(() => {
+    return salesUsers.map((u: any) => {
+      const r = computeSaleRevenueForUser(u.id)
+      return { ...u, _rev: r }
+    })
+  }, [salesUsers, kvInvoices, customerNewClaims])
+  
+  // Tổng tất cả (cho summary)
+  const totals = useMemo(() => {
+    let totalDs = 0, totalKhachCu = 0, totalKhachMoi = 0, totalHh = 0
+    let totalInvoices = 0, totalReturned = 0
+    for (const inv of kvInvoices) {
+      totalInvoices++
+      if (inv.is_returned) { totalReturned++; continue }
+      totalDs += Number(inv.total_payment || 0)
+    }
+    for (const x of computedAll) {
+      totalKhachCu += x._rev.dsKhachCu
+      totalKhachMoi += x._rev.dsKhachMoi
+      totalHh += x._rev.hh.hhTotal
+    }
+    return { totalDs, totalKhachCu, totalKhachMoi, totalHh, totalInvoices, totalReturned }
+  }, [kvInvoices, computedAll])
+  
+  // Snapshot vào monthly_revenue
+  const handleSnapshot = async () => {
+    if (!confirm(`Snapshot DS Sale tháng ${month}/${year} vào DB?\n\nSẽ ghi đè ${computedAll.length} record monthly_revenue. Sau khi snapshot, tab Tổng quan sẽ tính lương dùng số này.`)) return
+    setWorking(true)
+    try {
+      let saved = 0
+      for (const x of computedAll) {
+        const payload = {
+          id: `mr_${x.id}_${year}_${String(month).padStart(2,'0')}`,
+          user_id: x.id,
+          user_name: x.name,
+          month, year,
+          ds_khach_cu: Math.round(x._rev.dsKhachCu),
+          ds_khach_moi: Math.round(x._rev.dsKhachMoi),
+          hh_khach_cu: Math.round(x._rev.hh.hhKhachCu),
+          hh_khach_moi: Math.round(x._rev.hh.hhKhachMoi),
+          hh_tuyen_duoi: Math.round(x._rev.hh.hhTuyenDuoi),
+          hh_total: Math.round(x._rev.hh.hhTotal),
+          ty_le_lcb: x._rev.hh.tyLeLcb,
+          lcb_dat: Math.round(x._rev.hh.lcbDat),
+          source: 'kv_sync',
+          synced_at: new Date().toISOString(),
+        }
+        const { error } = await db.from('monthly_revenue').upsert(payload, { onConflict: 'id' })
+        if (error) console.error(`[snapshot ${x.name}]`, error.message)
+        else saved++
+      }
+      toast.success(`✓ Đã snapshot ${saved}/${computedAll.length} NV vào monthly_revenue`)
+    } catch (e: any) {
+      toast.error('Lỗi: ' + e.message)
+    } finally {
+      setWorking(false)
+    }
+  }
+  
+  const detailUser = computedAll.find((x: any) => x.id === showDetailUid)
+  
+  return (
+    <div>
+      {/* Header */}
+      <Card style={{ padding:14, marginBottom:12, borderLeft:`4px solid ${T.green}` }}>
+        <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', flexWrap:'wrap', gap:10 }}>
+          <div>
+            <div style={{ fontSize:16, fontWeight:700, color:T.dark }}>
+              💰 Doanh số NV Sale — Tháng {month}/{year}
+            </div>
+            <div style={{ fontSize:12, color:T.med, marginTop:4 }}>
+              Auto compute từ KV invoices (loại đơn return). DS khách mới = đơn của KH được duyệt là "KH mới của sale X" trong tháng.
+              Bấm <b>💾 Snapshot</b> để lưu vào DB → tab Tổng quan sẽ tính lương dùng số này.
+            </div>
+          </div>
+          <button onClick={handleSnapshot} disabled={working || computedAll.length === 0}
+            style={{ padding:'10px 18px', borderRadius:6, border:'none',
+              background: working ? T.border : T.green, color:'#fff',
+              cursor: working ? 'wait' : 'pointer',
+              fontFamily:'inherit', fontSize:13, fontWeight:700,
+              whiteSpace:'nowrap' }}>
+            {working ? '⏳ Đang lưu...' : '💾 Snapshot vào DB'}
+          </button>
+        </div>
+      </Card>
+      
+      {/* Summary cards */}
+      <div style={{ display:'grid', gridTemplateColumns: mobile ? '1fr 1fr' : 'repeat(4, 1fr)',
+        gap:10, marginBottom:12 }}>
+        {[
+          { label:'📊 Tổng KV invoices tháng', val: `${totals.totalInvoices.toLocaleString('vi-VN')} đơn`, sub: `Returned: ${totals.totalReturned}`, color: T.blue },
+          { label:'💵 Tổng DS toàn cty (chưa group)', val: `${Math.round(totals.totalDs).toLocaleString('vi-VN')}đ`, sub: 'Net (loại return)', color: T.dark },
+          { label:'🆕 Tổng DS KH mới', val: `${Math.round(totals.totalKhachMoi).toLocaleString('vi-VN')}đ`, sub: `${customerNewClaims.filter((c: any) => c.status === 'approved').length} KH approved`, color: T.gold },
+          { label:'💰 Tổng HH chi trả', val: `${Math.round(totals.totalHh).toLocaleString('vi-VN')}đ`, sub: `${computedAll.length} sale`, color: T.green },
+        ].map(card => (
+          <Card key={card.label} style={{ padding:'10px 12px', textAlign:'center' }}>
+            <div style={{ fontSize:18, fontWeight:800, color:card.color }}>{card.val}</div>
+            <div style={{ fontSize:10, color:T.light, marginTop:3 }}>{card.label}</div>
+            <div style={{ fontSize:9, color:T.light, marginTop:1, fontStyle:'italic' }}>{card.sub}</div>
+          </Card>
+        ))}
+      </div>
+      
+      {/* Bảng chi tiết */}
+      <Card style={{ padding:0, overflow:'auto' }}>
+        <table style={{ width:'100%', borderCollapse:'collapse', fontSize:12 }}>
+          <thead style={{ background:T.bg }}>
+            <tr>
+              <th style={_payrollThStyle}>NV Sale</th>
+              <th style={_payrollThStyle}>Vị trí</th>
+              <th style={{ ..._payrollThStyle, textAlign:'right' }}>Tổng DS</th>
+              <th style={{ ..._payrollThStyle, textAlign:'right' }}>DS KH cũ</th>
+              <th style={{ ..._payrollThStyle, textAlign:'right' }}>DS KH mới</th>
+              <th style={{ ..._payrollThStyle, textAlign:'right' }}>HH KH cũ</th>
+              <th style={{ ..._payrollThStyle, textAlign:'right' }}>HH KH mới (1%)</th>
+              <th style={{ ..._payrollThStyle, textAlign:'right' }}>HH tuyến dưới</th>
+              <th style={{ ..._payrollThStyle, textAlign:'right', background: '#FEF3C7' }}>TỔNG HH</th>
+              <th style={{ ..._payrollThStyle, textAlign:'center' }}>Chi tiết</th>
+            </tr>
+          </thead>
+          <tbody>
+            {computedAll.length === 0 ? (
+              <tr>
+                <td colSpan={10} style={{ padding:30, textAlign:'center', color:T.light }}>
+                  📭 Chưa có NV Sales/Quản lý Sale nào trong salary_config
+                </td>
+              </tr>
+            ) : computedAll.map((x: any) => (
+              <tr key={x.id} style={{ borderBottom:`1px solid ${T.border}` }}>
+                <td style={{ padding:10, fontWeight:600, color:T.dark }}>{x.name}</td>
+                <td style={{ padding:10, fontSize:11, color:T.med }}>{x._salary?.position_type}</td>
+                <td style={{ padding:10, textAlign:'right', fontVariantNumeric:'tabular-nums', color:T.dark }}>
+                  {Math.round(x._rev.totalDs).toLocaleString('vi-VN')}đ
+                </td>
+                <td style={{ padding:10, textAlign:'right', fontVariantNumeric:'tabular-nums' }}>
+                  {Math.round(x._rev.dsKhachCu).toLocaleString('vi-VN')}đ
+                </td>
+                <td style={{ padding:10, textAlign:'right', fontVariantNumeric:'tabular-nums', color: x._rev.dsKhachMoi > 0 ? T.gold : T.light }}>
+                  {Math.round(x._rev.dsKhachMoi).toLocaleString('vi-VN')}đ
+                </td>
+                <td style={{ padding:10, textAlign:'right', fontVariantNumeric:'tabular-nums', color: x._rev.hh.hhKhachCu > 0 ? T.green : T.light }}>
+                  {Math.round(x._rev.hh.hhKhachCu).toLocaleString('vi-VN')}đ
+                </td>
+                <td style={{ padding:10, textAlign:'right', fontVariantNumeric:'tabular-nums', color: x._rev.hh.hhKhachMoi > 0 ? T.green : T.light }}>
+                  {Math.round(x._rev.hh.hhKhachMoi).toLocaleString('vi-VN')}đ
+                </td>
+                <td style={{ padding:10, textAlign:'right', fontVariantNumeric:'tabular-nums', color: x._rev.hh.hhTuyenDuoi > 0 ? T.purple : T.light }}>
+                  {Math.round(x._rev.hh.hhTuyenDuoi).toLocaleString('vi-VN')}đ
+                </td>
+                <td style={{ padding:10, textAlign:'right', fontVariantNumeric:'tabular-nums', fontWeight:700,
+                  background: '#FEF9E7', color: x._rev.hh.hhTotal > 0 ? T.dark : T.light }}>
+                  {Math.round(x._rev.hh.hhTotal).toLocaleString('vi-VN')}đ
+                </td>
+                <td style={{ padding:10, textAlign:'center' }}>
+                  <button onClick={() => setShowDetailUid(x.id)}
+                    style={{ padding:'4px 10px', borderRadius:4, border:`1px solid ${T.blue}`,
+                      background:'#fff', color:T.blue, cursor:'pointer',
+                      fontFamily:'inherit', fontSize:11, fontWeight:600 }}>
+                    🔍 Xem
+                  </button>
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </Card>
+      
+      {/* Modal chi tiết */}
+      {detailUser && (
+        <div style={{
+          position:'fixed', inset:0, background:'rgba(0,0,0,0.6)', zIndex:1100,
+          display:'flex', alignItems:'center', justifyContent:'center', padding:20,
+        }} onClick={() => setShowDetailUid(null)}>
+          <div onClick={(e: any) => e.stopPropagation()} style={{
+            background:'#fff', borderRadius:12, maxWidth:680, width:'100%', maxHeight:'85vh', overflow:'auto',
+          }}>
+            <div style={{ padding:'14px 20px', borderBottom:`1px solid ${T.border}`,
+              display:'flex', justifyContent:'space-between', alignItems:'center',
+              position:'sticky', top:0, background:'#fff' }}>
+              <div>
+                <div style={{ fontSize:16, fontWeight:700, color:T.dark }}>
+                  💰 Chi tiết DS — {detailUser.name}
+                </div>
+                <div style={{ fontSize:12, color:T.med, marginTop:2 }}>
+                  Tháng {month}/{year} · {detailUser._salary?.position_type}
+                </div>
+              </div>
+              <button onClick={() => setShowDetailUid(null)}
+                style={{ background:'none', border:'none', fontSize:22, cursor:'pointer', color:T.med }}>✕</button>
+            </div>
+            
+            <div style={{ padding:20 }}>
+              {/* Breakdown */}
+              <div style={{ display:'grid', gap:8, fontSize:13 }}>
+                <Row label="Tổng DS (gross)" value={`${Math.round(detailUser._rev.totalDs).toLocaleString('vi-VN')}đ`}/>
+                <Row label="└ DS khách cũ"   value={`${Math.round(detailUser._rev.dsKhachCu).toLocaleString('vi-VN')}đ`}/>
+                <Row label="└ DS khách mới"  value={`${Math.round(detailUser._rev.dsKhachMoi).toLocaleString('vi-VN')}đ`} hl/>
+                
+                <hr style={{ border:'none', borderTop:`1px dashed ${T.border}`, margin:'8px 0' }}/>
+                
+                <Row label="Tỷ lệ LCB đạt" value={`${(detailUser._rev.hh.tyLeLcb * 100).toFixed(0)}%`}/>
+                <Row label="LCB đạt"        value={`${Math.round(detailUser._rev.hh.lcbDat).toLocaleString('vi-VN')}đ`}/>
+                
+                <hr style={{ border:'none', borderTop:`1px dashed ${T.border}`, margin:'8px 0' }}/>
+                
+                <Row label="HH khách cũ (progressive)" value={`${Math.round(detailUser._rev.hh.hhKhachCu).toLocaleString('vi-VN')}đ`} hl/>
+                <Row label="HH khách mới (1%)"          value={`${Math.round(detailUser._rev.hh.hhKhachMoi).toLocaleString('vi-VN')}đ`} hl/>
+                {detailUser._salary?.is_sale_manager && (
+                  <Row label="HH tuyến dưới (QL Sale)"   value={`${Math.round(detailUser._rev.hh.hhTuyenDuoi).toLocaleString('vi-VN')}đ`} hl/>
+                )}
+                
+                <hr style={{ border:'none', borderTop:`2px solid ${T.dark}`, margin:'8px 0' }}/>
+                
+                <Row label="🎯 TỔNG HH chi trả" value={`${Math.round(detailUser._rev.hh.hhTotal).toLocaleString('vi-VN')}đ`} bold/>
+              </div>
+              
+              {/* DS khách mới — list */}
+              {detailUser._rev.dsKhachMoi > 0 && (
+                <div style={{ marginTop:18 }}>
+                  <div style={{ fontSize:12, fontWeight:700, color:T.gold, marginBottom:6 }}>
+                    🆕 KH mới đã được duyệt cho tháng này:
+                  </div>
+                  <div style={{ background:'#FEF9E7', padding:10, borderRadius:6, maxHeight:200, overflow:'auto' }}>
+                    {customerNewClaims
+                      .filter((c: any) => c.sale_user_id === detailUser.id && c.status === 'approved')
+                      .map((c: any, idx: number) => (
+                        <div key={idx} style={{ fontSize:11, color:T.dark, padding:'3px 0',
+                          borderBottom: `1px dashed ${T.border}` }}>
+                          {c.customer_code} — <b>{c.customer_name || ''}</b>
+                        </div>
+                      ))}
+                  </div>
+                </div>
+              )}
+              
+              {/* Source note */}
+              <div style={{ marginTop:16, padding:10, background:T.bg, borderRadius:6, fontSize:11, color:T.med }}>
+                💡 Compute từ <b>{kvInvoices.length}</b> KV invoices tháng này. 
+                Map sale qua bảng <code>user_aliases</code> ({userAliases.length} mapping). 
+                HH theo công thức Excel: tier LCB ({'{'}500M, 350M, 200M, 100M{'}'}) + progressive khách cũ ({'{'}500M-1.5B: 0.2%, 1.5B-3B: 0.3%, 3B+: 0.5%{'}'}) + 1% khách mới.
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  )
+}
+
+// Helper Row cho modal DS detail
+function Row({ label, value, hl, bold }: any) {
+  return (
+    <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center',
+      padding:'4px 0', fontWeight: bold ? 700 : 400, fontSize: bold ? 15 : 13,
+      color: bold ? T.dark : T.med }}>
+      <span>{label}</span>
+      <span style={{ fontVariantNumeric:'tabular-nums', color: hl ? T.gold : (bold ? T.green : T.dark),
+        fontWeight: hl || bold ? 700 : 600 }}>
+        {value}
+      </span>
     </div>
   )
 }
