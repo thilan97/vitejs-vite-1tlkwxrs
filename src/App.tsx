@@ -95,7 +95,18 @@ const db = createClient(SUPABASE_URL, SUPABASE_KEY)
 //       (3) Tab "💝 Trợ cấp" — 2 sections: cấu hình per-position default + override per-NV per tháng.
 //       (4) Tab "🛡 BHXH" mới: list NV với checkbox toggle has_bhxh + edit mức BHXH chung (lưu vào payroll_config).
 //       (5) Phiếu lương: thêm dòng "💡 Đơn giá/ngày = LCB ÷ NETWORKDAYS" giải thích công thức ngày lễ.
-const APP_VERSION = '2026.04.30.v196'
+// v197: KPI Công nợ Sale (chấm hiệu suất quản lý công nợ theo nhóm KH):
+//       (1) Migration 61: bảng kpi_debt_targets (5 grade SVIP/VIP/PREMIUM/STANDARD/NORMAL → target_ratio default 9/7/2/1/0%) + kpi_debt_snapshots (snapshot per sale per month).
+//       (2) Function computeKpiDebtForSale + computeKpiBonus (-300k/0/+100k/+200k tùy số nhóm đạt).
+//       (3) Tab MỚI "📊 KPI Công nợ" trong Tính lương — mode='snapshot', có nút "📌 Chốt tháng" + cấu hình target chung.
+//       (4) Tab MỚI "📊 KPI Công nợ" trong Khách Hàng — mode='realtime', cho sale xem tình hình hiện tại (sale chỉ thấy mình, admin thấy hết).
+//       (5) Component PayrollTabKpiDebt dùng chung 2 mode. Bảng giống Excel anh gửi: mỗi sale 5 dòng nhóm + TOTAL, cột Hiệu số xanh/đỏ.
+//       (6) Integrate vào computeMonthlyPayroll: thêm field kpi_debt_bonus, cộng vào finalSalary cho Sales/QL Sale từ snapshot.
+//       (7) Source: customers (assigned_to_user_id + groups + debt) cho công nợ, kiotviet_sales_daily cho DS.
+// v197.1: Bug fix:
+//       (a) Schema customers thực tế KHÔNG có field `revenue` (chỉ có `total_revenue`). Query SELECT đang fail silent → fix bằng cách bỏ revenue (KPI lấy DS từ kvSalesDaily, không cần customers.revenue).
+//       (b) Customers >2500 rows nhưng dùng .range(0, 9999) chưa đủ tin cậy — đổi sang pagination loop batch 1000 (giống CustomersModule).
+const APP_VERSION = '2026.04.30.v197.1'
 
 // ════════════════════════════════════════════════════════════════
 // v158: VersionBadge — Hiển thị APP_VERSION ở góc dưới phải
@@ -23964,6 +23975,8 @@ function computeMonthlyPayroll(opts: {
   // v196: MBO grade lookup + Position allowance lookup
   mboGradeAmount?: number,           // amount tra theo grade (B mặc định)
   positionAllowanceAmount?: number,  // amount theo vị trí của NV
+  // v197: KPI Công nợ bonus/penalty (cộng vào HH)
+  kpiDebtBonus?: number,             // -300k/0/+100k/+200k tùy số nhóm đạt
   // v191: overrides — Map<field_type, amount>
   overrides?: Map<string, number>,  // per-NV overrides cho NV này
   configOverrides?: Map<string, number>,  // override config chung tháng đó (user_id NULL)
@@ -24127,10 +24140,14 @@ function computeMonthlyPayroll(opts: {
   // other_income có thể override
   const effectiveOtherIncome = getOverride('other_income', opts.otherIncomeTotal)
 
+  // v197: KPI Công nợ bonus (-300k/0/+100k/+200k) — chỉ áp cho Sales / QL Sale
+  const kpiDebtBonus = (sc.position_type === 'Sales' || sc.position_type === 'Quản lý Sale')
+    ? Number(opts.kpiDebtBonus || 0)
+    : 0
+
   // 5. Tổng kết
   let finalSalary: number
   if (sc.position_type === 'Phụ trách chung') {
-    // PTC: LCB flat (LCB có thể bị override)
     finalSalary = effectiveBaseSalary + opts.manualAdjust
   } else if (sc.position_type === 'Part-time') {
     const totalHoursAmount = Math.round((workHoursRegular + ot150Hours + ot200Hours) * effectiveBaseSalary)
@@ -24139,8 +24156,9 @@ function computeMonthlyPayroll(opts: {
     finalSalary = workAmount + ot150Amount + ot200Amount
       + lunchAmount + attBonusAmount + inspectionBonusAmount
       + mboBonus + allowance
-      + holidayAmount                                          // v193: thêm lương ngày lễ
+      + holidayAmount
       + opts.commissionTotal + effectiveOtherIncome
+      + kpiDebtBonus                                             // v197: KPI bonus/penalty
       - bhxhDeduction - effectiveShortageLoss - returnLoss - otherDeduction
       + opts.manualAdjust
   }
@@ -24183,6 +24201,8 @@ function computeMonthlyPayroll(opts: {
     // v193: ngày lễ
     holiday_amount: holidayAmount,
     holiday_breakdown: holidayBreakdown,
+    // v197: KPI debt bonus
+    kpi_debt_bonus: kpiDebtBonus,
     final_salary: finalSalary,
   }
 }
@@ -24210,6 +24230,75 @@ const COMMISSION_OLD_CLIENT_TIERS = [
   { from: 1500000000, to: 3000000000,  rate: 0.003 },
   { from: 3000000000, to: Infinity,    rate: 0.005 },
 ]
+
+// ═════════════════════════════════════════════════════════════════════
+// v197: KPI Công nợ Sale — chấm hiệu suất quản lý công nợ theo nhóm KH
+// ═════════════════════════════════════════════════════════════════════
+
+const KPI_DEBT_GROUPS = ['SVIP', 'VIP', 'PREMIUM', 'STANDARD', 'NORMAL'] as const
+const KPI_DEBT_DEFAULT_TARGETS: Record<string, number> = {
+  SVIP: 0.09, VIP: 0.07, PREMIUM: 0.02, STANDARD: 0.01, NORMAL: 0.00,
+}
+
+// Thưởng/phạt theo số nhóm đạt target
+function computeKpiBonus(groupsPassed: number): number {
+  if (groupsPassed <= 2) return -300000  // Trừ 300k vào HH nếu chỉ đạt 0-2 nhóm
+  if (groupsPassed === 3) return 0       // Đạt 3 nhóm: không thưởng/phạt
+  if (groupsPassed === 4) return 100000  // 4 nhóm: +100k
+  if (groupsPassed === 5) return 200000  // 5 nhóm (full): +200k
+  return 0
+}
+
+// Compute KPI cho 1 sale dựa trên list customers + total revenue
+// Note: customers đã filter assigned_to_user_id = saleId
+// debt và revenue đã ×1000 → nhận VND thực
+function computeKpiDebtForSale(opts: {
+  customers: any[],            // KH thuộc về sale này (assigned_to_user_id=saleId)
+  totalRevenue: number,        // Tổng DS sale tháng đó (VND thực)
+  targets: Record<string, number>, // {SVIP: 0.09, ...}
+}): {
+  byGroup: Record<string, { debt: number, ratioOnRevenue: number, ratioOnDebt: number, target: number, isPass: boolean }>,
+  totalDebt: number,
+  groupsPassed: number,
+  bonusAmount: number,
+} {
+  const { customers, totalRevenue, targets } = opts
+  
+  // Tổng công nợ + chia theo group (×1000 ra VND thực)
+  const debtByGroup: Record<string, number> = { SVIP: 0, VIP: 0, PREMIUM: 0, STANDARD: 0, NORMAL: 0 }
+  for (const c of customers) {
+    const debtRaw = Number(c.debt || 0)  // KV rút gọn
+    const debtReal = debtRaw * 1000      // VND thực
+    const grp = (c.groups || '').toUpperCase().trim() || 'NORMAL'
+    if (debtByGroup[grp] !== undefined) {
+      debtByGroup[grp] += debtReal
+    } else {
+      // Group không thuộc 5 nhóm → tính vào NORMAL
+      debtByGroup['NORMAL'] += debtReal
+    }
+  }
+  
+  const totalDebt = Object.values(debtByGroup).reduce((s, v) => s + v, 0)
+  
+  // Compute ratio per group
+  const byGroup: any = {}
+  let groupsPassed = 0
+  for (const g of KPI_DEBT_GROUPS) {
+    const debt = debtByGroup[g] || 0
+    const ratioOnRevenue = totalRevenue > 0 ? debt / totalRevenue : 0
+    const ratioOnDebt = totalDebt !== 0 ? debt / totalDebt : 0
+    const target = targets[g] !== undefined ? targets[g] : (KPI_DEBT_DEFAULT_TARGETS[g] || 0)
+    // Đạt = ratio nhỏ hơn HOẶC bằng target (công nợ thấp hơn target = tốt)
+    const isPass = ratioOnRevenue <= target
+    if (isPass) groupsPassed++
+    byGroup[g] = { debt, ratioOnRevenue, ratioOnDebt, target, isPass }
+  }
+  
+  const bonusAmount = computeKpiBonus(groupsPassed)
+  
+  return { byGroup, totalDebt, groupsPassed, bonusAmount }
+}
+
 
 function computeCommission(opts: {
   dsKhachCu: number,
@@ -24310,13 +24399,17 @@ function PayrollModule({ user, allUsers, mobile }: any) {
   // v196: MBO grades + Position allowances
   const [mboGrades, setMboGrades] = useState<any[]>([])
   const [positionAllowances, setPositionAllowances] = useState<any[]>([])
+  // v197: KPI Công nợ Sale
+  const [kpiTargets, setKpiTargets] = useState<any[]>([])         // 5 grade config
+  const [kpiSnapshots, setKpiSnapshots] = useState<any[]>([])     // snapshots tháng
+  const [kpiCustomers, setKpiCustomers] = useState<any[]>([])     // customers có sale
   // v191/v192: overrides + position config (LCB lưu trong bảng positions)
   const [overrides, setOverrides] = useState<any[]>([])  // payroll_overrides của tháng này
   const [positionsList, setPositionsList] = useState<any[]>([])  // v192: bảng positions từ Quản trị
   const [positionWorkSchedule, setPositionWorkSchedule] = useState<any[]>([])
   const [specialDays, setSpecialDays] = useState<any[]>([])  // v193: ngày lễ/đặc biệt
   // v191: tabs
-  const [adminTab, setAdminTab] = useState<'overview'|'shortage_loss'|'return_loss'|'mbo_bonus'|'inspection_bonus'|'allowance'|'base_salary'|'schedule'|'sales_revenue'|'bhxh'>('overview')
+  const [adminTab, setAdminTab] = useState<'overview'|'shortage_loss'|'return_loss'|'mbo_bonus'|'inspection_bonus'|'allowance'|'base_salary'|'schedule'|'sales_revenue'|'bhxh'|'kpi_debt'>('overview')
   const isAdmin = perm.viewAllDashboard
   // v191: Admin chọn NV xem phiếu lương
   const [viewSlipUserId, setViewSlipUserId] = useState<string>('')
@@ -24347,7 +24440,26 @@ function PayrollModule({ user, allUsers, mobile }: any) {
               .range(0, 9999)
           : Promise.resolve({ data: [] })
         
-        const [sc, pc, pr, oi, sl, rv, att, ovr, pos, pws, sd, ri, ic, is_, ksd, kviNc, mbg, pa] = await Promise.all([
+        // v197.1: Tách query customers ra để dùng pagination loop (>2500 KH, an toàn hơn .range)
+        const fetchAllCustomers = async (): Promise<any[]> => {
+          const PAGE_SIZE = 1000
+          let all: any[] = []
+          let from = 0
+          while (true) {
+            const { data, error } = await db.from('customers')
+              .select('id,code,name,debt,groups,assigned_to_user_id,assigned_to_user_name')
+              .neq('is_deleted', true)
+              .range(from, from + PAGE_SIZE - 1)
+            if (error) { console.error('[customers]', error.message); break }
+            const rows = data || []
+            all = all.concat(rows)
+            if (rows.length < PAGE_SIZE || all.length >= 10000) break
+            from += PAGE_SIZE
+          }
+          return all
+        }
+        
+        const [sc, pc, pr, oi, sl, rv, att, ovr, pos, pws, sd, ri, ic, is_, ksd, kviNc, mbg, pa, kpt, kps, kpc] = await Promise.all([
           db.from('salary_config').select('*').is('effective_to', null),
           db.from('payroll_config').select('*').maybeSingle(),
           db.from('monthly_payroll').select('*').eq('month', month).eq('year', year),
@@ -24364,9 +24476,12 @@ function PayrollModule({ user, allUsers, mobile }: any) {
           db.from('inventory_sessions').select('*').range(0, 4999),
           db.from('kiotviet_sales_daily').select('*').gte('date', fromDate).lte('date', toDate).range(0, 9999),
           kviNewCustPromise,
-          // v196: MBO + Position allowances
           db.from('mbo_grades_config').select('*').order('display_order'),
           db.from('position_allowances').select('*'),
+          db.from('kpi_debt_targets').select('*').order('display_order'),
+          db.from('kpi_debt_snapshots').select('*').eq('month', month).eq('year', year),
+          // v197.1: pagination loop cho customers (>2500 rows)
+          fetchAllCustomers().then((data: any[]) => ({ data })),
         ])
         setSalaryConfigs(sc.data || [])
         setPayrollConfig(pc.data || {})
@@ -24396,6 +24511,10 @@ function PayrollModule({ user, allUsers, mobile }: any) {
         // v196
         setMboGrades(mbg.data || [])
         setPositionAllowances(pa.data || [])
+        // v197
+        setKpiTargets(kpt.data || [])
+        setKpiSnapshots(kps.data || [])
+        setKpiCustomers(kpc.data || [])
       } catch (e: any) {
         setError('Lỗi load data: ' + e.message)
       } finally {
@@ -24638,6 +24757,10 @@ function PayrollModule({ user, allUsers, mobile }: any) {
     const posAllowRow = positionAllowances.find((p: any) => p.position_id === u.position_id)
     const positionAllowanceAmount = Number(posAllowRow?.amount || 0)
     
+    // v197: KPI debt bonus từ snapshot tháng đó (nếu đã chốt)
+    const kpiSnap = kpiSnapshots.find((k: any) => k.sale_user_id === u.id)
+    const kpiDebtBonus = kpiSnap ? Number(kpiSnap.bonus_amount || 0) : 0
+    
     // v192: Lấy LCB từ positions.base_salary nếu có
     const positionLcb = u.position_id 
       ? Number(positionsList.find((p: any) => p.id === u.position_id)?.base_salary || 0)
@@ -24666,6 +24789,8 @@ function PayrollModule({ user, allUsers, mobile }: any) {
       // v196: MBO + Allowance lookup amounts
       mboGradeAmount,
       positionAllowanceAmount,
+      // v197: KPI Công nợ bonus
+      kpiDebtBonus,
       // v191: pass overrides
       overrides: getUserOverrides(u.id),
       configOverrides: getConfigOverrides(),
@@ -24820,6 +24945,7 @@ function PayrollModule({ user, allUsers, mobile }: any) {
           {([
             { id:'overview',         label:'📊 Tổng quan' },
             { id:'sales_revenue',    label:'💰 DS Sale' },
+            { id:'kpi_debt',         label:'📊 KPI Công nợ' },
             { id:'shortage_loss',    label:'💸 Mất hàng' },
             { id:'return_loss',      label:'🔄 Hoàn hàng' },
             { id:'mbo_bonus',        label:'🎯 MBO/Hiệu suất' },
@@ -24896,6 +25022,19 @@ function PayrollModule({ user, allUsers, mobile }: any) {
             setSalaryConfigs={setSalaryConfigs}
             payrollConfig={payrollConfig}
             setPayrollConfig={setPayrollConfig}/>
+        ) : adminTab === 'kpi_debt' ? (
+          <PayrollTabKpiDebt user={user} mobile={mobile}
+            allUsers={allUsers}
+            usersWithSalary={usersWithSalary}
+            month={month} year={year}
+            kvSalesDaily={kvSalesDaily}
+            kvNameToAppUserMap={kvNameToAppUserMap}
+            kpiCustomers={kpiCustomers}
+            kpiTargets={kpiTargets}
+            setKpiTargets={setKpiTargets}
+            kpiSnapshots={kpiSnapshots}
+            setKpiSnapshots={setKpiSnapshots}
+            mode="snapshot"/>
         ) : (
           <PayrollTabOverride user={user} mobile={mobile}
             usersWithSalary={usersWithSalary}
@@ -27091,7 +27230,414 @@ function PayrollTabBhxh({ user, mobile, allUsers, usersWithSalary, salaryConfigs
 }
 
 
-// Detail modal — breakdown công thức + manual override + bảng chấm công full tháng (v192)
+// ══════════════════════════════════════════════════════════════════════
+// v197: PayrollTabKpiDebt — KPI Công nợ Sale (snapshot/realtime mode)
+// Dùng chung giữa PayrollModule (mode='snapshot') + CustomersModule (mode='realtime')
+// ══════════════════════════════════════════════════════════════════════
+function PayrollTabKpiDebt({ 
+  user, mobile, allUsers, usersWithSalary, month, year, 
+  kvSalesDaily, kvNameToAppUserMap,
+  kpiCustomers, kpiTargets, setKpiTargets,
+  kpiSnapshots, setKpiSnapshots,
+  mode = 'snapshot'  // 'snapshot' (Payroll) hoặc 'realtime' (Customers)
+}: any) {
+  const [working, setWorking] = useState(false)
+  const [editingTarget, setEditingTarget] = useState<string|null>(null)
+  const [editTargetVal, setEditTargetVal] = useState('')
+  
+  // Lọc Sales từ usersWithSalary (mode snapshot — Payroll context) hoặc allUsers
+  const salesUsers = useMemo(() => {
+    if (usersWithSalary && usersWithSalary.length > 0) {
+      return usersWithSalary.filter((u: any) => 
+        u._salary?.position_type === 'Sales' || u._salary?.position_type === 'Quản lý Sale'
+      )
+    }
+    // Realtime mode (Customers): lấy từ allUsers
+    return (allUsers || []).filter((u: any) => u.dept_id === 'sale' && u.active !== false)
+  }, [usersWithSalary, allUsers])
+  
+  // Build map target từ kpiTargets table
+  const targetsMap = useMemo(() => {
+    const m: Record<string, number> = { ...KPI_DEBT_DEFAULT_TARGETS }
+    for (const t of (kpiTargets || [])) {
+      m[t.customer_group] = Number(t.target_ratio || 0)
+    }
+    return m
+  }, [kpiTargets])
+  
+  // Compute KPI per sale (realtime mode)
+  const computeRealtime = (saleId: string) => {
+    // Tổng DS từ kvSalesDaily
+    let totalRevenueRaw = 0
+    if (kvSalesDaily && kvNameToAppUserMap) {
+      for (const r of kvSalesDaily) {
+        const k = (r.sold_by_name || '').toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g,'').replace(/đ/g,'d').replace(/\s+/g,' ').trim()
+        const mappedId = kvNameToAppUserMap.get(k)
+        if (mappedId === saleId) totalRevenueRaw += Number(r.total_revenue || 0)
+      }
+    }
+    const totalRevenue = totalRevenueRaw * 1000  // VND thực
+    
+    // Customers thuộc về sale này
+    const myCustomers = (kpiCustomers || []).filter((c: any) => c.assigned_to_user_id === saleId)
+    
+    return computeKpiDebtForSale({
+      customers: myCustomers,
+      totalRevenue,
+      targets: targetsMap,
+    })
+  }
+  
+  // Compute từ snapshot (snapshot mode)
+  const getSnapshot = (saleId: string) => {
+    return kpiSnapshots.find((s: any) => s.sale_user_id === saleId)
+  }
+  
+  // Bảng data — hybrid (snapshot ưu tiên, fallback realtime)
+  const tableData = useMemo(() => {
+    return salesUsers.map((u: any) => {
+      const snap = getSnapshot(u.id)
+      const realtime = computeRealtime(u.id)
+      // Nếu mode='snapshot' và có snapshot → dùng snapshot. Ngược lại → realtime
+      const useSnapshot = mode === 'snapshot' && snap
+      const display = useSnapshot ? {
+        byGroup: snap.breakdown_json || {},
+        totalDebt: Number(snap.total_debt || 0),
+        groupsPassed: snap.groups_passed || 0,
+        bonusAmount: Number(snap.bonus_amount || 0),
+        totalRevenue: Number(snap.total_revenue || 0),
+        isSnapshot: true,
+      } : {
+        ...realtime,
+        totalRevenue: realtime.byGroup ? (() => {
+          // Tính lại totalRevenue từ realtime
+          let r = 0
+          if (kvSalesDaily && kvNameToAppUserMap) {
+            for (const row of kvSalesDaily) {
+              const k = (row.sold_by_name || '').toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g,'').replace(/đ/g,'d').replace(/\s+/g,' ').trim()
+              const mappedId = kvNameToAppUserMap.get(k)
+              if (mappedId === u.id) r += Number(row.total_revenue || 0)
+            }
+          }
+          return r * 1000
+        })() : 0,
+        isSnapshot: false,
+      }
+      return { ...u, _kpi: display }
+    })
+  }, [salesUsers, kpiSnapshots, kpiTargets, kpiCustomers, kvSalesDaily, mode])
+  
+  // Snapshot toàn bộ
+  const handleSnapshotAll = async () => {
+    if (!confirm(`Chốt KPI Công nợ tháng ${month}/${year}?\n\nSẽ snapshot ${tableData.length} sale vào DB. Số liệu sau khi chốt sẽ KHÔNG đổi (kể cả khi KH thanh toán/phát sinh nợ mới).`)) return
+    setWorking(true)
+    try {
+      let saved = 0
+      for (const x of tableData) {
+        // Realtime compute để snapshot (không dùng snapshot cũ)
+        const k = computeRealtime(x.id)
+        const totalRevenue = (() => {
+          let r = 0
+          if (kvSalesDaily && kvNameToAppUserMap) {
+            for (const row of kvSalesDaily) {
+              const norm = (row.sold_by_name || '').toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g,'').replace(/đ/g,'d').replace(/\s+/g,' ').trim()
+              const mappedId = kvNameToAppUserMap.get(norm)
+              if (mappedId === x.id) r += Number(row.total_revenue || 0)
+            }
+          }
+          return r * 1000
+        })()
+        const payload: any = {
+          id: `kpi_${x.id}_${year}_${String(month).padStart(2,'0')}`,
+          sale_user_id: x.id,
+          sale_name: x.name,
+          month, year,
+          total_revenue: Math.round(totalRevenue),
+          debt_svip: Math.round(k.byGroup.SVIP?.debt || 0),
+          debt_vip: Math.round(k.byGroup.VIP?.debt || 0),
+          debt_premium: Math.round(k.byGroup.PREMIUM?.debt || 0),
+          debt_standard: Math.round(k.byGroup.STANDARD?.debt || 0),
+          debt_normal: Math.round(k.byGroup.NORMAL?.debt || 0),
+          total_debt: Math.round(k.totalDebt),
+          groups_passed: k.groupsPassed,
+          bonus_amount: k.bonusAmount,
+          snapshot_at: new Date().toISOString(),
+          snapshot_by: user.id,
+          breakdown_json: k.byGroup,
+        }
+        const { error } = await db.from('kpi_debt_snapshots').upsert(payload, { onConflict: 'id' })
+        if (error) console.error('[snapshot]', x.name, error.message)
+        else saved++
+      }
+      const { data } = await db.from('kpi_debt_snapshots').select('*').eq('month', month).eq('year', year)
+      setKpiSnapshots(data || [])
+      toast.success(`✓ Đã snapshot ${saved}/${tableData.length} sale`)
+    } catch (e: any) {
+      toast.error('Lỗi: ' + e.message)
+    } finally {
+      setWorking(false)
+    }
+  }
+  
+  const handleRemoveSnapshot = async () => {
+    if (!confirm(`Xóa toàn bộ snapshot tháng ${month}/${year}?\n\nKhi xóa, KPI sẽ quay về realtime — tính theo data hiện tại của KV/KH.`)) return
+    setWorking(true)
+    try {
+      const { error } = await db.from('kpi_debt_snapshots').delete().eq('month', month).eq('year', year)
+      if (error) throw new Error(error.message)
+      setKpiSnapshots([])
+      toast.success('✓ Đã xóa snapshot')
+    } catch (e: any) {
+      toast.error('Lỗi: ' + e.message)
+    } finally {
+      setWorking(false)
+    }
+  }
+  
+  // Save target
+  const saveTarget = async (group: string) => {
+    const ratio = parseFloat(editTargetVal.replace(/[^0-9.\-]/g, '')) / 100  // user nhập % → /100
+    if (isNaN(ratio) || ratio < 0 || ratio > 1) { toast.error('Nhập 0-100%'); return }
+    setWorking(true)
+    try {
+      const { error } = await db.from('kpi_debt_targets').update({
+        target_ratio: ratio, updated_at: new Date().toISOString(), updated_by: user.id,
+      }).eq('customer_group', group)
+      if (error) throw new Error(error.message)
+      const { data } = await db.from('kpi_debt_targets').select('*').order('display_order')
+      setKpiTargets(data || [])
+      setEditingTarget(null)
+      toast.success(`✓ Cập nhật target ${group}`)
+    } catch (e: any) {
+      toast.error('Lỗi: ' + e.message)
+    } finally {
+      setWorking(false)
+    }
+  }
+  
+  const fmtPercent = (n: number) => (n * 100).toFixed(1) + '%'
+  const fmtVNDshort = (n: number) => Math.round(n / 1000).toLocaleString('vi-VN')  // ngàn đ
+  
+  const hasAnySnapshot = kpiSnapshots.length > 0
+  
+  return (
+    <div>
+      {/* Header */}
+      <Card style={{ padding:14, marginBottom:12, borderLeft:`4px solid ${T.purple}` }}>
+        <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', flexWrap:'wrap', gap:10 }}>
+          <div>
+            <div style={{ fontSize:16, fontWeight:700, color:T.dark }}>
+              📊 KPI Công nợ Sale — Tháng {month}/{year}
+              {mode === 'snapshot' && hasAnySnapshot && (
+                <span style={{ marginLeft:10, padding:'3px 10px', background:T.greenBg, color:T.green,
+                  fontSize:10, fontWeight:700, borderRadius:10 }}>
+                  ✓ ĐÃ CHỐT
+                </span>
+              )}
+              {mode === 'realtime' && (
+                <span style={{ marginLeft:10, padding:'3px 10px', background:T.amberBg, color:T.amber,
+                  fontSize:10, fontWeight:700, borderRadius:10 }}>
+                  ⏱ REALTIME
+                </span>
+              )}
+            </div>
+            <div style={{ fontSize:12, color:T.med, marginTop:4 }}>
+              {mode === 'snapshot' 
+                ? 'Bảng chốt KPI để tính lương. Bấm "📌 Chốt tháng" để snapshot. Sau khi chốt, số sẽ FREEZE dù KH thanh toán/phát sinh nợ.'
+                : 'Realtime cho sale theo dõi tình hình. Tính theo data hiện tại của KH (đơn vị: nghìn đ giống KV).'}
+              <br/>Đơn vị tiền hiển thị: <b>nghìn đ</b> (giống KV) · Công thức: 
+              <code> ratio = công_nợ_nhóm ÷ tổng_DS_sale</code> · 
+              Đạt khi <code>ratio ≤ target</code>.
+            </div>
+          </div>
+          {mode === 'snapshot' && (
+            <div style={{ display:'flex', gap:6 }}>
+              {hasAnySnapshot && (
+                <button onClick={handleRemoveSnapshot} disabled={working}
+                  style={{ padding:'8px 14px', borderRadius:6, border:`1px solid ${T.red}`,
+                    background:'#fff', color:T.red, cursor:'pointer', fontSize:12, fontWeight:600 }}>
+                  🗑 Xóa chốt
+                </button>
+              )}
+              <button onClick={handleSnapshotAll} disabled={working || tableData.length === 0}
+                style={{ padding:'10px 18px', borderRadius:6, border:'none',
+                  background: working ? T.border : T.purple, color:'#fff',
+                  cursor: working ? 'wait' : 'pointer',
+                  fontFamily:'inherit', fontSize:13, fontWeight:700 }}>
+                {working ? '⏳ Đang chốt...' : (hasAnySnapshot ? '🔄 Chốt lại' : '📌 Chốt tháng')}
+              </button>
+            </div>
+          )}
+        </div>
+      </Card>
+      
+      {/* Section: Cấu hình target (chỉ admin/snapshot mode) */}
+      {mode === 'snapshot' && (
+        <Card style={{ padding:14, marginBottom:12 }}>
+          <div style={{ fontSize:14, fontWeight:700, color:T.dark, marginBottom:8 }}>
+            🎯 Cấu hình target KPI (% công nợ tối đa / tổng DS)
+          </div>
+          <div style={{ display:'grid', gridTemplateColumns: mobile ? '1fr 1fr' : 'repeat(5, 1fr)', gap:10 }}>
+            {KPI_DEBT_GROUPS.map(g => {
+              const currentTarget = targetsMap[g]
+              const isEdit = editingTarget === g
+              return (
+                <div key={g} style={{ padding:10, border:`2px solid ${T.border}`, borderRadius:8, textAlign:'center' }}>
+                  <div style={{ fontSize:12, fontWeight:700, color:T.purple, marginBottom:4 }}>{g}</div>
+                  {isEdit ? (
+                    <div>
+                      <input type="text" value={editTargetVal}
+                        onChange={e => setEditTargetVal(e.target.value)}
+                        autoFocus placeholder="9"
+                        style={{ width:'100%', padding:'6px', border:`1px solid ${T.border}`, borderRadius:4,
+                          background:'#fff', color:T.dark, fontSize:13, fontFamily:'inherit', textAlign:'center' }}/>
+                      <div style={{ fontSize:9, color:T.light, marginTop:2 }}>% (vd 9 cho 9%)</div>
+                      <div style={{ display:'flex', gap:4, marginTop:6 }}>
+                        <button onClick={() => saveTarget(g)} disabled={working}
+                          style={{ flex:1, padding:'4px', borderRadius:4, border:'none',
+                            background:T.green, color:'#fff', cursor:'pointer', fontSize:10, fontWeight:600 }}>
+                          💾
+                        </button>
+                        <button onClick={() => setEditingTarget(null)}
+                          style={{ flex:1, padding:'4px', borderRadius:4, border:`1px solid ${T.border}`,
+                            background:'#fff', color:T.med, cursor:'pointer', fontSize:10 }}>
+                          ✕
+                        </button>
+                      </div>
+                    </div>
+                  ) : (
+                    <>
+                      <div style={{ fontSize:18, fontWeight:800, color:T.dark }}>
+                        {fmtPercent(currentTarget)}
+                      </div>
+                      <button onClick={() => { setEditingTarget(g); setEditTargetVal(String((currentTarget * 100).toFixed(1))) }}
+                        style={{ marginTop:4, padding:'2px 8px', borderRadius:4, border:`1px solid ${T.purple}`,
+                          background:'#fff', color:T.purple, cursor:'pointer', fontSize:9, fontWeight:600 }}>
+                        ✏ Sửa
+                      </button>
+                    </>
+                  )}
+                </div>
+              )
+            })}
+          </div>
+          <div style={{ fontSize:10, color:T.light, marginTop:8, fontStyle:'italic' }}>
+            💡 Thưởng/phạt: 0-2 nhóm đạt = TRỪ 300k · 3 nhóm = 0 · 4 nhóm = +100k · 5 nhóm = +200k. Cộng/trừ vào HH tháng.
+          </div>
+        </Card>
+      )}
+      
+      {/* Bảng KPI lớn */}
+      <Card style={{ padding:0, overflow:'auto' }}>
+        <table style={{ width:'100%', borderCollapse:'collapse', fontSize:11 }}>
+          <thead style={{ background:T.bg }}>
+            <tr>
+              <th style={_payrollThStyle}>Sale</th>
+              <th style={_payrollThStyle}>Nhóm KH</th>
+              <th style={{ ..._payrollThStyle, textAlign:'right' }}>Doanh số</th>
+              <th style={{ ..._payrollThStyle, textAlign:'right' }}>Công nợ</th>
+              <th style={{ ..._payrollThStyle, textAlign:'right' }}>% nợ/Tổng nợ</th>
+              <th style={{ ..._payrollThStyle, textAlign:'right' }}>% nợ/Tổng DS</th>
+              <th style={{ ..._payrollThStyle, textAlign:'right' }}>Target</th>
+              <th style={{ ..._payrollThStyle, textAlign:'right', background:'#FECACA' }}>Hiệu số</th>
+              <th style={{ ..._payrollThStyle, textAlign:'right' }}>Thưởng/phạt</th>
+            </tr>
+          </thead>
+          <tbody>
+            {tableData.length === 0 ? (
+              <tr>
+                <td colSpan={9} style={{ padding:30, textAlign:'center', color:T.light }}>
+                  📭 Chưa có sale nào
+                </td>
+              </tr>
+            ) : tableData.map((x: any) => {
+              const rows: any[] = []
+              const k = x._kpi
+              // 5 dòng nhóm + 1 TOTAL
+              KPI_DEBT_GROUPS.forEach((g, idx) => {
+                const grp = k.byGroup[g] || { debt: 0, ratioOnRevenue: 0, ratioOnDebt: 0, target: targetsMap[g] || 0, isPass: true }
+                const diff = grp.target - grp.ratioOnRevenue
+                rows.push(
+                  <tr key={`${x.id}_${g}`} style={{
+                    borderBottom: idx === 4 ? `2px solid ${T.dark}` : `1px solid ${T.border}`,
+                    background: idx === 0 ? '#FAF5FF' : (idx % 2 === 0 ? '#fff' : T.bg),
+                  }}>
+                    {idx === 0 ? (
+                      <td rowSpan={6} style={{ padding:10, fontWeight:600, color:T.dark, verticalAlign:'middle',
+                        borderRight:`1px solid ${T.border}`, background:'#F3E8FF' }}>
+                        {x.name}
+                        <div style={{ fontSize:10, color:T.med, marginTop:2 }}>{x._salary?.position_type || x.position_name || ''}</div>
+                        {k.isSnapshot && (
+                          <div style={{ marginTop:4, fontSize:9, color:T.green, fontWeight:600 }}>📌 SNAPSHOT</div>
+                        )}
+                      </td>
+                    ) : null}
+                    <td style={{ padding:'6px 10px', fontWeight:600, color:T.purple }}>{g}</td>
+                    {idx === 0 ? (
+                      <td rowSpan={5} style={{ padding:10, textAlign:'right', fontVariantNumeric:'tabular-nums', verticalAlign:'middle',
+                        borderRight:`1px solid ${T.border}`, fontWeight:600, color:T.dark }}>
+                        {fmtVNDshort(k.totalRevenue)}
+                      </td>
+                    ) : null}
+                    <td style={{ padding:'6px 10px', textAlign:'right', fontVariantNumeric:'tabular-nums',
+                      color: grp.debt < 0 ? T.green : T.dark }}>
+                      {fmtVNDshort(grp.debt)}
+                    </td>
+                    <td style={{ padding:'6px 10px', textAlign:'right', fontVariantNumeric:'tabular-nums', color:T.med }}>
+                      {fmtPercent(grp.ratioOnDebt)}
+                    </td>
+                    <td style={{ padding:'6px 10px', textAlign:'right', fontVariantNumeric:'tabular-nums', color:T.med }}>
+                      {fmtPercent(grp.ratioOnRevenue)}
+                    </td>
+                    <td style={{ padding:'6px 10px', textAlign:'right', fontVariantNumeric:'tabular-nums', color:T.dark, fontWeight:600 }}>
+                      {fmtPercent(grp.target)}
+                    </td>
+                    <td style={{ padding:'6px 10px', textAlign:'right', fontVariantNumeric:'tabular-nums', fontWeight:700,
+                      background: grp.isPass ? '#D1FAE5' : '#FEE2E2',
+                      color: grp.isPass ? '#065F46' : '#991B1B' }}>
+                      {(diff >= 0 ? '+' : '') + fmtPercent(diff)}
+                    </td>
+                    {idx === 0 ? (
+                      <td rowSpan={6} style={{ padding:10, textAlign:'right', fontVariantNumeric:'tabular-nums', verticalAlign:'middle',
+                        fontWeight:700,
+                        background: k.bonusAmount > 0 ? '#D1FAE5' : k.bonusAmount < 0 ? '#FEE2E2' : '#fff',
+                        color: k.bonusAmount > 0 ? '#065F46' : k.bonusAmount < 0 ? '#991B1B' : T.med }}>
+                        <div style={{ fontSize:14 }}>
+                          {k.bonusAmount > 0 ? '+' : ''}{fmtVNDshort(k.bonusAmount)}
+                        </div>
+                        <div style={{ fontSize:9, marginTop:2 }}>
+                          Đạt {k.groupsPassed}/5 nhóm
+                        </div>
+                      </td>
+                    ) : null}
+                  </tr>
+                )
+              })
+              // Dòng TOTAL
+              rows.push(
+                <tr key={`${x.id}_TOTAL`} style={{ borderBottom:`3px solid ${T.dark}`, background:'#E6F4EA' }}>
+                  <td style={{ padding:'8px 10px', fontWeight:700, color:T.dark }}>TOTAL</td>
+                  <td style={{ padding:'8px 10px', textAlign:'right', fontVariantNumeric:'tabular-nums', fontWeight:700, color:T.dark }}>
+                    {fmtVNDshort(k.totalDebt)}
+                  </td>
+                  <td colSpan={2}></td>
+                  <td style={{ padding:'8px 10px', textAlign:'right', fontVariantNumeric:'tabular-nums', fontWeight:700, color:T.dark }}>
+                    {fmtPercent(k.totalRevenue > 0 ? k.totalDebt / k.totalRevenue : 0)}
+                  </td>
+                  <td colSpan={2}></td>
+                </tr>
+              )
+              return rows
+            })}
+          </tbody>
+        </table>
+      </Card>
+    </div>
+  )
+}
+
+
+
 function PayrollDetailModal({ user: nv, payroll, salaryConfig, otherIncomes, shortageLoss, revenue, paidLeaveDates, month, year, actor, onClose, onUpdate, attendanceMonth, positionWorkSchedule, positionsList, isAdmin, onAttendanceUpdate, specialDays }: any) {
   const [manualAdjust, setManualAdjust] = useState(payroll?.manual_adjust || 0)
   const [manualReason, setManualReason] = useState(payroll?.manual_adjust_reason || '')
@@ -35227,8 +35773,15 @@ function CustomersModule({ user, allUsers, mobile }: any) {
   const perm = getPerm(user)
   const isAdmin = perm.viewAllDashboard || perm.manageCustomers
   
-  // v183: 2 tabs — Tất cả + KH mới
-  const [tab, setTab] = useState<'all'|'new'>('all')
+  // v183 + v197: 3 tabs — Tất cả + KH mới + KPI Công nợ
+  const [tab, setTab] = useState<'all'|'new'|'kpi_debt'>('all')
+  
+  // v197: KPI Công nợ data
+  const [kpiTargets, setKpiTargets] = useState<any[]>([])
+  const [kpiSnapshots, setKpiSnapshots] = useState<any[]>([])
+  const [kvSalesDaily, setKvSalesDaily] = useState<any[]>([])
+  const [kpiMonth, setKpiMonth] = useState(new Date().getMonth() + 1)
+  const [kpiYear, setKpiYear] = useState(new Date().getFullYear())
   
   const [customers, setCustomers] = useState<any[]>([])
   const [loading, setLoading] = useState(false)
@@ -35448,12 +36001,28 @@ function CustomersModule({ user, allUsers, mobile }: any) {
             BETA
           </span>
         </button>
+        <button onClick={() => setTab('kpi_debt')}
+          style={{
+            padding:'10px 20px', border:'none', borderBottom: tab === 'kpi_debt' ? `3px solid ${T.purple}` : '3px solid transparent',
+            background:'transparent', cursor:'pointer', fontFamily:'inherit', fontSize:13,
+            fontWeight: tab === 'kpi_debt' ? 700 : 500,
+            color: tab === 'kpi_debt' ? T.purple : T.med,
+            marginBottom:-2,
+          }}>
+          📊 KPI Công nợ
+        </button>
       </div>
 
       {/* v183: Render tab "KH mới" */}
       {tab === 'new' ? (
         <NewCustomersTab user={user} mobile={mobile} customers={customers}
           isAdmin={isAdmin} onRefreshCustomers={fetchCustomers}/>
+      ) : tab === 'kpi_debt' ? (
+        <CustomersTabKpiDebt user={user} mobile={mobile} allUsers={allUsers}
+          customers={customers}
+          month={kpiMonth} setMonth={setKpiMonth}
+          year={kpiYear} setYear={setKpiYear}
+          isAdmin={isAdmin}/>
       ) : (
         <>
       {/* Summary stats — sticky tổng */}
@@ -36488,6 +37057,105 @@ function CustomerDetailModal({ customer: c, mobile, user, onClose, onRefresh }: 
 // v183: NewCustomersTab — KH mới tháng X (sale claim, admin duyệt)
 // v184: Refactor table view + checkbox bulk + sort by phụ trách + bỏ commission column
 // ══════════════════════════════════════════════════════════════════════
+// ══════════════════════════════════════════════════════════════════════
+// v197: CustomersTabKpiDebt — Realtime KPI Công nợ cho Sale (trong Customers module)
+// ══════════════════════════════════════════════════════════════════════
+function CustomersTabKpiDebt({ user, mobile, allUsers, customers, month, setMonth, year, setYear, isAdmin }: any) {
+  const [loading, setLoading] = useState(true)
+  const [kpiTargets, setKpiTargets] = useState<any[]>([])
+  const [kvSalesDaily, setKvSalesDaily] = useState<any[]>([])
+  
+  // Build kvNameToAppUserMap
+  const kvNameToAppUserMap = useMemo(() => {
+    const m = new Map<string, string>()
+    for (const u of (allUsers || [])) {
+      const names = Array.isArray(u.kiotviet_user_names) ? u.kiotviet_user_names : []
+      for (const n of names) {
+        const k = (n || '').toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g,'').replace(/đ/g,'d').replace(/\s+/g,' ').trim()
+        if (k) m.set(k, u.id)
+      }
+    }
+    return m
+  }, [allUsers])
+  
+  // Fetch data realtime
+  useEffect(() => {
+    (async () => {
+      setLoading(true)
+      try {
+        const fromDate = `${year}-${String(month).padStart(2,'0')}-01`
+        const toDate = new Date(year, month, 0).toISOString().slice(0, 10)
+        const [kpt, ksd] = await Promise.all([
+          db.from('kpi_debt_targets').select('*').order('display_order'),
+          db.from('kiotviet_sales_daily').select('*').gte('date', fromDate).lte('date', toDate).range(0, 9999),
+        ])
+        setKpiTargets(kpt.data || [])
+        setKvSalesDaily(ksd.data || [])
+      } catch (e) {
+        console.error('[KPI Debt fetch]', e)
+      } finally {
+        setLoading(false)
+      }
+    })()
+  }, [month, year])
+  
+  if (loading) return <div style={{ padding:30, textAlign:'center', color:T.med }}>⏳ Đang tải data KPI...</div>
+  
+  // Filter sale: nếu user là sale → chỉ thấy mình. Nếu admin → thấy hết
+  const isUserSale = user.dept_id === 'sale' && !isAdmin
+  
+  return (
+    <div>
+      {/* Selector tháng/năm */}
+      <Card style={{ padding:14, marginBottom:12 }}>
+        <div style={{ display:'flex', gap:10, alignItems:'center', flexWrap:'wrap' }}>
+          <div>
+            <label style={{ fontSize:12, color:T.med, fontWeight:600 }}>Tháng:</label>
+            <select value={month} onChange={e => setMonth(Number(e.target.value))}
+              style={{ marginLeft:6, padding:'6px 10px', borderRadius:6, border:`1px solid ${T.border}`,
+                background:'#fff', color:T.dark, fontFamily:'inherit', fontSize:13 }}>
+              {Array.from({ length: 12 }, (_, i) => i + 1).map(m => (
+                <option key={m} value={m}>T{m}</option>
+              ))}
+            </select>
+          </div>
+          <div>
+            <label style={{ fontSize:12, color:T.med, fontWeight:600 }}>Năm:</label>
+            <select value={year} onChange={e => setYear(Number(e.target.value))}
+              style={{ marginLeft:6, padding:'6px 10px', borderRadius:6, border:`1px solid ${T.border}`,
+                background:'#fff', color:T.dark, fontFamily:'inherit', fontSize:13 }}>
+              {[2025, 2026, 2027].map(y => (
+                <option key={y} value={y}>{y}</option>
+              ))}
+            </select>
+          </div>
+          {isUserSale && (
+            <span style={{ fontSize:11, color:T.med, fontStyle:'italic' }}>
+              👤 Bạn chỉ thấy KPI của mình. Admin thấy tất cả sale.
+            </span>
+          )}
+        </div>
+      </Card>
+      
+      {/* Reuse PayrollTabKpiDebt với mode='realtime' */}
+      <PayrollTabKpiDebt 
+        user={user} mobile={mobile}
+        allUsers={isUserSale ? [user] : allUsers}
+        usersWithSalary={null}
+        month={month} year={year}
+        kvSalesDaily={kvSalesDaily}
+        kvNameToAppUserMap={kvNameToAppUserMap}
+        kpiCustomers={customers || []}
+        kpiTargets={kpiTargets}
+        setKpiTargets={setKpiTargets}
+        kpiSnapshots={[]}
+        setKpiSnapshots={() => {}}
+        mode="realtime"/>
+    </div>
+  )
+}
+
+
 function NewCustomersTab({ user, mobile, customers, isAdmin, onRefreshCustomers }: any) {
   const defaultMonth = (() => {
     const d = new Date()
