@@ -80,7 +80,15 @@ const db = createClient(SUPABASE_URL, SUPABASE_KEY)
 //       (c) KV currency rút gọn → tất cả số tiền KV phải × 1000.
 //       (d) Supabase default limit 1000 → dùng .range(0, 19999) cho kv_invoices, .range(0, 49999) cho inventory_checks.
 //       (e) Modal Detail thêm section "🔧 Debug match" hiển thị số đơn KV match cho NV để verify mapping.
-const APP_VERSION = '2026.04.30.v195.1'
+// v195.2: Refactor full DS Sale dùng đúng logic Dashboard "💼 Doanh số NV Sale":
+//       (a) DỌI NGUỒN DATA: từ kv_invoices (full) → kiotviet_sales_daily (rollup theo ngày + sale, đã match KV report). 
+//           Không còn bị limit 1000 vì daily rows ít hơn nhiều.
+//       (b) ĐỔI MAPPING: từ user_aliases (sai schema) → users.kiotviet_user_names array (đúng như dashboard).
+//           Bảng users đã có sẵn field này — anh chỉ cần update vào module Quản trị → Nhân sự.
+//       (c) DS khách mới: vẫn load kv_invoices nhưng filter customer_code IN (approved_codes) → số ít, không bị limit.
+//       (d) Cảnh báo "X KV account chưa map" trên header để admin biết bổ sung.
+//       (e) Cột "KV names" trong bảng hiển thị các alias đã match.
+const APP_VERSION = '2026.04.30.v195.2'
 
 // ════════════════════════════════════════════════════════════════
 // v158: VersionBadge — Hiển thị APP_VERSION ở góc dưới phải
@@ -24283,9 +24291,10 @@ function PayrollModule({ user, allUsers, mobile }: any) {
   const [returnItems, setReturnItems] = useState<any[]>([])         // Y/c 1
   const [inventoryChecks, setInventoryChecks] = useState<any[]>([]) // Y/c 3
   const [inventorySessions, setInventorySessions] = useState<any[]>([]) // Y/c 3
-  const [kvInvoices, setKvInvoices] = useState<any[]>([])           // Y/c 2
-  const [userAliases, setUserAliases] = useState<any[]>([])         // Y/c 2 — map KV→app
-  const [customerNewClaims, setCustomerNewClaims] = useState<any[]>([]) // Y/c 2 — DS khách mới
+  // v195.2: dùng kiotviet_sales_daily (đã rollup) thay vì kv_invoices full
+  const [kvSalesDaily, setKvSalesDaily] = useState<any[]>([])       // Y/c 2 — tổng DS từ daily rollup
+  const [kvInvoicesNewCust, setKvInvoicesNewCust] = useState<any[]>([])  // Y/c 2 — chỉ invoices của KH mới approved
+  const [customerNewClaims, setCustomerNewClaims] = useState<any[]>([]) // Y/c 2
   // v191/v192: overrides + position config (LCB lưu trong bảng positions)
   const [overrides, setOverrides] = useState<any[]>([])  // payroll_overrides của tháng này
   const [positionsList, setPositionsList] = useState<any[]>([])  // v192: bảng positions từ Quản trị
@@ -24307,7 +24316,23 @@ function PayrollModule({ user, allUsers, mobile }: any) {
         const fromISO = `${fromDate}T00:00:00.000Z`
         const toISO = `${toDate}T23:59:59.999Z`
         
-        const [sc, pc, pr, oi, sl, rv, att, ovr, pos, pws, sd, ri, ic, is_, kvi, ua, cnc] = await Promise.all([
+        // v195.2: Load customer_new_claims TRƯỚC để biết customer_codes của KH mới
+        const cncRes = await db.from('customer_new_claims').select('*')
+          .eq('claim_month', `${year}-${String(month).padStart(2,'0')}`)
+          .eq('status', 'approved').range(0, 9999)
+        const newCustCodes = (cncRes.data || []).map((c: any) => c.customer_code).filter(Boolean)
+        setCustomerNewClaims(cncRes.data || [])
+        
+        // Query kv_invoices CHỈ những KH mới approved (số ít, không bị 1000 limit)
+        // Nếu không có KH mới nào → skip query
+        const kviNewCustPromise = newCustCodes.length > 0
+          ? db.from('kv_invoices').select('id,code,customer_code,sold_by_name,total,discount,total_payment,is_returned,purchase_date')
+              .in('customer_code', newCustCodes)
+              .gte('purchase_date', fromISO).lte('purchase_date', toISO)
+              .range(0, 9999)
+          : Promise.resolve({ data: [] })
+        
+        const [sc, pc, pr, oi, sl, rv, att, ovr, pos, pws, sd, ri, ic, is_, ksd, kviNc] = await Promise.all([
           db.from('salary_config').select('*').is('effective_to', null),
           db.from('payroll_config').select('*').maybeSingle(),
           db.from('monthly_payroll').select('*').eq('month', month).eq('year', year),
@@ -24319,16 +24344,12 @@ function PayrollModule({ user, allUsers, mobile }: any) {
           db.from('positions').select('*').order('name'),
           db.from('position_work_schedule').select('*'),
           db.from('payroll_special_days').select('*').order('date'),
-          // v195: Y/c 1 — return_items (TÊN ĐÚNG, không phải return_slips)
           db.from('return_items').select('*').gte('date', fromDate).lte('date', toDate).range(0, 9999),
-          // v195: Y/c 3 — inventory checks (load all - filter session is_month_close trên client)
           db.from('inventory_checks').select('*').range(0, 49999),
           db.from('inventory_sessions').select('*').range(0, 4999),
-          // v195: Y/c 2 — KV invoices của tháng + aliases + claims
-          // v195.1 FIX: Supabase default limit 1000 — phải dùng .range để vượt
-          db.from('kv_invoices').select('*').gte('purchase_date', fromISO).lte('purchase_date', toISO).range(0, 19999),
-          db.from('user_aliases').select('*').range(0, 4999),
-          db.from('customer_new_claims').select('*').eq('claim_month', `${year}-${String(month).padStart(2,'0')}`).range(0, 9999),
+          // v195.2: kiotviet_sales_daily (đã rollup, chính xác với KV report)
+          db.from('kiotviet_sales_daily').select('*').gte('date', fromDate).lte('date', toDate).range(0, 9999),
+          kviNewCustPromise,
         ])
         setSalaryConfigs(sc.data || [])
         setPayrollConfig(pc.data || {})
@@ -24349,13 +24370,12 @@ function PayrollModule({ user, allUsers, mobile }: any) {
         setPositionsList(pos.data || [])
         setPositionWorkSchedule(pws.data || [])
         setSpecialDays(sd.data || [])  // v193
-        // v195
+        // v195.2
         setReturnItems(ri.data || [])
         setInventoryChecks(ic.data || [])
         setInventorySessions(is_.data || [])
-        setKvInvoices(kvi.data || [])
-        setUserAliases(ua.data || [])
-        setCustomerNewClaims(cnc.data || [])
+        setKvSalesDaily(ksd.data || [])
+        setKvInvoicesNewCust(kviNc.data || [])
       } catch (e: any) {
         setError('Lỗi load data: ' + e.message)
       } finally {
@@ -24436,97 +24456,112 @@ function PayrollModule({ user, allUsers, mobile }: any) {
     return Math.round(inventoryLossInfo.totalLoss / inventoryLossInfo.khoUsersCount)
   }
   
-  // Y/c 2: Map sold_by_name (KV string) → app user_id qua user_aliases hoặc trực tiếp users.name
-  // v195.1: BUG FIX — user_aliases có schema (user_id, alias, alias_normalized) — match qua TÊN, không phải ID
+  // ═════ v195.2: Helpers cho Y/c 2 (DS Sale) — DÙNG CHÍNH XÁC LOGIC DASHBOARD ═════
+  // Source: kiotviet_sales_daily (đã rollup) + users.kiotviet_user_names (array)
+  
   const normName = (s: string) => (s || '').toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g,'').replace(/đ/g,'d').replace(/\s+/g,' ').trim()
   
-  const aliasNameMap = useMemo(() => {
-    const m = new Map<string, string>()  // normalized_name → user_id
-    // 1. Map từ user_aliases (alias_normalized hoặc normalize của alias)
-    for (const a of userAliases) {
-      const k = a.alias_normalized || normName(a.alias || '')
-      if (k && a.user_id) m.set(k, a.user_id)
-    }
-    // 2. Bổ sung map từ user.name (trực tiếp) — fallback cho NV không có alias
+  // Map: normalized_kv_name → app_user_id (từ users.kiotviet_user_names)
+  const kvNameToAppUserMap = useMemo(() => {
+    const m = new Map<string, string>()
     for (const u of allUsers) {
-      const k = normName(u.name || '')
-      if (k && !m.has(k)) m.set(k, u.id)
+      const names = Array.isArray(u.kiotviet_user_names) ? u.kiotviet_user_names : []
+      for (const n of names) {
+        const k = normName(n || '')
+        if (k) m.set(k, u.id)
+      }
     }
     return m
-  }, [userAliases, allUsers])
+  }, [allUsers])
   
   const getSaleAppId = (kvSoldByName: string): string | null => {
     if (!kvSoldByName) return null
-    return aliasNameMap.get(normName(kvSoldByName)) || null
+    return kvNameToAppUserMap.get(normName(kvSoldByName)) || null
   }
   
-  // Y/c 2: Compute DS sale của NV trong tháng (realtime từ KV)
-  // v195.1 FIX: dùng `total` × 1000 (currency rút gọn) thay vì total_payment
+  // v195.2: Compute DS sale của NV trong tháng từ kiotviet_sales_daily + invoices của KH mới
+  // ⚠ Currency: KV rút gọn → MỌI số tiền lưu trong DB (ngàn đồng) phải × 1000 trước khi tính HH 
+  //   vì COMMISSION_OLD_CLIENT_TIERS dùng VND thực (500M, 1.5B, 3B threshold)
   const computeSaleRevenueForUser = (uid: string): any => {
     const sc = getSalaryConfig(uid)
-    if (!sc) return { totalDs: 0, dsKhachCu: 0, dsKhachMoi: 0, hh: { tyLeLcb: 0, lcbDat: 0, hhKhachCu: 0, hhKhachMoi: 0, hhTuyenDuoi: 0, hhTotal: 0 } }
+    if (!sc) return { totalDs: 0, dsKhachCu: 0, dsKhachMoi: 0, hh: { tyLeLcb: 0, lcbDat: 0, hhKhachCu: 0, hhKhachMoi: 0, hhTuyenDuoi: 0, hhTotal: 0 }, kvNamesMatched: [] }
     
-    // Helper: amount cho 1 invoice (KV currency rút gọn → ×1000)
-    const invoiceAmount = (inv: any): number => {
-      const raw = Number(inv.total || 0) - Number(inv.discount || 0)
-      return raw * 1000
+    // 1. Tổng DS: SUM(total_revenue) từ kiotviet_sales_daily cho mọi KV name map về uid
+    //    (giống logic Dashboard ở line ~3007)
+    let totalDsRaw = 0  // raw = ngàn đ (như KV)
+    const kvNamesMatched = new Set<string>()
+    let invoiceCount = 0
+    for (const r of kvSalesDaily) {
+      const kvName = r.sold_by_name || ''
+      const mappedId = getSaleAppId(kvName)
+      if (mappedId === uid) {
+        totalDsRaw += Number(r.total_revenue || 0)
+        invoiceCount += Number(r.invoice_count || 0)
+        kvNamesMatched.add(kvName)
+      }
     }
     
-    // Tổng DS = SUM amount của invoices có sold_by_name match → uid, is_returned=false
-    let totalDs = 0
-    for (const inv of kvInvoices) {
-      if (inv.is_returned) continue
-      const saleId = getSaleAppId(inv.sold_by_name)
-      if (saleId === uid) totalDs += invoiceAmount(inv)
-    }
-    
-    // DS khách mới = invoices có customer_code IN (KH approved cho sale này tháng này)
+    // 2. DS khách mới: SUM amount từ kv_invoices của KH approved cho sale này
+    //    (kvInvoicesNewCust đã được filter customer_code IN approved_codes)
     const myApprovedCustomers = new Set(
       customerNewClaims
         .filter((c: any) => c.sale_user_id === uid && c.status === 'approved')
         .map((c: any) => c.customer_code)
     )
-    let dsKhachMoi = 0
+    let dsKhachMoiRaw = 0
     if (myApprovedCustomers.size > 0) {
-      for (const inv of kvInvoices) {
+      for (const inv of kvInvoicesNewCust) {
         if (inv.is_returned) continue
-        const saleId = getSaleAppId(inv.sold_by_name)
-        if (saleId === uid && myApprovedCustomers.has(inv.customer_code)) {
-          dsKhachMoi += invoiceAmount(inv)
-        }
+        const sid = getSaleAppId(inv.sold_by_name)
+        if (sid !== uid) continue
+        if (!myApprovedCustomers.has(inv.customer_code)) continue
+        // Dùng total - discount (total_payment thường = 0)
+        const amount = Number(inv.total || 0) - Number(inv.discount || 0)
+        dsKhachMoiRaw += amount
       }
     }
     
-    const dsKhachCu = Math.max(0, totalDs - dsKhachMoi)
+    const dsKhachCuRaw = Math.max(0, totalDsRaw - dsKhachMoiRaw)
     
-    // HH compute — dùng computeCommission đã có
+    // 3. NHÂN 1000 để có VND thực (KV currency rút gọn)
+    const totalDs = totalDsRaw * 1000
+    const dsKhachMoi = dsKhachMoiRaw * 1000
+    const dsKhachCu = dsKhachCuRaw * 1000
+    
+    // 4. HH compute với VND thực
     let allSaleRevenues: Array<{ ds_khach_cu: number, ds_khach_moi: number }> | undefined
     if (sc.is_sale_manager) {
       allSaleRevenues = []
       for (const otherSc of salaryConfigs) {
         if (otherSc.position_type !== 'Sales' && otherSc.position_type !== 'Quản lý Sale') continue
-        let othDs = 0, othDsKhachMoi = 0
+        // Tổng DS NV khác
+        let othDsRaw = 0
+        for (const r of kvSalesDaily) {
+          const sid = getSaleAppId(r.sold_by_name || '')
+          if (sid === otherSc.user_id) othDsRaw += Number(r.total_revenue || 0)
+        }
+        // DS khách mới NV khác
+        let othDsKhachMoiRaw = 0
         const othCustomers = new Set(
           customerNewClaims
             .filter((c: any) => c.sale_user_id === otherSc.user_id && c.status === 'approved')
             .map((c: any) => c.customer_code)
         )
-        for (const inv of kvInvoices) {
+        for (const inv of kvInvoicesNewCust) {
           if (inv.is_returned) continue
           const sid = getSaleAppId(inv.sold_by_name)
-          if (sid === otherSc.user_id) {
-            othDs += invoiceAmount(inv)
-            if (othCustomers.has(inv.customer_code)) othDsKhachMoi += invoiceAmount(inv)
-          }
+          if (sid !== otherSc.user_id) continue
+          if (!othCustomers.has(inv.customer_code)) continue
+          othDsKhachMoiRaw += Number(inv.total || 0) - Number(inv.discount || 0)
         }
         allSaleRevenues.push({
-          ds_khach_cu: Math.max(0, othDs - othDsKhachMoi),
-          ds_khach_moi: othDsKhachMoi,
+          ds_khach_cu: Math.max(0, (othDsRaw - othDsKhachMoiRaw) * 1000),
+          ds_khach_moi: othDsKhachMoiRaw * 1000,
         })
       }
     }
     
-    // v192: LCB từ positions
+    // LCB từ positions
     const positionLcb = (() => {
       const u = allUsers.find((au: any) => au.id === uid)
       if (u?.position_id) {
@@ -24544,7 +24579,7 @@ function PayrollModule({ user, allUsers, mobile }: any) {
       ownTotalDs: totalDs,
     })
     
-    return { totalDs, dsKhachCu, dsKhachMoi, hh }
+    return { totalDs, dsKhachCu, dsKhachMoi, hh, kvNamesMatched: Array.from(kvNamesMatched), invoiceCount }
   }
 
   // Users có salary_config (19 NV)
@@ -24799,9 +24834,10 @@ function PayrollModule({ user, allUsers, mobile }: any) {
             allUsers={allUsers}
             usersWithSalary={usersWithSalary}
             month={month} year={year}
-            kvInvoices={kvInvoices}
-            userAliases={userAliases}
+            kvSalesDaily={kvSalesDaily}
+            kvInvoicesNewCust={kvInvoicesNewCust}
             customerNewClaims={customerNewClaims}
+            kvNameToAppUserMap={kvNameToAppUserMap}
             computeSaleRevenueForUser={computeSaleRevenueForUser}/>
         ) : (
           <PayrollTabOverride user={user} mobile={mobile}
@@ -26012,7 +26048,7 @@ function PayrollTabSchedule({ user, mobile, positionWorkSchedule, setPositionWor
 // ══════════════════════════════════════════════════════════════════════
 // v195: PayrollTabSalesRevenue — Doanh số NV Sale (từ KV)
 // ══════════════════════════════════════════════════════════════════════
-function PayrollTabSalesRevenue({ user, mobile, allUsers, usersWithSalary, month, year, kvInvoices, userAliases, customerNewClaims, computeSaleRevenueForUser }: any) {
+function PayrollTabSalesRevenue({ user, mobile, allUsers, usersWithSalary, month, year, kvSalesDaily, kvInvoicesNewCust, customerNewClaims, kvNameToAppUserMap, computeSaleRevenueForUser }: any) {
   const [working, setWorking] = useState(false)
   const [showDetailUid, setShowDetailUid] = useState<string|null>(null)
   
@@ -26029,24 +26065,40 @@ function PayrollTabSalesRevenue({ user, mobile, allUsers, usersWithSalary, month
       const r = computeSaleRevenueForUser(u.id)
       return { ...u, _rev: r }
     })
-  }, [salesUsers, kvInvoices, customerNewClaims])
+  }, [salesUsers, kvSalesDaily, customerNewClaims, kvInvoicesNewCust])
   
-  // Tổng tất cả (cho summary)
+  // Tổng tất cả (cho summary) — dùng kvSalesDaily
   const totals = useMemo(() => {
-    let totalDs = 0, totalKhachCu = 0, totalKhachMoi = 0, totalHh = 0
-    let totalInvoices = 0, totalReturned = 0
-    for (const inv of kvInvoices) {
-      totalInvoices++
-      if (inv.is_returned) { totalReturned++; continue }
-      totalDs += Number(inv.total_payment || 0)
+    let totalDsRaw = 0, totalInvoices = 0
+    let totalKhachCu = 0, totalKhachMoi = 0, totalHh = 0
+    let totalUnmappedRaw = 0
+    const unmappedNames = new Set<string>()
+    
+    for (const r of kvSalesDaily) {
+      const kvName = r.sold_by_name || ''
+      totalDsRaw += Number(r.total_revenue || 0)
+      totalInvoices += Number(r.invoice_count || 0)
+      // Check unmapped
+      const k = (kvName || '').toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g,'').replace(/đ/g,'d').replace(/\s+/g,' ').trim()
+      if (!kvNameToAppUserMap.get(k)) {
+        unmappedNames.add(kvName)
+        totalUnmappedRaw += Number(r.total_revenue || 0)
+      }
     }
     for (const x of computedAll) {
       totalKhachCu += x._rev.dsKhachCu
       totalKhachMoi += x._rev.dsKhachMoi
       totalHh += x._rev.hh.hhTotal
     }
-    return { totalDs, totalKhachCu, totalKhachMoi, totalHh, totalInvoices, totalReturned }
-  }, [kvInvoices, computedAll])
+    return {
+      totalDs: totalDsRaw * 1000,  // VND thực
+      totalKhachCu, totalKhachMoi, totalHh,
+      totalInvoices,
+      unmappedCount: unmappedNames.size,
+      unmappedNames: Array.from(unmappedNames),
+      totalUnmapped: totalUnmappedRaw * 1000,
+    }
+  }, [kvSalesDaily, kvNameToAppUserMap, computedAll])
   
   // Snapshot vào monthly_revenue
   const handleSnapshot = async () => {
@@ -26095,8 +26147,10 @@ function PayrollTabSalesRevenue({ user, mobile, allUsers, usersWithSalary, month
               💰 Doanh số NV Sale — Tháng {month}/{year}
             </div>
             <div style={{ fontSize:12, color:T.med, marginTop:4 }}>
-              Auto compute từ KV invoices (loại đơn return). DS khách mới = đơn của KH được duyệt là "KH mới của sale X" trong tháng.
-              Bấm <b>💾 Snapshot</b> để lưu vào DB → tab Tổng quan sẽ tính lương dùng số này.
+              Auto compute từ <code>kiotviet_sales_daily</code> (rollup chính xác như báo cáo KV). 
+              Map qua <code>users.kiotviet_user_names</code>. 
+              DS khách mới = đơn của KH duyệt là "KH mới của sale X" trong tháng. 
+              Bấm <b>💾 Snapshot</b> → tab Tổng quan tính lương dùng số này.
             </div>
           </div>
           <button onClick={handleSnapshot} disabled={working || computedAll.length === 0}
@@ -26108,14 +26162,25 @@ function PayrollTabSalesRevenue({ user, mobile, allUsers, usersWithSalary, month
             {working ? '⏳ Đang lưu...' : '💾 Snapshot vào DB'}
           </button>
         </div>
+        {totals.unmappedCount > 0 && (
+          <div style={{ marginTop:10, padding:10, background:'#FEF3C7', borderRadius:6, fontSize:11, color:'#92400E' }}>
+            ⚠ <b>{totals.unmappedCount} KV account chưa map</b> với app user (DS chưa group: {Math.round(totals.totalUnmapped).toLocaleString('vi-VN')}đ).
+            <div style={{ marginTop:4, fontStyle:'italic' }}>
+              Tên KV chưa map: {totals.unmappedNames.slice(0, 5).join(', ')}{totals.unmappedNames.length > 5 ? ` +${totals.unmappedNames.length - 5} khác` : ''}
+            </div>
+            <div style={{ marginTop:4 }}>
+              💡 Vào module <b>Quản trị → Nhân sự</b> → mở user → thêm KV name vào field <code>kiotviet_user_names</code>.
+            </div>
+          </div>
+        )}
       </Card>
       
       {/* Summary cards */}
       <div style={{ display:'grid', gridTemplateColumns: mobile ? '1fr 1fr' : 'repeat(4, 1fr)',
         gap:10, marginBottom:12 }}>
         {[
-          { label:'📊 Tổng KV invoices tháng', val: `${totals.totalInvoices.toLocaleString('vi-VN')} đơn`, sub: `Returned: ${totals.totalReturned}`, color: T.blue },
-          { label:'💵 Tổng DS toàn cty (chưa group)', val: `${Math.round(totals.totalDs).toLocaleString('vi-VN')}đ`, sub: 'Net (loại return)', color: T.dark },
+          { label:'📊 Tổng KV invoices tháng', val: `${totals.totalInvoices.toLocaleString('vi-VN')} đơn`, sub: `${kvSalesDaily.length} dòng daily`, color: T.blue },
+          { label:'💵 Tổng DS toàn cty', val: `${Math.round(totals.totalDs).toLocaleString('vi-VN')}đ`, sub: 'Gross (chưa trừ return)', color: T.dark },
           { label:'🆕 Tổng DS KH mới', val: `${Math.round(totals.totalKhachMoi).toLocaleString('vi-VN')}đ`, sub: `${customerNewClaims.filter((c: any) => c.status === 'approved').length} KH approved`, color: T.gold },
           { label:'💰 Tổng HH chi trả', val: `${Math.round(totals.totalHh).toLocaleString('vi-VN')}đ`, sub: `${computedAll.length} sale`, color: T.green },
         ].map(card => (
@@ -26133,13 +26198,14 @@ function PayrollTabSalesRevenue({ user, mobile, allUsers, usersWithSalary, month
           <thead style={{ background:T.bg }}>
             <tr>
               <th style={_payrollThStyle}>NV Sale</th>
-              <th style={_payrollThStyle}>Vị trí</th>
+              <th style={_payrollThStyle}>KV names</th>
+              <th style={{ ..._payrollThStyle, textAlign:'right' }}>Số đơn</th>
               <th style={{ ..._payrollThStyle, textAlign:'right' }}>Tổng DS</th>
               <th style={{ ..._payrollThStyle, textAlign:'right' }}>DS KH cũ</th>
               <th style={{ ..._payrollThStyle, textAlign:'right' }}>DS KH mới</th>
               <th style={{ ..._payrollThStyle, textAlign:'right' }}>HH KH cũ</th>
               <th style={{ ..._payrollThStyle, textAlign:'right' }}>HH KH mới (1%)</th>
-              <th style={{ ..._payrollThStyle, textAlign:'right' }}>HH tuyến dưới</th>
+              <th style={{ ..._payrollThStyle, textAlign:'right' }}>HH t.dưới</th>
               <th style={{ ..._payrollThStyle, textAlign:'right', background: '#FEF3C7' }}>TỔNG HH</th>
               <th style={{ ..._payrollThStyle, textAlign:'center' }}>Chi tiết</th>
             </tr>
@@ -26147,15 +26213,25 @@ function PayrollTabSalesRevenue({ user, mobile, allUsers, usersWithSalary, month
           <tbody>
             {computedAll.length === 0 ? (
               <tr>
-                <td colSpan={10} style={{ padding:30, textAlign:'center', color:T.light }}>
+                <td colSpan={11} style={{ padding:30, textAlign:'center', color:T.light }}>
                   📭 Chưa có NV Sales/Quản lý Sale nào trong salary_config
                 </td>
               </tr>
             ) : computedAll.map((x: any) => (
               <tr key={x.id} style={{ borderBottom:`1px solid ${T.border}` }}>
-                <td style={{ padding:10, fontWeight:600, color:T.dark }}>{x.name}</td>
-                <td style={{ padding:10, fontSize:11, color:T.med }}>{x._salary?.position_type}</td>
+                <td style={{ padding:10, fontWeight:600, color:T.dark }}>
+                  {x.name}
+                  <div style={{ fontSize:10, color:T.med, marginTop:2 }}>{x._salary?.position_type}</div>
+                </td>
+                <td style={{ padding:10, fontSize:10, color:T.med }}>
+                  {x._rev.kvNamesMatched.length === 0 ? (
+                    <span style={{ color:T.red }}>❌ Chưa map</span>
+                  ) : x._rev.kvNamesMatched.join(', ')}
+                </td>
                 <td style={{ padding:10, textAlign:'right', fontVariantNumeric:'tabular-nums', color:T.dark }}>
+                  {(x._rev.invoiceCount || 0).toLocaleString('vi-VN')}
+                </td>
+                <td style={{ padding:10, textAlign:'right', fontVariantNumeric:'tabular-nums', color:T.dark, fontWeight:600 }}>
                   {Math.round(x._rev.totalDs).toLocaleString('vi-VN')}đ
                 </td>
                 <td style={{ padding:10, textAlign:'right', fontVariantNumeric:'tabular-nums' }}>
@@ -26209,6 +26285,9 @@ function PayrollTabSalesRevenue({ user, mobile, allUsers, usersWithSalary, month
                 </div>
                 <div style={{ fontSize:12, color:T.med, marginTop:2 }}>
                   Tháng {month}/{year} · {detailUser._salary?.position_type}
+                  {detailUser._rev.kvNamesMatched.length > 0 && (
+                    <span> · KV: <b>{detailUser._rev.kvNamesMatched.join(', ')}</b></span>
+                  )}
                 </div>
               </div>
               <button onClick={() => setShowDetailUid(null)}
@@ -26216,8 +26295,15 @@ function PayrollTabSalesRevenue({ user, mobile, allUsers, usersWithSalary, month
             </div>
             
             <div style={{ padding:20 }}>
-              {/* Breakdown */}
+              {detailUser._rev.kvNamesMatched.length === 0 && (
+                <div style={{ marginBottom:14, padding:12, background:'#FEF2F2', borderRadius:6, color:T.red, fontSize:12 }}>
+                  ⚠ NV này CHƯA có KV name nào trong <code>users.kiotviet_user_names</code>. 
+                  Vào <b>Quản trị → Nhân sự</b> để thêm tên KV.
+                </div>
+              )}
+              
               <div style={{ display:'grid', gap:8, fontSize:13 }}>
+                <Row label="Số đơn KV" value={`${(detailUser._rev.invoiceCount || 0).toLocaleString('vi-VN')} đơn`}/>
                 <Row label="Tổng DS (gross)" value={`${Math.round(detailUser._rev.totalDs).toLocaleString('vi-VN')}đ`}/>
                 <Row label="└ DS khách cũ"   value={`${Math.round(detailUser._rev.dsKhachCu).toLocaleString('vi-VN')}đ`}/>
                 <Row label="└ DS khách mới"  value={`${Math.round(detailUser._rev.dsKhachMoi).toLocaleString('vi-VN')}đ`} hl/>
@@ -26259,51 +26345,12 @@ function PayrollTabSalesRevenue({ user, mobile, allUsers, usersWithSalary, month
                 </div>
               )}
               
-              {/* v195.1: Debug — danh sách invoices đã match (để verify) */}
-              {(() => {
-                const matched = kvInvoices.filter((inv: any) => {
-                  if (inv.is_returned) return false
-                  const k = (inv.sold_by_name || '').toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g,'').replace(/đ/g,'d').replace(/\s+/g,' ').trim()
-                  // Lookup trong aliasNameMap không thể từ đây — tìm thủ công
-                  const alias = userAliases.find((a: any) => (a.alias_normalized || '') === k)
-                  if (alias?.user_id === detailUser.id) return true
-                  // Fallback: match user.name
-                  const u = allUsers.find((au: any) => au.id === detailUser.id)
-                  const uk = (u?.name || '').toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g,'').replace(/đ/g,'d').replace(/\s+/g,' ').trim()
-                  return uk === k
-                })
-                return (
-                  <div style={{ marginTop:14 }}>
-                    <div style={{ fontSize:12, fontWeight:700, color:T.blue, marginBottom:6 }}>
-                      🔧 Debug match: {matched.length} đơn KV match với "{detailUser.name}"
-                    </div>
-                    {matched.length === 0 && (
-                      <div style={{ fontSize:11, color:T.red, padding:10, background:'#FEF2F2', borderRadius:6 }}>
-                        ⚠ KHÔNG có invoice nào match! Kiểm tra:<br/>
-                        1. Tên trong KV (sold_by_name) có khớp với <code>user_aliases.alias</code> hoặc <code>users.name</code> không?<br/>
-                        2. Có thể NV này dùng tên khác trên KV — cần thêm alias.
-                      </div>
-                    )}
-                    {matched.length > 0 && matched.length < 10 && (
-                      <div style={{ fontSize:10, color:T.med, padding:8, background:T.bg, borderRadius:6, maxHeight:150, overflow:'auto' }}>
-                        {matched.slice(0, 10).map((inv: any, idx: number) => (
-                          <div key={idx} style={{ borderBottom:`1px dashed ${T.border}`, padding:'2px 0' }}>
-                            {inv.code} · {inv.sold_by_name} · 
-                            total={Number(inv.total).toLocaleString('vi-VN')} (×1000 = {(Number(inv.total) * 1000).toLocaleString('vi-VN')}đ)
-                          </div>
-                        ))}
-                      </div>
-                    )}
-                  </div>
-                )
-              })()}
-              
               {/* Source note */}
               <div style={{ marginTop:16, padding:10, background:T.bg, borderRadius:6, fontSize:11, color:T.med }}>
-                💡 Compute từ <b>{kvInvoices.length}</b> KV invoices tháng này (loại {kvInvoices.filter((i: any) => i.is_returned).length} returned). 
-                Map qua user_aliases ({userAliases.length} alias) + match trực tiếp users.name. <br/>
-                💰 KV currency rút gọn: <code>total × 1000 = số thực</code>. 
-                HH: tier LCB + progressive KH cũ + 1% KH mới + HH tuyến dưới (QL).
+                💡 Source: <code>kiotviet_sales_daily</code> ({kvSalesDaily.length} dòng tháng này) cho tổng DS, 
+                + <code>kv_invoices</code> ({kvInvoicesNewCust.length} đơn KH mới) cho DS khách mới. <br/>
+                💰 KV currency rút gọn → số trong DB × 1000 = VND thực để tính HH. <br/>
+                🔢 Số trong bảng đã hiển thị VND THỰC (nhân 1000 rồi).
               </div>
             </div>
           </div>
