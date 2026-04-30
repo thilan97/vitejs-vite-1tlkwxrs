@@ -32,7 +32,9 @@ const db = createClient(SUPABASE_URL, SUPABASE_KEY)
 // v175: fix code badge S22.HN1.13.A99 trong banner Import bị blend trắng-trắng — set color+border đậm
 // v176: fix logo bị corrupt (base64 lệch 1 ký tự, thiếu IEND chunk) — encode lại logo gốc, bỏ nền đen, transparent
 // v177: feature module "👥 Khách hàng" — sync KV + filter/sort + upload Excel người phụ trách + chi tiết KH
-const APP_VERSION = '2026.04.29.v177'
+// v178: fix code badge "Mã KH" trong CustomerDetailModal blend trắng-trắng — add background+border explicit
+// v179: fix MỌI input/select/date trong CustomersModule blend với dark mode — add background:'#fff' + color:T.dark cho hết. Thêm gợi ý range ngày khi filter không ra kết quả
+const APP_VERSION = '2026.04.29.v179'
 
 // ════════════════════════════════════════════════════════════════
 // v158: VersionBadge — Hiển thị APP_VERSION ở góc dưới phải
@@ -32165,14 +32167,15 @@ function CustomersModule({ user, allUsers, mobile }: any) {
             <input value={search} onChange={e => setSearch(e.target.value)}
               placeholder="Tên / SĐT / Mã KH / Người phụ trách"
               style={{ width:'100%', padding:'8px 10px', border:`1px solid ${T.border}`,
-                borderRadius:6, fontSize:13, fontFamily:'inherit', boxSizing:'border-box' }}/>
+                borderRadius:6, fontSize:13, fontFamily:'inherit', boxSizing:'border-box',
+                background:'#fff', color:T.dark }}/>
           </div>
           {isAdmin && (
             <div style={{ flex:'1 1 180px', minWidth:160 }}>
               <SettingSectionTitle>👤 Người phụ trách</SettingSectionTitle>
               <select value={filterAssignee} onChange={e => setFilterAssignee(e.target.value)}
                 style={{ width:'100%', padding:'8px 10px', border:`1px solid ${T.border}`,
-                  borderRadius:6, fontSize:13, fontFamily:'inherit', boxSizing:'border-box', background:'#fff' }}>
+                  borderRadius:6, fontSize:13, fontFamily:'inherit', boxSizing:'border-box', background:'#fff', color:T.dark }}>
                 <option value="all">Tất cả</option>
                 <option value="unassigned">⚠ Chưa gán</option>
                 {assignees.map(a => <option key={a.id} value={a.id}>{a.name}</option>)}
@@ -32183,7 +32186,7 @@ function CustomersModule({ user, allUsers, mobile }: any) {
             <SettingSectionTitle>🏷 Nhóm</SettingSectionTitle>
             <select value={filterGroup} onChange={e => setFilterGroup(e.target.value)}
               style={{ width:'100%', padding:'8px 10px', border:`1px solid ${T.border}`,
-                borderRadius:6, fontSize:13, fontFamily:'inherit', boxSizing:'border-box', background:'#fff' }}>
+                borderRadius:6, fontSize:13, fontFamily:'inherit', boxSizing:'border-box', background:'#fff', color:T.dark }}>
               <option value="all">Tất cả</option>
               {groups.map(g => <option key={g} value={g}>{g}</option>)}
             </select>
@@ -32192,7 +32195,7 @@ function CustomersModule({ user, allUsers, mobile }: any) {
             <SettingSectionTitle>💸 Công nợ</SettingSectionTitle>
             <select value={filterDebt} onChange={e => setFilterDebt(e.target.value as any)}
               style={{ width:'100%', padding:'8px 10px', border:`1px solid ${T.border}`,
-                borderRadius:6, fontSize:13, fontFamily:'inherit', boxSizing:'border-box', background:'#fff' }}>
+                borderRadius:6, fontSize:13, fontFamily:'inherit', boxSizing:'border-box', background:'#fff', color:T.dark }}>
               <option value="all">Tất cả</option>
               <option value="with_debt">Có nợ</option>
               <option value="no_debt">Đã trả hết</option>
@@ -32202,19 +32205,21 @@ function CustomersModule({ user, allUsers, mobile }: any) {
             <SettingSectionTitle>📅 Tạo từ</SettingSectionTitle>
             <input type="date" value={dateFrom} onChange={e => setDateFrom(e.target.value)}
               style={{ width:'100%', padding:'7px 10px', border:`1px solid ${T.border}`,
-                borderRadius:6, fontSize:13, fontFamily:'inherit', boxSizing:'border-box' }}/>
+                borderRadius:6, fontSize:13, fontFamily:'inherit', boxSizing:'border-box',
+                background:'#fff', color:T.dark }}/>
           </div>
           <div style={{ flex:'1 1 140px', minWidth:120 }}>
             <SettingSectionTitle>đến</SettingSectionTitle>
             <input type="date" value={dateTo} onChange={e => setDateTo(e.target.value)}
               style={{ width:'100%', padding:'7px 10px', border:`1px solid ${T.border}`,
-                borderRadius:6, fontSize:13, fontFamily:'inherit', boxSizing:'border-box' }}/>
+                borderRadius:6, fontSize:13, fontFamily:'inherit', boxSizing:'border-box',
+                background:'#fff', color:T.dark }}/>
           </div>
           <div style={{ flex:'1 1 180px', minWidth:140 }}>
             <SettingSectionTitle>💰 Doanh số ≥</SettingSectionTitle>
             <select value={minRevenue} onChange={e => setMinRevenue(Number(e.target.value))}
               style={{ width:'100%', padding:'8px 10px', border:`1px solid ${T.border}`,
-                borderRadius:6, fontSize:13, fontFamily:'inherit', boxSizing:'border-box', background:'#fff' }}>
+                borderRadius:6, fontSize:13, fontFamily:'inherit', boxSizing:'border-box', background:'#fff', color:T.dark }}>
               <option value={0}>Không lọc</option>
               <option value={100000}>100K</option>
               <option value={500000}>500K</option>
@@ -32228,7 +32233,7 @@ function CustomersModule({ user, allUsers, mobile }: any) {
             <SettingSectionTitle>↕ Sắp xếp</SettingSectionTitle>
             <select value={sortBy} onChange={e => setSortBy(e.target.value as any)}
               style={{ width:'100%', padding:'8px 10px', border:`1px solid ${T.border}`,
-                borderRadius:6, fontSize:13, fontFamily:'inherit', boxSizing:'border-box', background:'#fff' }}>
+                borderRadius:6, fontSize:13, fontFamily:'inherit', boxSizing:'border-box', background:'#fff', color:T.dark }}>
               <option value="debt_desc">Nợ cao → thấp</option>
               <option value="debt_asc">Nợ thấp → cao</option>
               <option value="revenue_desc">Doanh số cao → thấp</option>
@@ -32261,7 +32266,21 @@ function CustomersModule({ user, allUsers, mobile }: any) {
         <Card style={{ padding:30, textAlign:'center', color:T.light }}>
           {customers.length === 0
             ? '📭 Chưa có KH nào. Bấm "🔄 Sync từ KV" để đồng bộ.'
-            : '🔍 Không có KH nào khớp bộ lọc.'}
+            : (
+              <div>
+                🔍 Không có KH nào khớp bộ lọc.
+                {(dateFrom || dateTo) && customers.length > 0 && (
+                  <div style={{ marginTop:12, fontSize:11, color:T.med, lineHeight:1.7 }}>
+                    💡 <b>Gợi ý:</b> Trong DB có {customers.length} KH với ngày tạo từ{' '}
+                    <b>{getDateRangeFromData(customers).min}</b> đến{' '}
+                    <b>{getDateRangeFromData(customers).max}</b>.<br/>
+                    Anh đang lọc{' '}
+                    {dateFrom && <span>từ <b>{new Date(dateFrom).toLocaleDateString('vi-VN')}</b> </span>}
+                    {dateTo && <span>đến <b>{new Date(dateTo).toLocaleDateString('vi-VN')}</b></span>}.
+                  </div>
+                )}
+              </div>
+            )}
         </Card>
       ) : mobile ? (
         // ── MOBILE: card view ──
@@ -32344,6 +32363,17 @@ const pageBtnStyle = (disabled: boolean): any => ({
   cursor: disabled ? 'not-allowed' : 'pointer',
   fontFamily:'inherit', fontSize:13, fontWeight:600, opacity: disabled ? 0.5 : 1,
 })
+
+// v178: helper hiển thị range ngày tạo trong data — debug filter
+function getDateRangeFromData(customers: any[]): { min: string, max: string } {
+  const dates = customers
+    .map((c: any) => c.kv_created_at)
+    .filter(Boolean)
+    .sort()
+  if (dates.length === 0) return { min: '—', max: '—' }
+  const fmt = (s: string) => new Date(s).toLocaleDateString('vi-VN')
+  return { min: fmt(dates[0]), max: fmt(dates[dates.length - 1]) }
+}
 
 function SummaryStat({ label, value, color }: any) {
   return (
@@ -32683,7 +32713,7 @@ function CustomerUploadExcelModal({ user, mobile, onClose, onDone }: any) {
               <SettingSectionTitle>Cột Mã KH</SettingSectionTitle>
               <select value={colCode} onChange={e => setColCode(e.target.value)}
                 style={{ width:'100%', padding:'8px 10px', border:`1px solid ${T.border}`,
-                  borderRadius:6, fontSize:13, fontFamily:'inherit', boxSizing:'border-box', background:'#fff' }}>
+                  borderRadius:6, fontSize:13, fontFamily:'inherit', boxSizing:'border-box', background:'#fff', color:T.dark }}>
                 {headers.map(h => <option key={h} value={h}>{h}</option>)}
               </select>
             </div>
@@ -32691,7 +32721,7 @@ function CustomerUploadExcelModal({ user, mobile, onClose, onDone }: any) {
               <SettingSectionTitle>Cột Người phụ trách</SettingSectionTitle>
               <select value={colAssignee} onChange={e => setColAssignee(e.target.value)}
                 style={{ width:'100%', padding:'8px 10px', border:`1px solid ${T.border}`,
-                  borderRadius:6, fontSize:13, fontFamily:'inherit', boxSizing:'border-box', background:'#fff' }}>
+                  borderRadius:6, fontSize:13, fontFamily:'inherit', boxSizing:'border-box', background:'#fff', color:T.dark }}>
                 <option value="">— Chọn cột —</option>
                 {headers.map(h => <option key={h} value={h}>{h}</option>)}
               </select>
@@ -32817,7 +32847,9 @@ function CustomerDetailModal({ customer: c, mobile, user, onClose, onRefresh }: 
         <Card style={{ padding:14, marginBottom:14, background:T.bg }}>
           <div style={{ display:'grid',
             gridTemplateColumns: mobile ? '1fr' : 'repeat(2,1fr)', gap:8, fontSize:12 }}>
-            <div><b>Mã KH:</b> <code style={{ fontFamily:'monospace', color:T.dark }}>{c.code}</code></div>
+            <div><b>Mã KH:</b> <code style={{ padding:'2px 8px', background:'#fff',
+              color:T.dark, border:`1px solid ${T.border}`, borderRadius:4,
+              fontFamily:'monospace', fontWeight:700, fontSize:12 }}>{c.code}</code></div>
             <div><b>Nhóm:</b> {c.groups || '—'}</div>
             <div><b>SĐT:</b> {c.phone || '—'}</div>
             {c.sub_phone && <div><b>SĐT phụ:</b> {c.sub_phone}</div>}
