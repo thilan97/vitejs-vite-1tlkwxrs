@@ -106,7 +106,18 @@ const db = createClient(SUPABASE_URL, SUPABASE_KEY)
 // v197.1: Bug fix:
 //       (a) Schema customers thực tế KHÔNG có field `revenue` (chỉ có `total_revenue`). Query SELECT đang fail silent → fix bằng cách bỏ revenue (KPI lấy DS từ kvSalesDaily, không cần customers.revenue).
 //       (b) Customers >2500 rows nhưng dùng .range(0, 9999) chưa đủ tin cậy — đổi sang pagination loop batch 1000 (giống CustomersModule).
-const APP_VERSION = '2026.04.30.v197.1'
+// v198: Master Sync architecture — đồng bộ data KV trong 1 lượt:
+//       (1) Migration 62: thêm cols kv_master_sync_last_at/by/status/summary vào settings + (optional) pg_cron job mỗi 1h.
+//       (2) handleMasterSync: gọi tuần tự /kiotviet-sales-revenue + /kiotviet-sync-customers với progress bar + state masterSyncing/masterSyncStep.
+//       (3) Button "🔄 Sync TOÀN BỘ KV" (purple) ở Dashboard cạnh button "🔄 Chỉ DS" (debug). Stale warning >2h hiển thị màu vàng + cảnh báo.
+//       (4) Toggle "⏱ DS Tháng / 🌐 DS Lũy kế" trong CustomersTabKpiDebt — lifetime dùng SUM(customers.total_revenue) thay vì kvSalesDaily.
+//       (5) PayrollTabKpiDebt accept prop lifetimeMode + computeRealtime switch logic theo mode.
+//       (6) Customers query thêm field total_revenue.
+// 
+// ⚠ TODO sau v198 (anh deploy thủ công):
+//   - Cập nhật edge function `kiotviet-sales-revenue` để auto sync luôn `kv_invoices` (anh paste code edge function cho em fix).
+//   - Setup pg_cron hoặc external cron (cron-job.org) để auto sync mỗi 1h. Hướng dẫn trong migration_62.sql.
+const APP_VERSION = '2026.04.30.v198'
 
 // ════════════════════════════════════════════════════════════════
 // v158: VersionBadge — Hiển thị APP_VERSION ở góc dưới phải
@@ -2714,6 +2725,8 @@ function Dashboard({ user, checklist, tasks, allUsers, attendance, leaveRequests
   // KV Sales state
   const [kvSalesRows,    setKvSalesRows]    = useState<any[]>([])
   const [kvLastSyncAt,   setKvLastSyncAt]   = useState<string | null>(null)
+  // v198: Master sync time
+  const [kvMasterSyncAt, setKvMasterSyncAt] = useState<string | null>(null)
   const [kvSyncFromDate, setKvSyncFromDate] = useState<string>('')
   const [kvSyncToDate,   setKvSyncToDate]   = useState<string>('')
   const [kvSyncError,    setKvSyncError]    = useState<string | null>(null)
@@ -2758,11 +2771,12 @@ function Dashboard({ user, checklist, tasks, allUsers, attendance, leaveRequests
       const [salesRes, setRes] = await Promise.all([
         db.from('kiotviet_sales_daily').select('*')
           .gte('date', fromD).lte('date', toD).limit(5000),
-        db.from('settings').select('kv_sales_last_sync_at, kv_sales_last_sync_from, kv_sales_last_sync_to, kv_sales_last_sync_error').eq('id', 'main').maybeSingle(),
+        db.from('settings').select('kv_sales_last_sync_at, kv_sales_last_sync_from, kv_sales_last_sync_to, kv_sales_last_sync_error, kv_master_sync_last_at').eq('id', 'main').maybeSingle(),
       ])
       setKvSalesRows(salesRes.data || [])
       if (setRes.data) {
         setKvLastSyncAt(setRes.data.kv_sales_last_sync_at || null)
+        setKvMasterSyncAt(setRes.data.kv_master_sync_last_at || null)
         setKvSyncFromDate(setRes.data.kv_sales_last_sync_from || fromD)
         setKvSyncToDate(setRes.data.kv_sales_last_sync_to || toD)
         setKvSyncError(setRes.data.kv_sales_last_sync_error || null)
@@ -2826,6 +2840,83 @@ function Dashboard({ user, checklist, tasks, allUsers, attendance, leaveRequests
       toast.error(`Sync lỗi: ${e.message}`)
     } finally {
       setKvSyncing(false)
+    }
+  }
+  
+  // v198: MASTER SYNC — gọi tuần tự 3 endpoint để đồng bộ TẤT CẢ data từ KV
+  const [masterSyncing, setMasterSyncing] = useState(false)
+  const [masterSyncStep, setMasterSyncStep] = useState('')
+  
+  const handleMasterSync = async () => {
+    if (masterSyncing || kvSyncing) return
+    if (!perm.viewAllDashboard) { alert('Chỉ admin/GĐ mới sync được'); return }
+    if (!(await confirmDialog({
+      title: '🔄 Master Sync — Đồng bộ TOÀN BỘ data từ KiotViet?',
+      message: 'Sẽ chạy tuần tự:\n1. Sync DS sale + invoices chi tiết (kiotviet-sales-revenue)\n2. Sync danh sách KH + công nợ (kiotviet-sync-customers)\n\nMất khoảng 30-60 giây. Sau khi xong các module sẽ có data đồng bộ.',
+      confirmText: '🔄 Sync toàn bộ',
+    }))) return
+    
+    setMasterSyncing(true)
+    const t0 = Date.now()
+    let salesData: any = null
+    let custData: any = null
+    let errors: string[] = []
+    
+    try {
+      // ─── Step 1: Sales + Invoices ───
+      setMasterSyncStep('1/2: Đang sync doanh số + invoices từ KV...')
+      try {
+        const res1 = await fetch(`${SUPABASE_URL}/functions/v1/kiotviet-sales-revenue`, {
+          method: 'POST',
+          headers: { 'Authorization': `Bearer ${SUPABASE_ANON}`, 'Content-Type': 'application/json' },
+          body: JSON.stringify({}),
+        })
+        salesData = await res1.json()
+        if (!res1.ok) throw new Error(salesData?.error || `HTTP ${res1.status}`)
+      } catch (e: any) {
+        errors.push(`Sales: ${e.message}`)
+      }
+      
+      // ─── Step 2: Customers + debt + groups ───
+      setMasterSyncStep('2/2: Đang sync khách hàng + công nợ...')
+      try {
+        const res2 = await fetch(`${SUPABASE_URL}/functions/v1/kiotviet-sync-customers?mode=sync`, {
+          headers: { 'Authorization': `Bearer ${SUPABASE_ANON}` },
+        })
+        custData = await res2.json()
+        if (!res2.ok || !custData.success) throw new Error(custData?.error || `HTTP ${res2.status}`)
+      } catch (e: any) {
+        errors.push(`Customers: ${e.message}`)
+      }
+      
+      // ─── Refresh local state ───
+      setMasterSyncStep('Đang tải lại data...')
+      await fetchKvSales()
+      
+      // ─── Save last master sync time ───
+      try {
+        await db.from('settings').update({
+          kv_master_sync_last_at: new Date().toISOString(),
+          kv_master_sync_last_by: user.id,
+        }).eq('id', 'main')
+      } catch (e) { /* ignore */ }
+      
+      const elapsed = ((Date.now() - t0) / 1000).toFixed(1)
+      const summary = [
+        salesData ? `📊 ${salesData.invoice_count || 0} đơn, ${salesData.sales_rows_count || 0} dòng DS` : '❌ Sales',
+        custData ? `👥 ${custData.upserted || 0} KH` : '❌ Customers',
+      ].join(' · ')
+      
+      if (errors.length > 0) {
+        toast.error(`⚠ Sync hoàn thành 1 phần (${elapsed}s)\n${summary}\nLỗi: ${errors.join('; ')}`)
+      } else {
+        toast.success(`✅ Sync TOÀN BỘ xong (${elapsed}s)\n${summary}`)
+      }
+    } catch (e: any) {
+      toast.error(`Sync lỗi: ${e.message}`)
+    } finally {
+      setMasterSyncing(false)
+      setMasterSyncStep('')
     }
   }
 
@@ -3370,36 +3461,69 @@ function Dashboard({ user, checklist, tasks, allUsers, attendance, leaveRequests
               💼 Doanh số NV Sale — tháng này
             </div>
             {perm.viewAllDashboard && (
-              <button onClick={handleSyncKv} disabled={kvSyncing}
-                style={{ padding:'5px 12px', borderRadius:16, cursor:kvSyncing?'wait':'pointer',
-                  fontFamily:'inherit', fontSize:11, fontWeight:600,
-                  border:`1px solid ${T.gold}`,
-                  background: kvSyncing?T.bg:T.goldBg,
-                  color: T.goldText }}>
-                {kvSyncing ? '⏳ Đang sync...' : '🔄 Sync ngay từ KiotViet'}
-              </button>
+              <div style={{ display:'flex', gap:6, flexWrap:'wrap' }}>
+                {/* v198: Master Sync button — gọi tuần tự cả 3 endpoint */}
+                <button onClick={handleMasterSync} disabled={masterSyncing || kvSyncing}
+                  style={{ padding:'5px 12px', borderRadius:16, cursor:(masterSyncing||kvSyncing)?'wait':'pointer',
+                    fontFamily:'inherit', fontSize:11, fontWeight:700,
+                    border:`1px solid ${T.purple}`,
+                    background: masterSyncing ? T.bg : T.purpleBg || '#F3E8FF',
+                    color: T.purple }}
+                  title="Sync TẤT CẢ data từ KV (DS + Customers + Invoices) trong 1 lần">
+                  {masterSyncing ? `⏳ ${masterSyncStep || 'Đang sync...'}` : '🔄 Sync TOÀN BỘ KV'}
+                </button>
+                <button onClick={handleSyncKv} disabled={kvSyncing || masterSyncing}
+                  style={{ padding:'5px 12px', borderRadius:16, cursor:kvSyncing?'wait':'pointer',
+                    fontFamily:'inherit', fontSize:11, fontWeight:600,
+                    border:`1px solid ${T.gold}`,
+                    background: kvSyncing?T.bg:T.goldBg,
+                    color: T.goldText }}
+                  title="Chỉ sync DS sale (debug)">
+                  {kvSyncing ? '⏳ Đang sync...' : '🔄 Chỉ DS'}
+                </button>
+              </div>
             )}
           </div>
 
-          {/* Sync info */}
-          <div style={{ fontSize:11, color:T.light, marginBottom:12,
-            padding:'6px 10px', background:T.bg, borderRadius:RD.sm,
-            borderLeft:`3px solid ${kvSyncError ? T.red : T.blue}` }}>
-            {kvSalesRows.length === 0 && !kvLastSyncAt ? (
-              <span>Chưa có dữ liệu. {perm.viewAllDashboard ? 'Click "Sync ngay" để kéo dữ liệu từ KiotViet.' : 'Admin chưa sync lần nào.'}</span>
-            ) : (
-              <>
-                📅 Dữ liệu từ <b style={{ color:T.dark }}>{fmtDM(kvSyncFromDate)}</b> đến <b style={{ color:T.dark }}>{fmtDM(kvSyncToDate)}</b>
-                {' '}(đến 0h00 ngày {fmtDMY(kvSyncToDate && new Date(new Date(kvSyncToDate).getTime() + 86400000).toISOString())})
-                {' '}· Cập nhật lúc <b style={{ color:T.dark }}>{fmtDT(kvLastSyncAt||'')}</b>
-                {' '}· <span style={{ color:T.green }}>{mappedSaleUsers.length} NV Sale đã map</span>
-                {unmappedKvCount > 0 && perm.viewAllDashboard && (
-                  <span style={{ color:T.amber }}> · ⚠️ {unmappedKvCount} KV account chưa map (admin/chủ)</span>
+          {/* Sync info — v198: thêm stale warning + master sync time */}
+          {(() => {
+            const syncTime = kvMasterSyncAt || kvLastSyncAt
+            const ageMs = syncTime ? Date.now() - new Date(syncTime).getTime() : Infinity
+            const ageHours = ageMs / (1000 * 60 * 60)
+            const isStale = ageHours > 2  // > 2 giờ = stale
+            const ageStr = !syncTime ? 'chưa bao giờ' :
+              ageHours < 1 ? `${Math.round(ageMs / 60000)} phút trước` :
+              ageHours < 24 ? `${Math.floor(ageHours)} giờ trước` :
+              `${Math.floor(ageHours / 24)} ngày trước`
+            return (
+              <div style={{ fontSize:11, color:T.light, marginBottom:12,
+                padding:'6px 10px',
+                background: isStale ? '#FEF3C7' : T.bg,
+                borderRadius:RD.sm,
+                borderLeft:`3px solid ${kvSyncError ? T.red : (isStale ? T.amber : T.blue)}` }}>
+                {kvSalesRows.length === 0 && !kvLastSyncAt ? (
+                  <span>Chưa có dữ liệu. {perm.viewAllDashboard ? 'Click "Sync TOÀN BỘ KV" để kéo dữ liệu.' : 'Admin chưa sync lần nào.'}</span>
+                ) : (
+                  <>
+                    📅 Dữ liệu từ <b style={{ color:T.dark }}>{fmtDM(kvSyncFromDate)}</b> đến <b style={{ color:T.dark }}>{fmtDM(kvSyncToDate)}</b>
+                    {' '}· DS Sale cập nhật <b style={{ color:T.dark }}>{fmtDT(kvLastSyncAt||'')}</b>
+                    {kvMasterSyncAt && (
+                      <span> · Master sync <b style={{ color:T.dark }}>{ageStr}</b></span>
+                    )}
+                    {' '}· <span style={{ color:T.green }}>{mappedSaleUsers.length} NV map</span>
+                    {unmappedKvCount > 0 && perm.viewAllDashboard && (
+                      <span style={{ color:T.amber }}> · ⚠️ {unmappedKvCount} KV chưa map</span>
+                    )}
+                    {isStale && perm.viewAllDashboard && (
+                      <div style={{ marginTop:4, color:'#92400E', fontWeight:600 }}>
+                        ⚠ Đã {ageStr} chưa sync — có thể data đã cũ. Bấm <b>"🔄 Sync TOÀN BỘ KV"</b> để cập nhật.
+                      </div>
+                    )}
+                  </>
                 )}
-                {kvSyncError && <div style={{ color:T.red, marginTop:4 }}>❌ Lỗi lần sync cuối: {kvSyncError}</div>}
-              </>
-            )}
-          </div>
+              </div>
+            )
+          })()}
 
           {kvSalesRanking.length === 0 ? (
             <div style={{ fontSize:12, color:T.light, textAlign:'center', padding:'16px 0' }}>
@@ -24441,13 +24565,14 @@ function PayrollModule({ user, allUsers, mobile }: any) {
           : Promise.resolve({ data: [] })
         
         // v197.1: Tách query customers ra để dùng pagination loop (>2500 KH, an toàn hơn .range)
+        // v198: thêm total_revenue cho lifetime mode KPI
         const fetchAllCustomers = async (): Promise<any[]> => {
           const PAGE_SIZE = 1000
           let all: any[] = []
           let from = 0
           while (true) {
             const { data, error } = await db.from('customers')
-              .select('id,code,name,debt,groups,assigned_to_user_id,assigned_to_user_name')
+              .select('id,code,name,debt,total_revenue,groups,assigned_to_user_id,assigned_to_user_name')
               .neq('is_deleted', true)
               .range(from, from + PAGE_SIZE - 1)
             if (error) { console.error('[customers]', error.message); break }
@@ -27239,7 +27364,8 @@ function PayrollTabKpiDebt({
   kvSalesDaily, kvNameToAppUserMap,
   kpiCustomers, kpiTargets, setKpiTargets,
   kpiSnapshots, setKpiSnapshots,
-  mode = 'snapshot'  // 'snapshot' (Payroll) hoặc 'realtime' (Customers)
+  mode = 'snapshot',  // 'snapshot' (Payroll) hoặc 'realtime' (Customers)
+  lifetimeMode = false,  // v198: true = dùng customers.total_revenue (lũy kế) thay vì kvSalesDaily (tháng)
 }: any) {
   const [working, setWorking] = useState(false)
   const [editingTarget, setEditingTarget] = useState<string|null>(null)
@@ -27266,16 +27392,27 @@ function PayrollTabKpiDebt({
   }, [kpiTargets])
   
   // Compute KPI per sale (realtime mode)
+  // v198: nếu lifetimeMode → dùng SUM(customers.total_revenue) thay vì kvSalesDaily
   const computeRealtime = (saleId: string) => {
-    // Tổng DS từ kvSalesDaily
     let totalRevenueRaw = 0
-    if (kvSalesDaily && kvNameToAppUserMap) {
-      for (const r of kvSalesDaily) {
-        const k = (r.sold_by_name || '').toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g,'').replace(/đ/g,'d').replace(/\s+/g,' ').trim()
-        const mappedId = kvNameToAppUserMap.get(k)
-        if (mappedId === saleId) totalRevenueRaw += Number(r.total_revenue || 0)
+    
+    if (lifetimeMode) {
+      // Lũy kế: SUM customers.total_revenue cho KH thuộc sale này
+      const myCustomers = (kpiCustomers || []).filter((c: any) => c.assigned_to_user_id === saleId)
+      for (const c of myCustomers) {
+        totalRevenueRaw += Number(c.total_revenue || 0)
+      }
+    } else {
+      // Tháng: từ kvSalesDaily
+      if (kvSalesDaily && kvNameToAppUserMap) {
+        for (const r of kvSalesDaily) {
+          const k = (r.sold_by_name || '').toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g,'').replace(/đ/g,'d').replace(/\s+/g,' ').trim()
+          const mappedId = kvNameToAppUserMap.get(k)
+          if (mappedId === saleId) totalRevenueRaw += Number(r.total_revenue || 0)
+        }
       }
     }
+    
     const totalRevenue = totalRevenueRaw * 1000  // VND thực
     
     // Customers thuộc về sale này
@@ -27309,8 +27446,12 @@ function PayrollTabKpiDebt({
         isSnapshot: true,
       } : {
         ...realtime,
-        totalRevenue: realtime.byGroup ? (() => {
-          // Tính lại totalRevenue từ realtime
+        totalRevenue: (() => {
+          // v198: Tính totalRevenue đồng bộ với computeRealtime
+          if (lifetimeMode) {
+            const myCustomers = (kpiCustomers || []).filter((c: any) => c.assigned_to_user_id === u.id)
+            return myCustomers.reduce((s: number, c: any) => s + Number(c.total_revenue || 0), 0) * 1000
+          }
           let r = 0
           if (kvSalesDaily && kvNameToAppUserMap) {
             for (const row of kvSalesDaily) {
@@ -27320,12 +27461,12 @@ function PayrollTabKpiDebt({
             }
           }
           return r * 1000
-        })() : 0,
+        })(),
         isSnapshot: false,
       }
       return { ...u, _kpi: display }
     })
-  }, [salesUsers, kpiSnapshots, kpiTargets, kpiCustomers, kvSalesDaily, mode])
+  }, [salesUsers, kpiSnapshots, kpiTargets, kpiCustomers, kvSalesDaily, mode, lifetimeMode])
   
   // Snapshot toàn bộ
   const handleSnapshotAll = async () => {
@@ -27444,7 +27585,9 @@ function PayrollTabKpiDebt({
             <div style={{ fontSize:12, color:T.med, marginTop:4 }}>
               {mode === 'snapshot' 
                 ? 'Bảng chốt KPI để tính lương. Bấm "📌 Chốt tháng" để snapshot. Sau khi chốt, số sẽ FREEZE dù KH thanh toán/phát sinh nợ.'
-                : 'Realtime cho sale theo dõi tình hình. Tính theo data hiện tại của KH (đơn vị: nghìn đ giống KV).'}
+                : (lifetimeMode 
+                    ? '🌐 LŨY KẾ: DS tính từ tổng total_revenue của KH (cả đời). Công nợ realtime hiện tại. Tỉ lệ thấp do DS lũy kế thường lớn.'
+                    : '⏱ THÁNG: DS tính từ kiotviet_sales_daily (chỉ trong tháng được chọn). Công nợ realtime hiện tại.')}
               <br/>Đơn vị tiền hiển thị: <b>nghìn đ</b> (giống KV) · Công thức: 
               <code> ratio = công_nợ_nhóm ÷ tổng_DS_sale</code> · 
               Đạt khi <code>ratio ≤ target</code>.
@@ -37064,6 +37207,8 @@ function CustomersTabKpiDebt({ user, mobile, allUsers, customers, month, setMont
   const [loading, setLoading] = useState(true)
   const [kpiTargets, setKpiTargets] = useState<any[]>([])
   const [kvSalesDaily, setKvSalesDaily] = useState<any[]>([])
+  // v198: Toggle DS Tháng vs Lũy kế
+  const [revenueMode, setRevenueMode] = useState<'monthly'|'lifetime'>('monthly')
   
   // Build kvNameToAppUserMap
   const kvNameToAppUserMap = useMemo(() => {
@@ -37106,14 +37251,16 @@ function CustomersTabKpiDebt({ user, mobile, allUsers, customers, month, setMont
   
   return (
     <div>
-      {/* Selector tháng/năm */}
+      {/* Selector tháng/năm + toggle DS mode */}
       <Card style={{ padding:14, marginBottom:12 }}>
-        <div style={{ display:'flex', gap:10, alignItems:'center', flexWrap:'wrap' }}>
+        <div style={{ display:'flex', gap:14, alignItems:'center', flexWrap:'wrap' }}>
           <div>
             <label style={{ fontSize:12, color:T.med, fontWeight:600 }}>Tháng:</label>
             <select value={month} onChange={e => setMonth(Number(e.target.value))}
+              disabled={revenueMode === 'lifetime'}
               style={{ marginLeft:6, padding:'6px 10px', borderRadius:6, border:`1px solid ${T.border}`,
-                background:'#fff', color:T.dark, fontFamily:'inherit', fontSize:13 }}>
+                background:'#fff', color:T.dark, fontFamily:'inherit', fontSize:13,
+                opacity: revenueMode === 'lifetime' ? 0.5 : 1 }}>
               {Array.from({ length: 12 }, (_, i) => i + 1).map(m => (
                 <option key={m} value={m}>T{m}</option>
               ))}
@@ -37122,18 +37269,49 @@ function CustomersTabKpiDebt({ user, mobile, allUsers, customers, month, setMont
           <div>
             <label style={{ fontSize:12, color:T.med, fontWeight:600 }}>Năm:</label>
             <select value={year} onChange={e => setYear(Number(e.target.value))}
+              disabled={revenueMode === 'lifetime'}
               style={{ marginLeft:6, padding:'6px 10px', borderRadius:6, border:`1px solid ${T.border}`,
-                background:'#fff', color:T.dark, fontFamily:'inherit', fontSize:13 }}>
+                background:'#fff', color:T.dark, fontFamily:'inherit', fontSize:13,
+                opacity: revenueMode === 'lifetime' ? 0.5 : 1 }}>
               {[2025, 2026, 2027].map(y => (
                 <option key={y} value={y}>{y}</option>
               ))}
             </select>
           </div>
+          
+          {/* v198: Toggle DS Tháng / Lũy kế */}
+          <div style={{ display:'flex', gap:0, border:`1.5px solid ${T.purple}`, borderRadius:6, overflow:'hidden' }}>
+            <button onClick={() => setRevenueMode('monthly')}
+              style={{
+                padding:'7px 14px', border:'none', cursor:'pointer',
+                background: revenueMode === 'monthly' ? T.purple : '#fff',
+                color: revenueMode === 'monthly' ? '#fff' : T.purple,
+                fontFamily:'inherit', fontSize:12, fontWeight:700,
+              }}>
+              ⏱ DS Tháng
+            </button>
+            <button onClick={() => setRevenueMode('lifetime')}
+              style={{
+                padding:'7px 14px', border:'none', cursor:'pointer',
+                background: revenueMode === 'lifetime' ? T.purple : '#fff',
+                color: revenueMode === 'lifetime' ? '#fff' : T.purple,
+                fontFamily:'inherit', fontSize:12, fontWeight:700,
+                borderLeft: `1.5px solid ${T.purple}`,
+              }}>
+              🌐 DS Lũy kế
+            </button>
+          </div>
+          
           {isUserSale && (
             <span style={{ fontSize:11, color:T.med, fontStyle:'italic' }}>
-              👤 Bạn chỉ thấy KPI của mình. Admin thấy tất cả sale.
+              👤 Bạn chỉ thấy KPI của mình
             </span>
           )}
+        </div>
+        <div style={{ fontSize:10, color:T.light, marginTop:8 }}>
+          {revenueMode === 'monthly' 
+            ? '💡 DS Tháng: chỉ tính DS bán trong tháng được chọn (kiotviet_sales_daily). Cần Sync KV cập nhật để chuẩn xác.'
+            : '💡 DS Lũy kế: tính từ customers.total_revenue (tổng DS từ trước đến nay của mỗi KH). Tỉ lệ % sẽ thấp hơn nhiều so với DS tháng.'}
         </div>
       </Card>
       
@@ -37150,7 +37328,8 @@ function CustomersTabKpiDebt({ user, mobile, allUsers, customers, month, setMont
         setKpiTargets={setKpiTargets}
         kpiSnapshots={[]}
         setKpiSnapshots={() => {}}
-        mode="realtime"/>
+        mode="realtime"
+        lifetimeMode={revenueMode === 'lifetime'}/>
     </div>
   )
 }
