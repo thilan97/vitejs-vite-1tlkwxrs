@@ -43,7 +43,15 @@ const db = createClient(SUPABASE_URL, SUPABASE_KEY)
 // v186: fix build error — fmtMoney trùng tên với global của payment module → đổi thành fmtMoneyKv
 // v187: fix alias không match — frontend normalize "Ngân Lan" → "ngân lan" còn dấu, edge function search "ngan lan" → KHÔNG match. Đổi frontend dùng cùng logic NFD+bỏ dấu+đ→d. Thêm check duplicate trước insert (tránh 409).
 // v188: fix bug zoom ảnh trên iOS — (1) safe-area-inset-top tránh notch che top bar, (2) thêm nút "← Đóng" rõ ràng phía trái thay nút ✕ phải có thể bị che, (3) touchAction:'none' tắt iOS Safari default page zoom, (4) pointerEvents:none cho img để div parent nhận touch event, (5) lock body scroll khi modal mở. Hint mobile: pinch 2 ngón để zoom.
-const APP_VERSION = '2026.04.30.v188'
+// v189: feature filter ngày cho 5 tab GHTK (Dropship của tôi, Đã tạo đơn, Theo dõi đơn, Đã giao, In mã dropship). Preset 3d/7d/30d/all/custom date range. Default 30d. Lọc theo created_at của đơn trong DB.
+// v190: refine filter ngày — thêm preset "Hôm nay", default 1 tuần. Field date tùy tab: dropship_mine + dropship dùng dropship_printed_at (ngày in nhãn), GHTK tabs (created/track/delivered) dùng ghtk_created_at (ngày tạo nhãn GHTK). Label header rõ ràng "Ngày in nhãn" vs "Ngày tạo GHTK".
+// v191: Payroll Override System — Migration 53 (payroll_overrides) + 54 (position_base_salary + position_work_schedule). 
+//       Tabs Admin (chỉ admin thấy): 📊 Tổng quan / 💸 Mất hàng / 🔄 Hoàn hàng / 🎯 MBO / ✅ Kiểm hàng / 💝 Trợ cấp / 💼 LCB vị trí / ⏰ Giờ làm. 
+//       Override per-NV per-tháng (mất hàng, hoàn hàng, MBO, kiểm hàng, trợ cấp, LCB) + Override config chung per-tháng (mức kiểm hàng, mức chuyên cần). 
+//       LCB có 2 lớp: mặc định theo vị trí + override theo NV. Cấu hình giờ làm (start/end/lunch) theo VT. 
+//       Compute logic update: getOverride priority → fallback default. NV xem phiếu lương không biết bị override (transparent). 
+//       Admin chọn NV xem phiếu lương từ dropdown trong tab Tổng quan.
+const APP_VERSION = '2026.04.30.v191'
 
 // ════════════════════════════════════════════════════════════════
 // v158: VersionBadge — Hiển thị APP_VERSION ở góc dưới phải
@@ -23905,9 +23913,25 @@ function computeMonthlyPayroll(opts: {
   shortageLossTotal: number,
   commissionTotal: number,
   manualAdjust: number,
+  // v191: overrides — Map<field_type, amount>
+  overrides?: Map<string, number>,  // per-NV overrides cho NV này
+  configOverrides?: Map<string, number>,  // override config chung tháng đó (user_id NULL)
 }) {
   const { user, salaryConfig, attendanceRecords, month, year, paidLeaveDates } = opts
   const sc = salaryConfig
+
+  // v191: Helper get value với override priority
+  const ov = opts.overrides || new Map()
+  const cfgOv = opts.configOverrides || new Map()
+  
+  // Per-NV override (highest priority cho từng khoản)
+  const getOverride = (field: string, fallback: number): number => {
+    return ov.has(field) ? Number(ov.get(field)) : fallback
+  }
+  // Config override per-month (override config chung)
+  const getCfgOverride = (field: string, fallback: number): number => {
+    return cfgOv.has(field) ? Number(cfgOv.get(field)) : fallback
+  }
 
   // 1. Tổng hợp attendance
   let workHoursRegular = 0, ot150Hours = 0, ot200Hours = 0
@@ -23928,40 +23952,63 @@ function computeMonthlyPayroll(opts: {
   // 2. Tính số ngày làm việc chuẩn tháng
   const totalWorkingDaysInMonth = countWorkingDaysInMonth(month, year, paidLeaveDates)
 
-  // 3. Tính lương công + OT
+  // v191: LCB có thể bị override per-NV
+  const effectiveBaseSalary = getOverride('base_salary', sc.base_salary)
+
+  // 3. Tính lương công + OT (dùng LCB sau override)
   const { workAmount, ot150Amount, ot200Amount } = computeSalaryAmounts({
     positionType: sc.position_type,
-    baseSalary: sc.base_salary,
+    baseSalary: effectiveBaseSalary,
     workHoursRegular, ot150Hours, ot200Hours,
     totalWorkingDaysInMonth,
   })
 
-  // 4. Các khoản cộng/trừ
-  const lunchAmount = lunchDays * opts.lunchPerDay
-  const attBonusAmount = isAttendanceBonusEligible(sc.position_type, totalLeaveDays, totalNkpDays, cnBuDays, sc.has_attendance_bonus)
-    ? opts.attendanceBonusAmount : 0
-  const inspectionBonusAmount = sc.has_inspection_bonus ? opts.inspectionBonusAmount : 0
-  const bhxhDeduction = sc.has_bhxh ? opts.bhxhAmount : 0
+  // 4. Các khoản cộng/trừ (mỗi khoản có thể bị override)
+  // v191: Lunch — cfg override có thể đổi giá tiền ăn/ngày
+  const effectiveLunchPerDay = getCfgOverride('cfg_lunch_per_day', opts.lunchPerDay)
+  const lunchAmountAuto = lunchDays * effectiveLunchPerDay
+  const lunchAmount = getOverride('lunch_amount', lunchAmountAuto)
+  
+  // v191: Attendance bonus — config override + per-NV override
+  const effectiveAttBonusAmount = getCfgOverride('cfg_attendance_bonus_amount', opts.attendanceBonusAmount)
+  const attBonusAuto = isAttendanceBonusEligible(sc.position_type, totalLeaveDays, totalNkpDays, cnBuDays, sc.has_attendance_bonus)
+    ? effectiveAttBonusAmount : 0
+  const attBonusAmount = getOverride('attendance_bonus', attBonusAuto)
+  
+  // v191: Inspection bonus
+  const effectiveInspectionAmount = getCfgOverride('cfg_inspection_bonus_amount', opts.inspectionBonusAmount)
+  const inspectionAuto = sc.has_inspection_bonus ? effectiveInspectionAmount : 0
+  const inspectionBonusAmount = getOverride('inspection_bonus', inspectionAuto)
+  
+  // v191: BHXH
+  const effectiveBhxhAmount = getCfgOverride('cfg_bhxh_amount', opts.bhxhAmount)
+  const bhxhDeduction = sc.has_bhxh ? effectiveBhxhAmount : 0
+  
+  // v191: Per-NV override fields mới
+  const mboBonus = getOverride('mbo_bonus', 0)         // Thưởng MBO (mặc định 0, cần Admin set)
+  const allowance = getOverride('allowance', 0)        // Trợ cấp khác
+  const returnLoss = getOverride('return_loss', 0)     // Tiền hoàn hàng do đóng sai
+  const otherDeduction = getOverride('other_deduction', 0)  // Trừ khác
+  
+  // shortage_loss có thể override (trước tự động từ monthly_shortage_loss)
+  const effectiveShortageLoss = getOverride('shortage_loss', opts.shortageLossTotal)
+  // other_income có thể override
+  const effectiveOtherIncome = getOverride('other_income', opts.otherIncomeTotal)
 
-  // 5. Tổng kết — theo công thức Excel:
-  //    IF PTC: THỰC NHẬN = LCB (cố định, không trừ/cộng gì)
-  //    IF Part-time: (BT + OT150 + OT200) × LCB + tiền ăn + tiền khác
-  //    ELSE: lương công + OT + chuyên cần + tiền ăn + thưởng/HH + tiền khác - tiền mất hàng - BHXH
+  // 5. Tổng kết
   let finalSalary: number
   if (sc.position_type === 'Phụ trách chung') {
-    // PTC: LCB flat
-    finalSalary = sc.base_salary + opts.manualAdjust
+    // PTC: LCB flat (LCB có thể bị override)
+    finalSalary = effectiveBaseSalary + opts.manualAdjust
   } else if (sc.position_type === 'Part-time') {
-    // Part-time: (BT + OT150 + OT200) × đơn_giá + tiền ăn + tiền khác (+/-)
-    // workAmount đã = BT × LCB, cần cộng OT cũng × LCB
-    const totalHoursAmount = Math.round((workHoursRegular + ot150Hours + ot200Hours) * sc.base_salary)
-    finalSalary = totalHoursAmount + lunchAmount + opts.otherIncomeTotal + opts.manualAdjust
+    const totalHoursAmount = Math.round((workHoursRegular + ot150Hours + ot200Hours) * effectiveBaseSalary)
+    finalSalary = totalHoursAmount + lunchAmount + effectiveOtherIncome + opts.manualAdjust
   } else {
-    // Regular (Kho, Sales, KT, etc.)
     finalSalary = workAmount + ot150Amount + ot200Amount
       + lunchAmount + attBonusAmount + inspectionBonusAmount
-      + opts.commissionTotal + opts.otherIncomeTotal
-      - bhxhDeduction - opts.shortageLossTotal
+      + mboBonus + allowance                                  // v191: thêm
+      + opts.commissionTotal + effectiveOtherIncome
+      - bhxhDeduction - effectiveShortageLoss - returnLoss - otherDeduction  // v191: thêm trừ
       + opts.manualAdjust
   }
 
@@ -23969,7 +24016,7 @@ function computeMonthlyPayroll(opts: {
     user_id: user.id,
     month, year,
     position_type: sc.position_type,
-    base_salary: sc.base_salary,
+    base_salary: effectiveBaseSalary,
     has_bhxh: sc.has_bhxh,
     has_attendance_bonus: sc.has_attendance_bonus,
     has_inspection_bonus: sc.has_inspection_bonus,
@@ -23992,9 +24039,14 @@ function computeMonthlyPayroll(opts: {
     inspection_bonus_amount: inspectionBonusAmount,
     bhxh_deduction: bhxhDeduction,
     commission_total: opts.commissionTotal,
-    other_income_total: opts.otherIncomeTotal,
-    shortage_loss_total: opts.shortageLossTotal,
+    other_income_total: effectiveOtherIncome,
+    shortage_loss_total: effectiveShortageLoss,
     manual_adjust: opts.manualAdjust,
+    // v191: fields mới
+    mbo_bonus: mboBonus,
+    allowance: allowance,
+    return_loss: returnLoss,
+    other_deduction: otherDeduction,
     final_salary: finalSalary,
   }
 }
@@ -24111,13 +24163,22 @@ function PayrollModule({ user, allUsers, mobile }: any) {
   const [revenues, setRevenues]     = useState<any[]>([])
   const [attendanceMonth, setAttendanceMonth] = useState<any[]>([])
   const [detailModalUser, setDetailModalUser] = useState<any>(null)
+  // v191: overrides + position config
+  const [overrides, setOverrides] = useState<any[]>([])  // payroll_overrides của tháng này
+  const [positionBaseSalary, setPositionBaseSalary] = useState<any[]>([])
+  const [positionWorkSchedule, setPositionWorkSchedule] = useState<any[]>([])
+  // v191: tabs
+  const [adminTab, setAdminTab] = useState<'overview'|'shortage_loss'|'return_loss'|'mbo_bonus'|'inspection_bonus'|'allowance'|'base_salary'|'schedule'>('overview')
+  const isAdmin = perm.viewAllDashboard
+  // v191: Admin chọn NV xem phiếu lương
+  const [viewSlipUserId, setViewSlipUserId] = useState<string>('')
 
   // Load all data khi month/year change
   useEffect(() => {
     (async () => {
       setLoading(true)
       try {
-        const [sc, pc, pr, oi, sl, rv, att] = await Promise.all([
+        const [sc, pc, pr, oi, sl, rv, att, ovr, pbs, pws] = await Promise.all([
           db.from('salary_config').select('*').is('effective_to', null),
           db.from('payroll_config').select('*').maybeSingle(),
           db.from('monthly_payroll').select('*').eq('month', month).eq('year', year),
@@ -24127,11 +24188,14 @@ function PayrollModule({ user, allUsers, mobile }: any) {
           db.from('attendance').select('*')
             .gte('date', `${year}-${String(month).padStart(2,'0')}-01`)
             .lte('date', `${year}-${String(month).padStart(2,'0')}-31`),
+          // v191: Load overrides + position config
+          db.from('payroll_overrides').select('*').eq('month', month).eq('year', year),
+          db.from('position_base_salary').select('*'),
+          db.from('position_work_schedule').select('*'),
         ])
         setSalaryConfigs(sc.data || [])
         setPayrollConfig(pc.data || {})
         
-        // Extract paid_leave_dates cho tháng hiện tại
         const pldJson = pc.data?.paid_leave_dates || []
         const datesThisMonth = pldJson
           .map((x: any) => typeof x === 'string' ? x : x.date)
@@ -24143,6 +24207,10 @@ function PayrollModule({ user, allUsers, mobile }: any) {
         setShortageLoss(sl.data || [])
         setRevenues(rv.data || [])
         setAttendanceMonth(att.data || [])
+        // v191
+        setOverrides(ovr.data || [])
+        setPositionBaseSalary(pbs.data || [])
+        setPositionWorkSchedule(pws.data || [])
       } catch (e: any) {
         setError('Lỗi load data: ' + e.message)
       } finally {
@@ -24150,6 +24218,27 @@ function PayrollModule({ user, allUsers, mobile }: any) {
       }
     })()
   }, [month, year])
+
+  // v191: Helper get overrides
+  const getUserOverrides = (uid: string): Map<string, number> => {
+    const m = new Map<string, number>()
+    for (const o of overrides) {
+      if (o.user_id === uid) m.set(o.field_type, Number(o.amount))
+    }
+    return m
+  }
+  const getConfigOverrides = (): Map<string, number> => {
+    const m = new Map<string, number>()
+    for (const o of overrides) {
+      if (!o.user_id && o.field_type.startsWith('cfg_')) m.set(o.field_type, Number(o.amount))
+    }
+    return m
+  }
+  // v191: refresh overrides sau khi save
+  const refreshOverrides = async () => {
+    const { data } = await db.from('payroll_overrides').select('*').eq('month', month).eq('year', year)
+    setOverrides(data || [])
+  }
 
   // Helpers
   const getSalaryConfig = (uid: string) => salaryConfigs.find(s => s.user_id === uid)
@@ -24193,6 +24282,9 @@ function PayrollModule({ user, allUsers, mobile }: any) {
       shortageLossTotal: shortage,
       commissionTotal: rev?.hh_total || 0,
       manualAdjust: existing?.manual_adjust || 0,
+      // v191: pass overrides
+      overrides: getUserOverrides(u.id),
+      configOverrides: getConfigOverrides(),
     })
   }
 
@@ -24300,13 +24392,78 @@ function PayrollModule({ user, allUsers, mobile }: any) {
         </div>
       )}
 
-      {/* Controls */}
+      {/* v191: Tab switcher (chỉ Admin) */}
+      {isAdmin && (
+        <div style={{ display:'flex', gap:4, marginBottom:14, borderBottom:`2px solid ${T.border}`,
+          flexWrap:'wrap', overflowX:'auto' }}>
+          {([
+            { id:'overview',         label:'📊 Tổng quan' },
+            { id:'shortage_loss',    label:'💸 Mất hàng' },
+            { id:'return_loss',      label:'🔄 Hoàn hàng' },
+            { id:'mbo_bonus',        label:'🎯 MBO' },
+            { id:'inspection_bonus', label:'✅ Kiểm hàng' },
+            { id:'allowance',        label:'💝 Trợ cấp' },
+            { id:'base_salary',      label:'💼 LCB vị trí' },
+            { id:'schedule',         label:'⏰ Giờ làm' },
+          ] as Array<{ id: any, label: string }>).map(t => (
+            <button key={t.id} onClick={() => setAdminTab(t.id)}
+              style={{
+                padding:'10px 16px', border:'none',
+                borderBottom: adminTab === t.id ? `3px solid ${T.gold}` : '3px solid transparent',
+                background:'transparent', cursor:'pointer', fontFamily:'inherit', fontSize:13,
+                fontWeight: adminTab === t.id ? 700 : 500,
+                color: adminTab === t.id ? T.gold : T.med,
+                marginBottom:-2, whiteSpace:'nowrap',
+              }}>
+              {t.label}
+            </button>
+          ))}
+        </div>
+      )}
+
+      {/* v191: Render theo tab */}
+      {adminTab !== 'overview' && isAdmin ? (
+        adminTab === 'base_salary' ? (
+          <PayrollTabBaseSalary user={user} mobile={mobile}
+            usersWithSalary={usersWithSalary}
+            month={month} year={year}
+            overrides={overrides}
+            positionBaseSalary={positionBaseSalary}
+            setPositionBaseSalary={setPositionBaseSalary}
+            onRefresh={refreshOverrides}/>
+        ) : adminTab === 'schedule' ? (
+          <PayrollTabSchedule user={user} mobile={mobile}
+            positionWorkSchedule={positionWorkSchedule}
+            setPositionWorkSchedule={setPositionWorkSchedule}/>
+        ) : (
+          <PayrollTabOverride user={user} mobile={mobile}
+            usersWithSalary={usersWithSalary}
+            month={month} year={year}
+            overrides={overrides}
+            payrollConfig={payrollConfig}
+            fieldType={adminTab}
+            getAuto={(u: any) => {
+              // Tính số tự động cho từng loại
+              const computed = computeForUser(u)
+              if (adminTab === 'shortage_loss')    return computed.shortage_loss_total
+              if (adminTab === 'return_loss')      return computed.return_loss
+              if (adminTab === 'mbo_bonus')        return computed.mbo_bonus
+              if (adminTab === 'inspection_bonus') return computed.inspection_bonus_amount
+              if (adminTab === 'allowance')        return computed.allowance
+              return 0
+            }}
+            onRefresh={refreshOverrides}/>
+        )
+      ) : (
+        <>
+      {/* Controls — overview */}
       <Card style={{ padding: 14, marginBottom: 14 }}>
         <div style={{ display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap' }}>
           <div>
             <label style={{ fontSize: FS.sm, color: T.med, fontWeight: 600 }}>Tháng:</label>
             <select value={month} onChange={e => setMonth(Number(e.target.value))}
-              style={{ marginLeft: 6, padding: 6, borderRadius: RD.sm, border: `1px solid ${T.border}` }}>
+              style={{ marginLeft: 6, padding: 6, borderRadius: RD.sm, border: `1px solid ${T.border}`,
+                background:'#fff', color:T.dark, fontFamily:'inherit' }}>
               {Array.from({ length: 12 }, (_, i) => i + 1).map(m => (
                 <option key={m} value={m}>T{m}</option>
               ))}
@@ -24315,7 +24472,8 @@ function PayrollModule({ user, allUsers, mobile }: any) {
           <div>
             <label style={{ fontSize: FS.sm, color: T.med, fontWeight: 600 }}>Năm:</label>
             <select value={year} onChange={e => setYear(Number(e.target.value))}
-              style={{ marginLeft: 6, padding: 6, borderRadius: RD.sm, border: `1px solid ${T.border}` }}>
+              style={{ marginLeft: 6, padding: 6, borderRadius: RD.sm, border: `1px solid ${T.border}`,
+                background:'#fff', color:T.dark, fontFamily:'inherit' }}>
               {[2025, 2026, 2027].map(y => <option key={y} value={y}>{y}</option>)}
             </select>
           </div>
@@ -24327,6 +24485,30 @@ function PayrollModule({ user, allUsers, mobile }: any) {
             style={{ padding: '8px 16px', background: T.green, color: '#fff', border: 'none', borderRadius: RD.md, cursor: 'pointer', fontWeight: 600 }}>
             📊 Export Excel
           </button>
+          
+          {/* v191: Admin chọn NV xem phiếu lương */}
+          {isAdmin && (
+            <div style={{ marginLeft:'auto', display:'flex', alignItems:'center', gap:6 }}>
+              <label style={{ fontSize: FS.sm, color: T.med, fontWeight: 600 }}>👁 Xem phiếu lương NV:</label>
+              <select value={viewSlipUserId}
+                onChange={e => {
+                  const uid = e.target.value
+                  setViewSlipUserId(uid)
+                  if (uid) {
+                    const u = usersWithSalary.find((x: any) => x.id === uid)
+                    if (u) setDetailModalUser(u)
+                  }
+                }}
+                style={{ padding:'7px 10px', borderRadius:RD.sm, border:`1px solid ${T.border}`,
+                  background:'#fff', color:T.dark, fontFamily:'inherit', fontSize:12,
+                  minWidth:180 }}>
+                <option value="">— Chọn NV —</option>
+                {usersWithSalary.map((u: any) => (
+                  <option key={u.id} value={u.id}>{u.name} ({u._salary?.position_type})</option>
+                ))}
+              </select>
+            </div>
+          )}
         </div>
       </Card>
 
@@ -24442,7 +24624,710 @@ function PayrollModule({ user, allUsers, mobile }: any) {
           }}
         />
       )}
+        </>
+      )}
     </PageContainer>
+  )
+}
+
+
+// ══════════════════════════════════════════════════════════════════════
+// v191: Helper styles cho payroll tabs (thStyle dùng ở 3 tabs)
+// ══════════════════════════════════════════════════════════════════════
+const _payrollThStyle: any = {
+  padding:'10px 12px', textAlign:'left', fontSize:11, fontWeight:700,
+  color:T.med, borderBottom:`2px solid ${T.border}`, whiteSpace:'nowrap', verticalAlign:'middle',
+}
+
+// ══════════════════════════════════════════════════════════════════════
+// v191: PayrollTabOverride — Tab override 1 loại tiền (mất hàng/MBO/etc.)
+// ══════════════════════════════════════════════════════════════════════
+function PayrollTabOverride({ user, mobile, usersWithSalary, month, year, overrides, fieldType, getAuto, payrollConfig, onRefresh }: any) {
+  const [editingUid, setEditingUid] = useState<string|null>(null)
+  const [editValue, setEditValue] = useState<string>('')
+  const [editNote, setEditNote] = useState<string>('')
+  const [working, setWorking] = useState(false)
+  
+  // v191: cfg override (riêng cho inspection_bonus và attendance — có config chung)
+  const cfgFieldByType: any = {
+    'inspection_bonus': 'cfg_inspection_bonus_amount',
+    'attendance_bonus': 'cfg_attendance_bonus_amount',
+  }
+  const cfgField = cfgFieldByType[fieldType]
+  const cfgOverride = overrides.find((o: any) => !o.user_id && o.field_type === cfgField)
+  const cfgDefault: any = {
+    'cfg_inspection_bonus_amount': Number(payrollConfig?.inspection_bonus_monthly || 300000),
+    'cfg_attendance_bonus_amount': Number(payrollConfig?.attendance_bonus_monthly || 500000),
+  }
+  const [cfgEditing, setCfgEditing] = useState(false)
+  const [cfgEditValue, setCfgEditValue] = useState('')
+  
+  const titles: any = {
+    'shortage_loss':    { emoji: '💸', name: 'Tiền mất hàng', desc: 'Tiền NV đền bù cho mất hàng (trừ vào lương)', color: T.red },
+    'return_loss':      { emoji: '🔄', name: 'Tiền hoàn hàng', desc: 'Đóng sai → khách trả lại → trừ NV (trừ vào lương)', color: T.red },
+    'mbo_bonus':        { emoji: '🎯', name: 'Thưởng MBO', desc: 'Thưởng đạt mục tiêu MBO tháng', color: T.green },
+    'inspection_bonus': { emoji: '✅', name: 'Thưởng kiểm hàng', desc: 'Thưởng kiểm hàng — config chung mặc định, có thể override per-NV', color: T.green },
+    'allowance':        { emoji: '💝', name: 'Trợ cấp', desc: 'Trợ cấp khác (xăng xe, điện thoại, v.v.)', color: T.blue },
+  }
+  const meta = titles[fieldType] || titles['shortage_loss']
+
+  const userOverride = (uid: string) => overrides.find((o: any) => o.user_id === uid && o.field_type === fieldType)
+
+  const startEdit = (u: any) => {
+    const ov = userOverride(u.id)
+    setEditingUid(u.id)
+    setEditValue(ov ? String(Math.round(Number(ov.amount))) : '')
+    setEditNote(ov?.note || '')
+  }
+  const cancelEdit = () => { setEditingUid(null); setEditValue(''); setEditNote('') }
+
+  const handleSave = async (u: any) => {
+    const numVal = parseInt(editValue.replace(/[^0-9-]/g, ''), 10)
+    if (isNaN(numVal)) { toast.error('Số không hợp lệ'); return }
+    
+    setWorking(true)
+    try {
+      const existing = userOverride(u.id)
+      const now = new Date().toISOString()
+      if (existing) {
+        await db.from('payroll_overrides').update({
+          amount: numVal, note: editNote.trim() || null,
+          set_by: user.id, set_by_name: user.name, updated_at: now,
+        }).eq('id', existing.id)
+      } else {
+        await db.from('payroll_overrides').insert({
+          id: `po_${Date.now()}_${Math.random().toString(36).slice(2,7)}`,
+          user_id: u.id, user_name: u.name,
+          month, year, field_type: fieldType,
+          amount: numVal, note: editNote.trim() || null,
+          set_by: user.id, set_by_name: user.name,
+        })
+      }
+      toast.success(`✓ Đã lưu override cho ${u.name}`)
+      cancelEdit()
+      onRefresh && onRefresh()
+    } catch (e: any) {
+      toast.error('Lỗi: ' + e.message)
+    } finally {
+      setWorking(false)
+    }
+  }
+
+  const handleReset = async (u: any) => {
+    const existing = userOverride(u.id)
+    if (!existing) return
+    if (!confirm(`Reset override "${meta.name}" của ${u.name}? Sẽ về số tự động.`)) return
+    setWorking(true)
+    try {
+      await db.from('payroll_overrides').delete().eq('id', existing.id)
+      toast.success(`✓ Đã reset`)
+      onRefresh && onRefresh()
+    } finally {
+      setWorking(false)
+    }
+  }
+
+  const handleSaveCfg = async () => {
+    if (!cfgField) return
+    const numVal = parseInt(cfgEditValue.replace(/[^0-9-]/g, ''), 10)
+    if (isNaN(numVal)) { toast.error('Số không hợp lệ'); return }
+    
+    setWorking(true)
+    try {
+      if (cfgOverride) {
+        await db.from('payroll_overrides').update({
+          amount: numVal, set_by: user.id, set_by_name: user.name,
+          updated_at: new Date().toISOString(),
+        }).eq('id', cfgOverride.id)
+      } else {
+        await db.from('payroll_overrides').insert({
+          id: `po_${Date.now()}_${Math.random().toString(36).slice(2,7)}`,
+          user_id: null, user_name: null,
+          month, year, field_type: cfgField,
+          amount: numVal,
+          set_by: user.id, set_by_name: user.name,
+        })
+      }
+      toast.success(`✓ Đã cập nhật config tháng ${month}/${year}`)
+      setCfgEditing(false)
+      onRefresh && onRefresh()
+    } finally {
+      setWorking(false)
+    }
+  }
+
+  return (
+    <div>
+      {/* Header */}
+      <Card style={{ padding:14, marginBottom:12, borderLeft:`4px solid ${meta.color}` }}>
+        <div style={{ fontSize:16, fontWeight:700, color:T.dark }}>
+          {meta.emoji} {meta.name} — Tháng {month}/{year}
+        </div>
+        <div style={{ fontSize:12, color:T.med, marginTop:4 }}>
+          {meta.desc}
+        </div>
+      </Card>
+
+      {/* Config chung override (chỉ cho inspection_bonus, attendance_bonus) */}
+      {cfgField && (
+        <Card style={{ padding:12, marginBottom:8, background:T.goldBg, border:`1.5px solid ${T.gold}` }}>
+          <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', flexWrap:'wrap', gap:8 }}>
+            <div>
+              <div style={{ fontSize:12, fontWeight:700, color:T.dark }}>
+                ⚙️ Số tiền mặc định cho {meta.name.toLowerCase()} tháng {month}/{year}
+              </div>
+              <div style={{ fontSize:11, color:T.med, marginTop:3 }}>
+                Hiện tại: <b>{Math.round(Number(cfgOverride?.amount ?? cfgDefault[cfgField])).toLocaleString('vi-VN')}đ</b>
+                {cfgOverride
+                  ? <span style={{ color:T.gold, marginLeft:6 }}>(đã override tháng này)</span>
+                  : <span style={{ color:T.light, marginLeft:6 }}>(default từ payroll_config)</span>}
+              </div>
+            </div>
+            {!cfgEditing ? (
+              <button onClick={() => {
+                setCfgEditing(true)
+                setCfgEditValue(String(Math.round(Number(cfgOverride?.amount ?? cfgDefault[cfgField]))))
+              }}
+                style={{ padding:'6px 12px', borderRadius:6, border:`1px solid ${T.gold}`,
+                  background:'#fff', color:T.gold, cursor:'pointer',
+                  fontFamily:'inherit', fontSize:11, fontWeight:600 }}>
+                ✏ Sửa default tháng
+              </button>
+            ) : (
+              <div style={{ display:'flex', gap:6 }}>
+                <input value={cfgEditValue} onChange={e => setCfgEditValue(e.target.value)}
+                  placeholder="Số tiền"
+                  style={{ width:120, padding:'5px 8px', border:`1px solid ${T.border}`, borderRadius:4,
+                    background:'#fff', color:T.dark, fontSize:12, fontFamily:'inherit' }}/>
+                <button onClick={handleSaveCfg} disabled={working}
+                  style={{ padding:'5px 10px', borderRadius:4, border:'none',
+                    background:T.gold, color:'#fff', cursor:'pointer',
+                    fontFamily:'inherit', fontSize:11, fontWeight:600 }}>
+                  Lưu
+                </button>
+                <button onClick={() => setCfgEditing(false)}
+                  style={{ padding:'5px 10px', borderRadius:4, border:`1px solid ${T.border}`,
+                    background:'#fff', color:T.med, cursor:'pointer',
+                    fontFamily:'inherit', fontSize:11 }}>
+                  Hủy
+                </button>
+              </div>
+            )}
+          </div>
+        </Card>
+      )}
+
+      {/* Table */}
+      <Card style={{ padding:0, overflow:'auto' }}>
+        <table style={{ width:'100%', borderCollapse:'collapse', fontSize:12 }}>
+          <thead style={{ background:T.bg }}>
+            <tr>
+              <th style={_payrollThStyle}>NV</th>
+              <th style={_payrollThStyle}>Vị trí</th>
+              <th style={{ ..._payrollThStyle, textAlign:'right' }}>Số tự động</th>
+              <th style={{ ..._payrollThStyle, textAlign:'right' }}>Override</th>
+              <th style={_payrollThStyle}>Ghi chú</th>
+              <th style={{ ..._payrollThStyle, textAlign:'center' }}>Hành động</th>
+            </tr>
+          </thead>
+          <tbody>
+            {usersWithSalary.map((u: any) => {
+              const ov = userOverride(u.id)
+              const auto = getAuto(u)
+              const isEditing = editingUid === u.id
+              return (
+                <tr key={u.id} style={{ borderBottom:`1px solid ${T.border}`,
+                  background: ov ? `${meta.color}11` : 'transparent' }}>
+                  <td style={{ padding:10, fontWeight:600, color:T.dark }}>{u.name}</td>
+                  <td style={{ padding:10, fontSize:11, color:T.med }}>{u._salary?.position_type}</td>
+                  <td style={{ padding:10, textAlign:'right', fontVariantNumeric:'tabular-nums' }}>
+                    {Math.round(Number(auto || 0)).toLocaleString('vi-VN')}đ
+                  </td>
+                  <td style={{ padding:10, textAlign:'right', fontVariantNumeric:'tabular-nums' }}>
+                    {isEditing ? (
+                      <input value={editValue} onChange={e => setEditValue(e.target.value)}
+                        autoFocus
+                        style={{ width:120, padding:'4px 8px', border:`1px solid ${T.border}`, borderRadius:4,
+                          background:'#fff', color:T.dark, fontSize:12, fontFamily:'inherit',
+                          textAlign:'right' }}/>
+                    ) : ov ? (
+                      <b style={{ color: meta.color }}>
+                        {Math.round(Number(ov.amount)).toLocaleString('vi-VN')}đ
+                      </b>
+                    ) : (
+                      <span style={{ color:T.light }}>—</span>
+                    )}
+                  </td>
+                  <td style={{ padding:10, fontSize:11, color:T.med, maxWidth:200 }}>
+                    {isEditing ? (
+                      <input value={editNote} onChange={e => setEditNote(e.target.value)}
+                        placeholder="Lý do override (tùy chọn)"
+                        style={{ width:'100%', padding:'4px 8px', border:`1px solid ${T.border}`, borderRadius:4,
+                          background:'#fff', color:T.dark, fontSize:11, fontFamily:'inherit' }}/>
+                    ) : ov?.note ? (
+                      <span title={ov.note}>{ov.note.length > 25 ? ov.note.slice(0, 25) + '...' : ov.note}</span>
+                    ) : ''}
+                  </td>
+                  <td style={{ padding:10, textAlign:'center' }}>
+                    {isEditing ? (
+                      <div style={{ display:'inline-flex', gap:4 }}>
+                        <button onClick={() => handleSave(u)} disabled={working}
+                          style={{ padding:'4px 10px', borderRadius:4, border:'none',
+                            background:T.gold, color:'#fff', cursor:'pointer',
+                            fontFamily:'inherit', fontSize:11, fontWeight:600 }}>
+                          Lưu
+                        </button>
+                        <button onClick={cancelEdit}
+                          style={{ padding:'4px 10px', borderRadius:4, border:`1px solid ${T.border}`,
+                            background:'#fff', color:T.med, cursor:'pointer',
+                            fontFamily:'inherit', fontSize:11 }}>
+                          Hủy
+                        </button>
+                      </div>
+                    ) : (
+                      <div style={{ display:'inline-flex', gap:4 }}>
+                        <button onClick={() => startEdit(u)}
+                          style={{ padding:'4px 10px', borderRadius:4, border:`1px solid ${T.gold}`,
+                            background:'#fff', color:T.gold, cursor:'pointer',
+                            fontFamily:'inherit', fontSize:11, fontWeight:600 }}>
+                          ✏ Sửa
+                        </button>
+                        {ov && (
+                          <button onClick={() => handleReset(u)} disabled={working}
+                            style={{ padding:'4px 10px', borderRadius:4, border:`1px solid ${T.red}`,
+                              background:'#fff', color:T.red, cursor:'pointer',
+                              fontFamily:'inherit', fontSize:11 }}>
+                            Reset
+                          </button>
+                        )}
+                      </div>
+                    )}
+                  </td>
+                </tr>
+              )
+            })}
+          </tbody>
+        </table>
+      </Card>
+    </div>
+  )
+}
+
+
+// ══════════════════════════════════════════════════════════════════════
+// v191: PayrollTabBaseSalary — LCB theo vị trí + override per-NV
+// ══════════════════════════════════════════════════════════════════════
+function PayrollTabBaseSalary({ user, mobile, usersWithSalary, month, year, overrides, positionBaseSalary, setPositionBaseSalary, onRefresh }: any) {
+  const [editingPos, setEditingPos] = useState<string|null>(null)
+  const [editPosValue, setEditPosValue] = useState('')
+  const [editingNvUid, setEditingNvUid] = useState<string|null>(null)
+  const [editNvValue, setEditNvValue] = useState('')
+  const [editNvNote, setEditNvNote] = useState('')
+  const [working, setWorking] = useState(false)
+
+  const userOverride = (uid: string) => overrides.find((o: any) => o.user_id === uid && o.field_type === 'base_salary')
+
+  const handleSavePos = async (positionType: string) => {
+    const numVal = parseInt(editPosValue.replace(/[^0-9]/g, ''), 10)
+    if (isNaN(numVal) || numVal <= 0) { toast.error('LCB không hợp lệ'); return }
+    setWorking(true)
+    try {
+      const existing = positionBaseSalary.find((p: any) => p.position_type === positionType)
+      if (existing) {
+        await db.from('position_base_salary').update({
+          base_salary: numVal, updated_at: new Date().toISOString(), updated_by: user.id,
+        }).eq('position_type', positionType)
+      } else {
+        await db.from('position_base_salary').insert({
+          position_type: positionType, base_salary: numVal,
+          updated_at: new Date().toISOString(), updated_by: user.id,
+        })
+      }
+      // refresh local
+      const { data } = await db.from('position_base_salary').select('*')
+      setPositionBaseSalary(data || [])
+      setEditingPos(null)
+      toast.success(`✓ Cập nhật LCB ${positionType}`)
+    } finally {
+      setWorking(false)
+    }
+  }
+
+  const handleSaveNv = async (u: any) => {
+    const numVal = parseInt(editNvValue.replace(/[^0-9]/g, ''), 10)
+    if (isNaN(numVal) || numVal <= 0) { toast.error('LCB không hợp lệ'); return }
+    setWorking(true)
+    try {
+      const existing = userOverride(u.id)
+      const now = new Date().toISOString()
+      if (existing) {
+        await db.from('payroll_overrides').update({
+          amount: numVal, note: editNvNote.trim() || null,
+          set_by: user.id, set_by_name: user.name, updated_at: now,
+        }).eq('id', existing.id)
+      } else {
+        await db.from('payroll_overrides').insert({
+          id: `po_${Date.now()}_${Math.random().toString(36).slice(2,7)}`,
+          user_id: u.id, user_name: u.name,
+          month, year, field_type: 'base_salary',
+          amount: numVal, note: editNvNote.trim() || null,
+          set_by: user.id, set_by_name: user.name,
+        })
+      }
+      setEditingNvUid(null); setEditNvValue(''); setEditNvNote('')
+      toast.success(`✓ Override LCB ${u.name}`)
+      onRefresh && onRefresh()
+    } finally {
+      setWorking(false)
+    }
+  }
+
+  const handleResetNv = async (u: any) => {
+    const existing = userOverride(u.id)
+    if (!existing) return
+    if (!confirm(`Reset LCB của ${u.name} về mặc định?`)) return
+    setWorking(true)
+    try {
+      await db.from('payroll_overrides').delete().eq('id', existing.id)
+      toast.success('✓ Đã reset')
+      onRefresh && onRefresh()
+    } finally {
+      setWorking(false)
+    }
+  }
+
+  // Group users by position
+  const usersByPos = useMemo(() => {
+    const m = new Map<string, any[]>()
+    for (const u of usersWithSalary) {
+      const pt = u._salary?.position_type || '—'
+      if (!m.has(pt)) m.set(pt, [])
+      m.get(pt)!.push(u)
+    }
+    return m
+  }, [usersWithSalary])
+
+  return (
+    <div>
+      <Card style={{ padding:14, marginBottom:12, borderLeft:`4px solid ${T.gold}` }}>
+        <div style={{ fontSize:16, fontWeight:700, color:T.dark }}>
+          💼 Lương cơ bản theo vị trí — Tháng {month}/{year}
+        </div>
+        <div style={{ fontSize:12, color:T.med, marginTop:4 }}>
+          LCB mặc định áp dụng cho mọi NV cùng vị trí. Có thể override LCB cho từng NV (hiệu lực tháng được chọn).
+        </div>
+      </Card>
+
+      {/* Bảng LCB theo VT */}
+      <Card style={{ padding:0, overflow:'auto', marginBottom:14 }}>
+        <div style={{ padding:'10px 14px', background:T.bg, fontSize:12, fontWeight:700, color:T.dark, borderBottom:`1px solid ${T.border}` }}>
+          🏷 LCB mặc định theo vị trí (toàn công ty)
+        </div>
+        <table style={{ width:'100%', borderCollapse:'collapse', fontSize:12 }}>
+          <thead style={{ background:T.bg }}>
+            <tr>
+              <th style={_payrollThStyle}>Vị trí</th>
+              <th style={{ ..._payrollThStyle, textAlign:'right' }}>LCB mặc định</th>
+              <th style={_payrollThStyle}>Mô tả</th>
+              <th style={{ ..._payrollThStyle, textAlign:'center' }}>Hành động</th>
+            </tr>
+          </thead>
+          <tbody>
+            {positionBaseSalary.map((p: any) => {
+              const isEditing = editingPos === p.position_type
+              return (
+                <tr key={p.position_type} style={{ borderBottom:`1px solid ${T.border}` }}>
+                  <td style={{ padding:10, fontWeight:600, color:T.dark }}>{p.position_type}</td>
+                  <td style={{ padding:10, textAlign:'right', fontVariantNumeric:'tabular-nums' }}>
+                    {isEditing ? (
+                      <input value={editPosValue} onChange={e => setEditPosValue(e.target.value)}
+                        autoFocus
+                        style={{ width:140, padding:'4px 8px', border:`1px solid ${T.border}`, borderRadius:4,
+                          background:'#fff', color:T.dark, fontSize:12, textAlign:'right', fontFamily:'inherit' }}/>
+                    ) : (
+                      <b style={{ color:T.gold }}>{Math.round(Number(p.base_salary)).toLocaleString('vi-VN')}đ</b>
+                    )}
+                  </td>
+                  <td style={{ padding:10, fontSize:11, color:T.med }}>{p.description || ''}</td>
+                  <td style={{ padding:10, textAlign:'center' }}>
+                    {isEditing ? (
+                      <div style={{ display:'inline-flex', gap:4 }}>
+                        <button onClick={() => handleSavePos(p.position_type)} disabled={working}
+                          style={{ padding:'4px 10px', borderRadius:4, border:'none',
+                            background:T.gold, color:'#fff', cursor:'pointer', fontFamily:'inherit', fontSize:11, fontWeight:600 }}>
+                          Lưu
+                        </button>
+                        <button onClick={() => setEditingPos(null)}
+                          style={{ padding:'4px 10px', borderRadius:4, border:`1px solid ${T.border}`,
+                            background:'#fff', color:T.med, cursor:'pointer', fontFamily:'inherit', fontSize:11 }}>
+                          Hủy
+                        </button>
+                      </div>
+                    ) : (
+                      <button onClick={() => { setEditingPos(p.position_type); setEditPosValue(String(Math.round(Number(p.base_salary)))) }}
+                        style={{ padding:'4px 10px', borderRadius:4, border:`1px solid ${T.gold}`,
+                          background:'#fff', color:T.gold, cursor:'pointer', fontFamily:'inherit', fontSize:11, fontWeight:600 }}>
+                        ✏ Sửa
+                      </button>
+                    )}
+                  </td>
+                </tr>
+              )
+            })}
+          </tbody>
+        </table>
+      </Card>
+
+      {/* Override LCB per-NV */}
+      <Card style={{ padding:0, overflow:'auto' }}>
+        <div style={{ padding:'10px 14px', background:T.bg, fontSize:12, fontWeight:700, color:T.dark, borderBottom:`1px solid ${T.border}` }}>
+          👤 Override LCB cho từng NV (chỉ áp dụng tháng {month}/{year})
+        </div>
+        <table style={{ width:'100%', borderCollapse:'collapse', fontSize:12 }}>
+          <thead style={{ background:T.bg }}>
+            <tr>
+              <th style={_payrollThStyle}>NV</th>
+              <th style={_payrollThStyle}>Vị trí</th>
+              <th style={{ ..._payrollThStyle, textAlign:'right' }}>LCB hệ thống</th>
+              <th style={{ ..._payrollThStyle, textAlign:'right' }}>LCB override</th>
+              <th style={_payrollThStyle}>Ghi chú</th>
+              <th style={{ ..._payrollThStyle, textAlign:'center' }}>Hành động</th>
+            </tr>
+          </thead>
+          <tbody>
+            {usersWithSalary.map((u: any) => {
+              const ov = userOverride(u.id)
+              const isEditing = editingNvUid === u.id
+              // v191: LCB hệ thống = LCB theo vị trí (từ position_base_salary), fallback về salary_config
+              const positionLcb = positionBaseSalary.find((p: any) => p.position_type === u._salary?.position_type)?.base_salary
+              const baseSalary = positionLcb ?? u._salary?.base_salary ?? 0
+              return (
+                <tr key={u.id} style={{ borderBottom:`1px solid ${T.border}`,
+                  background: ov ? T.goldBg : 'transparent' }}>
+                  <td style={{ padding:10, fontWeight:600, color:T.dark }}>{u.name}</td>
+                  <td style={{ padding:10, fontSize:11, color:T.med }}>{u._salary?.position_type}</td>
+                  <td style={{ padding:10, textAlign:'right', fontVariantNumeric:'tabular-nums' }}>
+                    {Math.round(Number(baseSalary)).toLocaleString('vi-VN')}đ
+                  </td>
+                  <td style={{ padding:10, textAlign:'right', fontVariantNumeric:'tabular-nums' }}>
+                    {isEditing ? (
+                      <input value={editNvValue} onChange={e => setEditNvValue(e.target.value)}
+                        autoFocus
+                        style={{ width:140, padding:'4px 8px', border:`1px solid ${T.border}`, borderRadius:4,
+                          background:'#fff', color:T.dark, fontSize:12, textAlign:'right', fontFamily:'inherit' }}/>
+                    ) : ov ? (
+                      <b style={{ color:T.gold }}>{Math.round(Number(ov.amount)).toLocaleString('vi-VN')}đ</b>
+                    ) : (
+                      <span style={{ color:T.light }}>—</span>
+                    )}
+                  </td>
+                  <td style={{ padding:10, fontSize:11, color:T.med, maxWidth:200 }}>
+                    {isEditing ? (
+                      <input value={editNvNote} onChange={e => setEditNvNote(e.target.value)}
+                        placeholder="Lý do (tùy chọn)"
+                        style={{ width:'100%', padding:'4px 8px', border:`1px solid ${T.border}`, borderRadius:4,
+                          background:'#fff', color:T.dark, fontSize:11, fontFamily:'inherit' }}/>
+                    ) : ov?.note || ''}
+                  </td>
+                  <td style={{ padding:10, textAlign:'center' }}>
+                    {isEditing ? (
+                      <div style={{ display:'inline-flex', gap:4 }}>
+                        <button onClick={() => handleSaveNv(u)} disabled={working}
+                          style={{ padding:'4px 10px', borderRadius:4, border:'none',
+                            background:T.gold, color:'#fff', cursor:'pointer', fontFamily:'inherit', fontSize:11, fontWeight:600 }}>
+                          Lưu
+                        </button>
+                        <button onClick={() => { setEditingNvUid(null); setEditNvValue(''); setEditNvNote('') }}
+                          style={{ padding:'4px 10px', borderRadius:4, border:`1px solid ${T.border}`,
+                            background:'#fff', color:T.med, cursor:'pointer', fontFamily:'inherit', fontSize:11 }}>
+                          Hủy
+                        </button>
+                      </div>
+                    ) : (
+                      <div style={{ display:'inline-flex', gap:4 }}>
+                        <button onClick={() => {
+                          setEditingNvUid(u.id)
+                          setEditNvValue(ov ? String(Math.round(Number(ov.amount))) : String(Math.round(Number(baseSalary))))
+                          setEditNvNote(ov?.note || '')
+                        }}
+                          style={{ padding:'4px 10px', borderRadius:4, border:`1px solid ${T.gold}`,
+                            background:'#fff', color:T.gold, cursor:'pointer', fontFamily:'inherit', fontSize:11, fontWeight:600 }}>
+                          ✏ Sửa
+                        </button>
+                        {ov && (
+                          <button onClick={() => handleResetNv(u)} disabled={working}
+                            style={{ padding:'4px 10px', borderRadius:4, border:`1px solid ${T.red}`,
+                              background:'#fff', color:T.red, cursor:'pointer', fontFamily:'inherit', fontSize:11 }}>
+                            Reset
+                          </button>
+                        )}
+                      </div>
+                    )}
+                  </td>
+                </tr>
+              )
+            })}
+          </tbody>
+        </table>
+      </Card>
+    </div>
+  )
+}
+
+
+// ══════════════════════════════════════════════════════════════════════
+// v191: PayrollTabSchedule — Cấu hình giờ làm theo VT
+// ══════════════════════════════════════════════════════════════════════
+function PayrollTabSchedule({ user, mobile, positionWorkSchedule, setPositionWorkSchedule }: any) {
+  const [editing, setEditing] = useState<string|null>(null)
+  const [editForm, setEditForm] = useState<any>({})
+  const [working, setWorking] = useState(false)
+
+  const startEdit = (p: any) => {
+    setEditing(p.position_type)
+    setEditForm({
+      start_time: p.start_time || '08:00:00',
+      end_time: p.end_time || '17:00:00',
+      lunch_start_time: p.lunch_start_time || '',
+      lunch_end_time: p.lunch_end_time || '',
+      std_hours_per_day: p.std_hours_per_day || 8,
+    })
+  }
+
+  const handleSave = async (positionType: string) => {
+    setWorking(true)
+    try {
+      const payload: any = {
+        start_time: editForm.start_time,
+        end_time: editForm.end_time,
+        lunch_start_time: editForm.lunch_start_time || null,
+        lunch_end_time: editForm.lunch_end_time || null,
+        std_hours_per_day: Number(editForm.std_hours_per_day) || 8,
+        updated_at: new Date().toISOString(),
+        updated_by: user.id,
+      }
+      const existing = positionWorkSchedule.find((x: any) => x.position_type === positionType)
+      if (existing) {
+        await db.from('position_work_schedule').update(payload).eq('position_type', positionType)
+      } else {
+        await db.from('position_work_schedule').insert({ ...payload, position_type: positionType })
+      }
+      const { data } = await db.from('position_work_schedule').select('*')
+      setPositionWorkSchedule(data || [])
+      setEditing(null)
+      toast.success(`✓ Cập nhật giờ làm ${positionType}`)
+    } finally {
+      setWorking(false)
+    }
+  }
+
+  const fmtTime = (t: string|null) => t ? t.slice(0, 5) : '—'
+
+  return (
+    <div>
+      <Card style={{ padding:14, marginBottom:12, borderLeft:`4px solid ${T.blue}` }}>
+        <div style={{ fontSize:16, fontWeight:700, color:T.dark }}>
+          ⏰ Cấu hình giờ làm theo vị trí
+        </div>
+        <div style={{ fontSize:12, color:T.med, marginTop:4 }}>
+          Giờ bắt đầu / kết thúc / nghỉ trưa theo vị trí. Dùng để tính chuyên cần & OT.
+        </div>
+      </Card>
+
+      <Card style={{ padding:0, overflow:'auto' }}>
+        <table style={{ width:'100%', borderCollapse:'collapse', fontSize:12 }}>
+          <thead style={{ background:T.bg }}>
+            <tr>
+              <th style={_payrollThStyle}>Vị trí</th>
+              <th style={{ ..._payrollThStyle, textAlign:'center' }}>Bắt đầu</th>
+              <th style={{ ..._payrollThStyle, textAlign:'center' }}>Kết thúc</th>
+              <th style={{ ..._payrollThStyle, textAlign:'center' }}>Nghỉ trưa</th>
+              <th style={{ ..._payrollThStyle, textAlign:'right' }}>Giờ chuẩn/ngày</th>
+              <th style={_payrollThStyle}>Mô tả</th>
+              <th style={{ ..._payrollThStyle, textAlign:'center' }}>Hành động</th>
+            </tr>
+          </thead>
+          <tbody>
+            {positionWorkSchedule.map((p: any) => {
+              const isEditing = editing === p.position_type
+              return (
+                <tr key={p.position_type} style={{ borderBottom:`1px solid ${T.border}` }}>
+                  <td style={{ padding:10, fontWeight:600, color:T.dark }}>{p.position_type}</td>
+                  <td style={{ padding:10, textAlign:'center' }}>
+                    {isEditing ? (
+                      <input type="time" value={editForm.start_time?.slice(0, 5) || ''}
+                        onChange={e => setEditForm({ ...editForm, start_time: e.target.value + ':00' })}
+                        style={{ padding:'4px 8px', border:`1px solid ${T.border}`, borderRadius:4,
+                          background:'#fff', color:T.dark, fontSize:12, fontFamily:'inherit' }}/>
+                    ) : fmtTime(p.start_time)}
+                  </td>
+                  <td style={{ padding:10, textAlign:'center' }}>
+                    {isEditing ? (
+                      <input type="time" value={editForm.end_time?.slice(0, 5) || ''}
+                        onChange={e => setEditForm({ ...editForm, end_time: e.target.value + ':00' })}
+                        style={{ padding:'4px 8px', border:`1px solid ${T.border}`, borderRadius:4,
+                          background:'#fff', color:T.dark, fontSize:12, fontFamily:'inherit' }}/>
+                    ) : fmtTime(p.end_time)}
+                  </td>
+                  <td style={{ padding:10, textAlign:'center' }}>
+                    {isEditing ? (
+                      <div style={{ display:'inline-flex', gap:4, alignItems:'center' }}>
+                        <input type="time" value={editForm.lunch_start_time?.slice(0, 5) || ''}
+                          onChange={e => setEditForm({ ...editForm, lunch_start_time: e.target.value ? e.target.value + ':00' : '' })}
+                          style={{ padding:'4px 8px', border:`1px solid ${T.border}`, borderRadius:4,
+                            background:'#fff', color:T.dark, fontSize:12, fontFamily:'inherit' }}/>
+                        <span style={{ fontSize:11, color:T.med }}>→</span>
+                        <input type="time" value={editForm.lunch_end_time?.slice(0, 5) || ''}
+                          onChange={e => setEditForm({ ...editForm, lunch_end_time: e.target.value ? e.target.value + ':00' : '' })}
+                          style={{ padding:'4px 8px', border:`1px solid ${T.border}`, borderRadius:4,
+                            background:'#fff', color:T.dark, fontSize:12, fontFamily:'inherit' }}/>
+                      </div>
+                    ) : (
+                      p.lunch_start_time && p.lunch_end_time
+                        ? `${fmtTime(p.lunch_start_time)} → ${fmtTime(p.lunch_end_time)}`
+                        : <span style={{ color:T.light }}>—</span>
+                    )}
+                  </td>
+                  <td style={{ padding:10, textAlign:'right', fontVariantNumeric:'tabular-nums' }}>
+                    {isEditing ? (
+                      <input type="number" step="0.5" value={editForm.std_hours_per_day}
+                        onChange={e => setEditForm({ ...editForm, std_hours_per_day: e.target.value })}
+                        style={{ width:70, padding:'4px 8px', border:`1px solid ${T.border}`, borderRadius:4,
+                          background:'#fff', color:T.dark, fontSize:12, textAlign:'right', fontFamily:'inherit' }}/>
+                    ) : `${p.std_hours_per_day}h`}
+                  </td>
+                  <td style={{ padding:10, fontSize:11, color:T.med, maxWidth:250 }}>
+                    {p.description || ''}
+                  </td>
+                  <td style={{ padding:10, textAlign:'center' }}>
+                    {isEditing ? (
+                      <div style={{ display:'inline-flex', gap:4 }}>
+                        <button onClick={() => handleSave(p.position_type)} disabled={working}
+                          style={{ padding:'4px 10px', borderRadius:4, border:'none',
+                            background:T.gold, color:'#fff', cursor:'pointer', fontFamily:'inherit', fontSize:11, fontWeight:600 }}>
+                          Lưu
+                        </button>
+                        <button onClick={() => setEditing(null)}
+                          style={{ padding:'4px 10px', borderRadius:4, border:`1px solid ${T.border}`,
+                            background:'#fff', color:T.med, cursor:'pointer', fontFamily:'inherit', fontSize:11 }}>
+                          Hủy
+                        </button>
+                      </div>
+                    ) : (
+                      <button onClick={() => startEdit(p)}
+                        style={{ padding:'4px 10px', borderRadius:4, border:`1px solid ${T.gold}`,
+                          background:'#fff', color:T.gold, cursor:'pointer', fontFamily:'inherit', fontSize:11, fontWeight:600 }}>
+                        ✏ Sửa
+                      </button>
+                    )}
+                  </td>
+                </tr>
+              )
+            })}
+          </tbody>
+        </table>
+      </Card>
+    </div>
   )
 }
 
@@ -31331,6 +32216,25 @@ function GhtkModule({ user, allUsers, mobile }: any) {
   const [searchQ, setSearchQ] = useState('')
   // v169: Filter status cho tab "Theo dõi đơn"
   const [trackStatusFilter, setTrackStatusFilter] = useState<'all'|'pending'|'shipping'|'done'|'returned'|'cancelled'|'unsynced'|'manual'|'external'|'unlinked'>('all')
+  // v189/v190: Filter ngày cho 5 tabs (dropship_mine, created, track, delivered, dropship)
+  // Preset: today / 3d / 7d / 30d / all / custom — default 7d (1 tuần)
+  // Date field tùy tab: dropship dùng dropship_printed_at, GHTK dùng ghtk_created_at
+  const [dateFilter, setDateFilter] = useState<'today'|'3d'|'7d'|'30d'|'all'|'custom'>('7d')
+  const [dateFrom, setDateFrom] = useState<string>('')  // YYYY-MM-DD cho custom
+  const [dateTo, setDateTo] = useState<string>('')
+  
+  // v190: Field date dùng để filter — tùy tab
+  const getDateFieldValue = (o: any, currentTab: string): string | null => {
+    if (currentTab === 'dropship_mine' || currentTab === 'dropship') {
+      // Tab dropship → ngày in nhãn dropship
+      return o.dropship_printed_at || o.created_at || null
+    }
+    if (currentTab === 'created' || currentTab === 'track' || currentTab === 'delivered') {
+      // Tab GHTK → ngày tạo nhãn GHTK (fallback dropship cho đơn dropship)
+      return o.ghtk_created_at || o.dropship_printed_at || o.created_at || null
+    }
+    return o.created_at || null
+  }
   // v169: State cho "Sync tất cả"
   const [syncingAll, setSyncingAll] = useState(false)
   // v173: Modal Import external orders
@@ -31481,6 +32385,34 @@ function GhtkModule({ user, allUsers, mobile }: any) {
   const filtered = useMemo(() => {
     if (tab === 'settings' || tab === 'dropship' || tab === 'busship') return []
     let list = (categorized as any)[tab] || []
+    
+    // v189/v190: Date filter cho 4 tabs (dropship_mine, created, track, delivered)
+    // Tab "dropship" filter riêng ở chỗ render panel.
+    // Date field: dropship dùng dropship_printed_at, GHTK dùng ghtk_created_at
+    const APPLY_DATE_FILTER = ['dropship_mine','created','track','delivered'].includes(tab)
+    if (APPLY_DATE_FILTER && dateFilter !== 'all') {
+      let cutoffMs: number
+      let endMs = Date.now()
+      const todayStart = new Date()
+      todayStart.setHours(0, 0, 0, 0)
+      
+      if (dateFilter === 'today') cutoffMs = todayStart.getTime()
+      else if (dateFilter === '3d') cutoffMs = Date.now() - 3 * 86400000
+      else if (dateFilter === '7d') cutoffMs = Date.now() - 7 * 86400000
+      else if (dateFilter === '30d') cutoffMs = Date.now() - 30 * 86400000
+      else if (dateFilter === 'custom') {
+        cutoffMs = dateFrom ? new Date(dateFrom + 'T00:00:00').getTime() : 0
+        endMs = dateTo ? new Date(dateTo + 'T23:59:59').getTime() : Date.now()
+      }
+      else cutoffMs = 0
+      
+      list = list.filter((o: any) => {
+        const dateStr = getDateFieldValue(o, tab)
+        const ts = dateStr ? new Date(dateStr).getTime() : 0
+        return ts >= cutoffMs && ts <= endMs
+      })
+    }
+    
     if (searchQ.trim()) {
       const tokens = norm2(searchQ).split(/\s+/).filter(Boolean)
       list = list.filter((o: any) => {
@@ -31553,7 +32485,7 @@ function GhtkModule({ user, allUsers, mobile }: any) {
       })
     }
     return list
-  }, [tab, categorized, searchQ, trackStatusFilter])
+  }, [tab, categorized, searchQ, trackStatusFilter, dateFilter, dateFrom, dateTo])
 
   const TABS = [
     // Nhóm Sale
@@ -31698,10 +32630,77 @@ function GhtkModule({ user, allUsers, mobile }: any) {
       {tab === 'settings' ? (
         <GhtkSettingsPanel user={user} mobile={mobile}/>
       ) : tab === 'dropship' ? (
-        <GhtkDropshipPrintPanel user={user} mobile={mobile}
-          dropshipGhtk={categorized.dropship_ghtk}
-          dropshipVtp={categorized.dropship_vtp}
-          onRefresh={fetchOrders}/>
+        <>
+          {/* v189/v190: Filter ngày cho tab "In mã dropship" — UI inline (panel có UI riêng) */}
+          {/* Field: dropship_printed_at (ngày in nhãn dropship) */}
+          <Card style={{ padding:10, marginBottom:8 }}>
+            <div style={{ display:'flex', gap:6, flexWrap:'wrap', alignItems:'center' }}>
+              <div style={{ fontSize:11, color:T.med, fontWeight:600, marginRight:4 }}>📅 Ngày in nhãn:</div>
+              {([
+                { id:'today',  label:'Hôm nay' },
+                { id:'3d',     label:'3 ngày' },
+                { id:'7d',     label:'1 tuần' },
+                { id:'30d',    label:'1 tháng' },
+                { id:'all',    label:'Tất cả' },
+                { id:'custom', label:'Tùy chọn' },
+              ] as Array<{ id: any, label: string }>).map(f => (
+                <button key={f.id} onClick={() => setDateFilter(f.id)}
+                  style={{ padding:'5px 12px', borderRadius:14, fontSize:11, fontWeight:600,
+                    border: dateFilter === f.id ? `1.5px solid ${T.gold}` : `1px solid ${T.border}`,
+                    background: dateFilter === f.id ? T.goldBg : '#fff',
+                    color: dateFilter === f.id ? T.gold : T.med,
+                    cursor:'pointer', fontFamily:'inherit' }}>
+                  {f.label}
+                </button>
+              ))}
+              {dateFilter === 'custom' && (
+                <>
+                  <input type="date" value={dateFrom} onChange={e => setDateFrom(e.target.value)}
+                    style={{ padding:'5px 8px', border:`1px solid ${T.border}`, borderRadius:6,
+                      fontSize:11, fontFamily:'inherit', background:'#fff', color:T.dark }}/>
+                  <span style={{ fontSize:11, color:T.med }}>→</span>
+                  <input type="date" value={dateTo} onChange={e => setDateTo(e.target.value)}
+                    style={{ padding:'5px 8px', border:`1px solid ${T.border}`, borderRadius:6,
+                      fontSize:11, fontFamily:'inherit', background:'#fff', color:T.dark }}/>
+                </>
+              )}
+            </div>
+          </Card>
+          <GhtkDropshipPrintPanel user={user} mobile={mobile}
+            dropshipGhtk={(() => {
+              if (dateFilter === 'all') return categorized.dropship_ghtk
+              const todayStart = new Date(); todayStart.setHours(0, 0, 0, 0)
+              const cutoffMs = dateFilter === 'today' ? todayStart.getTime()
+                : dateFilter === '3d' ? Date.now() - 3*86400000
+                : dateFilter === '7d' ? Date.now() - 7*86400000
+                : dateFilter === '30d' ? Date.now() - 30*86400000
+                : dateFilter === 'custom' ? (dateFrom ? new Date(dateFrom + 'T00:00:00').getTime() : 0) : 0
+              const endMs = dateFilter === 'custom' && dateTo
+                ? new Date(dateTo + 'T23:59:59').getTime() : Date.now()
+              return categorized.dropship_ghtk.filter((o: any) => {
+                const dateStr = o.dropship_printed_at || o.created_at
+                const ts = dateStr ? new Date(dateStr).getTime() : 0
+                return ts >= cutoffMs && ts <= endMs
+              })
+            })()}
+            dropshipVtp={(() => {
+              if (dateFilter === 'all') return categorized.dropship_vtp
+              const todayStart = new Date(); todayStart.setHours(0, 0, 0, 0)
+              const cutoffMs = dateFilter === 'today' ? todayStart.getTime()
+                : dateFilter === '3d' ? Date.now() - 3*86400000
+                : dateFilter === '7d' ? Date.now() - 7*86400000
+                : dateFilter === '30d' ? Date.now() - 30*86400000
+                : dateFilter === 'custom' ? (dateFrom ? new Date(dateFrom + 'T00:00:00').getTime() : 0) : 0
+              const endMs = dateFilter === 'custom' && dateTo
+                ? new Date(dateTo + 'T23:59:59').getTime() : Date.now()
+              return categorized.dropship_vtp.filter((o: any) => {
+                const dateStr = o.dropship_printed_at || o.created_at
+                const ts = dateStr ? new Date(dateStr).getTime() : 0
+                return ts >= cutoffMs && ts <= endMs
+              })
+            })()}
+            onRefresh={fetchOrders}/>
+        </>
       ) : tab === 'busship' ? (
         <GhtkBusShipPrintPanel user={user} mobile={mobile}/>
       ) : (
@@ -31714,6 +32713,48 @@ function GhtkModule({ user, allUsers, mobile }: any) {
                 fontSize:12, fontFamily:'inherit', color:T.dark, background:'#fff', outline:'none',
                 boxSizing:'border-box' as any }}/>
           </Card>
+
+          {/* v189/v190: Filter ngày — chỉ hiển thị cho 4 tabs */}
+          {['dropship_mine','created','track','delivered'].includes(tab) && (
+            <Card style={{ padding:10, marginBottom:8 }}>
+              <div style={{ display:'flex', gap:6, flexWrap:'wrap', alignItems:'center' }}>
+                <div style={{ fontSize:11, color:T.med, fontWeight:600, marginRight:4 }}>
+                  📅 {tab === 'dropship_mine' ? 'Ngày in nhãn' : 'Ngày tạo GHTK'}:
+                </div>
+                {([
+                  { id:'today',  label:'Hôm nay' },
+                  { id:'3d',     label:'3 ngày' },
+                  { id:'7d',     label:'1 tuần' },
+                  { id:'30d',    label:'1 tháng' },
+                  { id:'all',    label:'Tất cả' },
+                  { id:'custom', label:'Tùy chọn' },
+                ] as Array<{ id: any, label: string }>).map(f => (
+                  <button key={f.id} onClick={() => setDateFilter(f.id)}
+                    style={{ padding:'5px 12px', borderRadius:14, fontSize:11, fontWeight:600,
+                      border: dateFilter === f.id ? `1.5px solid ${T.gold}` : `1px solid ${T.border}`,
+                      background: dateFilter === f.id ? T.goldBg : '#fff',
+                      color: dateFilter === f.id ? T.gold : T.med,
+                      cursor:'pointer', fontFamily:'inherit' }}>
+                    {f.label}
+                  </button>
+                ))}
+                {dateFilter === 'custom' && (
+                  <>
+                    <input type="date" value={dateFrom} onChange={e => setDateFrom(e.target.value)}
+                      style={{ padding:'5px 8px', border:`1px solid ${T.border}`, borderRadius:6,
+                        fontSize:11, fontFamily:'inherit', background:'#fff', color:T.dark }}/>
+                    <span style={{ fontSize:11, color:T.med }}>→</span>
+                    <input type="date" value={dateTo} onChange={e => setDateTo(e.target.value)}
+                      style={{ padding:'5px 8px', border:`1px solid ${T.border}`, borderRadius:6,
+                        fontSize:11, fontFamily:'inherit', background:'#fff', color:T.dark }}/>
+                  </>
+                )}
+                <div style={{ marginLeft:'auto', fontSize:10, color:T.light }}>
+                  Hiện <b style={{ color:T.dark }}>{filtered.length}</b> đơn
+                </div>
+              </div>
+            </Card>
+          )}
 
           {/* v133: Sync batch button — chỉ hiển thị tab 'created' khi có đơn pending */}
           {tab === 'created' && (perm.ghtkPrintLabel || perm.ghtkSettings) && (() => {
