@@ -36,7 +36,9 @@ const db = createClient(SUPABASE_URL, SUPABASE_KEY)
 // v179: fix MỌI input/select/date trong CustomersModule blend với dark mode — add background:'#fff' + color:T.dark cho hết. Thêm gợi ý range ngày khi filter không ra kết quả
 // v180: fix CustomersModule chỉ load 1000/2541 KH — Supabase cap response → dùng .range() pagination batch 1000. Cải tiến filter Doanh số: input số tự nhập thay dropdown cố định
 // v181: KV setup hiển thị tiền theo "đơn vị nghìn đồng" — toàn bộ Customer module hiển thị "nghìn đ" thay vì "đ", thêm chú thích đơn vị ở header bảng + summary + detail. Filter doanh số nhập theo nghìn (vd: 1000 = 1tr đ thực)
-const APP_VERSION = '2026.04.29.v181'
+// v182: fix header bảng KH lệch — đơn vị "(nghìn đ)" inline thay vì xuống dòng, vertical-align middle. Standby cho feature "Tab KH mới"
+// v183: Phase B — Tab "✨ KH mới" trong CustomersModule. Sale claim KH mới của tháng → Admin duyệt → tính hoa hồng 1% DS tháng. Migration 50 (claims) + 51 (kv_invoices) + edge function customer-month-revenue
+const APP_VERSION = '2026.04.29.v183'
 
 // ════════════════════════════════════════════════════════════════
 // v158: VersionBadge — Hiển thị APP_VERSION ở góc dưới phải
@@ -31964,6 +31966,9 @@ function CustomersModule({ user, allUsers, mobile }: any) {
   const perm = getPerm(user)
   const isAdmin = perm.viewAllDashboard || perm.manageCustomers
   
+  // v183: 2 tabs — Tất cả + KH mới
+  const [tab, setTab] = useState<'all'|'new'>('all')
+  
   const [customers, setCustomers] = useState<any[]>([])
   const [loading, setLoading] = useState(false)
   const [search, setSearch] = useState('')
@@ -32156,6 +32161,40 @@ function CustomersModule({ user, allUsers, mobile }: any) {
         </div>
       </div>
 
+      {/* v183: Tab switcher */}
+      <div style={{ display:'flex', gap:4, marginBottom:14, borderBottom:`2px solid ${T.border}` }}>
+        <button onClick={() => setTab('all')}
+          style={{
+            padding:'10px 20px', border:'none', borderBottom: tab === 'all' ? `3px solid ${T.gold}` : '3px solid transparent',
+            background:'transparent', cursor:'pointer', fontFamily:'inherit', fontSize:13,
+            fontWeight: tab === 'all' ? 700 : 500,
+            color: tab === 'all' ? T.gold : T.med,
+            marginBottom:-2,
+          }}>
+          👥 Tất cả KH
+        </button>
+        <button onClick={() => setTab('new')}
+          style={{
+            padding:'10px 20px', border:'none', borderBottom: tab === 'new' ? `3px solid ${T.gold}` : '3px solid transparent',
+            background:'transparent', cursor:'pointer', fontFamily:'inherit', fontSize:13,
+            fontWeight: tab === 'new' ? 700 : 500,
+            color: tab === 'new' ? T.gold : T.med,
+            marginBottom:-2,
+          }}>
+          ✨ KH mới
+          <span style={{ marginLeft:6, padding:'1px 6px', borderRadius:8, fontSize:9,
+            background:T.amberBg, color:T.amber, fontWeight:700 }}>
+            BETA
+          </span>
+        </button>
+      </div>
+
+      {/* v183: Render tab "KH mới" */}
+      {tab === 'new' ? (
+        <NewCustomersTab user={user} mobile={mobile} customers={customers}
+          isAdmin={isAdmin} onRefreshCustomers={fetchCustomers}/>
+      ) : (
+        <>
       {/* Summary stats — sticky tổng */}
       <Card style={{ padding:'14px 16px', marginBottom:12,
         background:`linear-gradient(135deg, ${T.goldBg}, ${T.bg})`,
@@ -32331,16 +32370,13 @@ function CustomersModule({ user, allUsers, mobile }: any) {
                   <th style={thStyle}>Người phụ trách</th>
                   <th style={thStyle}>Ngày tạo</th>
                   <th style={{ ...thStyle, textAlign:'right' }}>
-                    Nợ hiện tại<br/>
-                    <span style={{ fontSize:9, fontWeight:500, color:T.light, textTransform:'none' }}>(nghìn đ)</span>
+                    Nợ hiện tại <span style={thUnitStyle}>(nghìn đ)</span>
                   </th>
                   <th style={{ ...thStyle, textAlign:'right' }}>
-                    Tổng bán<br/>
-                    <span style={{ fontSize:9, fontWeight:500, color:T.light, textTransform:'none' }}>(nghìn đ)</span>
+                    Tổng bán <span style={thUnitStyle}>(nghìn đ)</span>
                   </th>
                   <th style={{ ...thStyle, textAlign:'right' }}>
-                    Tổng bán trừ trả<br/>
-                    <span style={{ fontSize:9, fontWeight:500, color:T.light, textTransform:'none' }}>(nghìn đ)</span>
+                    Tổng bán trừ trả <span style={thUnitStyle}>(nghìn đ)</span>
                   </th>
                 </tr>
               </thead>
@@ -32370,6 +32406,8 @@ function CustomersModule({ user, allUsers, mobile }: any) {
             style={pageBtnStyle(page >= totalPages - 1)}>»</button>
         </div>
       )}
+        </>
+      )}
 
       {/* Modals */}
       {showSync && (
@@ -32394,6 +32432,11 @@ function CustomersModule({ user, allUsers, mobile }: any) {
 const thStyle: any = {
   padding:'10px 12px', textAlign:'left', fontSize:11, fontWeight:700,
   color:T.med, borderBottom:`2px solid ${T.border}`, whiteSpace:'nowrap',
+  verticalAlign:'middle',  // v182: tránh header lệch do mixed inline styles
+}
+const thUnitStyle: any = {
+  fontSize:9, fontWeight:500, color:T.light, textTransform:'none',
+  marginLeft:2, fontStyle:'italic',
 }
 const pageBtnStyle = (disabled: boolean): any => ({
   padding:'6px 12px', borderRadius:6, border:`1px solid ${T.border}`,
@@ -32974,6 +33017,547 @@ function CustomerDetailModal({ customer: c, mobile, user, onClose, onRefresh }: 
         </div>
       </div>
     </Modal>
+  )
+}
+
+
+// ══════════════════════════════════════════════════════════════════════
+// v183: NewCustomersTab — KH mới tháng X (sale claim, admin duyệt)
+// ══════════════════════════════════════════════════════════════════════
+function NewCustomersTab({ user, mobile, customers, isAdmin, onRefreshCustomers }: any) {
+  // Default tháng = tháng trước (vì cuối tháng sale claim cho tháng đang qua)
+  const defaultMonth = (() => {
+    const d = new Date()
+    return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`
+  })()
+  
+  const [month, setMonth] = useState(defaultMonth)
+  const [claims, setClaims] = useState<any[]>([])
+  const [revenueMap, setRevenueMap] = useState<Map<string, { revenue: number, orders: number }>>(new Map())
+  const [loadingClaims, setLoadingClaims] = useState(false)
+  const [loadingRevenue, setLoadingRevenue] = useState(false)
+  const [statusFilter, setStatusFilter] = useState<'all'|'unclaimed'|'pending'|'approved'|'rejected'>('all')
+
+  // Compute "KH mới tháng X" cho user hiện tại
+  // Logic: kv_created_at trong tháng + (sale: assigned_to_user_id = user.id, admin: all)
+  const eligibleNewCustomers = useMemo(() => {
+    const [year, m] = month.split('-').map(Number)
+    const monthStart = new Date(Date.UTC(year, m - 1, 1)).getTime()
+    const monthEnd   = new Date(Date.UTC(year, m, 1)).getTime()
+    
+    return customers.filter((c: any) => {
+      if (!c.kv_created_at) return false
+      const createdMs = new Date(c.kv_created_at).getTime()
+      if (createdMs < monthStart || createdMs >= monthEnd) return false
+      
+      // Sale: chỉ KH có assigned_to_user_id = mình (Admin upload Excel)
+      if (!isAdmin) {
+        if (c.assigned_to_user_id !== user.id) return false
+      }
+      
+      return true
+    })
+  }, [customers, month, isAdmin, user.id])
+
+  const customerCodes = useMemo(() => 
+    eligibleNewCustomers.map((c: any) => c.code).filter(Boolean),
+    [eligibleNewCustomers]
+  )
+
+  // Load claims tháng này
+  const fetchClaims = async () => {
+    setLoadingClaims(true)
+    try {
+      let q = db.from('customer_new_claims').select('*').eq('claim_month', month)
+      // Sale: chỉ thấy claim của mình. Admin: all
+      if (!isAdmin) q = q.eq('claimed_by', user.id)
+      const { data, error } = await q.order('created_at', { ascending: false })
+      if (error) {
+        console.error('[Claims] error:', error)
+        toast.error('Lỗi tải claims: ' + error.message)
+      }
+      setClaims(data || [])
+    } finally {
+      setLoadingClaims(false)
+    }
+  }
+
+  // Load revenue cho tất cả KH trong tháng
+  const fetchRevenue = async () => {
+    if (customerCodes.length === 0) {
+      setRevenueMap(new Map())
+      return
+    }
+    setLoadingRevenue(true)
+    try {
+      const res = await fetch(`${SUPABASE_URL}/functions/v1/customer-month-revenue`, {
+        method: 'POST',
+        headers: { 'Content-Type':'application/json', 'Authorization':`Bearer ${SUPABASE_ANON}` },
+        body: JSON.stringify({ customer_codes: customerCodes, month }),
+      })
+      const json = await res.json()
+      if (json.success && json.results) {
+        const map = new Map()
+        for (const [code, stats] of Object.entries(json.results)) {
+          map.set(code, stats)
+        }
+        setRevenueMap(map)
+      }
+    } catch (e: any) {
+      console.error('[Revenue] error:', e)
+    } finally {
+      setLoadingRevenue(false)
+    }
+  }
+
+  useEffect(() => { fetchClaims() }, [month, user.id, isAdmin])
+  useEffect(() => { fetchRevenue() }, [customerCodes.join(',')])
+
+  // Map: customer_code → claim
+  const claimByCode = useMemo(() => {
+    const m = new Map()
+    for (const cl of claims) {
+      // Nếu Admin: 1 KH có thể có nhiều claim, lưu cả mảng
+      if (isAdmin) {
+        const arr = m.get(cl.customer_code) || []
+        arr.push(cl)
+        m.set(cl.customer_code, arr)
+      } else {
+        m.set(cl.customer_code, cl)
+      }
+    }
+    return m
+  }, [claims, isAdmin])
+
+  // Filter rows theo status
+  const rows = useMemo(() => {
+    let list = eligibleNewCustomers.map((c: any) => {
+      const claim = claimByCode.get(c.code)
+      const claimSingle = isAdmin ? null : claim   // sale view
+      const claimList = isAdmin ? (claim || []) : []  // admin view
+      const stats = revenueMap.get(c.code) || { revenue: 0, orders: 0 }
+      return {
+        customer: c,
+        claim: claimSingle,
+        claims: claimList,
+        revenue: stats.revenue,
+        orders_count: stats.orders,
+        commission: stats.revenue * 0.01,
+      }
+    })
+    
+    if (statusFilter !== 'all') {
+      list = list.filter((r: any) => {
+        if (isAdmin) {
+          // Admin filter theo any claim status
+          if (statusFilter === 'unclaimed') return r.claims.length === 0
+          return r.claims.some((cl: any) => cl.status === statusFilter)
+        } else {
+          if (statusFilter === 'unclaimed') return !r.claim
+          return r.claim?.status === statusFilter
+        }
+      })
+    }
+    
+    // Sort: chưa claim lên đầu, rồi theo doanh số desc
+    list.sort((a: any, b: any) => {
+      const aClaimed = isAdmin ? a.claims.length > 0 : !!a.claim
+      const bClaimed = isAdmin ? b.claims.length > 0 : !!b.claim
+      if (aClaimed !== bClaimed) return aClaimed ? 1 : -1
+      return b.revenue - a.revenue
+    })
+    
+    return list
+  }, [eligibleNewCustomers, claimByCode, revenueMap, statusFilter, isAdmin])
+
+  // Stats summary
+  const stats = useMemo(() => {
+    const totalNew = eligibleNewCustomers.length
+    const totalClaimed = isAdmin
+      ? claims.length
+      : claims.filter((c: any) => c.claimed_by === user.id).length
+    const totalApproved = claims.filter((c: any) => c.status === 'approved').length
+    const totalPending = claims.filter((c: any) => c.status === 'pending').length
+    const totalRejected = claims.filter((c: any) => c.status === 'rejected').length
+    
+    // Total commission (sale: của mình, admin: tổng)
+    const myClaims = isAdmin ? claims : claims.filter((c: any) => c.claimed_by === user.id)
+    const approvedRevenue = myClaims
+      .filter((c: any) => c.status === 'approved')
+      .reduce((s: number, c: any) => s + Number(c.month_revenue || 0), 0)
+    const approvedCommission = myClaims
+      .filter((c: any) => c.status === 'approved')
+      .reduce((s: number, c: any) => s + Number(c.commission_amount || 0), 0)
+    
+    return { totalNew, totalClaimed, totalApproved, totalPending, totalRejected, approvedRevenue, approvedCommission }
+  }, [eligibleNewCustomers, claims, isAdmin, user.id])
+
+  return (
+    <div>
+      {/* Header */}
+      <Card style={{ padding:14, marginBottom:12 }}>
+        <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center',
+          gap:10, flexWrap:'wrap', marginBottom:10 }}>
+          <div>
+            <div style={{ fontSize:15, fontWeight:700, color:T.dark }}>
+              ✨ KH mới tháng {month.split('-').reverse().join('/')}
+            </div>
+            <div style={{ fontSize:11, color:T.med, marginTop:2 }}>
+              {isAdmin
+                ? `Admin xem tất cả KH mới + claim từ sale + duyệt`
+                : `Sale: KH được Admin gán cho bạn (Excel) trong tháng. Claim để được tính hoa hồng 1% DS tháng.`}
+            </div>
+          </div>
+          <div style={{ display:'flex', gap:8, flexWrap:'wrap', alignItems:'center' }}>
+            <input type="month" value={month} onChange={e => setMonth(e.target.value)}
+              style={{ padding:'7px 10px', border:`1px solid ${T.border}`,
+                borderRadius:6, fontSize:13, fontFamily:'inherit',
+                background:'#fff', color:T.dark }}/>
+            <button onClick={() => { fetchClaims(); fetchRevenue() }}
+              style={{ padding:'7px 14px', borderRadius:6, border:`1px solid ${T.border}`,
+                background:'#fff', color:T.med, cursor:'pointer',
+                fontFamily:'inherit', fontSize:12, fontWeight:600 }}>
+              🔄 Refresh
+            </button>
+          </div>
+        </div>
+
+        {/* Stats */}
+        <div style={{ display:'grid',
+          gridTemplateColumns: mobile ? 'repeat(2,1fr)' : 'repeat(4,1fr)',
+          gap:10, marginTop:10 }}>
+          <div style={{ padding:10, background:T.bg, borderRadius:6, textAlign:'center' }}>
+            <div style={{ fontSize:9, color:T.med, fontWeight:600 }}>📋 KH mới {isAdmin ? 'tổng' : 'của bạn'}</div>
+            <div style={{ fontSize:18, fontWeight:800, color:T.dark }}>{stats.totalNew}</div>
+          </div>
+          <div style={{ padding:10, background:T.amberBg, borderRadius:6, textAlign:'center' }}>
+            <div style={{ fontSize:9, color:T.amber, fontWeight:600 }}>⏳ Chờ duyệt</div>
+            <div style={{ fontSize:18, fontWeight:800, color:T.amber }}>{stats.totalPending}</div>
+          </div>
+          <div style={{ padding:10, background:T.greenBg, borderRadius:6, textAlign:'center' }}>
+            <div style={{ fontSize:9, color:T.green, fontWeight:600 }}>✅ Đã duyệt</div>
+            <div style={{ fontSize:18, fontWeight:800, color:T.green }}>{stats.totalApproved}</div>
+          </div>
+          <div style={{ padding:10, background:T.goldBg, borderRadius:6, textAlign:'center' }}>
+            <div style={{ fontSize:9, color:T.gold, fontWeight:600 }}>
+              💰 Hoa hồng {isAdmin ? 'tổng' : 'của bạn'}
+            </div>
+            <div style={{ fontSize:14, fontWeight:800, color:T.gold }}>
+              {Math.round(stats.approvedCommission).toLocaleString('vi-VN')}
+              <span style={{ fontSize:9, fontWeight:600, color:T.med, marginLeft:3 }}>nghìn đ</span>
+            </div>
+          </div>
+        </div>
+
+        {/* Filters */}
+        <div style={{ display:'flex', gap:6, flexWrap:'wrap', marginTop:12 }}>
+          {([
+            { id:'all',       label:'Tất cả',         count: rows.length },
+            { id:'unclaimed', label:'⚪ Chưa claim',   count: eligibleNewCustomers.filter((c: any) => !claimByCode.has(c.code)).length },
+            { id:'pending',   label:'⏳ Chờ duyệt',    count: stats.totalPending },
+            { id:'approved',  label:'✅ Đã duyệt',     count: stats.totalApproved },
+            { id:'rejected',  label:'❌ Bị từ chối',   count: stats.totalRejected },
+          ] as Array<{ id: any, label: string, count: number }>).map(f => (
+            <button key={f.id} onClick={() => setStatusFilter(f.id)}
+              style={{ padding:'5px 12px', borderRadius:14, fontSize:11, fontWeight:600,
+                border: statusFilter === f.id ? `1.5px solid ${T.gold}` : `1px solid ${T.border}`,
+                background: statusFilter === f.id ? T.goldBg : '#fff',
+                color: statusFilter === f.id ? T.gold : T.med,
+                cursor:'pointer', fontFamily:'inherit' }}>
+              {f.label} ({f.count})
+            </button>
+          ))}
+        </div>
+      </Card>
+
+      {/* List */}
+      {loadingClaims || loadingRevenue ? (
+        <Card style={{ padding:30, textAlign:'center', color:T.med }}>⏳ Đang tải...</Card>
+      ) : rows.length === 0 ? (
+        <Card style={{ padding:30, textAlign:'center', color:T.light }}>
+          {eligibleNewCustomers.length === 0
+            ? `📭 Không có KH mới nào trong tháng ${month}.${!isAdmin ? ' Admin chưa upload Excel hoặc bạn chưa được gán KH.' : ''}`
+            : '🔍 Không có KH nào khớp filter.'}
+        </Card>
+      ) : (
+        <div style={{ display:'flex', flexDirection:'column', gap:8 }}>
+          {rows.map((row: any) => (
+            <NewCustomerCard key={row.customer.code} row={row}
+              user={user} mobile={mobile} isAdmin={isAdmin} month={month}
+              onRefresh={() => { fetchClaims(); fetchRevenue() }}/>
+          ))}
+        </div>
+      )}
+    </div>
+  )
+}
+
+
+// ══════════════════════════════════════════════════════════════════════
+// NewCustomerCard — 1 KH mới (sale claim hoặc admin duyệt)
+// ══════════════════════════════════════════════════════════════════════
+function NewCustomerCard({ row, user, mobile, isAdmin, month, onRefresh }: any) {
+  const { customer: c, claim, claims: claimList, revenue, orders_count, commission } = row
+  const [working, setWorking] = useState(false)
+  const [showRejectReason, setShowRejectReason] = useState(false)
+  const [rejectReason, setRejectReason] = useState('')
+
+  const handleClaim = async () => {
+    setWorking(true)
+    try {
+      const id = `claim_${Date.now()}_${Math.random().toString(36).slice(2,7)}`
+      const { error } = await db.from('customer_new_claims').insert({
+        id,
+        customer_code: c.code,
+        customer_name: c.name,
+        customer_kv_id: c.kv_id,
+        claimed_by: user.id,
+        claimed_by_name: user.name,
+        claim_month: month,
+        status: 'pending',
+        month_revenue: revenue,        // snapshot
+        month_orders_count: orders_count,
+        commission_rate: 0.01,
+        commission_amount: commission,
+      })
+      if (error) {
+        toast.error('Lỗi: ' + error.message)
+      } else {
+        toast.success(`✓ Đã claim ${c.name}`)
+        onRefresh && onRefresh()
+      }
+    } finally {
+      setWorking(false)
+    }
+  }
+
+  const handleUnclaim = async () => {
+    if (!claim) return
+    if (!confirm(`Hủy claim KH "${c.name}"?`)) return
+    setWorking(true)
+    try {
+      const { error } = await db.from('customer_new_claims').delete().eq('id', claim.id)
+      if (error) {
+        toast.error('Lỗi: ' + error.message)
+      } else {
+        toast.success(`✓ Đã hủy claim`)
+        onRefresh && onRefresh()
+      }
+    } finally {
+      setWorking(false)
+    }
+  }
+
+  const handleApprove = async (claimItem: any) => {
+    setWorking(true)
+    try {
+      // Refresh revenue snapshot khi duyệt
+      const { error } = await db.from('customer_new_claims').update({
+        status: 'approved',
+        reviewed_by: user.id,
+        reviewed_by_name: user.name,
+        reviewed_at: new Date().toISOString(),
+        month_revenue: revenue,        // refresh
+        month_orders_count: orders_count,
+        commission_amount: commission,
+        rejected_reason: null,
+        updated_at: new Date().toISOString(),
+      }).eq('id', claimItem.id)
+      if (error) {
+        toast.error('Lỗi: ' + error.message)
+      } else {
+        toast.success(`✓ Đã duyệt claim của ${claimItem.claimed_by_name}`)
+        onRefresh && onRefresh()
+      }
+    } finally {
+      setWorking(false)
+    }
+  }
+
+  const handleReject = async (claimItem: any) => {
+    if (!rejectReason.trim()) { toast.error('Cần nhập lý do từ chối'); return }
+    setWorking(true)
+    try {
+      const { error } = await db.from('customer_new_claims').update({
+        status: 'rejected',
+        reviewed_by: user.id,
+        reviewed_by_name: user.name,
+        reviewed_at: new Date().toISOString(),
+        rejected_reason: rejectReason.trim(),
+        updated_at: new Date().toISOString(),
+      }).eq('id', claimItem.id)
+      if (error) {
+        toast.error('Lỗi: ' + error.message)
+      } else {
+        toast.success(`✓ Đã từ chối`)
+        setShowRejectReason(false)
+        setRejectReason('')
+        onRefresh && onRefresh()
+      }
+    } finally {
+      setWorking(false)
+    }
+  }
+
+  const statusColor = (s: string) => 
+    s === 'approved' ? T.green : s === 'rejected' ? T.red : T.amber
+  const statusEmoji = (s: string) => 
+    s === 'approved' ? '✅' : s === 'rejected' ? '❌' : '⏳'
+
+  return (
+    <Card style={{ padding:12, borderLeft: claim ? `3px solid ${statusColor(claim.status)}` : `3px solid ${T.border}` }}>
+      <div style={{ display:'flex', justifyContent:'space-between', gap:10, flexWrap:'wrap', marginBottom:8 }}>
+        <div style={{ flex:1, minWidth:0 }}>
+          <div style={{ fontSize:13, fontWeight:700, color:T.dark }}>
+            <code style={{ padding:'2px 6px', background:'#fff', color:T.dark,
+              border:`1px solid ${T.border}`, borderRadius:4,
+              fontFamily:'monospace', fontSize:11, fontWeight:600, marginRight:6 }}>
+              {c.code}
+            </code>
+            {c.name}
+            {c.groups && (
+              <span style={{ marginLeft:6, padding:'1px 7px', borderRadius:10, fontSize:9, fontWeight:700,
+                background: T.gold + '22', color: T.gold }}>
+                {c.groups}
+              </span>
+            )}
+          </div>
+          <div style={{ fontSize:11, color:T.med, marginTop:3 }}>
+            📞 {c.phone || '—'} · 📅 Tạo: {c.kv_created_at ? new Date(c.kv_created_at).toLocaleDateString('vi-VN') : '—'}
+            {c.assigned_to_user_name && <span> · 👤 Phụ trách: <b>{c.assigned_to_user_name}</b></span>}
+          </div>
+        </div>
+        
+        {/* Status badge */}
+        {!isAdmin && claim && (
+          <span style={{ padding:'3px 10px', borderRadius:12, fontSize:11, fontWeight:700,
+            background: statusColor(claim.status) + '22', color: statusColor(claim.status),
+            alignSelf:'flex-start' }}>
+            {statusEmoji(claim.status)} {claim.status === 'approved' ? 'Đã duyệt' : claim.status === 'rejected' ? 'Bị từ chối' : 'Chờ duyệt'}
+          </span>
+        )}
+      </div>
+
+      {/* Revenue + commission */}
+      <div style={{ display:'flex', gap:14, flexWrap:'wrap', fontSize:11, marginBottom:8,
+        padding:'6px 10px', background:T.bg, borderRadius:6 }}>
+        <span><b style={{ color:T.med }}>📊 Đơn:</b> {orders_count}</span>
+        <span><b style={{ color:T.med }}>💰 DS tháng:</b> <b style={{ color:T.gold }}>{revenue.toLocaleString('vi-VN')}</b> <span style={{ color:T.light, fontSize:10 }}>nghìn đ</span></span>
+        <span><b style={{ color:T.med }}>✨ Hoa hồng 1%:</b> <b style={{ color:T.green }}>{Math.round(commission).toLocaleString('vi-VN')}</b> <span style={{ color:T.light, fontSize:10 }}>nghìn đ</span></span>
+      </div>
+
+      {/* SALE VIEW: claim button */}
+      {!isAdmin && (
+        <div>
+          {!claim && revenue > 0 && (
+            <button onClick={handleClaim} disabled={working}
+              style={{ padding:'7px 16px', borderRadius:6, border:'none',
+                background: T.gold, color:'#fff',
+                cursor: working ? 'wait' : 'pointer',
+                fontFamily:'inherit', fontSize:12, fontWeight:700 }}>
+              {working ? '⏳' : '➕ Claim KH này'}
+            </button>
+          )}
+          {!claim && revenue === 0 && (
+            <div style={{ fontSize:11, color:T.light, fontStyle:'italic' }}>
+              💡 KH chưa có đơn nào trong tháng → chưa thể claim
+            </div>
+          )}
+          {claim?.status === 'pending' && (
+            <button onClick={handleUnclaim} disabled={working}
+              style={{ padding:'6px 14px', borderRadius:6, border:`1px solid ${T.red}`,
+                background:'#fff', color:T.red,
+                cursor: working ? 'wait' : 'pointer',
+                fontFamily:'inherit', fontSize:11, fontWeight:600 }}>
+              ✕ Hủy claim
+            </button>
+          )}
+          {claim?.status === 'rejected' && claim.rejected_reason && (
+            <div style={{ padding:8, background:T.redBg, borderRadius:4, fontSize:11, color:T.red }}>
+              ❌ <b>Lý do từ chối:</b> {claim.rejected_reason}
+            </div>
+          )}
+          {claim?.status === 'approved' && (
+            <div style={{ fontSize:11, color:T.green, fontWeight:600 }}>
+              ✅ Đã được {claim.reviewed_by_name} duyệt {claim.reviewed_at ? formatAgo(claim.reviewed_at) : ''}
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* ADMIN VIEW: list claims + duyệt/từ chối */}
+      {isAdmin && (
+        <div>
+          {claimList.length === 0 ? (
+            <div style={{ fontSize:11, color:T.light, fontStyle:'italic' }}>
+              ⚪ Chưa có sale nào claim KH này
+            </div>
+          ) : (
+            <div style={{ display:'flex', flexDirection:'column', gap:6 }}>
+              {claimList.map((cl: any) => (
+                <div key={cl.id} style={{ padding:'8px 10px', borderRadius:6,
+                  background: statusColor(cl.status) + '11',
+                  border: `1px solid ${statusColor(cl.status)}55` }}>
+                  <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', flexWrap:'wrap', gap:6 }}>
+                    <div style={{ fontSize:12 }}>
+                      <span style={{ marginRight:6 }}>{statusEmoji(cl.status)}</span>
+                      <b>{cl.claimed_by_name}</b>
+                      <span style={{ color:T.light, marginLeft:6, fontSize:10 }}>
+                        claim {formatAgo(cl.created_at)}
+                      </span>
+                    </div>
+                    {cl.status === 'pending' && (
+                      <div style={{ display:'flex', gap:6 }}>
+                        <button onClick={() => handleApprove(cl)} disabled={working}
+                          style={{ padding:'4px 10px', borderRadius:4, border:'none',
+                            background:T.green, color:'#fff',
+                            cursor: working ? 'wait' : 'pointer',
+                            fontFamily:'inherit', fontSize:11, fontWeight:600 }}>
+                          ✓ Duyệt
+                        </button>
+                        <button onClick={() => setShowRejectReason(showRejectReason === cl.id ? false : cl.id)}
+                          style={{ padding:'4px 10px', borderRadius:4, border:`1px solid ${T.red}`,
+                            background:'#fff', color:T.red, cursor:'pointer',
+                            fontFamily:'inherit', fontSize:11, fontWeight:600 }}>
+                          ✕ Từ chối
+                        </button>
+                      </div>
+                    )}
+                  </div>
+                  {cl.status === 'rejected' && cl.rejected_reason && (
+                    <div style={{ fontSize:10, color:T.red, marginTop:3 }}>
+                      ❌ {cl.rejected_reason} <i style={{ color:T.light }}>(by {cl.reviewed_by_name})</i>
+                    </div>
+                  )}
+                  {cl.status === 'approved' && (
+                    <div style={{ fontSize:10, color:T.green, marginTop:3 }}>
+                      ✅ Duyệt bởi {cl.reviewed_by_name} {formatAgo(cl.reviewed_at)}
+                      {' · Hoa hồng: '}<b>{Math.round(Number(cl.commission_amount || 0)).toLocaleString('vi-VN')} nghìn đ</b>
+                    </div>
+                  )}
+                  {showRejectReason === cl.id && (
+                    <div style={{ marginTop:6, display:'flex', gap:6 }}>
+                      <input value={rejectReason} onChange={e => setRejectReason(e.target.value)}
+                        placeholder="Lý do từ chối..."
+                        style={{ flex:1, padding:'5px 8px', border:`1px solid ${T.border}`,
+                          borderRadius:4, fontSize:11, fontFamily:'inherit',
+                          background:'#fff', color:T.dark }}/>
+                      <button onClick={() => handleReject(cl)} disabled={working || !rejectReason.trim()}
+                        style={{ padding:'5px 10px', borderRadius:4, border:'none',
+                          background: rejectReason.trim() ? T.red : T.border, color:'#fff',
+                          cursor: working ? 'wait' : (rejectReason.trim() ? 'pointer' : 'not-allowed'),
+                          fontFamily:'inherit', fontSize:11, fontWeight:600 }}>
+                        OK
+                      </button>
+                    </div>
+                  )}
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
+    </Card>
   )
 }
 
