@@ -54,7 +54,13 @@ const db = createClient(SUPABASE_URL, SUPABASE_KEY)
 // v192: (1) LCB lưu trong bảng `positions` thay vì `position_base_salary` (tích hợp với module Quản trị → Vị trí). Migration 56 thêm column base_salary. PayrollTabBaseSalary refactor dùng positions table.
 //       (2) Phiếu lương admin có bảng chấm công full tháng (giờ vào/giờ ra/BT/OT/trạng thái/ăn trưa) + nút "✏ Sửa chấm công". 
 //       (3) AttendanceEditModal: admin nhập giờ vào/ra → auto-recompute work_hours_regular + ot_150 + ot_200 + lunch_eligible theo schedule của vị trí. Audit log monthly_payroll_audit (action=attendance_edit).
-const APP_VERSION = '2026.04.30.v192'
+// v193: (1) Migration 57 — payroll_special_days (date, label, multiplier 1.0/2.0, attendance_immunity, note).
+//       (2) Compute logic: ngày lễ multiplier=2 → bonus = (multiplier-1) × dailyPay khi đi làm, hoặc 100% × dailyPay khi nghỉ. Multiplier=1 → 100% paid leave. Part-time bỏ qua. Immunity → không tính NKP/Leave để check chuyên cần.
+//       (3) Fix bug OT200% Sales: Excel = 40k × giờ (KHÔNG ×2). Sửa computeSalaryAmounts khớp Excel.
+//       (4) PayrollTabSchedule thêm section "🎉 Cấu hình ngày nghỉ / Lễ Tết" — CRUD ngày lễ với modal thêm/sửa.
+//       (5) PayrollDetailModal hiển thị badge ngày lễ trong bảng chấm công (highlight vàng 200%, xanh 100%) + chi tiết breakdown holiday_amount.
+//       (6) countWorkingDaysInMonth nhận thêm param specialImmunityDates để tính chuẩn.
+const APP_VERSION = '2026.04.30.v193'
 
 // ════════════════════════════════════════════════════════════════
 // v158: VersionBadge — Hiển thị APP_VERSION ở góc dưới phải
@@ -23850,12 +23856,12 @@ function computeSalaryAmounts(opts: {
     ot150Amount = 0
     ot200Amount = 0
   } else if (isSale) {
-    // LCB × tỷ lệ + OT flat 40k/h
+    // LCB × tỷ lệ + OT flat 40k/h cho cả 150% và 200% (theo Excel - không nhân 2)
     workAmount = standardMonthHours > 0 
       ? Math.round((workHoursRegular / standardMonthHours) * baseSalary)
       : 0
     ot150Amount = Math.round(ot150Hours * 40000)
-    ot200Amount = Math.round(ot200Hours * 40000 * 2)  // OT200 flat rate × 2
+    ot200Amount = Math.round(ot200Hours * 40000)  // v193: bỏ ×2 để khớp Excel
   } else {
     // Kho, KT: LCB × tỷ lệ giờ + OT 150% và 200% theo đơn giá
     workAmount = standardMonthHours > 0
@@ -23870,9 +23876,10 @@ function computeSalaryAmounts(opts: {
 }
 
 
-// Đếm số ngày làm việc chuẩn trong tháng (loại bỏ CN + ngày nghỉ có lý do)
-function countWorkingDaysInMonth(month: number, year: number, paidLeaveDates: string[]): number {
+// Đếm số ngày làm việc chuẩn trong tháng (loại bỏ CN + ngày nghỉ có lý do + ngày lễ có immunity)
+function countWorkingDaysInMonth(month: number, year: number, paidLeaveDates: string[], specialImmunityDates?: string[]): number {
   const daysInMonth = new Date(year, month, 0).getDate()
+  const immune = new Set(specialImmunityDates || [])
   let count = 0
   for (let d = 1; d <= daysInMonth; d++) {
     const date = new Date(year, month - 1, d)
@@ -23880,6 +23887,7 @@ function countWorkingDaysInMonth(month: number, year: number, paidLeaveDates: st
     const dateStr = `${year}-${String(month).padStart(2, '0')}-${String(d).padStart(2, '0')}`
     if (dow === 0) continue  // Bỏ CN
     if (paidLeaveDates.includes(dateStr)) continue  // Bỏ ngày nghỉ có lý do
+    if (immune.has(dateStr)) continue  // v193: Bỏ ngày lễ có immunity
     count++
   }
   return count
@@ -23919,6 +23927,8 @@ function computeMonthlyPayroll(opts: {
   // v191: overrides — Map<field_type, amount>
   overrides?: Map<string, number>,  // per-NV overrides cho NV này
   configOverrides?: Map<string, number>,  // override config chung tháng đó (user_id NULL)
+  // v193: special days
+  specialDays?: Map<string, { label: string, multiplier: number, attendance_immunity: boolean }>,
 }) {
   const { user, salaryConfig, attendanceRecords, month, year, paidLeaveDates } = opts
   const sc = salaryConfig
@@ -23936,6 +23946,15 @@ function computeMonthlyPayroll(opts: {
     return cfgOv.has(field) ? Number(cfgOv.get(field)) : fallback
   }
 
+  // v193: Special days helpers
+  const specialDaysMap = opts.specialDays || new Map()
+  const specialImmunityDates: string[] = []
+  for (const [dateStr, sd] of specialDaysMap.entries()) {
+    if (sd.attendance_immunity) specialImmunityDates.push(dateStr)
+  }
+  const isPartTime = sc.position_type === 'Part-time'
+  const isPTC = sc.position_type === 'Phụ trách chung'
+
   // 1. Tổng hợp attendance
   let workHoursRegular = 0, ot150Hours = 0, ot200Hours = 0
   let totalWorkDays = 0, totalLeaveDays = 0, totalNkpDays = 0, lunchDays = 0
@@ -23947,13 +23966,20 @@ function computeMonthlyPayroll(opts: {
     ot200Hours += Number(a.ot_200_hours || 0)
     if (a.lunch_eligible) lunchDays++
     if (a.status === 'Đi làm') totalWorkDays++
-    else if (a.status === 'Nghỉ') totalLeaveDays++
-    else if (a.status === 'Nghỉ không phép' || a.status === 'NKP') totalNkpDays++
+    else if (a.status === 'Nghỉ') {
+      // v193: Nếu ngày này có immunity → KHÔNG tính vào totalLeaveDays (không mất chuyên cần)
+      const sd = specialDaysMap.get(a.date)
+      if (!sd || !sd.attendance_immunity) totalLeaveDays++
+    }
+    else if (a.status === 'Nghỉ không phép' || a.status === 'NKP') {
+      const sd = specialDaysMap.get(a.date)
+      if (!sd || !sd.attendance_immunity) totalNkpDays++
+    }
     if (a.sunday_type === 'CN-Bù') cnBuDays++
   }
 
-  // 2. Tính số ngày làm việc chuẩn tháng
-  const totalWorkingDaysInMonth = countWorkingDaysInMonth(month, year, paidLeaveDates)
+  // 2. Tính số ngày làm việc chuẩn tháng (v193: trừ thêm ngày special có immunity)
+  const totalWorkingDaysInMonth = countWorkingDaysInMonth(month, year, paidLeaveDates, specialImmunityDates)
 
   // v191: LCB có thể bị override per-NV
   const effectiveBaseSalary = getOverride('base_salary', sc.base_salary)
@@ -23965,6 +23991,55 @@ function computeMonthlyPayroll(opts: {
     workHoursRegular, ot150Hours, ot200Hours,
     totalWorkingDaysInMonth,
   })
+
+  // v193: Tính tiền ngày lễ (holiday pay/bonus)
+  // Logic:
+  // - Part-time/PTC: bỏ qua (không áp dụng)
+  // - Loop từng ngày special trong tháng đó:
+  //   - hourly_rate = LCB / NETWORKDAYS / std_hours
+  //   - daily_pay = LCB / NETWORKDAYS  (= 1 ngày lương cứng)
+  //   - Nếu NV "Đi làm" → bonus = (multiplier - 1) × daily_pay (vì lương BT đã tính rồi)
+  //   - Nếu NV "Nghỉ" hoặc không có chấm công → 1.0 × daily_pay (paid leave 100%)
+  //   - Nếu NV "NKP" → 0 (đi vắng không lý do thì không trả)
+  let holidayAmount = 0
+  const holidayBreakdown: any[] = []  // Để debug + hiển thị ra UI sau này
+  if (!isPartTime && !isPTC && totalWorkingDaysInMonth > 0 && specialDaysMap.size > 0) {
+    const isKho = sc.position_type === 'Kho' || sc.position_type === 'Quản lý kho'
+    const stdHoursPerDay = isKho ? 8 : 7.5
+    const dailyPay = effectiveBaseSalary / totalWorkingDaysInMonth
+    
+    for (const [dateStr, sd] of specialDaysMap.entries()) {
+      // Chỉ xử lý ngày special trong tháng/năm này
+      if (!dateStr.startsWith(`${year}-${String(month).padStart(2, '0')}-`)) continue
+      
+      const att = attendanceRecords.find((a: any) => a.date === dateStr)
+      const status = att?.status || 'Nghỉ'  // Không có record = mặc định coi là nghỉ
+      const multiplier = Number(sd.multiplier || 1)
+      
+      let bonus = 0
+      let kind = ''
+      if (status === 'Đi làm') {
+        // NV đi làm ngày lễ → bonus = (multiplier - 1) × daily_pay
+        // multiplier=2 → 1 ngày lương bonus (tức 200% tổng = 100% BT đã có + 100% bonus)
+        // multiplier=1 → 0 (không bonus, tính bình thường)
+        bonus = Math.round((multiplier - 1) * dailyPay)
+        kind = 'work'
+      } else if (status === 'Nghỉ không phép' || status === 'NKP') {
+        // NKP → không trả gì
+        bonus = 0
+        kind = 'nkp'
+      } else {
+        // Nghỉ (có phép) hoặc không có chấm công → trả 100% × dailyPay (paid leave)
+        bonus = Math.round(1.0 * dailyPay)
+        kind = 'leave'
+      }
+      
+      holidayAmount += bonus
+      holidayBreakdown.push({
+        date: dateStr, label: sd.label, multiplier, status, kind, amount: bonus, std_hours: stdHoursPerDay,
+      })
+    }
+  }
 
   // 4. Các khoản cộng/trừ (mỗi khoản có thể bị override)
   // v191: Lunch — cfg override có thể đổi giá tiền ăn/ngày
@@ -24009,9 +24084,10 @@ function computeMonthlyPayroll(opts: {
   } else {
     finalSalary = workAmount + ot150Amount + ot200Amount
       + lunchAmount + attBonusAmount + inspectionBonusAmount
-      + mboBonus + allowance                                  // v191: thêm
+      + mboBonus + allowance
+      + holidayAmount                                          // v193: thêm lương ngày lễ
       + opts.commissionTotal + effectiveOtherIncome
-      - bhxhDeduction - effectiveShortageLoss - returnLoss - otherDeduction  // v191: thêm trừ
+      - bhxhDeduction - effectiveShortageLoss - returnLoss - otherDeduction
       + opts.manualAdjust
   }
 
@@ -24050,6 +24126,9 @@ function computeMonthlyPayroll(opts: {
     allowance: allowance,
     return_loss: returnLoss,
     other_deduction: otherDeduction,
+    // v193: ngày lễ
+    holiday_amount: holidayAmount,
+    holiday_breakdown: holidayBreakdown,
     final_salary: finalSalary,
   }
 }
@@ -24170,6 +24249,7 @@ function PayrollModule({ user, allUsers, mobile }: any) {
   const [overrides, setOverrides] = useState<any[]>([])  // payroll_overrides của tháng này
   const [positionsList, setPositionsList] = useState<any[]>([])  // v192: bảng positions từ Quản trị
   const [positionWorkSchedule, setPositionWorkSchedule] = useState<any[]>([])
+  const [specialDays, setSpecialDays] = useState<any[]>([])  // v193: ngày lễ/đặc biệt
   // v191: tabs
   const [adminTab, setAdminTab] = useState<'overview'|'shortage_loss'|'return_loss'|'mbo_bonus'|'inspection_bonus'|'allowance'|'base_salary'|'schedule'>('overview')
   const isAdmin = perm.viewAllDashboard
@@ -24181,7 +24261,7 @@ function PayrollModule({ user, allUsers, mobile }: any) {
     (async () => {
       setLoading(true)
       try {
-        const [sc, pc, pr, oi, sl, rv, att, ovr, pos, pws] = await Promise.all([
+        const [sc, pc, pr, oi, sl, rv, att, ovr, pos, pws, sd] = await Promise.all([
           db.from('salary_config').select('*').is('effective_to', null),
           db.from('payroll_config').select('*').maybeSingle(),
           db.from('monthly_payroll').select('*').eq('month', month).eq('year', year),
@@ -24195,6 +24275,8 @@ function PayrollModule({ user, allUsers, mobile }: any) {
           db.from('payroll_overrides').select('*').eq('month', month).eq('year', year),
           db.from('positions').select('*').order('name'),  // v192: load positions thay vì position_base_salary
           db.from('position_work_schedule').select('*'),
+          // v193: Load tất cả ngày lễ (để PayrollTabSchedule hiển thị) — filter theo tháng/năm khi compute
+          db.from('payroll_special_days').select('*').order('date'),
         ])
         setSalaryConfigs(sc.data || [])
         setPayrollConfig(pc.data || {})
@@ -24214,6 +24296,7 @@ function PayrollModule({ user, allUsers, mobile }: any) {
         setOverrides(ovr.data || [])
         setPositionsList(pos.data || [])
         setPositionWorkSchedule(pws.data || [])
+        setSpecialDays(sd.data || [])  // v193
       } catch (e: any) {
         setError('Lỗi load data: ' + e.message)
       } finally {
@@ -24297,6 +24380,20 @@ function PayrollModule({ user, allUsers, mobile }: any) {
       // v191: pass overrides
       overrides: getUserOverrides(u.id),
       configOverrides: getConfigOverrides(),
+      // v193: pass special days của tháng này
+      specialDays: (() => {
+        const m = new Map<string, any>()
+        for (const sd of specialDays) {
+          if (sd.date && sd.date.startsWith(`${year}-${String(month).padStart(2,'0')}`)) {
+            m.set(sd.date, {
+              label: sd.label,
+              multiplier: Number(sd.multiplier),
+              attendance_immunity: !!sd.attendance_immunity,
+            })
+          }
+        }
+        return m
+      })(),
     })
   }
 
@@ -24306,25 +24403,34 @@ function PayrollModule({ user, allUsers, mobile }: any) {
     const existing = getPayroll(u.id)
     const payload: any = {
       ...computed,
+      // v193: holiday_breakdown là array → save trực tiếp jsonb (Supabase tự handle)
+      // Nếu DB chưa có column, sẽ bị reject → catch ở dưới sẽ log
       status: existing?.status || 'draft',
       computed_by: user.id,
       updated_at: new Date().toISOString(),
     }
-    if (existing) {
-      payload.id = existing.id
-      await db.from('monthly_payroll').update(payload).eq('id', existing.id)
-    } else {
-      payload.created_at = new Date().toISOString()
-      const { data } = await db.from('monthly_payroll').insert(payload).select().single()
-      if (data) payload.id = data.id
+    try {
+      if (existing) {
+        payload.id = existing.id
+        const { error } = await db.from('monthly_payroll').update(payload).eq('id', existing.id)
+        if (error) throw new Error(error.message)
+      } else {
+        payload.created_at = new Date().toISOString()
+        const { data, error } = await db.from('monthly_payroll').insert(payload).select().single()
+        if (error) throw new Error(error.message)
+        if (data) payload.id = data.id
+      }
+      setPayrolls(prev => existing ? prev.map(p => p.id === existing.id ? payload : p) : [...prev, payload])
+      // Audit log
+      await db.from('monthly_payroll_audit').insert({
+        payroll_id: payload.id, user_id: u.id, month, year,
+        action: existing ? 'recompute' : 'compute',
+        actor_id: user.id, actor_name: user.name,
+      })
+    } catch (e: any) {
+      console.error('[computeAndSave] err:', e.message)
+      throw e
     }
-    setPayrolls(prev => existing ? prev.map(p => p.id === existing.id ? payload : p) : [...prev, payload])
-    // Audit log
-    await db.from('monthly_payroll_audit').insert({
-      payroll_id: payload.id, user_id: u.id, month, year,
-      action: existing ? 'recompute' : 'compute',
-      actor_id: user.id, actor_name: user.name,
-    })
   }
 
   // Tính hàng loạt
@@ -24446,7 +24552,10 @@ function PayrollModule({ user, allUsers, mobile }: any) {
         ) : adminTab === 'schedule' ? (
           <PayrollTabSchedule user={user} mobile={mobile}
             positionWorkSchedule={positionWorkSchedule}
-            setPositionWorkSchedule={setPositionWorkSchedule}/>
+            setPositionWorkSchedule={setPositionWorkSchedule}
+            specialDays={specialDays}
+            setSpecialDays={setSpecialDays}
+            year={year}/>
         ) : (
           <PayrollTabOverride user={user} mobile={mobile}
             usersWithSalary={usersWithSalary}
@@ -24625,6 +24734,8 @@ function PayrollModule({ user, allUsers, mobile }: any) {
           positionWorkSchedule={positionWorkSchedule}
           positionsList={positionsList}
           isAdmin={isAdmin}
+          // v193: pass special days
+          specialDays={specialDays}
           onAttendanceUpdate={async () => {
             // Refresh attendance + recompute payroll for this user
             const fromDate = `${year}-${String(month).padStart(2,'0')}-01`
@@ -25209,12 +25320,19 @@ function PayrollTabBaseSalary({ user, mobile, allUsers, usersWithSalary, month, 
 
 
 // ══════════════════════════════════════════════════════════════════════
-// v191: PayrollTabSchedule — Cấu hình giờ làm theo VT
+// v191: PayrollTabSchedule — Cấu hình giờ làm theo VT + v193: Cấu hình ngày lễ/Tết
 // ══════════════════════════════════════════════════════════════════════
-function PayrollTabSchedule({ user, mobile, positionWorkSchedule, setPositionWorkSchedule }: any) {
+function PayrollTabSchedule({ user, mobile, positionWorkSchedule, setPositionWorkSchedule, specialDays, setSpecialDays, year }: any) {
   const [editing, setEditing] = useState<string|null>(null)
   const [editForm, setEditForm] = useState<any>({})
   const [working, setWorking] = useState(false)
+  
+  // v193: Special days state
+  const [showAddSdModal, setShowAddSdModal] = useState(false)
+  const [editingSdDate, setEditingSdDate] = useState<string|null>(null)
+  const [sdForm, setSdForm] = useState<any>({
+    date: '', label: '', multiplier: 2.0, attendance_immunity: true, note: '',
+  })
 
   const startEdit = (p: any) => {
     setEditing(p.position_type)
@@ -25360,13 +25478,254 @@ function PayrollTabSchedule({ user, mobile, positionWorkSchedule, setPositionWor
           </tbody>
         </table>
       </Card>
+      
+      {/* v193: ─── Cấu hình ngày nghỉ / Lễ Tết ─── */}
+      <Card style={{ padding:14, marginBottom:12, marginTop:24, borderLeft:`4px solid ${T.green}` }}>
+        <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', flexWrap:'wrap', gap:8 }}>
+          <div>
+            <div style={{ fontSize:16, fontWeight:700, color:T.dark }}>
+              🎉 Cấu hình ngày nghỉ / Lễ Tết
+            </div>
+            <div style={{ fontSize:12, color:T.med, marginTop:4 }}>
+              Hệ số 200% = NV làm được trả gấp đôi, NV nghỉ vẫn được trả 100%. 
+              Hệ số 100% = NV nghỉ paid (không mất chuyên cần). 
+              <b>Part-time</b> không áp dụng.
+            </div>
+          </div>
+          <button onClick={() => {
+            setEditingSdDate(null)
+            setSdForm({ date: `${year}-01-01`, label: '', multiplier: 2.0, attendance_immunity: true, note: '' })
+            setShowAddSdModal(true)
+          }}
+            style={{ padding:'8px 14px', borderRadius:6, border:'none',
+              background:T.green, color:'#fff', cursor:'pointer',
+              fontFamily:'inherit', fontSize:12, fontWeight:600 }}>
+            + Thêm ngày
+          </button>
+        </div>
+      </Card>
+      
+      <Card style={{ padding:0, overflow:'auto' }}>
+        <table style={{ width:'100%', borderCollapse:'collapse', fontSize:12 }}>
+          <thead style={{ background:T.bg }}>
+            <tr>
+              <th style={_payrollThStyle}>Ngày</th>
+              <th style={_payrollThStyle}>Tên / Label</th>
+              <th style={{ ..._payrollThStyle, textAlign:'center' }}>Hệ số lương</th>
+              <th style={{ ..._payrollThStyle, textAlign:'center' }}>Miễn chuyên cần</th>
+              <th style={_payrollThStyle}>Ghi chú</th>
+              <th style={{ ..._payrollThStyle, textAlign:'center' }}>Hành động</th>
+            </tr>
+          </thead>
+          <tbody>
+            {(specialDays || []).length === 0 ? (
+              <tr>
+                <td colSpan={6} style={{ padding:20, textAlign:'center', color:T.light }}>
+                  📭 Chưa cấu hình ngày lễ nào. Bấm "+ Thêm ngày" ở trên.
+                </td>
+              </tr>
+            ) : specialDays.map((sd: any) => {
+              const dateObj = new Date(sd.date)
+              const dow = ['CN','T2','T3','T4','T5','T6','T7'][dateObj.getDay()]
+              return (
+                <tr key={sd.date} style={{ borderBottom:`1px solid ${T.border}` }}>
+                  <td style={{ padding:10, fontWeight:600, color:T.dark, fontVariantNumeric:'tabular-nums' }}>
+                    {sd.date}
+                    <span style={{ marginLeft:6, fontSize:11, color: dateObj.getDay() === 0 ? T.red : T.med }}>({dow})</span>
+                  </td>
+                  <td style={{ padding:10, color:T.dark }}>{sd.label}</td>
+                  <td style={{ padding:10, textAlign:'center' }}>
+                    <span style={{
+                      padding:'3px 10px', borderRadius:10,
+                      fontSize:11, fontWeight:700,
+                      background: Number(sd.multiplier) === 2 ? '#FEF3C7' : '#E0E7FF',
+                      color: Number(sd.multiplier) === 2 ? '#92400E' : '#3730A3',
+                    }}>
+                      {Number(sd.multiplier) === 2 ? '200% (×2)' : '100% (×1)'}
+                    </span>
+                  </td>
+                  <td style={{ padding:10, textAlign:'center', fontSize:14 }}>
+                    {sd.attendance_immunity ? '✅' : '—'}
+                  </td>
+                  <td style={{ padding:10, fontSize:11, color:T.med, maxWidth:180 }}>{sd.note || ''}</td>
+                  <td style={{ padding:10, textAlign:'center' }}>
+                    <div style={{ display:'inline-flex', gap:4 }}>
+                      <button onClick={() => {
+                        setEditingSdDate(sd.date)
+                        setSdForm({
+                          date: sd.date,
+                          label: sd.label || '',
+                          multiplier: Number(sd.multiplier) || 2.0,
+                          attendance_immunity: !!sd.attendance_immunity,
+                          note: sd.note || '',
+                        })
+                        setShowAddSdModal(true)
+                      }}
+                        style={{ padding:'4px 10px', borderRadius:4, border:`1px solid ${T.gold}`,
+                          background:'#fff', color:T.gold, cursor:'pointer',
+                          fontFamily:'inherit', fontSize:11, fontWeight:600 }}>
+                        ✏ Sửa
+                      </button>
+                      <button onClick={async () => {
+                        if (!confirm(`Xóa ngày "${sd.label}" (${sd.date})?`)) return
+                        setWorking(true)
+                        try {
+                          const { error } = await db.from('payroll_special_days').delete().eq('date', sd.date)
+                          if (error) throw new Error(error.message)
+                          const { data } = await db.from('payroll_special_days').select('*').order('date')
+                          setSpecialDays(data || [])
+                          toast.success('✓ Đã xóa')
+                        } catch (e: any) {
+                          toast.error('Lỗi: ' + e.message)
+                        } finally {
+                          setWorking(false)
+                        }
+                      }} disabled={working}
+                        style={{ padding:'4px 10px', borderRadius:4, border:`1px solid ${T.red}`,
+                          background:'#fff', color:T.red, cursor:'pointer',
+                          fontFamily:'inherit', fontSize:11 }}>
+                        🗑
+                      </button>
+                    </div>
+                  </td>
+                </tr>
+              )
+            })}
+          </tbody>
+        </table>
+      </Card>
+      
+      {/* v193: Modal thêm/sửa ngày lễ */}
+      {showAddSdModal && (
+        <div style={{
+          position:'fixed', inset:0, background:'rgba(0,0,0,0.6)', zIndex:1100,
+          display:'flex', alignItems:'center', justifyContent:'center', padding:20,
+        }} onClick={() => setShowAddSdModal(false)}>
+          <div onClick={(e: any) => e.stopPropagation()} style={{
+            background:'#fff', borderRadius:12, maxWidth:480, width:'100%', padding:20,
+          }}>
+            <div style={{ fontSize:16, fontWeight:700, color:T.dark, marginBottom:14 }}>
+              {editingSdDate ? '✏ Sửa ngày lễ' : '➕ Thêm ngày lễ / đặc biệt'}
+            </div>
+            
+            <div style={{ display:'grid', gap:12 }}>
+              <div>
+                <label style={{ fontSize:12, fontWeight:600, color:T.med, display:'block', marginBottom:4 }}>
+                  📅 Ngày *
+                </label>
+                <input type="date" value={sdForm.date}
+                  disabled={!!editingSdDate}  // Date là PK, không cho đổi khi edit
+                  onChange={e => setSdForm({...sdForm, date: e.target.value})}
+                  style={{ width:'100%', padding:'8px 10px', border:`1px solid ${T.border}`, borderRadius:6,
+                    background:'#fff', color:T.dark, fontSize:13, fontFamily:'inherit',
+                    opacity: editingSdDate ? 0.6 : 1 }}/>
+              </div>
+              
+              <div>
+                <label style={{ fontSize:12, fontWeight:600, color:T.med, display:'block', marginBottom:4 }}>
+                  🏷 Tên / Label *
+                </label>
+                <input type="text" value={sdForm.label}
+                  onChange={e => setSdForm({...sdForm, label: e.target.value})}
+                  placeholder="VD: Tết Dương lịch, Lễ 30/4, Bão lụt..."
+                  style={{ width:'100%', padding:'8px 10px', border:`1px solid ${T.border}`, borderRadius:6,
+                    background:'#fff', color:T.dark, fontSize:13, fontFamily:'inherit' }}/>
+              </div>
+              
+              <div>
+                <label style={{ fontSize:12, fontWeight:600, color:T.med, display:'block', marginBottom:4 }}>
+                  💰 Hệ số lương
+                </label>
+                <select value={sdForm.multiplier}
+                  onChange={e => setSdForm({...sdForm, multiplier: Number(e.target.value)})}
+                  style={{ width:'100%', padding:'8px 10px', border:`1px solid ${T.border}`, borderRadius:6,
+                    background:'#fff', color:T.dark, fontSize:13, fontFamily:'inherit' }}>
+                  <option value={2.0}>200% (×2) — Lễ Tết chính thức (làm gấp đôi, nghỉ vẫn full lương)</option>
+                  <option value={1.0}>100% (×1) — Cty cho nghỉ (paid leave, không bonus khi đi làm)</option>
+                </select>
+              </div>
+              
+              <div>
+                <label style={{ fontSize:12, fontWeight:600, color:T.med, display:'flex', alignItems:'center', gap:6 }}>
+                  <input type="checkbox" checked={!!sdForm.attendance_immunity}
+                    onChange={e => setSdForm({...sdForm, attendance_immunity: e.target.checked})}/>
+                  Miễn chuyên cần (nghỉ ngày này không bị mất chuyên cần)
+                </label>
+              </div>
+              
+              <div>
+                <label style={{ fontSize:12, fontWeight:600, color:T.med, display:'block', marginBottom:4 }}>
+                  📝 Ghi chú
+                </label>
+                <textarea value={sdForm.note}
+                  onChange={e => setSdForm({...sdForm, note: e.target.value})}
+                  rows={2}
+                  placeholder="Tùy chọn..."
+                  style={{ width:'100%', padding:'8px 10px', border:`1px solid ${T.border}`, borderRadius:6,
+                    background:'#fff', color:T.dark, fontSize:13, fontFamily:'inherit', resize:'vertical' }}/>
+              </div>
+            </div>
+            
+            <div style={{ display:'flex', justifyContent:'flex-end', gap:8, marginTop:18 }}>
+              <button onClick={() => setShowAddSdModal(false)}
+                style={{ padding:'8px 16px', borderRadius:6, border:`1px solid ${T.border}`,
+                  background:'#fff', color:T.med, cursor:'pointer',
+                  fontFamily:'inherit', fontSize:13 }}>
+                Hủy
+              </button>
+              <button onClick={async () => {
+                if (!sdForm.date || !sdForm.label.trim()) {
+                  toast.error('Vui lòng nhập đầy đủ Ngày và Tên')
+                  return
+                }
+                setWorking(true)
+                try {
+                  const payload = {
+                    date: sdForm.date,
+                    label: sdForm.label.trim(),
+                    multiplier: Number(sdForm.multiplier),
+                    attendance_immunity: !!sdForm.attendance_immunity,
+                    note: sdForm.note.trim() || null,
+                    created_by: user.id,
+                  }
+                  if (editingSdDate) {
+                    const { error } = await db.from('payroll_special_days').update({
+                      label: payload.label,
+                      multiplier: payload.multiplier,
+                      attendance_immunity: payload.attendance_immunity,
+                      note: payload.note,
+                    }).eq('date', editingSdDate)
+                    if (error) throw new Error(error.message)
+                  } else {
+                    const { error } = await db.from('payroll_special_days').insert(payload)
+                    if (error) throw new Error(error.message)
+                  }
+                  const { data } = await db.from('payroll_special_days').select('*').order('date')
+                  setSpecialDays(data || [])
+                  setShowAddSdModal(false)
+                  toast.success(editingSdDate ? '✓ Đã cập nhật' : '✓ Đã thêm')
+                } catch (e: any) {
+                  toast.error('Lỗi: ' + e.message)
+                } finally {
+                  setWorking(false)
+                }
+              }} disabled={working}
+                style={{ padding:'8px 20px', borderRadius:6, border:'none',
+                  background:T.green, color:'#fff', cursor:'pointer',
+                  fontFamily:'inherit', fontSize:13, fontWeight:700 }}>
+                {working ? '⏳ Đang lưu...' : '💾 Lưu'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   )
 }
 
 
 // Detail modal — breakdown công thức + manual override + bảng chấm công full tháng (v192)
-function PayrollDetailModal({ user: nv, payroll, salaryConfig, otherIncomes, shortageLoss, revenue, paidLeaveDates, month, year, actor, onClose, onUpdate, attendanceMonth, positionWorkSchedule, positionsList, isAdmin, onAttendanceUpdate }: any) {
+function PayrollDetailModal({ user: nv, payroll, salaryConfig, otherIncomes, shortageLoss, revenue, paidLeaveDates, month, year, actor, onClose, onUpdate, attendanceMonth, positionWorkSchedule, positionsList, isAdmin, onAttendanceUpdate, specialDays }: any) {
   const [manualAdjust, setManualAdjust] = useState(payroll?.manual_adjust || 0)
   const [manualReason, setManualReason] = useState(payroll?.manual_adjust_reason || '')
   const totalWorkingDays = countWorkingDaysInMonth(month, year, paidLeaveDates)
@@ -25433,7 +25792,31 @@ function PayrollDetailModal({ user: nv, payroll, salaryConfig, otherIncomes, sho
                 <span style={{ textAlign: 'right' }}>{fmtVND(payroll.commission_total || 0)}đ</span>
               </>
             )}
+            {/* v193: Lương ngày lễ */}
+            {(payroll.holiday_amount || 0) > 0 && (
+              <>
+                <span>🎉 Lương ngày lễ ({(payroll.holiday_breakdown || []).length} ngày):</span>
+                <span style={{ textAlign: 'right', fontWeight:600, color:'#92400E' }}>+{fmtVND(payroll.holiday_amount || 0)}đ</span>
+              </>
+            )}
           </div>
+          {/* v193: Chi tiết breakdown ngày lễ */}
+          {(payroll.holiday_breakdown || []).length > 0 && (
+            <div style={{ marginTop:8, padding:8, background:'#FEF3C7', borderRadius:6, fontSize:11 }}>
+              <div style={{ fontWeight:700, color:'#92400E', marginBottom:4 }}>Chi tiết ngày lễ:</div>
+              {(payroll.holiday_breakdown || []).map((h: any, idx: number) => (
+                <div key={idx} style={{ display:'flex', justifyContent:'space-between', color:'#78350F', padding:'2px 0' }}>
+                  <span>
+                    {h.date} — {h.label} (×{h.multiplier})
+                    {h.kind === 'work' && ' · Đi làm → bonus'}
+                    {h.kind === 'leave' && ' · Nghỉ paid'}
+                    {h.kind === 'nkp' && ' · NKP (không trả)'}
+                  </span>
+                  <span style={{ fontWeight:600 }}>{h.amount > 0 ? '+' : ''}{fmtVND(h.amount)}đ</span>
+                </div>
+              ))}
+            </div>
+          )}
         </div>
 
         {(otherIncomes.length > 0 || shortageLoss.length > 0) && (
@@ -25524,6 +25907,11 @@ function PayrollDetailModal({ user: nv, payroll, salaryConfig, otherIncomes, sho
                     const dayLabels = ['CN','Thứ 2','Thứ 3','Thứ 4','Thứ 5','Thứ 6','Thứ 7']
                     const rows: any[] = []
                     let totalBt = 0, totalOt150 = 0, totalOt200 = 0, totalLunch = 0
+                    // v193: Build special day map
+                    const specialMap = new Map<string, any>()
+                    for (const sd of (specialDays || [])) {
+                      if (sd.date) specialMap.set(sd.date, sd)
+                    }
                     for (let d = 1; d <= daysInMonth; d++) {
                       const dateStr = `${year}-${String(month).padStart(2,'0')}-${String(d).padStart(2,'0')}`
                       const att = attendanceMonth.find((a: any) => a.date === dateStr)
@@ -25537,17 +25925,29 @@ function PayrollDetailModal({ user: nv, payroll, salaryConfig, otherIncomes, sho
                       totalBt += bt; totalOt150 += ot150; totalOt200 += ot200
                       if (att?.lunch_eligible) totalLunch++
                       const status = att?.status || (isWeekend ? '' : 'Nghỉ')
+                      // v193: Special day check
+                      const sd = specialMap.get(dateStr)
+                      const rowBg = sd
+                        ? (Number(sd.multiplier) === 2 ? '#FEF3C7' : '#E0E7FF')
+                        : (status === 'Đi làm' ? '#E6F4EA' : (isWeekend ? '#F8FAFB' : '#fff'))
                       rows.push(
-                        <tr key={d} style={{ borderBottom:`1px solid ${T.border}`,
-                          background: status === 'Đi làm' ? '#E6F4EA' : (isWeekend ? '#F8FAFB' : '#fff') }}>
-                          <td style={{ padding:'5px 8px', textAlign:'center', color:T.dark }}>{String(d).padStart(2,'0')}/{String(month).padStart(2,'0')}</td>
+                        <tr key={d} style={{ borderBottom:`1px solid ${T.border}`, background: rowBg }}>
+                          <td style={{ padding:'5px 8px', textAlign:'center', color:T.dark }}>
+                            {String(d).padStart(2,'0')}/{String(month).padStart(2,'0')}
+                          </td>
                           <td style={{ padding:'5px 8px', textAlign:'center', color: isWeekend ? T.red : T.med }}>{dayLabels[dayOfWeek]}</td>
                           <td style={{ padding:'5px 8px', textAlign:'center', fontVariantNumeric:'tabular-nums', color:T.dark }}>{cIn ? cIn.slice(0,5) : '—'}</td>
                           <td style={{ padding:'5px 8px', textAlign:'center', fontVariantNumeric:'tabular-nums', color:T.dark }}>{cOut ? cOut.slice(0,5) : '—'}</td>
                           <td style={{ padding:'5px 8px', textAlign:'right', fontVariantNumeric:'tabular-nums', color:T.dark }}>{bt > 0 ? bt.toFixed(2) : '—'}</td>
                           <td style={{ padding:'5px 8px', textAlign:'right', fontVariantNumeric:'tabular-nums', color: ot150 > 0 ? T.green : T.light }}>{ot150 > 0 ? ot150.toFixed(2) : '—'}</td>
                           <td style={{ padding:'5px 8px', textAlign:'right', fontVariantNumeric:'tabular-nums', color: ot200 > 0 ? T.green : T.light }}>{ot200 > 0 ? ot200.toFixed(2) : '—'}</td>
-                          <td style={{ padding:'5px 8px', textAlign:'center', fontSize:10, color: status === 'Đi làm' ? T.green : status === 'Nghỉ không phép' || status === 'NKP' ? T.red : T.med }}>{status}</td>
+                          <td style={{ padding:'5px 8px', textAlign:'center', fontSize:10, color: status === 'Đi làm' ? T.green : status === 'Nghỉ không phép' || status === 'NKP' ? T.red : T.med }}>
+                            {sd ? (
+                              <span style={{ fontWeight:700, color: Number(sd.multiplier) === 2 ? '#92400E' : '#3730A3' }}>
+                                🎉 {sd.label} ({Number(sd.multiplier) === 2 ? '×2' : '×1'})
+                              </span>
+                            ) : status}
+                          </td>
                           <td style={{ padding:'5px 8px', textAlign:'center', color:T.med }}>{att?.lunch_eligible ? '✓' : ''}</td>
                         </tr>
                       )
