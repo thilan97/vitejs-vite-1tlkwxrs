@@ -60,7 +60,10 @@ const db = createClient(SUPABASE_URL, SUPABASE_KEY)
 //       (4) PayrollTabSchedule thêm section "🎉 Cấu hình ngày nghỉ / Lễ Tết" — CRUD ngày lễ với modal thêm/sửa.
 //       (5) PayrollDetailModal hiển thị badge ngày lễ trong bảng chấm công (highlight vàng 200%, xanh 100%) + chi tiết breakdown holiday_amount.
 //       (6) countWorkingDaysInMonth nhận thêm param specialImmunityDates để tính chuẩn.
-const APP_VERSION = '2026.04.30.v193'
+// v194: Thêm option thứ 3 cho ngày lễ — "200% Cty cho nghỉ tùy chọn" (làm gấp đôi, nghỉ KHÔNG có lương). 
+//       Migration 58 thêm column pay_when_absent. Compute logic phân biệt: pay_when_absent=true → trả 100% khi nghỉ, =false → 0. 
+//       3 option dropdown: 🟡 Lễ Tết chính thức / 🟢 Paid leave / 🟠 Tùy chọn. Badge phân biệt 3 màu riêng trong bảng chấm công.
+const APP_VERSION = '2026.04.30.v194'
 
 // ════════════════════════════════════════════════════════════════
 // v158: VersionBadge — Hiển thị APP_VERSION ở góc dưới phải
@@ -23928,7 +23931,7 @@ function computeMonthlyPayroll(opts: {
   overrides?: Map<string, number>,  // per-NV overrides cho NV này
   configOverrides?: Map<string, number>,  // override config chung tháng đó (user_id NULL)
   // v193: special days
-  specialDays?: Map<string, { label: string, multiplier: number, attendance_immunity: boolean }>,
+  specialDays?: Map<string, { label: string, multiplier: number, attendance_immunity: boolean, pay_when_absent: boolean }>,
 }) {
   const { user, salaryConfig, attendanceRecords, month, year, paidLeaveDates } = opts
   const sc = salaryConfig
@@ -24015,6 +24018,9 @@ function computeMonthlyPayroll(opts: {
       const att = attendanceRecords.find((a: any) => a.date === dateStr)
       const status = att?.status || 'Nghỉ'  // Không có record = mặc định coi là nghỉ
       const multiplier = Number(sd.multiplier || 1)
+      // v194: pay_when_absent quyết định nghỉ có được trả không
+      // Default = true (tương thích ngược với data cũ)
+      const payWhenAbsent = sd.pay_when_absent !== false
       
       let bonus = 0
       let kind = ''
@@ -24029,14 +24035,22 @@ function computeMonthlyPayroll(opts: {
         bonus = 0
         kind = 'nkp'
       } else {
-        // Nghỉ (có phép) hoặc không có chấm công → trả 100% × dailyPay (paid leave)
-        bonus = Math.round(1.0 * dailyPay)
-        kind = 'leave'
+        // Nghỉ (có phép) hoặc không có chấm công
+        if (payWhenAbsent) {
+          // Cty cho nghỉ paid (lễ Tết chính thức / paid leave) → trả 100% × dailyPay
+          bonus = Math.round(1.0 * dailyPay)
+          kind = 'leave_paid'
+        } else {
+          // v194: Cty cho nghỉ tùy chọn — không trả lương khi nghỉ
+          bonus = 0
+          kind = 'leave_unpaid'
+        }
       }
       
       holidayAmount += bonus
       holidayBreakdown.push({
-        date: dateStr, label: sd.label, multiplier, status, kind, amount: bonus, std_hours: stdHoursPerDay,
+        date: dateStr, label: sd.label, multiplier, status, kind, amount: bonus,
+        std_hours: stdHoursPerDay, pay_when_absent: payWhenAbsent,
       })
     }
   }
@@ -24389,6 +24403,7 @@ function PayrollModule({ user, allUsers, mobile }: any) {
               label: sd.label,
               multiplier: Number(sd.multiplier),
               attendance_immunity: !!sd.attendance_immunity,
+              pay_when_absent: sd.pay_when_absent !== false,  // v194: default true
             })
           }
         }
@@ -25331,8 +25346,19 @@ function PayrollTabSchedule({ user, mobile, positionWorkSchedule, setPositionWor
   const [showAddSdModal, setShowAddSdModal] = useState(false)
   const [editingSdDate, setEditingSdDate] = useState<string|null>(null)
   const [sdForm, setSdForm] = useState<any>({
-    date: '', label: '', multiplier: 2.0, attendance_immunity: true, note: '',
+    date: '', label: '', multiplier: 2.0, attendance_immunity: true, pay_when_absent: true, note: '',
   })
+  // v194: Helper get pay_type từ multiplier + pay_when_absent
+  const getPayType = (mult: number, payWhenAbsent: boolean): 'official_holiday'|'paid_leave'|'optional_holiday' => {
+    if (Number(mult) === 2 && payWhenAbsent) return 'official_holiday'
+    if (Number(mult) === 1 && payWhenAbsent) return 'paid_leave'
+    return 'optional_holiday'  // mult=2, payWhenAbsent=false
+  }
+  const setPayType = (type: string) => {
+    if (type === 'official_holiday') setSdForm({...sdForm, multiplier: 2.0, pay_when_absent: true})
+    else if (type === 'paid_leave') setSdForm({...sdForm, multiplier: 1.0, pay_when_absent: true})
+    else if (type === 'optional_holiday') setSdForm({...sdForm, multiplier: 2.0, pay_when_absent: false})
+  }
 
   const startEdit = (p: any) => {
     setEditing(p.position_type)
@@ -25494,7 +25520,7 @@ function PayrollTabSchedule({ user, mobile, positionWorkSchedule, setPositionWor
           </div>
           <button onClick={() => {
             setEditingSdDate(null)
-            setSdForm({ date: `${year}-01-01`, label: '', multiplier: 2.0, attendance_immunity: true, note: '' })
+            setSdForm({ date: `${year}-01-01`, label: '', multiplier: 2.0, attendance_immunity: true, pay_when_absent: true, note: '' })
             setShowAddSdModal(true)
           }}
             style={{ padding:'8px 14px', borderRadius:6, border:'none',
@@ -25535,14 +25561,23 @@ function PayrollTabSchedule({ user, mobile, positionWorkSchedule, setPositionWor
                   </td>
                   <td style={{ padding:10, color:T.dark }}>{sd.label}</td>
                   <td style={{ padding:10, textAlign:'center' }}>
-                    <span style={{
-                      padding:'3px 10px', borderRadius:10,
-                      fontSize:11, fontWeight:700,
-                      background: Number(sd.multiplier) === 2 ? '#FEF3C7' : '#E0E7FF',
-                      color: Number(sd.multiplier) === 2 ? '#92400E' : '#3730A3',
-                    }}>
-                      {Number(sd.multiplier) === 2 ? '200% (×2)' : '100% (×1)'}
-                    </span>
+                    {(() => {
+                      const m = Number(sd.multiplier)
+                      const pay = sd.pay_when_absent !== false
+                      let bg = '#FEF3C7', color = '#92400E', label = '200% Lễ Tết'
+                      if (m === 1 && pay) { bg = '#E0E7FF'; color = '#3730A3'; label = '100% Paid leave' }
+                      else if (m === 2 && !pay) { bg = '#FED7AA'; color = '#9A3412'; label = '200% Tùy chọn' }
+                      return (
+                        <span style={{
+                          padding:'3px 10px', borderRadius:10,
+                          fontSize:10, fontWeight:700,
+                          background: bg, color: color,
+                          whiteSpace:'nowrap',
+                        }}>
+                          {label}
+                        </span>
+                      )
+                    })()}
                   </td>
                   <td style={{ padding:10, textAlign:'center', fontSize:14 }}>
                     {sd.attendance_immunity ? '✅' : '—'}
@@ -25557,6 +25592,7 @@ function PayrollTabSchedule({ user, mobile, positionWorkSchedule, setPositionWor
                           label: sd.label || '',
                           multiplier: Number(sd.multiplier) || 2.0,
                           attendance_immunity: !!sd.attendance_immunity,
+                          pay_when_absent: sd.pay_when_absent !== false,  // v194: default true
                           note: sd.note || '',
                         })
                         setShowAddSdModal(true)
@@ -25636,13 +25672,19 @@ function PayrollTabSchedule({ user, mobile, positionWorkSchedule, setPositionWor
                 <label style={{ fontSize:12, fontWeight:600, color:T.med, display:'block', marginBottom:4 }}>
                   💰 Hệ số lương
                 </label>
-                <select value={sdForm.multiplier}
-                  onChange={e => setSdForm({...sdForm, multiplier: Number(e.target.value)})}
+                <select value={getPayType(sdForm.multiplier, sdForm.pay_when_absent)}
+                  onChange={e => setPayType(e.target.value)}
                   style={{ width:'100%', padding:'8px 10px', border:`1px solid ${T.border}`, borderRadius:6,
                     background:'#fff', color:T.dark, fontSize:13, fontFamily:'inherit' }}>
-                  <option value={2.0}>200% (×2) — Lễ Tết chính thức (làm gấp đôi, nghỉ vẫn full lương)</option>
-                  <option value={1.0}>100% (×1) — Cty cho nghỉ (paid leave, không bonus khi đi làm)</option>
+                  <option value="official_holiday">🟡 200% Lễ Tết chính thức — làm gấp đôi, nghỉ vẫn full lương</option>
+                  <option value="paid_leave">🟢 100% Cty cho nghỉ paid — làm bình thường, nghỉ vẫn full lương</option>
+                  <option value="optional_holiday">🟠 200% Cty cho nghỉ tùy chọn — làm gấp đôi, nghỉ KHÔNG có lương</option>
                 </select>
+                <div style={{ fontSize:10, color:T.light, marginTop:4, lineHeight:1.5 }}>
+                  💡 <b>Chính thức</b>: 30/4, 1/5, 2/9 (luật lao động bắt buộc trả lương) | 
+                  <b>Paid leave</b>: bão lụt, cty đóng cửa | 
+                  <b>Tùy chọn</b>: cty cho nghỉ thêm (vd nối ngày lễ)
+                </div>
               </div>
               
               <div>
@@ -25685,6 +25727,7 @@ function PayrollTabSchedule({ user, mobile, positionWorkSchedule, setPositionWor
                     label: sdForm.label.trim(),
                     multiplier: Number(sdForm.multiplier),
                     attendance_immunity: !!sdForm.attendance_immunity,
+                    pay_when_absent: !!sdForm.pay_when_absent,  // v194
                     note: sdForm.note.trim() || null,
                     created_by: user.id,
                   }
@@ -25693,6 +25736,7 @@ function PayrollTabSchedule({ user, mobile, positionWorkSchedule, setPositionWor
                       label: payload.label,
                       multiplier: payload.multiplier,
                       attendance_immunity: payload.attendance_immunity,
+                      pay_when_absent: payload.pay_when_absent,  // v194
                       note: payload.note,
                     }).eq('date', editingSdDate)
                     if (error) throw new Error(error.message)
@@ -25809,7 +25853,8 @@ function PayrollDetailModal({ user: nv, payroll, salaryConfig, otherIncomes, sho
                   <span>
                     {h.date} — {h.label} (×{h.multiplier})
                     {h.kind === 'work' && ' · Đi làm → bonus'}
-                    {h.kind === 'leave' && ' · Nghỉ paid'}
+                    {h.kind === 'leave_paid' && ' · Nghỉ paid'}
+                    {h.kind === 'leave_unpaid' && ' · Nghỉ không lương'}
                     {h.kind === 'nkp' && ' · NKP (không trả)'}
                   </span>
                   <span style={{ fontWeight:600 }}>{h.amount > 0 ? '+' : ''}{fmtVND(h.amount)}đ</span>
@@ -25927,8 +25972,15 @@ function PayrollDetailModal({ user: nv, payroll, salaryConfig, otherIncomes, sho
                       const status = att?.status || (isWeekend ? '' : 'Nghỉ')
                       // v193: Special day check
                       const sd = specialMap.get(dateStr)
-                      const rowBg = sd
-                        ? (Number(sd.multiplier) === 2 ? '#FEF3C7' : '#E0E7FF')
+                      // v194: Phân biệt 3 loại theo color
+                      const sdType = sd ? (() => {
+                        const m = Number(sd.multiplier)
+                        const pay = sd.pay_when_absent !== false
+                        if (m === 2 && pay) return { bg:'#FEF3C7', color:'#92400E', short:'×2' }
+                        if (m === 1 && pay) return { bg:'#E0E7FF', color:'#3730A3', short:'×1 paid' }
+                        return { bg:'#FED7AA', color:'#9A3412', short:'×2 tùy chọn' }  // m=2, !pay
+                      })() : null
+                      const rowBg = sdType ? sdType.bg
                         : (status === 'Đi làm' ? '#E6F4EA' : (isWeekend ? '#F8FAFB' : '#fff'))
                       rows.push(
                         <tr key={d} style={{ borderBottom:`1px solid ${T.border}`, background: rowBg }}>
@@ -25942,9 +25994,9 @@ function PayrollDetailModal({ user: nv, payroll, salaryConfig, otherIncomes, sho
                           <td style={{ padding:'5px 8px', textAlign:'right', fontVariantNumeric:'tabular-nums', color: ot150 > 0 ? T.green : T.light }}>{ot150 > 0 ? ot150.toFixed(2) : '—'}</td>
                           <td style={{ padding:'5px 8px', textAlign:'right', fontVariantNumeric:'tabular-nums', color: ot200 > 0 ? T.green : T.light }}>{ot200 > 0 ? ot200.toFixed(2) : '—'}</td>
                           <td style={{ padding:'5px 8px', textAlign:'center', fontSize:10, color: status === 'Đi làm' ? T.green : status === 'Nghỉ không phép' || status === 'NKP' ? T.red : T.med }}>
-                            {sd ? (
-                              <span style={{ fontWeight:700, color: Number(sd.multiplier) === 2 ? '#92400E' : '#3730A3' }}>
-                                🎉 {sd.label} ({Number(sd.multiplier) === 2 ? '×2' : '×1'})
+                            {sd && sdType ? (
+                              <span style={{ fontWeight:700, color: sdType.color }}>
+                                🎉 {sd.label} ({sdType.short})
                               </span>
                             ) : status}
                           </td>
