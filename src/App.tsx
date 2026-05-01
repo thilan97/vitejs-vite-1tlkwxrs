@@ -117,7 +117,7 @@ const db = createClient(SUPABASE_URL, SUPABASE_KEY)
 // ⚠ TODO sau v198 (anh deploy thủ công):
 //   - Cập nhật edge function `kiotviet-sales-revenue` để auto sync luôn `kv_invoices` (anh paste code edge function cho em fix).
 //   - Setup pg_cron hoặc external cron (cron-job.org) để auto sync mỗi 1h. Hướng dẫn trong migration_62.sql.
-const APP_VERSION = '2026.05.01.v198.1'
+const APP_VERSION = '2026.05.01.v198.2'
 
 // ════════════════════════════════════════════════════════════════
 // v158: VersionBadge — Hiển thị APP_VERSION ở góc dưới phải
@@ -24264,8 +24264,9 @@ function computeMonthlyPayroll(opts: {
   // other_income có thể override
   const effectiveOtherIncome = getOverride('other_income', opts.otherIncomeTotal)
 
-  // v197: KPI Công nợ bonus (-300k/0/+100k/+200k) — chỉ áp cho Sales / QL Sale
-  const kpiDebtBonus = (sc.position_type === 'Sales' || sc.position_type === 'Quản lý Sale')
+  // v197: KPI Công nợ bonus (-300k/0/+100k/+200k) — chỉ áp cho Sales
+  // v198.2: BỎ Quản lý Sale (QM Sale không tham gia KPI này)
+  const kpiDebtBonus = (sc.position_type === 'Sales')
     ? Number(opts.kpiDebtBonus || 0)
     : 0
 
@@ -24883,8 +24884,11 @@ function PayrollModule({ user, allUsers, mobile }: any) {
     const positionAllowanceAmount = Number(posAllowRow?.amount || 0)
     
     // v197: KPI debt bonus từ snapshot tháng đó (nếu đã chốt)
+    // v198.2: + top_performer_bonus (sale có ratio nợ thấp nhất → +200k)
     const kpiSnap = kpiSnapshots.find((k: any) => k.sale_user_id === u.id)
-    const kpiDebtBonus = kpiSnap ? Number(kpiSnap.bonus_amount || 0) : 0
+    const kpiDebtBonus = kpiSnap 
+      ? Number(kpiSnap.bonus_amount || 0) + Number(kpiSnap.top_performer_bonus || 0)
+      : 0
     
     // v192: Lấy LCB từ positions.base_salary nếu có
     const positionLcb = u.position_id 
@@ -27374,14 +27378,21 @@ function PayrollTabKpiDebt({
   const [editTargetVal, setEditTargetVal] = useState('')
   
   // Lọc Sales từ usersWithSalary (mode snapshot — Payroll context) hoặc allUsers
+  // v198.2: BỎ Quản lý Sale (QM Sale) khỏi KPI Công nợ — chỉ Sales
   const salesUsers = useMemo(() => {
     if (usersWithSalary && usersWithSalary.length > 0) {
       return usersWithSalary.filter((u: any) => 
-        u._salary?.position_type === 'Sales' || u._salary?.position_type === 'Quản lý Sale'
+        u._salary?.position_type === 'Sales'
       )
     }
-    // Realtime mode (Customers): lấy từ allUsers
-    return (allUsers || []).filter((u: any) => u.dept_id === 'sale' && u.active !== false)
+    // Realtime mode (Customers): lấy từ allUsers, loại QM Sale qua position lookup
+    return (allUsers || []).filter((u: any) => {
+      if (u.dept_id !== 'sale' || u.active === false) return false
+      // Loại nếu là Quản lý Sale (position name chứa "Quản lý")
+      const posName = (u._position_name || u.position_name || '').toLowerCase()
+      if (posName.includes('quản lý') || posName.includes('quan ly') || posName.includes('manager')) return false
+      return true
+    })
   }, [usersWithSalary, allUsers])
   
   // Build map target từ kpiTargets table
@@ -27434,40 +27445,74 @@ function PayrollTabKpiDebt({
   
   // Bảng data — hybrid (snapshot ưu tiên, fallback realtime)
   const tableData = useMemo(() => {
-    return salesUsers.map((u: any) => {
+    // v198.2: Tính top performer (sale có ratio nợ THẤP NHẤT) — chỉ tính các sale có DS > 0
+    // Nếu mode='snapshot' và đã có snapshot → lấy top từ snapshot.top_performer_bonus
+    // Nếu chưa có snapshot → tính realtime để preview
+    const baseRows = salesUsers.map((u: any) => {
       const snap = getSnapshot(u.id)
       const realtime = computeRealtime(u.id)
-      // Nếu mode='snapshot' và có snapshot → dùng snapshot. Ngược lại → realtime
       const useSnapshot = mode === 'snapshot' && snap
+      const totalRevenueLive = (() => {
+        if (lifetimeMode) {
+          const myCustomers = (kpiCustomers || []).filter((c: any) => c.assigned_to_user_id === u.id)
+          return myCustomers.reduce((s: number, c: any) => s + Number(c.total_revenue || 0), 0) * 1000
+        }
+        let r = 0
+        if (kvSalesDaily && kvNameToAppUserMap) {
+          for (const row of kvSalesDaily) {
+            const k = (row.sold_by_name || '').toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g,'').replace(/đ/g,'d').replace(/\s+/g,' ').trim()
+            const mappedId = kvNameToAppUserMap.get(k)
+            if (mappedId === u.id) r += Number(row.total_revenue || 0)
+          }
+        }
+        return r * 1000
+      })()
       const display = useSnapshot ? {
         byGroup: snap.breakdown_json || {},
         totalDebt: Number(snap.total_debt || 0),
         groupsPassed: snap.groups_passed || 0,
         bonusAmount: Number(snap.bonus_amount || 0),
+        topPerformerBonus: Number(snap.top_performer_bonus || 0),
+        isTopPerformer: Number(snap.top_performer_bonus || 0) > 0,
         totalRevenue: Number(snap.total_revenue || 0),
         isSnapshot: true,
       } : {
         ...realtime,
-        totalRevenue: (() => {
-          // v198: Tính totalRevenue đồng bộ với computeRealtime
-          if (lifetimeMode) {
-            const myCustomers = (kpiCustomers || []).filter((c: any) => c.assigned_to_user_id === u.id)
-            return myCustomers.reduce((s: number, c: any) => s + Number(c.total_revenue || 0), 0) * 1000
-          }
-          let r = 0
-          if (kvSalesDaily && kvNameToAppUserMap) {
-            for (const row of kvSalesDaily) {
-              const k = (row.sold_by_name || '').toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g,'').replace(/đ/g,'d').replace(/\s+/g,' ').trim()
-              const mappedId = kvNameToAppUserMap.get(k)
-              if (mappedId === u.id) r += Number(row.total_revenue || 0)
-            }
-          }
-          return r * 1000
-        })(),
+        topPerformerBonus: 0,  // sẽ set sau khi tìm top
+        isTopPerformer: false,
+        totalRevenue: totalRevenueLive,
         isSnapshot: false,
       }
       return { ...u, _kpi: display }
     })
+    
+    // Tìm top performer (mode realtime / snapshot chưa chốt)
+    // - Chỉ xét sale có totalRevenue > 0 (loại sale chưa có DS)
+    // - Tổng ratio = totalDebt / totalRevenue → ASC (thấp nhất = top)
+    // Nếu đã có snapshot ưu tiên: lấy người có top_performer_bonus > 0 từ snapshot
+    const hasAnyTopFromSnapshot = baseRows.some((r: any) => r._kpi.isSnapshot && r._kpi.topPerformerBonus > 0)
+    if (!hasAnyTopFromSnapshot) {
+      const eligibleRows = baseRows.filter((r: any) => 
+        !r._kpi.isSnapshot && Number(r._kpi.totalRevenue) > 0
+      )
+      if (eligibleRows.length > 0) {
+        const sorted = [...eligibleRows].sort((a: any, b: any) => {
+          const ra = Number(a._kpi.totalDebt || 0) / Number(a._kpi.totalRevenue || 1)
+          const rb = Number(b._kpi.totalDebt || 0) / Number(b._kpi.totalRevenue || 1)
+          return ra - rb
+        })
+        const topId = sorted[0]?.id
+        if (topId) {
+          const topRow = baseRows.find((r: any) => r.id === topId)
+          if (topRow && !topRow._kpi.isSnapshot) {
+            topRow._kpi.topPerformerBonus = 200000
+            topRow._kpi.isTopPerformer = true
+          }
+        }
+      }
+    }
+    
+    return baseRows
   }, [salesUsers, kpiSnapshots, kpiTargets, kpiCustomers, kvSalesDaily, mode, lifetimeMode])
   
   // Snapshot toàn bộ
@@ -27475,9 +27520,8 @@ function PayrollTabKpiDebt({
     if (!confirm(`Chốt KPI Công nợ tháng ${month}/${year}?\n\nSẽ snapshot ${tableData.length} sale vào DB. Số liệu sau khi chốt sẽ KHÔNG đổi (kể cả khi KH thanh toán/phát sinh nợ mới).`)) return
     setWorking(true)
     try {
-      let saved = 0
-      for (const x of tableData) {
-        // Realtime compute để snapshot (không dùng snapshot cũ)
+      // v198.2: B1 — tính realtime cho TẤT CẢ sale, sort theo ratio để tìm top performer
+      const allRealtime = tableData.map((x: any) => {
         const k = computeRealtime(x.id)
         const totalRevenue = (() => {
           let r = 0
@@ -27490,31 +27534,48 @@ function PayrollTabKpiDebt({
           }
           return r * 1000
         })()
+        return { id: x.id, name: x.name, k, totalRevenue }
+      })
+      
+      // Tìm sale có ratio thấp nhất (chỉ tính sale có DS > 0)
+      const eligible = allRealtime.filter((x: any) => x.totalRevenue > 0)
+      const sorted = [...eligible].sort((a: any, b: any) => 
+        (Number(a.k.totalDebt) / Number(a.totalRevenue || 1)) - 
+        (Number(b.k.totalDebt) / Number(b.totalRevenue || 1))
+      )
+      const topId = sorted[0]?.id || null
+      
+      // B2 — Snapshot từng sale
+      let saved = 0
+      for (const r of allRealtime) {
+        const isTop = r.id === topId
         const payload: any = {
-          id: `kpi_${x.id}_${year}_${String(month).padStart(2,'0')}`,
-          sale_user_id: x.id,
-          sale_name: x.name,
+          id: `kpi_${r.id}_${year}_${String(month).padStart(2,'0')}`,
+          sale_user_id: r.id,
+          sale_name: r.name,
           month, year,
-          total_revenue: Math.round(totalRevenue),
-          debt_svip: Math.round(k.byGroup.SVIP?.debt || 0),
-          debt_vip: Math.round(k.byGroup.VIP?.debt || 0),
-          debt_premium: Math.round(k.byGroup.PREMIUM?.debt || 0),
-          debt_standard: Math.round(k.byGroup.STANDARD?.debt || 0),
-          debt_normal: Math.round(k.byGroup.NORMAL?.debt || 0),
-          total_debt: Math.round(k.totalDebt),
-          groups_passed: k.groupsPassed,
-          bonus_amount: k.bonusAmount,
-          snapshot_at: new Date().toISOString(),
-          snapshot_by: user.id,
-          breakdown_json: k.byGroup,
+          total_revenue: Math.round(r.totalRevenue),
+          debt_svip:     Math.round(r.k.byGroup.SVIP?.debt || 0),
+          debt_vip:      Math.round(r.k.byGroup.VIP?.debt || 0),
+          debt_premium:  Math.round(r.k.byGroup.PREMIUM?.debt || 0),
+          debt_standard: Math.round(r.k.byGroup.STANDARD?.debt || 0),
+          debt_normal:   Math.round(r.k.byGroup.NORMAL?.debt || 0),
+          total_debt:    Math.round(r.k.totalDebt),
+          groups_passed: r.k.groupsPassed,
+          bonus_amount:  r.k.bonusAmount,
+          top_performer_bonus: isTop ? 200000 : 0,  // v198.2
+          snapshot_at:   new Date().toISOString(),
+          snapshot_by:   user.id,
+          breakdown_json: r.k.byGroup,
         }
         const { error } = await db.from('kpi_debt_snapshots').upsert(payload, { onConflict: 'id' })
-        if (error) console.error('[snapshot]', x.name, error.message)
+        if (error) console.error('[snapshot]', r.name, error.message)
         else saved++
       }
       const { data } = await db.from('kpi_debt_snapshots').select('*').eq('month', month).eq('year', year)
       setKpiSnapshots(data || [])
-      toast.success(`✓ Đã snapshot ${saved}/${tableData.length} sale`)
+      const topName = sorted[0]?.name || ''
+      toast.success(`✓ Đã chốt ${saved}/${tableData.length} sale${topName ? ` · 🏆 Top 1: ${topName} (+200k)` : ''}`)
     } catch (e: any) {
       toast.error('Lỗi: ' + e.message)
     } finally {
@@ -27593,6 +27654,16 @@ function PayrollTabKpiDebt({
               <br/>Đơn vị tiền hiển thị: <b>nghìn đ</b> (giống KV) · Công thức: 
               <code style={{ background:T.bg, padding:'1px 5px', borderRadius:3, color:T.dark }}> ratio = công_nợ_nhóm ÷ tổng_DS_sale</code> · 
               Đạt khi <code style={{ background:T.bg, padding:'1px 5px', borderRadius:3, color:T.dark }}>ratio ≤ target</code>.
+              {/* v198.2: Bảng quy tắc thưởng/phạt */}
+              <div style={{ marginTop:8, padding:'8px 10px', background:T.bg, borderRadius:6,
+                fontSize:11, color:T.dark, lineHeight:1.6, border:`1px solid ${T.border}` }}>
+                <b style={{ color:T.purple }}>📊 Quy tắc thưởng/phạt KPI:</b><br/>
+                • <b style={{ color:'#991B1B' }}>0–2/5 nhóm đạt</b>: trừ <b>−300.000đ</b> vào HH<br/>
+                • <b style={{ color:T.med }}>3/5 nhóm đạt</b>: không thưởng/phạt<br/>
+                • <b style={{ color:'#065F46' }}>4/5 nhóm đạt</b>: thưởng <b>+100.000đ</b><br/>
+                • <b style={{ color:'#065F46' }}>5/5 nhóm đạt</b>: thưởng <b>+200.000đ</b><br/>
+                • <b style={{ color:'#065F46' }}>🏆 Top 1 ratio thấp nhất</b>: cộng thêm <b>+200.000đ</b> (chỉ 1 sale có DS&gt;0 mỗi tháng)
+              </div>
               {mode === 'snapshot' && (() => {
                 const now = new Date()
                 const isCurrentMonth = month === now.getMonth() + 1 && year === now.getFullYear()
@@ -27710,7 +27781,7 @@ function PayrollTabKpiDebt({
             })}
           </div>
           <div style={{ fontSize:10, color:T.light, marginTop:8, fontStyle:'italic' }}>
-            💡 Thưởng/phạt: 0-2 nhóm đạt = TRỪ 300k · 3 nhóm = 0 · 4 nhóm = +100k · 5 nhóm = +200k. Cộng/trừ vào HH tháng.
+            💡 Thưởng/phạt: 0–2 nhóm = <b style={{ color:'#991B1B' }}>−300.000đ</b> · 3 nhóm = 0 · 4 nhóm = <b style={{ color:'#065F46' }}>+100.000đ</b> · 5 nhóm = <b style={{ color:'#065F46' }}>+200.000đ</b> · 🏆 Top 1 ratio thấp nhất = <b style={{ color:'#065F46' }}>+200.000đ</b>. Cộng/trừ vào HH tháng.
           </div>
         </Card>
       )}
@@ -27752,8 +27823,14 @@ function PayrollTabKpiDebt({
                   }}>
                     {idx === 0 ? (
                       <td rowSpan={6} style={{ padding:10, fontWeight:600, color:T.dark, verticalAlign:'middle',
-                        borderRight:`1px solid ${T.border}`, background:'#F3E8FF' }}>
-                        {x.name}
+                        borderRight:`1px solid ${T.border}`, background: k.isTopPerformer ? '#FEF3C7' : '#F3E8FF' }}>
+                        {k.isTopPerformer && (
+                          <div style={{ display:'inline-block', padding:'2px 6px', borderRadius:4,
+                            background:'#F59E0B', color:'#fff', fontSize:9, fontWeight:700, marginBottom:3 }}>
+                            🏆 TOP 1
+                          </div>
+                        )}
+                        <div>{x.name}</div>
                         <div style={{ fontSize:10, color:T.med, marginTop:2 }}>{x._salary?.position_type || x.position_name || ''}</div>
                         {k.isSnapshot && (
                           <div style={{ marginTop:4, fontSize:9, color:T.green, fontWeight:600 }}>📌 SNAPSHOT</div>
@@ -27788,14 +27865,33 @@ function PayrollTabKpiDebt({
                     {idx === 0 ? (
                       <td rowSpan={6} style={{ padding:10, textAlign:'right', fontVariantNumeric:'tabular-nums', verticalAlign:'middle',
                         fontWeight:700,
-                        background: k.bonusAmount > 0 ? '#D1FAE5' : k.bonusAmount < 0 ? '#FEE2E2' : '#fff',
-                        color: k.bonusAmount > 0 ? '#065F46' : k.bonusAmount < 0 ? '#991B1B' : T.med }}>
-                        <div style={{ fontSize:14 }}>
-                          {k.bonusAmount > 0 ? '+' : ''}{fmtVNDshort(k.bonusAmount)}
+                        background: (k.bonusAmount + (k.topPerformerBonus || 0)) > 0 ? '#D1FAE5' 
+                                  : (k.bonusAmount + (k.topPerformerBonus || 0)) < 0 ? '#FEE2E2' : '#fff',
+                        color: (k.bonusAmount + (k.topPerformerBonus || 0)) > 0 ? '#065F46' 
+                             : (k.bonusAmount + (k.topPerformerBonus || 0)) < 0 ? '#991B1B' : T.med }}>
+                        {/* Bonus theo nhóm đạt */}
+                        <div style={{ fontSize:13 }}>
+                          {k.bonusAmount > 0 ? '+' : ''}{Number(k.bonusAmount || 0).toLocaleString('vi-VN')}đ
                         </div>
-                        <div style={{ fontSize:9, marginTop:2 }}>
-                          Đạt {k.groupsPassed}/5 nhóm
+                        <div style={{ fontSize:9, color: k.bonusAmount > 0 ? '#065F46' : k.bonusAmount < 0 ? '#991B1B' : T.light, marginTop:1 }}>
+                          ({k.groupsPassed}/5 nhóm đạt)
                         </div>
+                        {/* Top performer +200k */}
+                        {k.isTopPerformer && (
+                          <div style={{ fontSize:11, marginTop:6, paddingTop:5, borderTop:`1px dashed ${T.green}`, color:'#065F46' }}>
+                            🏆 Top 1 ratio
+                            <div style={{ fontSize:13, fontWeight:700 }}>+200.000đ</div>
+                          </div>
+                        )}
+                        {/* Tổng */}
+                        {(k.topPerformerBonus || 0) > 0 && (
+                          <div style={{ fontSize:11, marginTop:4, paddingTop:4, borderTop:`2px solid #065F46`, color:'#065F46' }}>
+                            <span style={{ fontSize:9, fontWeight:500 }}>TỔNG:</span>
+                            <div style={{ fontSize:14, fontWeight:800 }}>
+                              +{Number(k.bonusAmount + k.topPerformerBonus).toLocaleString('vi-VN')}đ
+                            </div>
+                          </div>
+                        )}
                       </td>
                     ) : null}
                   </tr>
