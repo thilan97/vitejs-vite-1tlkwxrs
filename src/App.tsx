@@ -117,7 +117,7 @@ const db = createClient(SUPABASE_URL, SUPABASE_KEY)
 // ⚠ TODO sau v198 (anh deploy thủ công):
 //   - Cập nhật edge function `kiotviet-sales-revenue` để auto sync luôn `kv_invoices` (anh paste code edge function cho em fix).
 //   - Setup pg_cron hoặc external cron (cron-job.org) để auto sync mỗi 1h. Hướng dẫn trong migration_62.sql.
-const APP_VERSION = '2026.05.01.v198.5'
+const APP_VERSION = '2026.05.01.v198.5.2'
 
 // ════════════════════════════════════════════════════════════════
 // v158: VersionBadge — Hiển thị APP_VERSION ở góc dưới phải
@@ -24103,6 +24103,8 @@ function computeMonthlyPayroll(opts: {
   positionAllowanceAmount?: number,  // amount theo vị trí của NV
   // v197: KPI Công nợ bonus/penalty (cộng vào HH)
   kpiDebtBonus?: number,             // -300k/0/+100k/+200k tùy số nhóm đạt
+  // v198.5: OT đăng ký từ overtime_requests đã duyệt (làm thêm ở nhà)
+  approvedOTByDate?: Map<string, number>,  // date → tổng giờ OT đã duyệt ngày đó
   // v191: overrides — Map<field_type, amount>
   overrides?: Map<string, number>,  // per-NV overrides cho NV này
   configOverrides?: Map<string, number>,  // override config chung tháng đó (user_id NULL)
@@ -24135,14 +24137,39 @@ function computeMonthlyPayroll(opts: {
   const isPTC = sc.position_type === 'Phụ trách chung'
 
   // 1. Tổng hợp attendance
+  // v198.5: Tính per-day với cộng OT đã duyệt (overtime_requests đăng ký làm thêm tại nhà)
   let workHoursRegular = 0, ot150Hours = 0, ot200Hours = 0
+  let otRegisteredHours = 0  // v198.5: tổng giờ OT đăng ký đã duyệt
   let totalWorkDays = 0, totalLeaveDays = 0, totalNkpDays = 0, lunchDays = 0
   let cnBuDays = 0  // Số ngày CN đi làm bù cho ngày nghỉ khác
+  
+  // v198.5: stdHoursPerDay theo vị trí (8 cho Kho, 7.5 cho khác)
+  const isKhoForOT = ['Kho', 'Quản lý kho', 'Thử việc'].includes(sc.position_type)
+  const stdHoursPerDayForOT = isKhoForOT ? 8 : 7.5
+  
+  // v198.5: approvedOTByDate (map date → giờ OT đã duyệt)
+  const approvedOTMap = opts.approvedOTByDate || new Map<string, number>()
+  // Track ngày OT đã được xử lý qua attendance loop (để xử lý ngày OT KHÔNG có attendance bên dưới)
+  const attendanceDateSet = new Set<string>()
 
   for (const a of attendanceRecords) {
-    workHoursRegular += Number(a.work_hours_regular || 0)
-    ot150Hours += Number(a.ot_150_hours || 0)
+    attendanceDateSet.add(a.date)
+    const punchDay = Number(a.work_hours_regular || 0) + Number(a.ot_150_hours || 0)
+    const otRegDay = Number(approvedOTMap.get(a.date) || 0)
+    
+    if (otRegDay > 0) {
+      // Có OT đăng ký → recompute base + OT theo daily total
+      const totalDay = punchDay + otRegDay
+      workHoursRegular += Math.min(totalDay, stdHoursPerDayForOT)
+      ot150Hours += Math.max(0, totalDay - stdHoursPerDayForOT)
+      otRegisteredHours += otRegDay
+    } else {
+      // Không có OT đăng ký → giữ logic cũ (giờ chấm công đã được tính ot_150 nếu > std)
+      workHoursRegular += Number(a.work_hours_regular || 0)
+      ot150Hours += Number(a.ot_150_hours || 0)
+    }
     ot200Hours += Number(a.ot_200_hours || 0)
+    
     if (a.lunch_eligible) lunchDays++
     if (a.status === 'Đi làm') totalWorkDays++
     else if (a.status === 'Nghỉ') {
@@ -24155,6 +24182,15 @@ function computeMonthlyPayroll(opts: {
       if (!sd || !sd.attendance_immunity) totalNkpDays++
     }
     if (a.sunday_type === 'CN-Bù') cnBuDays++
+  }
+  
+  // v198.5: Xử lý OT đăng ký trên ngày KHÔNG có attendance record (NV vắng nguyên ngày + OT làm ở nhà)
+  for (const [date, hours] of approvedOTMap.entries()) {
+    if (attendanceDateSet.has(date)) continue  // đã xử lý ở trên
+    if (!hours || hours <= 0) continue
+    workHoursRegular += Math.min(hours, stdHoursPerDayForOT)
+    ot150Hours += Math.max(0, hours - stdHoursPerDayForOT)
+    otRegisteredHours += hours
   }
 
   // 2. Tính số ngày làm việc chuẩn tháng (v193: trừ thêm ngày special có immunity)
@@ -24306,6 +24342,7 @@ function computeMonthlyPayroll(opts: {
     work_hours_regular: workHoursRegular,
     ot_150_hours: ot150Hours,
     ot_200_hours: ot200Hours,
+    ot_registered_hours: otRegisteredHours,  // v198.5: OT đăng ký đã duyệt
     lunch_days: lunchDays,
     
     salary_work_amount: workAmount,
@@ -24933,6 +24970,18 @@ function PayrollModule({ user, allUsers, mobile }: any) {
       positionAllowanceAmount,
       // v197: KPI Công nợ bonus
       kpiDebtBonus,
+      // v198.5: OT đăng ký đã duyệt cho NV này (làm thêm ở nhà)
+      approvedOTByDate: (() => {
+        const m = new Map<string, number>()
+        for (const o of (overtimeRequests || [])) {
+          if (o.user_id !== u.id) continue
+          if (o.status !== 'approved') continue
+          if (!o.date) continue
+          const cur = m.get(o.date) || 0
+          m.set(o.date, cur + Number(o.hours || 0))
+        }
+        return m
+      })(),
       // v191: pass overrides
       overrides: getUserOverrides(u.id),
       configOverrides: getConfigOverrides(),
@@ -25050,12 +25099,13 @@ function PayrollModule({ user, allUsers, mobile }: any) {
   // Export Excel (Sprint 3)
   const exportExcel = async () => {
     const xlsx: any = await import('https://cdn.jsdelivr.net/npm/xlsx@0.18.5/+esm' as any)
-    const rows = [['STT', 'Họ và Tên', 'Vị trí', 'Giờ BT', 'OT 150%', 'OT 200%', 'Chuyên cần', 'Tiền ăn', 'Thưởng/HH', 'Tiền khác', 'Tiền mất hàng', 'Trừ BHXH', 'Kiểm hàng', 'Điều chỉnh', 'THỰC NHẬN']]
+    const rows = [['STT', 'Họ và Tên', 'Vị trí', 'Giờ BT', 'OT 150%', 'OT 200%', 'OT đăng ký', 'Chuyên cần', 'Tiền ăn', 'Thưởng/HH', 'Tiền khác', 'Tiền mất hàng', 'Trừ BHXH', 'Kiểm hàng', 'Điều chỉnh', 'THỰC NHẬN']]
     usersWithSalary.forEach((u: any, idx: number) => {
       const pr = getPayroll(u.id) || computeForUser(u)
       rows.push([
         String(idx + 1), u.name, pr.position_type || '',
         pr.work_hours_regular || 0, pr.ot_150_hours || 0, pr.ot_200_hours || 0,
+        pr.ot_registered_hours || 0,
         pr.attendance_bonus_amount || 0, pr.lunch_amount || 0,
         (pr.inspection_bonus_amount || 0) + (pr.commission_total || 0),
         pr.other_income_total || 0, pr.shortage_loss_total || 0, pr.bhxh_deduction || 0,
@@ -25278,6 +25328,7 @@ function PayrollModule({ user, allUsers, mobile }: any) {
               <th style={{ padding: 10 }}>Vị trí</th>
               <th style={{ padding: 10, textAlign: 'right' }}>Giờ BT</th>
               <th style={{ padding: 10, textAlign: 'right' }}>OT</th>
+              <th style={{ padding: 10, textAlign: 'right', color:T.purple }} title="Giờ làm thêm đã duyệt từ module Làm thêm (đã được cộng vào Giờ BT/OT theo daily basis)">OT đăng ký</th>
               <th style={{ padding: 10, textAlign: 'right' }}>Lương công</th>
               <th style={{ padding: 10, textAlign: 'right' }}>+ Thưởng</th>
               <th style={{ padding: 10, textAlign: 'right' }}>- Trừ</th>
@@ -25299,6 +25350,9 @@ function PayrollModule({ user, allUsers, mobile }: any) {
                   <td style={{ padding: 10 }}>{pr.position_type}</td>
                   <td style={{ padding: 10, textAlign: 'right' }}>{(pr.work_hours_regular || 0).toFixed(1)}h</td>
                   <td style={{ padding: 10, textAlign: 'right' }}>{((pr.ot_150_hours || 0) + (pr.ot_200_hours || 0)).toFixed(1)}h</td>
+                  <td style={{ padding: 10, textAlign: 'right', color: (pr.ot_registered_hours || 0) > 0 ? T.purple : T.light, fontWeight: (pr.ot_registered_hours || 0) > 0 ? 600 : 400 }}>
+                    {(pr.ot_registered_hours || 0) > 0 ? `+${(pr.ot_registered_hours || 0).toFixed(1)}h` : '—'}
+                  </td>
                   <td style={{ padding: 10, textAlign: 'right' }}>{fmtVND((pr.salary_work_amount || 0) + (pr.salary_ot_150_amount || 0) + (pr.salary_ot_200_amount || 0))}</td>
                   <td style={{ padding: 10, textAlign: 'right', color: T.green }}>
                     {fmtVND((pr.lunch_amount || 0) + (pr.attendance_bonus_amount || 0) + (pr.inspection_bonus_amount || 0) + (pr.commission_total || 0) + Math.max(0, pr.other_income_total || 0))}
@@ -28462,7 +28516,9 @@ function PayrollTabAttendance({
               <div style={{ padding:'10px 14px', fontSize:11, color:T.med, background:T.bg, borderTop:`1px solid ${T.border}` }}>
                 💡 <b>Click</b> ô Giờ vào / Giờ ra để chỉnh sửa thủ công · Enter/blur để lưu, Esc để hủy.
                 Số giờ Cơ bản và Tăng ca tự cập nhật theo công thức: 
-                <code style={{ background:'#fff', padding:'1px 5px', borderRadius:3, marginLeft:4 }}>
+                <code style={{ background:'#fff', padding:'2px 6px', borderRadius:3, 
+                  color:T.dark, border:`1px solid ${T.border}`, 
+                  marginLeft:4, fontSize:11, fontFamily:'monospace' }}>
                   Tổng = Chấm công + OT duyệt; Cơ bản = min(Tổng, {stdHoursPerDay}h); Tăng ca = max(0, Tổng − {stdHoursPerDay}h)
                 </code>
               </div>
@@ -40727,6 +40783,7 @@ function GhtkOrderDetailModal({ order: o, mobile, onClose }: any) {
                 <div style={{ fontSize:12, fontWeight:700, color:T.dark }}>
                   Thùng {lbl.box_no || idx + 1}: <code style={{
                     padding:'1px 6px', background:T.bg, borderRadius:3,
+                    color:T.dark, border:`1px solid ${T.border}`,
                     fontFamily:'monospace', fontSize:11 }}>
                     {lbl.label_id || lbl.tracking_id || 'chưa có ID'}
                   </code>
