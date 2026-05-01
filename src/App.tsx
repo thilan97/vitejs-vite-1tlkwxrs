@@ -117,7 +117,7 @@ const db = createClient(SUPABASE_URL, SUPABASE_KEY)
 // ⚠ TODO sau v198 (anh deploy thủ công):
 //   - Cập nhật edge function `kiotviet-sales-revenue` để auto sync luôn `kv_invoices` (anh paste code edge function cho em fix).
 //   - Setup pg_cron hoặc external cron (cron-job.org) để auto sync mỗi 1h. Hướng dẫn trong migration_62.sql.
-const APP_VERSION = '2026.05.01.v198.2'
+const APP_VERSION = '2026.05.01.v198.3'
 
 // ════════════════════════════════════════════════════════════════
 // v158: VersionBadge — Hiển thị APP_VERSION ở góc dưới phải
@@ -24264,11 +24264,10 @@ function computeMonthlyPayroll(opts: {
   // other_income có thể override
   const effectiveOtherIncome = getOverride('other_income', opts.otherIncomeTotal)
 
-  // v197: KPI Công nợ bonus (-300k/0/+100k/+200k) — chỉ áp cho Sales
-  // v198.2: BỎ Quản lý Sale (QM Sale không tham gia KPI này)
-  const kpiDebtBonus = (sc.position_type === 'Sales')
-    ? Number(opts.kpiDebtBonus || 0)
-    : 0
+  // v197: KPI Công nợ bonus (-300k/0/+100k/+200k)
+  // v198.3: Eligibility check đã làm ở computeForUser (qua kpi_debt_eligible_users)
+  // → ở đây chỉ cần truyền số đã filter sẵn
+  const kpiDebtBonus = Number(opts.kpiDebtBonus || 0)
 
   // 5. Tổng kết
   let finalSalary: number
@@ -24528,6 +24527,8 @@ function PayrollModule({ user, allUsers, mobile }: any) {
   const [kpiTargets, setKpiTargets] = useState<any[]>([])         // 5 grade config
   const [kpiSnapshots, setKpiSnapshots] = useState<any[]>([])     // snapshots tháng
   const [kpiCustomers, setKpiCustomers] = useState<any[]>([])     // customers có sale
+  // v198.3: list user_id được tham gia KPI Công nợ
+  const [kpiEligibleUsers, setKpiEligibleUsers] = useState<any[]>([])  // [{user_id, ...}]
   // v191/v192: overrides + position config (LCB lưu trong bảng positions)
   const [overrides, setOverrides] = useState<any[]>([])  // payroll_overrides của tháng này
   const [positionsList, setPositionsList] = useState<any[]>([])  // v192: bảng positions từ Quản trị
@@ -24585,7 +24586,7 @@ function PayrollModule({ user, allUsers, mobile }: any) {
           return all
         }
         
-        const [sc, pc, pr, oi, sl, rv, att, ovr, pos, pws, sd, ri, ic, is_, ksd, kviNc, mbg, pa, kpt, kps, kpc] = await Promise.all([
+        const [sc, pc, pr, oi, sl, rv, att, ovr, pos, pws, sd, ri, ic, is_, ksd, kviNc, mbg, pa, kpt, kps, keu, kpc] = await Promise.all([
           db.from('salary_config').select('*').is('effective_to', null),
           db.from('payroll_config').select('*').maybeSingle(),
           db.from('monthly_payroll').select('*').eq('month', month).eq('year', year),
@@ -24606,6 +24607,7 @@ function PayrollModule({ user, allUsers, mobile }: any) {
           db.from('position_allowances').select('*'),
           db.from('kpi_debt_targets').select('*').order('display_order'),
           db.from('kpi_debt_snapshots').select('*').eq('month', month).eq('year', year),
+          db.from('kpi_debt_eligible_users').select('*'),  // v198.3
           // v197.1: pagination loop cho customers (>2500 rows)
           fetchAllCustomers().then((data: any[]) => ({ data })),
         ])
@@ -24641,6 +24643,8 @@ function PayrollModule({ user, allUsers, mobile }: any) {
         setKpiTargets(kpt.data || [])
         setKpiSnapshots(kps.data || [])
         setKpiCustomers(kpc.data || [])
+        // v198.3
+        setKpiEligibleUsers(keu.data || [])
       } catch (e: any) {
         setError('Lỗi load data: ' + e.message)
       } finally {
@@ -24885,8 +24889,10 @@ function PayrollModule({ user, allUsers, mobile }: any) {
     
     // v197: KPI debt bonus từ snapshot tháng đó (nếu đã chốt)
     // v198.2: + top_performer_bonus (sale có ratio nợ thấp nhất → +200k)
+    // v198.3: chỉ apply nếu user IN kpi_debt_eligible_users (admin tích chọn)
+    const isKpiEligible = kpiEligibleUsers.some((e: any) => e.user_id === u.id)
     const kpiSnap = kpiSnapshots.find((k: any) => k.sale_user_id === u.id)
-    const kpiDebtBonus = kpiSnap 
+    const kpiDebtBonus = (isKpiEligible && kpiSnap)
       ? Number(kpiSnap.bonus_amount || 0) + Number(kpiSnap.top_performer_bonus || 0)
       : 0
     
@@ -25164,6 +25170,8 @@ function PayrollModule({ user, allUsers, mobile }: any) {
             setKpiTargets={setKpiTargets}
             kpiSnapshots={kpiSnapshots}
             setKpiSnapshots={setKpiSnapshots}
+            kpiEligibleUsers={kpiEligibleUsers}
+            setKpiEligibleUsers={setKpiEligibleUsers}
             mode="snapshot"/>
         ) : (
           <PayrollTabOverride user={user} mobile={mobile}
@@ -27370,29 +27378,35 @@ function PayrollTabKpiDebt({
   kvSalesDaily, kvNameToAppUserMap,
   kpiCustomers, kpiTargets, setKpiTargets,
   kpiSnapshots, setKpiSnapshots,
+  kpiEligibleUsers, setKpiEligibleUsers,
   mode = 'snapshot',  // 'snapshot' (Payroll) hoặc 'realtime' (Customers)
   lifetimeMode = false,  // v198: true = dùng customers.total_revenue (lũy kế) thay vì kvSalesDaily (tháng)
 }: any) {
   const [working, setWorking] = useState(false)
   const [editingTarget, setEditingTarget] = useState<string|null>(null)
   const [editTargetVal, setEditTargetVal] = useState('')
+  const [showEligibleConfig, setShowEligibleConfig] = useState(false)  // v198.3
   
-  // Lọc Sales từ usersWithSalary (mode snapshot — Payroll context) hoặc allUsers
-  // v198.2: BỎ Quản lý Sale (QM Sale) khỏi KPI Công nợ — chỉ Sales
+  // v198.3: Set chứa user_id được tham gia KPI (đã eligible)
+  const eligibleSet = useMemo(() => {
+    return new Set((kpiEligibleUsers || []).map((e: any) => e.user_id))
+  }, [kpiEligibleUsers])
+  
+  // Lọc Sales — CHỈ những user trong eligibleSet
+  // v198.3: Bỏ check position_type — admin tự quản lý qua UI tích chọn
   const salesUsers = useMemo(() => {
+    const allCandidates = (usersWithSalary && usersWithSalary.length > 0)
+      ? usersWithSalary
+      : (allUsers || []).filter((u: any) => u.dept_id === 'sale' && u.active !== false)
+    return allCandidates.filter((u: any) => eligibleSet.has(u.id))
+  }, [usersWithSalary, allUsers, eligibleSet])
+  
+  // List user có thể tham gia KPI (để admin tích chọn) — tất cả Sale dept
+  const allSaleCandidates = useMemo(() => {
     if (usersWithSalary && usersWithSalary.length > 0) {
-      return usersWithSalary.filter((u: any) => 
-        u._salary?.position_type === 'Sales'
-      )
+      return usersWithSalary.filter((u: any) => u.dept_id === 'sale')
     }
-    // Realtime mode (Customers): lấy từ allUsers, loại QM Sale qua position lookup
-    return (allUsers || []).filter((u: any) => {
-      if (u.dept_id !== 'sale' || u.active === false) return false
-      // Loại nếu là Quản lý Sale (position name chứa "Quản lý")
-      const posName = (u._position_name || u.position_name || '').toLowerCase()
-      if (posName.includes('quản lý') || posName.includes('quan ly') || posName.includes('manager')) return false
-      return true
-    })
+    return (allUsers || []).filter((u: any) => u.dept_id === 'sale')
   }, [usersWithSalary, allUsers])
   
   // Build map target từ kpiTargets table
@@ -27624,6 +27638,36 @@ function PayrollTabKpiDebt({
   
   const hasAnySnapshot = kpiSnapshots.length > 0
   
+  // v198.3: Toggle 1 user vào/ra khỏi eligible list
+  const toggleEligible = async (userId: string, userName: string) => {
+    if (!setKpiEligibleUsers) { toast.error('Không thể chỉnh sửa'); return }
+    const isCurrentlyEligible = eligibleSet.has(userId)
+    setWorking(true)
+    try {
+      if (isCurrentlyEligible) {
+        // Remove
+        const { error } = await db.from('kpi_debt_eligible_users').delete().eq('user_id', userId)
+        if (error) throw new Error(error.message)
+        toast.success(`✓ Đã loại ${userName} khỏi KPI`)
+      } else {
+        // Add
+        const { error } = await db.from('kpi_debt_eligible_users').insert({
+          user_id: userId,
+          added_at: new Date().toISOString(),
+          added_by: user.id,
+        })
+        if (error) throw new Error(error.message)
+        toast.success(`✓ Đã thêm ${userName} vào KPI`)
+      }
+      const { data } = await db.from('kpi_debt_eligible_users').select('*')
+      setKpiEligibleUsers(data || [])
+    } catch (e: any) {
+      toast.error('Lỗi: ' + e.message)
+    } finally {
+      setWorking(false)
+    }
+  }
+  
   return (
     <div>
       {/* Header */}
@@ -27718,6 +27762,16 @@ function PayrollTabKpiDebt({
                   🗑 Xóa chốt
                 </button>
               )}
+              {/* v198.3: Cấu hình sale tham gia */}
+              {setKpiEligibleUsers && (
+                <button onClick={() => setShowEligibleConfig(!showEligibleConfig)} disabled={working}
+                  style={{ padding:'8px 14px', borderRadius:6, border:`1px solid ${T.purple}`,
+                    background: showEligibleConfig ? T.purple : '#fff', 
+                    color: showEligibleConfig ? '#fff' : T.purple, 
+                    cursor:'pointer', fontSize:12, fontWeight:600 }}>
+                  ⚙️ Cấu hình NV ({eligibleSet.size}/{allSaleCandidates.length})
+                </button>
+              )}
               <button onClick={handleSnapshotAll} disabled={working || tableData.length === 0}
                 style={{ padding:'10px 18px', borderRadius:6, border:'none',
                   background: working ? T.border : T.purple, color:'#fff',
@@ -27729,6 +27783,75 @@ function PayrollTabKpiDebt({
           )}
         </div>
       </Card>
+      
+      {/* v198.3: Section: Tích chọn NV tham gia KPI (collapsible) */}
+      {mode === 'snapshot' && setKpiEligibleUsers && showEligibleConfig && (
+        <Card style={{ padding:14, marginBottom:12, borderLeft:`4px solid ${T.amber}` }}>
+          <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:10 }}>
+            <div>
+              <div style={{ fontSize:14, fontWeight:700, color:T.dark }}>
+                ⚙️ Tích chọn nhân viên tham gia KPI Công nợ
+              </div>
+              <div style={{ fontSize:11, color:T.med, marginTop:3 }}>
+                Chỉ những NV được tích sẽ hiển thị trong bảng KPI và tham gia ranking Top 1.
+                Snapshot cũ KHÔNG bị xóa khi loại NV — chỉ ẩn khỏi bảng và không tính lương.
+              </div>
+            </div>
+            <button onClick={() => setShowEligibleConfig(false)}
+              style={{ padding:'4px 10px', borderRadius:4, border:`1px solid ${T.border}`,
+                background:'#fff', color:T.med, cursor:'pointer', fontSize:11 }}>
+              ✕ Đóng
+            </button>
+          </div>
+          
+          {allSaleCandidates.length === 0 ? (
+            <div style={{ padding:20, textAlign:'center', color:T.light, fontSize:12 }}>
+              📭 Không tìm thấy NV phòng Sale nào. Hãy kiểm tra trong Quản trị → Nhân sự.
+            </div>
+          ) : (
+            <>
+              <div style={{ display:'grid', gridTemplateColumns: mobile ? '1fr 1fr' : 'repeat(3, 1fr)', gap:8 }}>
+                {allSaleCandidates.map((u: any) => {
+                  const isEligible = eligibleSet.has(u.id)
+                  return (
+                    <label key={u.id} 
+                      style={{ display:'flex', alignItems:'center', gap:8, padding:'8px 10px',
+                        border: `2px solid ${isEligible ? T.green : T.border}`,
+                        borderRadius:6, cursor: working ? 'wait' : 'pointer',
+                        background: isEligible ? T.greenBg : '#fff',
+                        opacity: working ? 0.6 : 1,
+                        transition:'all 0.15s' }}>
+                      <input type="checkbox" checked={isEligible}
+                        disabled={working}
+                        onChange={() => toggleEligible(u.id, u.name)}
+                        style={{ width:16, height:16, cursor:'pointer', accentColor:T.green }}/>
+                      <div style={{ flex:1, minWidth:0 }}>
+                        <div style={{ fontSize:12, fontWeight:600, color:T.dark, 
+                          textOverflow:'ellipsis', overflow:'hidden', whiteSpace:'nowrap' }}>
+                          {u.name}
+                        </div>
+                        <div style={{ fontSize:10, color:T.med, marginTop:1,
+                          textOverflow:'ellipsis', overflow:'hidden', whiteSpace:'nowrap' }}>
+                          {u._salary?.position_type || u.position_name || '—'}
+                          {u.active === false && <span style={{ color:T.red }}> · Đã nghỉ</span>}
+                        </div>
+                      </div>
+                    </label>
+                  )
+                })}
+              </div>
+              <div style={{ marginTop:10, padding:'8px 10px', background:T.bg, borderRadius:6, fontSize:11, color:T.med }}>
+                ✓ Đang chọn: <b style={{ color:T.green }}>{eligibleSet.size}</b> / {allSaleCandidates.length} NV phòng Sale
+                {eligibleSet.size === 0 && (
+                  <span style={{ color:T.red, marginLeft:6 }}>
+                    · ⚠️ Chưa chọn NV nào → bảng KPI sẽ trống
+                  </span>
+                )}
+              </div>
+            </>
+          )}
+        </Card>
+      )}
       
       {/* Section: Cấu hình target (chỉ admin/snapshot mode) */}
       {mode === 'snapshot' && (
