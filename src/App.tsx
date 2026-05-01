@@ -117,7 +117,7 @@ const db = createClient(SUPABASE_URL, SUPABASE_KEY)
 // ⚠ TODO sau v198 (anh deploy thủ công):
 //   - Cập nhật edge function `kiotviet-sales-revenue` để auto sync luôn `kv_invoices` (anh paste code edge function cho em fix).
 //   - Setup pg_cron hoặc external cron (cron-job.org) để auto sync mỗi 1h. Hướng dẫn trong migration_62.sql.
-const APP_VERSION = '2026.04.30.v198'
+const APP_VERSION = '2026.05.01.v198.1'
 
 // ════════════════════════════════════════════════════════════════
 // v158: VersionBadge — Hiển thị APP_VERSION ở góc dưới phải
@@ -25152,6 +25152,7 @@ function PayrollModule({ user, allUsers, mobile }: any) {
             allUsers={allUsers}
             usersWithSalary={usersWithSalary}
             month={month} year={year}
+            setMonth={setMonth} setYear={setYear}
             kvSalesDaily={kvSalesDaily}
             kvNameToAppUserMap={kvNameToAppUserMap}
             kpiCustomers={kpiCustomers}
@@ -27361,6 +27362,7 @@ function PayrollTabBhxh({ user, mobile, allUsers, usersWithSalary, salaryConfigs
 // ══════════════════════════════════════════════════════════════════════
 function PayrollTabKpiDebt({ 
   user, mobile, allUsers, usersWithSalary, month, year, 
+  setMonth, setYear,
   kvSalesDaily, kvNameToAppUserMap,
   kpiCustomers, kpiTargets, setKpiTargets,
   kpiSnapshots, setKpiSnapshots,
@@ -27589,12 +27591,55 @@ function PayrollTabKpiDebt({
                     ? '🌐 LŨY KẾ: DS tính từ tổng total_revenue của KH (cả đời). Công nợ realtime hiện tại. Tỉ lệ thấp do DS lũy kế thường lớn.'
                     : '⏱ THÁNG: DS tính từ kiotviet_sales_daily (chỉ trong tháng được chọn). Công nợ realtime hiện tại.')}
               <br/>Đơn vị tiền hiển thị: <b>nghìn đ</b> (giống KV) · Công thức: 
-              <code> ratio = công_nợ_nhóm ÷ tổng_DS_sale</code> · 
-              Đạt khi <code>ratio ≤ target</code>.
+              <code style={{ background:T.bg, padding:'1px 5px', borderRadius:3, color:T.dark }}> ratio = công_nợ_nhóm ÷ tổng_DS_sale</code> · 
+              Đạt khi <code style={{ background:T.bg, padding:'1px 5px', borderRadius:3, color:T.dark }}>ratio ≤ target</code>.
+              {mode === 'snapshot' && (() => {
+                const now = new Date()
+                const isCurrentMonth = month === now.getMonth() + 1 && year === now.getFullYear()
+                const isPastMonth = year < now.getFullYear() || (year === now.getFullYear() && month < now.getMonth() + 1)
+                if (isPastMonth) {
+                  return (
+                    <div style={{ marginTop:6, padding:'6px 10px', background:T.amberBg, color:T.amber,
+                      borderRadius:6, fontSize:11, fontWeight:600 }}>
+                      ⚠️ Đang chốt cho tháng {month}/{year} (quá khứ). DS sale lấy từ kvSalesDaily T{month}, công nợ realtime hiện tại.
+                    </div>
+                  )
+                }
+                if (isCurrentMonth) {
+                  return (
+                    <div style={{ marginTop:6, padding:'6px 10px', background:T.greenBg, color:T.green,
+                      borderRadius:6, fontSize:11, fontWeight:600 }}>
+                      ✓ Đang chốt cho tháng hiện tại ({month}/{year})
+                    </div>
+                  )
+                }
+                return null
+              })()}
             </div>
           </div>
           {mode === 'snapshot' && (
-            <div style={{ display:'flex', gap:6 }}>
+            <div style={{ display:'flex', gap:6, alignItems:'center', flexWrap:'wrap' }}>
+              {/* Dropdown chọn tháng/năm để chốt KPI */}
+              {setMonth && setYear && (
+                <div style={{ display:'flex', gap:4, alignItems:'center', padding:'6px 10px',
+                  background:T.bg, borderRadius:6, border:`1px solid ${T.border}`, marginRight:4 }}>
+                  <span style={{ fontSize:11, color:T.med, fontWeight:600 }}>Chốt cho:</span>
+                  <select value={month} onChange={e => setMonth(Number(e.target.value))}
+                    disabled={working}
+                    style={{ padding:'4px 6px', borderRadius:4, border:`1px solid ${T.border}`,
+                      background:'#fff', color:T.dark, fontFamily:'inherit', fontSize:12, fontWeight:600 }}>
+                    {Array.from({ length: 12 }, (_, i) => i + 1).map(m => (
+                      <option key={m} value={m}>T{m}</option>
+                    ))}
+                  </select>
+                  <select value={year} onChange={e => setYear(Number(e.target.value))}
+                    disabled={working}
+                    style={{ padding:'4px 6px', borderRadius:4, border:`1px solid ${T.border}`,
+                      background:'#fff', color:T.dark, fontFamily:'inherit', fontSize:12, fontWeight:600 }}>
+                    {[2025, 2026, 2027].map(y => <option key={y} value={y}>{y}</option>)}
+                  </select>
+                </div>
+              )}
               {hasAnySnapshot && (
                 <button onClick={handleRemoveSnapshot} disabled={working}
                   style={{ padding:'8px 14px', borderRadius:6, border:`1px solid ${T.red}`,
