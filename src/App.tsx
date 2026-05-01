@@ -117,7 +117,7 @@ const db = createClient(SUPABASE_URL, SUPABASE_KEY)
 // ⚠ TODO sau v198 (anh deploy thủ công):
 //   - Cập nhật edge function `kiotviet-sales-revenue` để auto sync luôn `kv_invoices` (anh paste code edge function cho em fix).
 //   - Setup pg_cron hoặc external cron (cron-job.org) để auto sync mỗi 1h. Hướng dẫn trong migration_62.sql.
-const APP_VERSION = '2026.05.01.v198.3'
+const APP_VERSION = '2026.05.01.v198.4'
 
 // ════════════════════════════════════════════════════════════════
 // v158: VersionBadge — Hiển thị APP_VERSION ở góc dưới phải
@@ -28020,18 +28020,25 @@ function PayrollTabKpiDebt({
                   </tr>
                 )
               })
-              // Dòng TOTAL
+              // Dòng TOTAL — bảng có 9 cột, row TOTAL có 7 td (Sale + Thưởng/phạt đã rowSpan)
+              // Cấu trúc cột: Sale | Nhóm KH | Doanh số | Công nợ | %nợ/Tổng nợ | %nợ/Tổng DS | Target | Hiệu số | Thưởng/phạt
               rows.push(
                 <tr key={`${x.id}_TOTAL`} style={{ borderBottom:`3px solid ${T.dark}`, background:'#E6F4EA' }}>
-                  <td style={{ padding:'8px 10px', fontWeight:700, color:T.dark }}>TOTAL</td>
+                  {/* Sale: rowSpan=6 đã chiếm */}
+                  <td style={{ padding:'8px 10px', fontWeight:700, color:T.dark, fontSize:12 }}>TOTAL</td>
+                  <td style={{ padding:'8px 10px' }}></td>
                   <td style={{ padding:'8px 10px', textAlign:'right', fontVariantNumeric:'tabular-nums', fontWeight:700, color:T.dark }}>
                     {fmtVNDshort(k.totalDebt)}
                   </td>
-                  <td colSpan={2}></td>
+                  <td style={{ padding:'8px 10px', textAlign:'right', fontVariantNumeric:'tabular-nums', fontWeight:700, color:T.med }}>
+                    100.0%
+                  </td>
                   <td style={{ padding:'8px 10px', textAlign:'right', fontVariantNumeric:'tabular-nums', fontWeight:700, color:T.dark }}>
                     {fmtPercent(k.totalRevenue > 0 ? k.totalDebt / k.totalRevenue : 0)}
                   </td>
-                  <td colSpan={2}></td>
+                  <td style={{ padding:'8px 10px' }}></td>
+                  <td style={{ padding:'8px 10px' }}></td>
+                  {/* Thưởng/phạt: rowSpan=6 đã chiếm */}
                 </tr>
               )
               return rows
@@ -37471,6 +37478,7 @@ function CustomersTabKpiDebt({ user, mobile, allUsers, customers, month, setMont
   const [loading, setLoading] = useState(true)
   const [kpiTargets, setKpiTargets] = useState<any[]>([])
   const [kvSalesDaily, setKvSalesDaily] = useState<any[]>([])
+  const [kpiEligibleUsers, setKpiEligibleUsers] = useState<any[]>([])  // v198.3
   // v198: Toggle DS Tháng vs Lũy kế
   const [revenueMode, setRevenueMode] = useState<'monthly'|'lifetime'>('monthly')
   
@@ -37494,12 +37502,14 @@ function CustomersTabKpiDebt({ user, mobile, allUsers, customers, month, setMont
       try {
         const fromDate = `${year}-${String(month).padStart(2,'0')}-01`
         const toDate = new Date(year, month, 0).toISOString().slice(0, 10)
-        const [kpt, ksd] = await Promise.all([
+        const [kpt, ksd, keu] = await Promise.all([
           db.from('kpi_debt_targets').select('*').order('display_order'),
           db.from('kiotviet_sales_daily').select('*').gte('date', fromDate).lte('date', toDate).range(0, 9999),
+          db.from('kpi_debt_eligible_users').select('*'),  // v198.3
         ])
         setKpiTargets(kpt.data || [])
         setKvSalesDaily(ksd.data || [])
+        setKpiEligibleUsers(keu.data || [])
       } catch (e) {
         console.error('[KPI Debt fetch]', e)
       } finally {
@@ -37592,6 +37602,8 @@ function CustomersTabKpiDebt({ user, mobile, allUsers, customers, month, setMont
         setKpiTargets={setKpiTargets}
         kpiSnapshots={[]}
         setKpiSnapshots={() => {}}
+        kpiEligibleUsers={kpiEligibleUsers}
+        setKpiEligibleUsers={setKpiEligibleUsers}
         mode="realtime"
         lifetimeMode={revenueMode === 'lifetime'}/>
     </div>
