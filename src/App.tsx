@@ -117,7 +117,7 @@ const db = createClient(SUPABASE_URL, SUPABASE_KEY)
 // ⚠ TODO sau v198 (anh deploy thủ công):
 //   - Cập nhật edge function `kiotviet-sales-revenue` để auto sync luôn `kv_invoices` (anh paste code edge function cho em fix).
 //   - Setup pg_cron hoặc external cron (cron-job.org) để auto sync mỗi 1h. Hướng dẫn trong migration_62.sql.
-const APP_VERSION = '2026.05.01.v198.4'
+const APP_VERSION = '2026.05.01.v198.5'
 
 // ════════════════════════════════════════════════════════════════
 // v158: VersionBadge — Hiển thị APP_VERSION ở góc dưới phải
@@ -2148,7 +2148,6 @@ const NAV_GROUPS = (perm: any, deptId = '') => {
       id:'hr', icon:Ico.users, emoji:'👥', label:'Nhân sự',
       pages:[
         { id:'attendance', icon:Ico.clock, emoji:'🕐', label:'Chấm công' },
-        perm.viewAllDashboard && { id:'payroll_import', icon:Ico.inbox, emoji:'📥', label:'Import máy chấm công' },
         perm.viewAllDashboard && { id:'payroll', icon:Ico.wallet, emoji:'💵', label:'Tính lương' },
         { id:'my_payslip', icon:Ico.receipt, emoji:'💰', label:'Phiếu lương của tôi' },
         { id:'overtime',   icon:Ico.sun, emoji:'⏰', label:'Làm thêm' },
@@ -23273,7 +23272,7 @@ function computeWorkHours(
 // ══════════════════════════════════════════════════════════════════
 // MAIN COMPONENT
 // ══════════════════════════════════════════════════════════════════
-function PayrollImportModule({ user, allUsers, mobile, attendance, setAttendance }: any) {
+function PayrollImportModule({ user, allUsers, mobile, attendance, setAttendance, embedMode, onClose }: any) {
   const perm = getPerm(user)
   const p = mobile ? 16 : 24
 
@@ -23613,11 +23612,14 @@ function PayrollImportModule({ user, allUsers, mobile, attendance, setAttendance
   }
 
   // ══ RENDER ══
+  // v198.5: embedMode → render trong Modal (bỏ PageContainer + Topbar wrapper)
+  const Wrapper: any = embedMode ? React.Fragment : PageContainer
+  const wrapperProps: any = embedMode ? {} : { mobile }
   return (
-    <PageContainer mobile={mobile}>
-      <Topbar mobile={mobile}
+    <Wrapper {...wrapperProps}>
+      {!embedMode && <Topbar mobile={mobile}
         title="📥 Import chấm công từ máy"
-        subtitle={`Tháng đang import: ${month}/${year}  •  Nguồn dữ liệu máy CC = nguồn duy nhất để tính lương`}/>
+        subtitle={`Tháng đang import: ${month}/${year}  •  Nguồn dữ liệu máy CC = nguồn duy nhất để tính lương`}/>}
 
       {error && (
         <div style={{ padding: 12, background: '#FEE', border: `1px solid ${T.red}`,
@@ -23968,7 +23970,7 @@ function PayrollImportModule({ user, allUsers, mobile, attendance, setAttendance
           </div>
         </>
       )}
-    </PageContainer>
+    </Wrapper>
   )
 }
 
@@ -24529,13 +24531,15 @@ function PayrollModule({ user, allUsers, mobile }: any) {
   const [kpiCustomers, setKpiCustomers] = useState<any[]>([])     // customers có sale
   // v198.3: list user_id được tham gia KPI Công nợ
   const [kpiEligibleUsers, setKpiEligibleUsers] = useState<any[]>([])  // [{user_id, ...}]
+  // v198.5: Approved OT requests (dùng cho tab Chấm công — cộng giờ làm thêm vào)
+  const [overtimeRequests, setOvertimeRequests] = useState<any[]>([])
   // v191/v192: overrides + position config (LCB lưu trong bảng positions)
   const [overrides, setOverrides] = useState<any[]>([])  // payroll_overrides của tháng này
   const [positionsList, setPositionsList] = useState<any[]>([])  // v192: bảng positions từ Quản trị
   const [positionWorkSchedule, setPositionWorkSchedule] = useState<any[]>([])
   const [specialDays, setSpecialDays] = useState<any[]>([])  // v193: ngày lễ/đặc biệt
   // v191: tabs
-  const [adminTab, setAdminTab] = useState<'overview'|'shortage_loss'|'return_loss'|'mbo_bonus'|'inspection_bonus'|'allowance'|'base_salary'|'schedule'|'sales_revenue'|'bhxh'|'kpi_debt'>('overview')
+  const [adminTab, setAdminTab] = useState<'overview'|'attendance'|'shortage_loss'|'return_loss'|'mbo_bonus'|'inspection_bonus'|'allowance'|'base_salary'|'schedule'|'sales_revenue'|'bhxh'|'kpi_debt'>('overview')
   const isAdmin = perm.viewAllDashboard
   // v191: Admin chọn NV xem phiếu lương
   const [viewSlipUserId, setViewSlipUserId] = useState<string>('')
@@ -24586,7 +24590,7 @@ function PayrollModule({ user, allUsers, mobile }: any) {
           return all
         }
         
-        const [sc, pc, pr, oi, sl, rv, att, ovr, pos, pws, sd, ri, ic, is_, ksd, kviNc, mbg, pa, kpt, kps, keu, kpc] = await Promise.all([
+        const [sc, pc, pr, oi, sl, rv, att, ovr, pos, pws, sd, ri, ic, is_, ksd, kviNc, mbg, pa, kpt, kps, keu, otr, kpc] = await Promise.all([
           db.from('salary_config').select('*').is('effective_to', null),
           db.from('payroll_config').select('*').maybeSingle(),
           db.from('monthly_payroll').select('*').eq('month', month).eq('year', year),
@@ -24608,6 +24612,7 @@ function PayrollModule({ user, allUsers, mobile }: any) {
           db.from('kpi_debt_targets').select('*').order('display_order'),
           db.from('kpi_debt_snapshots').select('*').eq('month', month).eq('year', year),
           db.from('kpi_debt_eligible_users').select('*'),  // v198.3
+          db.from('overtime_requests').select('*').gte('date', fromDate).lte('date', toDate),  // v198.5
           // v197.1: pagination loop cho customers (>2500 rows)
           fetchAllCustomers().then((data: any[]) => ({ data })),
         ])
@@ -24645,6 +24650,8 @@ function PayrollModule({ user, allUsers, mobile }: any) {
         setKpiCustomers(kpc.data || [])
         // v198.3
         setKpiEligibleUsers(keu.data || [])
+        // v198.5
+        setOvertimeRequests(otr.data || [])
       } catch (e: any) {
         setError('Lỗi load data: ' + e.message)
       } finally {
@@ -25079,6 +25086,7 @@ function PayrollModule({ user, allUsers, mobile }: any) {
           flexWrap:'wrap', overflowX:'auto' }}>
           {([
             { id:'overview',         label:'📊 Tổng quan' },
+            { id:'attendance',       label:'🕐 Chấm công' },
             { id:'sales_revenue',    label:'💰 DS Sale' },
             { id:'kpi_debt',         label:'📊 KPI Công nợ' },
             { id:'shortage_loss',    label:'💸 Mất hàng' },
@@ -25173,6 +25181,18 @@ function PayrollModule({ user, allUsers, mobile }: any) {
             kpiEligibleUsers={kpiEligibleUsers}
             setKpiEligibleUsers={setKpiEligibleUsers}
             mode="snapshot"/>
+        ) : adminTab === 'attendance' ? (
+          <PayrollTabAttendance user={user} mobile={mobile}
+            allUsers={allUsers}
+            usersWithSalary={usersWithSalary}
+            month={month} year={year}
+            setMonth={setMonth} setYear={setYear}
+            attendanceMonth={attendanceMonth}
+            setAttendanceMonth={setAttendanceMonth}
+            overtimeRequests={overtimeRequests}
+            payrollConfig={payrollConfig}
+            positionsList={positionsList}
+            positionWorkSchedule={positionWorkSchedule}/>
         ) : (
           <PayrollTabOverride user={user} mobile={mobile}
             usersWithSalary={usersWithSalary}
@@ -28048,6 +28068,448 @@ function PayrollTabKpiDebt({
       </Card>
     </div>
   )
+}
+
+
+// ══════════════════════════════════════════════════════════════════════
+// v198.5: PayrollTabAttendance — Tab Chấm công trong Tính lương
+//   - Sub-tab "🕐 Giờ chấm công" (chính): bảng giờ vào/ra theo tháng
+//     với inline edit + Import từ Excel máy chấm công
+//   - Sub-tab "📋 Điểm danh ngày" (placeholder Turn 2)
+//   - Logic giờ làm thực tế: punch + approved OT từ overtime_requests
+// ══════════════════════════════════════════════════════════════════════
+
+// Helper: Tính giờ làm thực tế trong 1 ngày từ attendance + approved OT
+function computeDailyHoursActual(opts: {
+  att: any,                     // record attendance của ngày đó (có check_in_final/machine, work_hours_regular, ot_150)
+  approvedOTHours: number,      // tổng giờ OT đã duyệt từ overtime_requests
+  stdHoursPerDay: number,       // giờ cơ bản theo vị trí (8 hoặc 7.5)
+}): {
+  punchIn: string, 
+  punchOut: string,
+  punchHours: number,           // tổng giờ chấm công (work_hours_regular + ot_150)
+  otRegistered: number,         // OT đã đăng ký + duyệt (làm thêm ở nhà)
+  totalHours: number,           // = punch + ot_registered
+  baseHours: number,            // min(total, std)
+  overtimeHours: number,        // max(0, total - std)
+} {
+  const { att, approvedOTHours, stdHoursPerDay } = opts
+  const punchIn = (att?.check_in_final || att?.check_in_machine || '').slice(0, 5)
+  const punchOut = (att?.check_out_final || att?.check_out_machine || '').slice(0, 5)
+  const wr = Number(att?.work_hours_regular || 0)
+  const ot150 = Number(att?.ot_150 || 0)
+  const punchHours = wr + ot150
+  const otRegistered = Number(approvedOTHours || 0)
+  const totalHours = punchHours + otRegistered
+  const baseHours = Math.min(totalHours, stdHoursPerDay)
+  const overtimeHours = Math.max(0, totalHours - stdHoursPerDay)
+  return { punchIn, punchOut, punchHours, otRegistered, totalHours, baseHours, overtimeHours }
+}
+
+function PayrollTabAttendance({
+  user, mobile, allUsers, usersWithSalary, month, year, setMonth, setYear,
+  attendanceMonth, setAttendanceMonth, overtimeRequests, payrollConfig,
+  positionsList, positionWorkSchedule,
+}: any) {
+  const [subTab, setSubTab] = useState<'gio_cham_cong'|'diem_danh'>('gio_cham_cong')
+  const [selectedUserId, setSelectedUserId] = useState<string>('')
+  const [showImportModal, setShowImportModal] = useState(false)
+  const [editingCell, setEditingCell] = useState<{ date: string, field: 'in'|'out' } | null>(null)
+  const [editVal, setEditVal] = useState('')
+  const [working, setWorking] = useState(false)
+  
+  // Sales/QM Sale có thể là KPI eligible nhưng đây là chấm công cho TẤT CẢ NV
+  const sortedUsers = useMemo(() => {
+    const list = (usersWithSalary && usersWithSalary.length > 0)
+      ? usersWithSalary.filter((u: any) => u.active !== false)
+      : (allUsers || []).filter((u: any) => u.active !== false)
+    return [...list].sort((a: any, b: any) => (a.name || '').localeCompare(b.name || '', 'vi'))
+  }, [usersWithSalary, allUsers])
+  
+  // Default chọn NV đầu tiên
+  useEffect(() => {
+    if (!selectedUserId && sortedUsers.length > 0) {
+      setSelectedUserId(sortedUsers[0].id)
+    }
+  }, [sortedUsers, selectedUserId])
+  
+  const selectedUser = useMemo(() => sortedUsers.find((u: any) => u.id === selectedUserId), [sortedUsers, selectedUserId])
+  
+  // Lấy std_hours_per_day theo vị trí của NV
+  const stdHoursPerDay = useMemo(() => {
+    if (!selectedUser) return 8
+    const sc = selectedUser._salary
+    const positionType = sc?.position_type || ''
+    const ws = (positionWorkSchedule || []).find((w: any) => w.position_type === positionType)
+    if (ws?.std_hours_per_day) return Number(ws.std_hours_per_day)
+    // Fallback: Kho = 8, Sales/khác = 7.5
+    return ['Kho', 'Quản lý kho', 'Thử việc'].includes(positionType) ? 8 : 7.5
+  }, [selectedUser, positionWorkSchedule])
+  
+  // Map approvedOT theo date của user đang chọn
+  const otByDate = useMemo(() => {
+    const m = new Map<string, number>()
+    if (!selectedUserId) return m
+    for (const r of (overtimeRequests || [])) {
+      if (r.user_id !== selectedUserId) continue
+      if (r.status !== 'approved') continue
+      const cur = m.get(r.date) || 0
+      m.set(r.date, cur + Number(r.hours || 0))
+    }
+    return m
+  }, [overtimeRequests, selectedUserId])
+  
+  // Map attendance theo date của user đang chọn
+  const attByDate = useMemo(() => {
+    const m = new Map<string, any>()
+    if (!selectedUserId) return m
+    for (const a of (attendanceMonth || [])) {
+      if (a.user_id !== selectedUserId) continue
+      m.set(a.date, a)
+    }
+    return m
+  }, [attendanceMonth, selectedUserId])
+  
+  // Generate list ngày trong tháng
+  const daysInMonth = useMemo(() => {
+    const days = new Date(year, month, 0).getDate()
+    const arr: any[] = []
+    const dayLabels = ['CN','T2','T3','T4','T5','T6','T7']
+    for (let d = 1; d <= days; d++) {
+      const dateStr = `${year}-${String(month).padStart(2,'0')}-${String(d).padStart(2,'0')}`
+      const wd = new Date(year, month - 1, d).getDay()
+      arr.push({ day: d, date: dateStr, dow: dayLabels[wd], isWeekend: wd === 0 || wd === 6 })
+    }
+    return arr
+  }, [month, year])
+  
+  // Save inline edit
+  const saveCell = async (dateStr: string, field: 'in'|'out', newValue: string) => {
+    if (!selectedUserId) { toast.error('Chưa chọn NV'); return }
+    setWorking(true)
+    try {
+      const att = attByDate.get(dateStr)
+      const existingIn  = (att?.check_in_final  || att?.check_in_machine  || '').slice(0, 5)
+      const existingOut = (att?.check_out_final || att?.check_out_machine || '').slice(0, 5)
+      const newIn  = field === 'in'  ? newValue : existingIn
+      const newOut = field === 'out' ? newValue : existingOut
+      
+      // Recompute hours
+      const positionType = selectedUser?._salary?.position_type || ''
+      const hours = computeWorkHours(
+        newIn ? `${newIn}:00` : '',
+        newOut ? `${newOut}:00` : '',
+        positionType,
+        payrollConfig
+      )
+      
+      const payload: any = {
+        date: dateStr,
+        user_id: selectedUserId,
+        user_name: selectedUser?.name,
+        check_in_final: newIn || null,
+        check_out_final: newOut || null,
+        check_in_machine: att?.check_in_machine || null,
+        check_out_machine: att?.check_out_machine || null,
+        work_hours_regular: hours.work_hours_regular,
+        ot_150: hours.ot_150,
+        lunch_eligible: hours.lunch_eligible,
+        status: att?.status || 'Đi làm',
+      }
+      
+      if (att?.id) {
+        // Update
+        const { error } = await db.from('attendance').update(payload).eq('id', att.id)
+        if (error) throw new Error(error.message)
+      } else {
+        // Insert mới
+        const { error } = await db.from('attendance').insert({ 
+          ...payload, 
+          id: `att_${selectedUserId}_${dateStr}`.replace(/-/g,''),
+        })
+        if (error) throw new Error(error.message)
+      }
+      
+      // Refresh attendanceMonth
+      const fromDate = `${year}-${String(month).padStart(2,'0')}-01`
+      const toDate = new Date(year, month, 0).toISOString().slice(0, 10)
+      const { data } = await db.from('attendance').select('*').gte('date', fromDate).lte('date', toDate)
+      setAttendanceMonth(data || [])
+      setEditingCell(null)
+      toast.success(`✓ Đã lưu giờ ${field === 'in' ? 'vào' : 'ra'} ngày ${dateStr.slice(8)}/${dateStr.slice(5,7)}`)
+    } catch (e: any) {
+      toast.error('Lỗi: ' + e.message)
+    } finally {
+      setWorking(false)
+    }
+  }
+  
+  // Stats: tổng giờ làm thực tế, tổng OT đăng ký, tổng tăng ca
+  const stats = useMemo(() => {
+    let totalPunch = 0, totalOTReg = 0, totalBase = 0, totalOT = 0, daysWithPunch = 0
+    for (const d of daysInMonth) {
+      const att = attByDate.get(d.date)
+      const otApproved = otByDate.get(d.date) || 0
+      const c = computeDailyHoursActual({ att, approvedOTHours: otApproved, stdHoursPerDay })
+      if (c.punchHours > 0) daysWithPunch++
+      totalPunch += c.punchHours
+      totalOTReg += c.otRegistered
+      totalBase += c.baseHours
+      totalOT += c.overtimeHours
+    }
+    return { totalPunch, totalOTReg, totalBase, totalOT, daysWithPunch }
+  }, [daysInMonth, attByDate, otByDate, stdHoursPerDay])
+  
+  const fmtHours = (n: number) => Number(n || 0).toFixed(2).replace(/\.00$/, '').replace(/(\.\d)0$/, '$1')
+  
+  return (
+    <div>
+      {/* Header */}
+      <Card style={{ padding:14, marginBottom:12, borderLeft:`4px solid ${T.gold}` }}>
+        <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', flexWrap:'wrap', gap:10 }}>
+          <div>
+            <div style={{ fontSize:16, fontWeight:700, color:T.dark }}>
+              🕐 Chấm công — Tháng {month}/{year}
+            </div>
+            <div style={{ fontSize:12, color:T.med, marginTop:4 }}>
+              Quản lý giờ vào/ra của NV. Giờ làm thêm đã duyệt (từ module Làm thêm) sẽ tự cộng vào tổng.
+            </div>
+          </div>
+          <div style={{ display:'flex', gap:6, alignItems:'center', flexWrap:'wrap' }}>
+            {/* Tháng/Năm */}
+            <div style={{ display:'flex', gap:4, alignItems:'center', padding:'6px 10px',
+              background:T.bg, borderRadius:6, border:`1px solid ${T.border}` }}>
+              <select value={month} onChange={e => setMonth(Number(e.target.value))}
+                style={{ padding:'4px 6px', borderRadius:4, border:`1px solid ${T.border}`,
+                  background:'#fff', color:T.dark, fontFamily:'inherit', fontSize:12, fontWeight:600 }}>
+                {Array.from({ length: 12 }, (_, i) => i + 1).map(m => (
+                  <option key={m} value={m}>T{m}</option>
+                ))}
+              </select>
+              <select value={year} onChange={e => setYear(Number(e.target.value))}
+                style={{ padding:'4px 6px', borderRadius:4, border:`1px solid ${T.border}`,
+                  background:'#fff', color:T.dark, fontFamily:'inherit', fontSize:12, fontWeight:600 }}>
+                {[2025, 2026, 2027].map(y => <option key={y} value={y}>{y}</option>)}
+              </select>
+            </div>
+            <button onClick={() => setShowImportModal(true)}
+              style={{ padding:'8px 14px', borderRadius:6, border:'none',
+                background:T.gold, color:'#fff', cursor:'pointer', fontSize:12, fontWeight:700 }}>
+              📥 Import máy chấm công
+            </button>
+          </div>
+        </div>
+      </Card>
+      
+      {/* Sub-tab switcher */}
+      <Card style={{ padding:0, marginBottom:12 }}>
+        <div style={{ display:'flex', borderBottom:`2px solid ${T.border}` }}>
+          {([
+            { id:'gio_cham_cong', label:'🕐 Giờ chấm công' },
+            { id:'diem_danh',     label:'📋 Điểm danh ngày' },
+          ] as Array<{ id: any, label: string }>).map(t => (
+            <button key={t.id} onClick={() => setSubTab(t.id)}
+              style={{
+                padding:'12px 20px', border:'none', background:'transparent', cursor:'pointer',
+                fontFamily:'inherit', fontSize:13,
+                fontWeight: subTab === t.id ? 700 : 500,
+                color: subTab === t.id ? T.gold : T.med,
+                borderBottom: subTab === t.id ? `3px solid ${T.gold}` : '3px solid transparent',
+                marginBottom:-2,
+              }}>
+              {t.label}
+            </button>
+          ))}
+        </div>
+      </Card>
+      
+      {subTab === 'gio_cham_cong' ? (
+        <>
+          {/* Filter NV */}
+          <Card style={{ padding:14, marginBottom:12 }}>
+            <div style={{ display:'flex', gap:10, alignItems:'center', flexWrap:'wrap' }}>
+              <label style={{ fontSize:12, color:T.med, fontWeight:600 }}>Nhân viên:</label>
+              <select value={selectedUserId} onChange={e => setSelectedUserId(e.target.value)}
+                style={{ padding:'8px 12px', borderRadius:6, border:`1px solid ${T.border}`,
+                  background:'#fff', color:T.dark, fontFamily:'inherit', fontSize:13, minWidth:240 }}>
+                {sortedUsers.map((u: any) => (
+                  <option key={u.id} value={u.id}>
+                    {u.name} {u._salary?.position_type ? `· ${u._salary.position_type}` : ''}
+                  </option>
+                ))}
+              </select>
+              {selectedUser && (
+                <div style={{ marginLeft:'auto', display:'flex', gap:14, fontSize:12, flexWrap:'wrap' }}>
+                  <div><span style={{ color:T.med }}>Giờ cơ bản/ngày:</span> <b style={{ color:T.dark }}>{stdHoursPerDay}h</b></div>
+                  <div><span style={{ color:T.med }}>Ngày có chấm:</span> <b style={{ color:T.dark }}>{stats.daysWithPunch}</b></div>
+                  <div><span style={{ color:T.med }}>Σ chấm công:</span> <b style={{ color:T.dark }}>{fmtHours(stats.totalPunch)}h</b></div>
+                  <div><span style={{ color:T.med }}>Σ OT đã duyệt:</span> <b style={{ color:T.purple }}>{fmtHours(stats.totalOTReg)}h</b></div>
+                  <div><span style={{ color:T.med }}>Σ Cơ bản:</span> <b style={{ color:T.green }}>{fmtHours(stats.totalBase)}h</b></div>
+                  <div><span style={{ color:T.med }}>Σ Tăng ca:</span> <b style={{ color:T.gold }}>{fmtHours(stats.totalOT)}h</b></div>
+                </div>
+              )}
+            </div>
+          </Card>
+          
+          {/* Bảng giờ chấm công */}
+          {selectedUser ? (
+            <Card style={{ padding:0, overflow:'auto' }}>
+              <table style={{ width:'100%', borderCollapse:'collapse', fontSize:12 }}>
+                <thead style={{ background:'#1976D2', color:'#fff', position:'sticky', top:0 }}>
+                  <tr>
+                    <th style={_payrollAttThStyle}>Tên NV</th>
+                    <th style={{..._payrollAttThStyle, textAlign:'center', width:60 }}>Tháng</th>
+                    <th style={{..._payrollAttThStyle, textAlign:'center', width:70 }}>Năm</th>
+                    <th style={{..._payrollAttThStyle, textAlign:'center', width:100 }}>Ngày</th>
+                    <th style={{..._payrollAttThStyle, textAlign:'center', width:60 }}>Thứ</th>
+                    <th style={{..._payrollAttThStyle, textAlign:'center', width:90 }}>Giờ vào</th>
+                    <th style={{..._payrollAttThStyle, textAlign:'center', width:90 }}>Giờ ra</th>
+                    <th style={{..._payrollAttThStyle, textAlign:'right', width:90 }}>Chấm công</th>
+                    <th style={{..._payrollAttThStyle, textAlign:'right', width:90 }}>OT duyệt</th>
+                    <th style={{..._payrollAttThStyle, textAlign:'right', width:80, background:'#0D47A1' }}>Tổng</th>
+                    <th style={{..._payrollAttThStyle, textAlign:'right', width:80, background:'#2E7D32' }}>Cơ bản</th>
+                    <th style={{..._payrollAttThStyle, textAlign:'right', width:80, background:'#F57C00' }}>Tăng ca</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {daysInMonth.map((d) => {
+                    const att = attByDate.get(d.date)
+                    const otApproved = otByDate.get(d.date) || 0
+                    const c = computeDailyHoursActual({ att, approvedOTHours: otApproved, stdHoursPerDay })
+                    const rowBg = d.isWeekend ? '#F0FDF4' : (d.day % 2 === 0 ? '#fff' : '#FAFAFA')
+                    const isEditingIn  = editingCell?.date === d.date && editingCell.field === 'in'
+                    const isEditingOut = editingCell?.date === d.date && editingCell.field === 'out'
+                    const ddmm = `${String(d.day).padStart(2,'0')}/${String(month).padStart(2,'0')}/${year}`
+                    return (
+                      <tr key={d.date} style={{ background:rowBg, borderBottom:`1px solid ${T.border}` }}>
+                        <td style={_payrollAttTdStyle}>{selectedUser.name}</td>
+                        <td style={{ ..._payrollAttTdStyle, textAlign:'center' }}>{month}</td>
+                        <td style={{ ..._payrollAttTdStyle, textAlign:'center' }}>{year}</td>
+                        <td style={{ ..._payrollAttTdStyle, textAlign:'center' }}>{ddmm}</td>
+                        <td style={{ ..._payrollAttTdStyle, textAlign:'center', color: d.isWeekend ? T.green : T.dark, fontWeight:600 }}>{d.dow}</td>
+                        {/* Giờ vào — click to edit */}
+                        <td style={{ ..._payrollAttTdStyle, textAlign:'center', padding:0 }}>
+                          {isEditingIn ? (
+                            <input type="time" value={editVal} autoFocus
+                              onChange={e => setEditVal(e.target.value)}
+                              onBlur={() => saveCell(d.date, 'in', editVal)}
+                              onKeyDown={e => {
+                                if (e.key === 'Enter') saveCell(d.date, 'in', editVal)
+                                if (e.key === 'Escape') setEditingCell(null)
+                              }}
+                              disabled={working}
+                              style={{ width:'100%', padding:'6px 4px', border:`2px solid ${T.gold}`, borderRadius:0,
+                                background:'#fff', color:T.dark, fontFamily:'inherit', fontSize:12, textAlign:'center' }}/>
+                          ) : (
+                            <div onClick={() => { setEditingCell({ date: d.date, field: 'in' }); setEditVal(c.punchIn) }}
+                              style={{ padding:'6px 8px', cursor:'pointer', minHeight:24, color: c.punchIn ? T.dark : T.light }}
+                              title="Click để sửa">
+                              {c.punchIn || '—'}
+                            </div>
+                          )}
+                        </td>
+                        {/* Giờ ra — click to edit */}
+                        <td style={{ ..._payrollAttTdStyle, textAlign:'center', padding:0 }}>
+                          {isEditingOut ? (
+                            <input type="time" value={editVal} autoFocus
+                              onChange={e => setEditVal(e.target.value)}
+                              onBlur={() => saveCell(d.date, 'out', editVal)}
+                              onKeyDown={e => {
+                                if (e.key === 'Enter') saveCell(d.date, 'out', editVal)
+                                if (e.key === 'Escape') setEditingCell(null)
+                              }}
+                              disabled={working}
+                              style={{ width:'100%', padding:'6px 4px', border:`2px solid ${T.gold}`, borderRadius:0,
+                                background:'#fff', color:T.dark, fontFamily:'inherit', fontSize:12, textAlign:'center' }}/>
+                          ) : (
+                            <div onClick={() => { setEditingCell({ date: d.date, field: 'out' }); setEditVal(c.punchOut) }}
+                              style={{ padding:'6px 8px', cursor:'pointer', minHeight:24, color: c.punchOut ? T.dark : T.light }}
+                              title="Click để sửa">
+                              {c.punchOut || '—'}
+                            </div>
+                          )}
+                        </td>
+                        <td style={{ ..._payrollAttTdStyle, textAlign:'right', fontVariantNumeric:'tabular-nums', color:T.dark }}>
+                          {c.punchHours > 0 ? fmtHours(c.punchHours) : '—'}
+                        </td>
+                        <td style={{ ..._payrollAttTdStyle, textAlign:'right', fontVariantNumeric:'tabular-nums', color: c.otRegistered > 0 ? T.purple : T.light, fontWeight: c.otRegistered > 0 ? 600 : 400 }}>
+                          {c.otRegistered > 0 ? `+${fmtHours(c.otRegistered)}` : '—'}
+                        </td>
+                        <td style={{ ..._payrollAttTdStyle, textAlign:'right', fontVariantNumeric:'tabular-nums', fontWeight:700, background: c.totalHours > 0 ? '#E3F2FD' : 'transparent', color:T.dark }}>
+                          {c.totalHours > 0 ? fmtHours(c.totalHours) : '—'}
+                        </td>
+                        <td style={{ ..._payrollAttTdStyle, textAlign:'right', fontVariantNumeric:'tabular-nums', fontWeight:700, background: c.baseHours > 0 ? '#E8F5E9' : 'transparent', color: c.baseHours > 0 ? '#2E7D32' : T.light }}>
+                          {c.baseHours > 0 ? fmtHours(c.baseHours) : '—'}
+                        </td>
+                        <td style={{ ..._payrollAttTdStyle, textAlign:'right', fontVariantNumeric:'tabular-nums', fontWeight:700, background: c.overtimeHours > 0 ? '#FFF3E0' : 'transparent', color: c.overtimeHours > 0 ? '#F57C00' : T.light }}>
+                          {c.overtimeHours > 0 ? fmtHours(c.overtimeHours) : '—'}
+                        </td>
+                      </tr>
+                    )
+                  })}
+                </tbody>
+                <tfoot>
+                  <tr style={{ background:'#FFF3E0', borderTop:`3px solid ${T.gold}`, fontWeight:700 }}>
+                    <td colSpan={7} style={{ ..._payrollAttTdStyle, fontWeight:700, color:T.dark }}>TỔNG THÁNG</td>
+                    <td style={{ ..._payrollAttTdStyle, textAlign:'right', fontVariantNumeric:'tabular-nums', fontWeight:700 }}>{fmtHours(stats.totalPunch)}h</td>
+                    <td style={{ ..._payrollAttTdStyle, textAlign:'right', fontVariantNumeric:'tabular-nums', fontWeight:700, color:T.purple }}>{fmtHours(stats.totalOTReg)}h</td>
+                    <td style={{ ..._payrollAttTdStyle, textAlign:'right', fontVariantNumeric:'tabular-nums', fontWeight:700, background:'#E3F2FD' }}>{fmtHours(stats.totalPunch + stats.totalOTReg)}h</td>
+                    <td style={{ ..._payrollAttTdStyle, textAlign:'right', fontVariantNumeric:'tabular-nums', fontWeight:700, background:'#E8F5E9', color:'#2E7D32' }}>{fmtHours(stats.totalBase)}h</td>
+                    <td style={{ ..._payrollAttTdStyle, textAlign:'right', fontVariantNumeric:'tabular-nums', fontWeight:700, background:'#FFF3E0', color:'#F57C00' }}>{fmtHours(stats.totalOT)}h</td>
+                  </tr>
+                </tfoot>
+              </table>
+              <div style={{ padding:'10px 14px', fontSize:11, color:T.med, background:T.bg, borderTop:`1px solid ${T.border}` }}>
+                💡 <b>Click</b> ô Giờ vào / Giờ ra để chỉnh sửa thủ công · Enter/blur để lưu, Esc để hủy.
+                Số giờ Cơ bản và Tăng ca tự cập nhật theo công thức: 
+                <code style={{ background:'#fff', padding:'1px 5px', borderRadius:3, marginLeft:4 }}>
+                  Tổng = Chấm công + OT duyệt; Cơ bản = min(Tổng, {stdHoursPerDay}h); Tăng ca = max(0, Tổng − {stdHoursPerDay}h)
+                </code>
+              </div>
+            </Card>
+          ) : (
+            <Card style={{ padding:30, textAlign:'center', color:T.light }}>📭 Chưa chọn NV</Card>
+          )}
+        </>
+      ) : (
+        // Sub-tab Điểm danh ngày — placeholder
+        <Card style={{ padding:30, textAlign:'center', color:T.med }}>
+          <div style={{ fontSize:14, marginBottom:8 }}>📋 Điểm danh ngày</div>
+          <div style={{ fontSize:12, color:T.light }}>
+            Sub-tab này đang được phát triển. Hiện tại anh có thể vào page <b>Chấm công</b> ở sidebar để điểm danh từng ngày.
+          </div>
+        </Card>
+      )}
+      
+      {/* Modal Import Excel — render full-screen PayrollImportModule trong Modal */}
+      {showImportModal && (
+        <Modal open={showImportModal} onClose={() => setShowImportModal(false)} 
+          title="📥 Import chấm công từ máy chấm công" wide>
+          <div style={{ maxHeight:'80vh', overflowY:'auto' }}>
+            <PayrollImportModule user={user} allUsers={allUsers} mobile={mobile}
+              attendance={attendanceMonth} setAttendance={setAttendanceMonth}
+              embedMode={true}
+              onClose={async () => {
+                setShowImportModal(false)
+                // Refresh data sau khi import
+                const fromDate = `${year}-${String(month).padStart(2,'0')}-01`
+                const toDate = new Date(year, month, 0).toISOString().slice(0, 10)
+                const { data } = await db.from('attendance').select('*').gte('date', fromDate).lte('date', toDate)
+                setAttendanceMonth(data || [])
+              }}/>
+          </div>
+        </Modal>
+      )}
+    </div>
+  )
+}
+
+const _payrollAttThStyle: any = {
+  padding:'10px 12px', textAlign:'left', fontSize:12, fontWeight:700, color:'#fff',
+  borderRight:'1px solid rgba(255,255,255,0.2)',
+}
+const _payrollAttTdStyle: any = {
+  padding:'8px 12px', borderRight:`1px solid ${T.border}`, fontSize:12,
 }
 
 
