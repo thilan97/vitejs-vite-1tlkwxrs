@@ -117,7 +117,7 @@ const db = createClient(SUPABASE_URL, SUPABASE_KEY)
 // ⚠ TODO sau v198 (anh deploy thủ công):
 //   - Cập nhật edge function `kiotviet-sales-revenue` để auto sync luôn `kv_invoices` (anh paste code edge function cho em fix).
 //   - Setup pg_cron hoặc external cron (cron-job.org) để auto sync mỗi 1h. Hướng dẫn trong migration_62.sql.
-const APP_VERSION = '2026.05.02.v198.7'
+const APP_VERSION = '2026.05.02.v198.7.1'
 
 // ════════════════════════════════════════════════════════════════
 // v158: VersionBadge — Hiển thị APP_VERSION ở góc dưới phải
@@ -12856,37 +12856,57 @@ function InventoryModule({ user, allUsers, products, invSessions, setInvSessions
 
   const fetchData = async (quiet=false) => {
     if (!quiet) setSyncing(true)
-    // v198.7: Load sessions trước, sau đó load checks RIÊNG cho phiên thuộc tháng đang xem
-    // (tránh limit 5000 bị cắt mất phiên cũ)
-    const { data: s } = await db.from('inventory_sessions').select('*').order('date',{ascending:false}).limit(100)
-    setInvSessions(s||[])
+    // v198.7.1: Load TẤT CẢ sessions (không limit 100) — paginate batch 1000
+    let allSessions: any[] = []
+    let sessOffset = 0
+    while (true) {
+      const { data: batch } = await db.from('inventory_sessions').select('*')
+        .order('date', { ascending: false })
+        .range(sessOffset, sessOffset + 999)
+      if (!batch || batch.length === 0) break
+      allSessions = allSessions.concat(batch)
+      if (batch.length < 1000) break
+      sessOffset += 1000
+      if (sessOffset >= 5000) break  // safety: tối đa 5000 phiên
+    }
+    setInvSessions(allSessions)
     
     // Lấy session IDs của tháng đang xem + tháng gần nhất (để cover tab "Cuối tháng" + "Phiên")
     const [fy, fm] = monthFilter.split('-').map(Number)
-    const monthStart = new Date(fy, fm - 1, 1)
-    const monthEnd = new Date(fy, fm, 0)
-    monthEnd.setHours(23, 59, 59, 999)
     
-    // Sessions thuộc tháng filter HOẶC đang mở HOẶC trong 60 ngày gần đây
+    // v198.7.1: Compare bằng STRING để tránh timezone issue
+    // sess.date thường là 'YYYY-MM-DD' (DATE type) → so sánh string trực tiếp
+    const monthPrefix = `${fy}-${String(fm).padStart(2, '0')}`  // "2026-04"
+    
+    // Sessions thuộc tháng filter HOẶC đang mở HOẶC trong 90 ngày gần đây
     const sessionIdsToFetch = new Set<string>()
-    for (const sess of (s || [])) {
+    const todayMs = Date.now()
+    for (const sess of allSessions) {
       if (!sess.id) continue
       if (sess.status === 'open') {
         sessionIdsToFetch.add(sess.id)
         continue
       }
-      const d = new Date(sess.date)
-      // Phiên thuộc tháng filter
-      if (d >= monthStart && d <= monthEnd) {
+      // Phiên thuộc tháng filter (compare prefix string)
+      const sessDateStr = String(sess.date || '').slice(0, 10)  // "2026-04-15"
+      if (sessDateStr.startsWith(monthPrefix)) {
         sessionIdsToFetch.add(sess.id)
         continue
       }
-      // Phiên trong 60 ngày gần đây (cho overview & history view)
-      const daysAgo = (Date.now() - d.getTime()) / (1000 * 60 * 60 * 24)
-      if (daysAgo <= 60) {
-        sessionIdsToFetch.add(sess.id)
+      // Phiên trong 90 ngày gần đây (cho overview)
+      if (sessDateStr) {
+        const sessTime = new Date(sessDateStr + 'T12:00:00').getTime()  // noon để tránh timezone
+        const daysAgo = (todayMs - sessTime) / (1000 * 60 * 60 * 24)
+        if (daysAgo <= 90 && daysAgo >= 0) {
+          sessionIdsToFetch.add(sess.id)
+        }
       }
     }
+    
+    // Debug log
+    console.log(`[InventoryModule] monthFilter=${monthFilter}, total sessions=${allSessions.length}, sessionsToFetch=${sessionIdsToFetch.size}`)
+    const filterMatches = allSessions.filter(s => String(s.date || '').slice(0, 10).startsWith(monthPrefix))
+    console.log(`[InventoryModule] Phiên trong tháng ${monthFilter}:`, filterMatches.map(s => ({ id: s.id, date: s.date, status: s.status, is_month_close: s.is_month_close })))
     
     let allChecks: any[] = []
     if (sessionIdsToFetch.size > 0) {
@@ -12903,10 +12923,11 @@ function InventoryModule({ user, allUsers, products, invSessions, setInvSessions
         allChecks = allChecks.concat(batch)
         if (batch.length < BATCH) break
         offset += BATCH
-        // Safety: tối đa 20 batch (= 20000 records)
-        if (offset >= 20000) break
+        // Safety: tối đa 30 batch (= 30000 records)
+        if (offset >= 30000) break
       }
     }
+    console.log(`[InventoryModule] Loaded ${allChecks.length} checks for ${sessionIdsToFetch.size} sessions`)
     setChecks(allChecks)
     setLastSync(new Date())
     // Load excluded + last sync
