@@ -117,7 +117,7 @@ const db = createClient(SUPABASE_URL, SUPABASE_KEY)
 // ⚠ TODO sau v198 (anh deploy thủ công):
 //   - Cập nhật edge function `kiotviet-sales-revenue` để auto sync luôn `kv_invoices` (anh paste code edge function cho em fix).
 //   - Setup pg_cron hoặc external cron (cron-job.org) để auto sync mỗi 1h. Hướng dẫn trong migration_62.sql.
-const APP_VERSION = '2026.05.02.v198.6'
+const APP_VERSION = '2026.05.02.v198.7'
 
 // ════════════════════════════════════════════════════════════════
 // v158: VersionBadge — Hiển thị APP_VERSION ở góc dưới phải
@@ -12856,12 +12856,58 @@ function InventoryModule({ user, allUsers, products, invSessions, setInvSessions
 
   const fetchData = async (quiet=false) => {
     if (!quiet) setSyncing(true)
-    const [{data:s},{data:c}] = await Promise.all([
-      db.from('inventory_sessions').select('*').order('date',{ascending:false}).limit(100),
-      db.from('inventory_checks').select('*').order('created_at',{ascending:false}).limit(5000)
-    ])
+    // v198.7: Load sessions trước, sau đó load checks RIÊNG cho phiên thuộc tháng đang xem
+    // (tránh limit 5000 bị cắt mất phiên cũ)
+    const { data: s } = await db.from('inventory_sessions').select('*').order('date',{ascending:false}).limit(100)
     setInvSessions(s||[])
-    setChecks(c||[])
+    
+    // Lấy session IDs của tháng đang xem + tháng gần nhất (để cover tab "Cuối tháng" + "Phiên")
+    const [fy, fm] = monthFilter.split('-').map(Number)
+    const monthStart = new Date(fy, fm - 1, 1)
+    const monthEnd = new Date(fy, fm, 0)
+    monthEnd.setHours(23, 59, 59, 999)
+    
+    // Sessions thuộc tháng filter HOẶC đang mở HOẶC trong 60 ngày gần đây
+    const sessionIdsToFetch = new Set<string>()
+    for (const sess of (s || [])) {
+      if (!sess.id) continue
+      if (sess.status === 'open') {
+        sessionIdsToFetch.add(sess.id)
+        continue
+      }
+      const d = new Date(sess.date)
+      // Phiên thuộc tháng filter
+      if (d >= monthStart && d <= monthEnd) {
+        sessionIdsToFetch.add(sess.id)
+        continue
+      }
+      // Phiên trong 60 ngày gần đây (cho overview & history view)
+      const daysAgo = (Date.now() - d.getTime()) / (1000 * 60 * 60 * 24)
+      if (daysAgo <= 60) {
+        sessionIdsToFetch.add(sess.id)
+      }
+    }
+    
+    let allChecks: any[] = []
+    if (sessionIdsToFetch.size > 0) {
+      // Paginate batch 1000 (Supabase default cap)
+      const sessionIds = Array.from(sessionIdsToFetch)
+      let offset = 0
+      const BATCH = 1000
+      while (true) {
+        const { data: batch } = await db.from('inventory_checks').select('*')
+          .in('session_id', sessionIds)
+          .order('created_at', { ascending: false })
+          .range(offset, offset + BATCH - 1)
+        if (!batch || batch.length === 0) break
+        allChecks = allChecks.concat(batch)
+        if (batch.length < BATCH) break
+        offset += BATCH
+        // Safety: tối đa 20 batch (= 20000 records)
+        if (offset >= 20000) break
+      }
+    }
+    setChecks(allChecks)
     setLastSync(new Date())
     // Load excluded + last sync
     db.from('kk_excluded_products').select('product_code')
@@ -12880,7 +12926,7 @@ function InventoryModule({ user, allUsers, products, invSessions, setInvSessions
       if (hasOpen || tab==='check') fetchData(true)
     }, 10000)
     return () => clearInterval(interval)
-  }, [invSessions.length, tab])
+  }, [invSessions.length, tab, monthFilter])  // v198.7: re-fetch khi đổi tháng
 
   const updateCheck = (id: string, upd: any) =>
     setChecks(prev => prev.map((c: any) => c.id===id ? {...c,...upd} : c))
@@ -30846,7 +30892,7 @@ function WarehouseStatsModule({ user, allUsers, mobile }: any) {
     return d.toISOString().split('T')[0]
   })
   const [toDate, setToDate] = useState(() => new Date().toISOString().split('T')[0])
-  const [preset, setPreset] = useState<'month'|'week'|'7d'|'30d'|'custom'>('month')
+  const [preset, setPreset] = useState<'month'|'lastMonth'|'week'|'7d'|'30d'|'custom'>('month')
 
   const [orders, setOrders] = useState<any[]>([])
   const [attendance, setAttendance] = useState<any[]>([])
@@ -30870,10 +30916,16 @@ function WarehouseStatsModule({ user, allUsers, mobile }: any) {
   }
 
   // Preset handlers
+  // v198.7: Đổi tên: chỉ set range, KHÔNG auto-fetch (user phải bấm "Áp dụng")
   const applyPreset = (p: string) => {
     const today = new Date()
     let from = new Date(), to = new Date()
     if (p === 'month')   { from = new Date(today.getFullYear(), today.getMonth(), 1) }
+    else if (p === 'lastMonth') {
+      // v198.7: Tháng trước — từ 1 đến cuối tháng trước
+      from = new Date(today.getFullYear(), today.getMonth() - 1, 1)
+      to = new Date(today.getFullYear(), today.getMonth(), 0)  // ngày cuối tháng trước
+    }
     else if (p === 'week') {
       const day = today.getDay() || 7
       from = new Date(today); from.setDate(today.getDate() - day + 1)
@@ -30914,15 +30966,12 @@ function WarehouseStatsModule({ user, allUsers, mobile }: any) {
     setLoading(false)
   }
 
-  // Debounce fetch để khi user gõ ngày tay ko bị spam query
+  // v198.7: Bỏ auto-fetch khi đổi date — user phải bấm nút "🔍 Áp dụng"
+  // Chỉ fetch lần đầu mount (initial)
   useEffect(() => {
-    // Validate ngày hợp lệ (YYYY-MM-DD, year 4 chữ số)
-    const validDate = (s: string) => /^\d{4}-\d{2}-\d{2}$/.test(s) && !isNaN(new Date(s).getTime())
-    if (!validDate(fromDate) || !validDate(toDate)) return
-    if (new Date(fromDate) > new Date(toDate)) return  // ngược logic
-    const timer = setTimeout(() => { fetchOrders() }, 400)
-    return () => clearTimeout(timer)
-  }, [fromDate, toDate])
+    fetchOrders()
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
 
   // Load cấu hình NV loại khỏi avg từ DB (chỉ 1 lần khi mount)
   useEffect(() => {
@@ -31399,10 +31448,11 @@ function WarehouseStatsModule({ user, allUsers, mobile }: any) {
       <Card style={{ padding:12, marginBottom:12 }}>
         <div style={{ display:'flex', gap:6, flexWrap:'wrap', marginBottom:10 }}>
           {[
-            { id:'month', label:'Tháng này' },
-            { id:'week',  label:'Tuần này'  },
-            { id:'7d',    label:'7 ngày'    },
-            { id:'30d',   label:'30 ngày'   },
+            { id:'month',     label:'Tháng này' },
+            { id:'lastMonth', label:'Tháng trước' },  // v198.7
+            { id:'week',      label:'Tuần này'  },
+            { id:'7d',        label:'7 ngày'    },
+            { id:'30d',       label:'30 ngày'   },
           ].map((t: any) => (
             <button key={t.id} onClick={() => applyPreset(t.id)}
               style={{ padding:'4px 12px', borderRadius:16, cursor:'pointer',
@@ -31423,6 +31473,18 @@ function WarehouseStatsModule({ user, allUsers, mobile }: any) {
           <input type="date" value={toDate} onChange={e => { setToDate(e.target.value); setPreset('custom')  }}
             style={{ padding:'5px 10px', border:`1px solid ${T.border}`, borderRadius:6,
               fontSize:11, fontFamily:'inherit' , background:'#fff', color:T.dark }}/>
+          {/* v198.7: Nút Áp dụng — không auto-fetch nữa */}
+          <button onClick={() => fetchOrders()} disabled={loading}
+            style={{ padding:'6px 16px', borderRadius:6, border:'none',
+              background: loading ? T.border : T.gold, color:'#fff',
+              cursor: loading ? 'wait' : 'pointer',
+              fontFamily:'inherit', fontSize:12, fontWeight:700,
+              marginLeft:'auto' }}>
+            {loading ? '⏳ Đang tính...' : '🔍 Áp dụng'}
+          </button>
+        </div>
+        <div style={{ marginTop:8, fontSize:10, color:T.med, fontStyle:'italic' }}>
+          💡 Chọn xong khoảng ngày, bấm <b style={{ color:T.gold }}>"🔍 Áp dụng"</b> để cập nhật bảng. Khi bấm preset (Tháng này/Tuần…) cũng cần bấm Áp dụng.
         </div>
       </Card>
 
