@@ -117,7 +117,7 @@ const db = createClient(SUPABASE_URL, SUPABASE_KEY)
 // ⚠ TODO sau v198 (anh deploy thủ công):
 //   - Cập nhật edge function `kiotviet-sales-revenue` để auto sync luôn `kv_invoices` (anh paste code edge function cho em fix).
 //   - Setup pg_cron hoặc external cron (cron-job.org) để auto sync mỗi 1h. Hướng dẫn trong migration_62.sql.
-const APP_VERSION = '2026.05.02.v198.8'
+const APP_VERSION = '2026.05.02.v198.9'
 
 // ════════════════════════════════════════════════════════════════
 // v158: VersionBadge — Hiển thị APP_VERSION ở góc dưới phải
@@ -16647,10 +16647,39 @@ function ExpiryModule({ user, mobile, products, batches, setBatches }: any) {
         }))
         .filter(r => r.kvStock !== null && r.diff !== 0)  // chỉ báo những SP có lệch
 
-      let autoSynced = 0, skippedSame = 0
+      let autoSynced = 0, skippedSame = 0, autoZeroed = 0, autoZeroedBatchCount = 0
       const now = new Date().toISOString()
 
+      // v198.9: Auto-zero ALL batches khi KV stock = 0 (KV đã hết hàng)
+      // Áp dụng cho cả single-lot và multi-lot. Override logic single/multi bên dưới.
+      const codesToZero = Object.entries(activeBatchesByCode)
+        .filter(([code, bList]) => {
+          const kvStock = stockMap[code]
+          // KV = 0 (hoặc null/undefined → coi như 0) NHƯNG app vẫn có lô active
+          return (kvStock === 0 || kvStock === null) && bList.some((b: any) => (b.qty_remaining || 0) > 0)
+        })
+        .map(([code, bList]) => ({ code, batches: bList }))
+      
+      const codesToZeroSet = new Set(codesToZero.map(x => x.code))
+      
+      for (const { code, batches: bList } of codesToZero) {
+        const ids = bList.filter((b: any) => (b.qty_remaining || 0) > 0).map((b: any) => b.id)
+        if (ids.length === 0) continue
+        const { error } = await db.from('product_batches')
+          .update({ qty_remaining: 0, last_updated_at: now, last_updated_by: user.id })
+          .in('id', ids)
+        if (!error) {
+          setBatches((prev: any[]) => prev.map((b: any) =>
+            ids.includes(b.id) ? { ...b, qty_remaining: 0, last_updated_at: now } : b
+          ))
+          autoZeroed++
+          autoZeroedBatchCount += ids.length
+        }
+      }
+
       for (const { code, batch } of singleLotCodes) {
+        // v198.9: Skip nếu đã xử lý qua auto-zero
+        if (codesToZeroSet.has(code)) continue
         const kvStock = stockMap[code]
         if (kvStock === undefined || kvStock === null) continue
         if (batch.qty_remaining === kvStock) { skippedSame++; continue }
@@ -16666,11 +16695,16 @@ function ExpiryModule({ user, mobile, products, batches, setBatches }: any) {
         }
       }
 
+      // v198.9: Filter multiLotCodes — bỏ những code đã được auto-zero (chúng sẽ khớp 0=0)
+      const filteredMultiLot = multiLotCodes.filter(r => !codesToZeroSet.has(r.code))
+
       setSyncResult({
         ok: true,
         autoSynced,
         skippedSame,
-        multiLot: multiLotCodes,
+        autoZeroed,                  // v198.9
+        autoZeroedBatchCount,        // v198.9
+        multiLot: filteredMultiLot,
         lastSync: now,
       })
 
@@ -16820,6 +16854,13 @@ function ExpiryModule({ user, mobile, products, batches, setBatches }: any) {
                 🔄 Auto-cập nhật: <b>{syncResult.autoSynced}</b> lô (SP chỉ có 1 lô active)
                 {syncResult.skippedSame > 0 && <span style={{ color:T.light }}> · {syncResult.skippedSame} lô đã khớp</span>}
               </div>
+              {/* v198.9: Thông báo auto-zero */}
+              {syncResult.autoZeroed > 0 && (
+                <div style={{ fontSize:12, color:T.dark, marginBottom:4,
+                  padding:'6px 10px', background:'#FEE2E2', borderRadius:6, border:`1px solid ${T.red}` }}>
+                  ⚠️ Tự động set <b>{syncResult.autoZeroedBatchCount}</b> lô về <b>0</b> ({syncResult.autoZeroed} mã SP) — KV đã hết hàng
+                </div>
+              )}
               {syncResult.multiLot?.length > 0 && (
                 <div style={{ marginTop:10 }}>
                   <div style={{ fontSize:12, fontWeight:700, color:T.amber, marginBottom:6 }}>
@@ -17061,12 +17102,25 @@ function ExpiryModule({ user, mobile, products, batches, setBatches }: any) {
                 {canManage && <span style={{ textAlign:'center' }}>Thao tác</span>}
               </div>
             )}
-            {filtered.map((b: any, i: number) => {
-              const kv         = b.prod?.stock ?? 0
-              const batchTotal = batchTotalByCode[b.product_code] || 0
-              const diff       = batchTotal - kv
-              const diffColor  = diff === 0 ? T.green : Math.abs(diff) <= 5 ? T.amber : T.red
-              return (
+            {(() => {
+              // v198.9: Track row đầu tiên của mỗi product_code (vì cột Chênh tính TỔNG SP)
+              // → chỉ hiển thị Tồn KV + Chênh ở dòng đầu, các dòng sau hiện "—" để tránh hiểu nhầm
+              const firstRowOfCode = new Set<string>()
+              const seenCodes = new Set<string>()
+              for (const b of filtered) {
+                if (!seenCodes.has(b.product_code)) {
+                  firstRowOfCode.add(b.id)
+                  seenCodes.add(b.product_code)
+                }
+              }
+              return filtered.map((b: any, i: number) => {
+                const kv         = b.prod?.stock ?? 0
+                const batchTotal = batchTotalByCode[b.product_code] || 0
+                const diff       = batchTotal - kv
+                const diffColor  = diff === 0 ? T.green : Math.abs(diff) <= 5 ? T.amber : T.red
+                const isFirstRowOfCode = firstRowOfCode.has(b.id)
+                const lotCount = batches.filter((x: any) => x.product_code === b.product_code && (x.qty_remaining || 0) > 0).length
+                return (
                 <div key={b.id} style={{
                   display: mobile ? 'block' : 'grid',
                   gridTemplateColumns: canManage
@@ -17123,10 +17177,29 @@ function ExpiryModule({ user, mobile, products, batches, setBatches }: any) {
                       </span>
                       <span style={{ fontSize:12, fontWeight:700, textAlign:'right',
                         color:(b.qty_remaining||0)===0?T.light:T.dark }}>{b.qty_remaining??0}</span>
-                      <span style={{ fontSize:12, textAlign:'right', color:T.med }}>{kv}</span>
-                      <span style={{ fontSize:11, fontWeight:700, textAlign:'right', color:diffColor }}>
-                        {diff===0?'✅':diff>0?`+${diff}`:`${diff}`}
-                      </span>
+                      {/* v198.9: Tồn KV + Chênh chỉ hiển thị ở dòng đầu của mỗi SP */}
+                      {/* (vì 2 cột này tính TỔNG SP, hiện ở mọi dòng gây hiểu nhầm) */}
+                      {isFirstRowOfCode ? (
+                        <>
+                          <span style={{ fontSize:12, textAlign:'right', color:T.med }} title={lotCount > 1 ? `Tổng ${lotCount} lô của SP này` : 'Tồn KiotViet'}>
+                            {kv}{lotCount > 1 && <span style={{ fontSize:9, color:T.light }}> /{lotCount}lô</span>}
+                          </span>
+                          <span style={{ fontSize:11, fontWeight:700, textAlign:'right', color:diffColor }}
+                            title={lotCount > 1 ? `Chênh tổng SP: tổng ${batchTotal} lô vs ${kv} KV` : 'Chênh giữa lô và KV'}>
+                            {diff===0?'✅':diff>0?`+${diff}`:`${diff}`}
+                          </span>
+                        </>
+                      ) : (
+                        <>
+                          <span style={{ fontSize:11, textAlign:'right', color:T.light, fontStyle:'italic' }}
+                            title={`Đã hiển thị ở dòng đầu (tổng ${lotCount} lô của SP)`}>
+                            ↑
+                          </span>
+                          <span style={{ fontSize:11, textAlign:'right', color:T.light, fontStyle:'italic' }}>
+                            ↑
+                          </span>
+                        </>
+                      )}
                       <span style={{ fontSize:11, color:T.light, overflow:'hidden',
                         textOverflow:'ellipsis', whiteSpace:'nowrap' }}>{b.note||'—'}</span>
                       {canManage && (
@@ -17145,7 +17218,8 @@ function ExpiryModule({ user, mobile, products, batches, setBatches }: any) {
                   )}
                 </div>
               )
-            })}
+              })
+            })()}
             {filtered.length === 0 && (
               <div style={{ padding:'32px', textAlign:'center', color:T.light, fontSize:13 }}>
                 {searchQ || filterStatus !== 'all'
