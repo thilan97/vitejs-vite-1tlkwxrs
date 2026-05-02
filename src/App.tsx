@@ -117,7 +117,7 @@ const db = createClient(SUPABASE_URL, SUPABASE_KEY)
 // ⚠ TODO sau v198 (anh deploy thủ công):
 //   - Cập nhật edge function `kiotviet-sales-revenue` để auto sync luôn `kv_invoices` (anh paste code edge function cho em fix).
 //   - Setup pg_cron hoặc external cron (cron-job.org) để auto sync mỗi 1h. Hướng dẫn trong migration_62.sql.
-const APP_VERSION = '2026.05.02.v198.7.2'
+const APP_VERSION = '2026.05.02.v198.8'
 
 // ════════════════════════════════════════════════════════════════
 // v158: VersionBadge — Hiển thị APP_VERSION ở góc dưới phải
@@ -4607,7 +4607,21 @@ function Attendance({ user, allUsers, leaveRequests, attendance, setAttendance, 
   const [outRecords, setOutRecords] = useState<any[]>([])
   const [outForm, setOutForm]   = useState({ at:'', mins:15, reason:'' })
   const [addingOut, setAddingOut] = useState(false)
+  // v198.8: Load ngày Lễ Tết để default status='leave' cho NV vào ngày đó
+  const [specialDays, setSpecialDays] = useState<any[]>([])
   const p = mobile ? '16px' : '24px'
+  
+  // v198.8: Load special days từ payroll_special_days
+  useEffect(() => {
+    db.from('payroll_special_days').select('*').then(({ data }) => {
+      setSpecialDays(data || [])
+    })
+  }, [])
+  
+  // v198.8: Set check nhanh xem 1 ngày có phải Lễ Tết không
+  const specialDaySet = useMemo(() => {
+    return new Set((specialDays || []).map((s: any) => String(s.date || '').slice(0, 10)))
+  }, [specialDays])
 
   const isQM = getPerm(user).approveLeave || getPerm(user).viewAllDashboard
 
@@ -4646,11 +4660,20 @@ function Attendance({ user, allUsers, leaveRequests, attendance, setAttendance, 
     leaveRequests.some((r: any) => r.user_id===uid && r.status==='approved' && r.start_date<=d && r.end_date>=d)
 
   const getRec    = (uid: string, d: string) => attendance.find((r: any) => r.user_id===uid && r.date===d)
+  
+  // v198.8: Helper check 1 ngày có phải ngày nghỉ mặc định không (CN hoặc Lễ Tết)
+  const isDayOff = (d: string) => {
+    if (!d) return false
+    if (specialDaySet.has(d)) return true  // Ngày Lễ Tết admin setup
+    const dow = new Date(d + 'T00:00:00').getDay()
+    return dow === 0  // Chủ Nhật
+  }
 
   const getStatus = (uid: string, d: string) => {
     const rec = getRec(uid, d)
-    if (rec) return rec.status
+    if (rec) return rec.status   // Đã chấm → ưu tiên record (kể cả khi QM chấm 'present' vào ngày Lễ)
     if (hasLeave(uid, d)) return 'leave'
+    if (isDayOff(d)) return 'leave'  // v198.8: CN + Lễ Tết → mặc định nghỉ phép
     return 'present'
   }
 
@@ -4677,7 +4700,15 @@ function Attendance({ user, allUsers, leaveRequests, attendance, setAttendance, 
   const openEdit = (u: any, d: string) => {
     const rec = getRec(u.id, d)
     setEditRow({ u, d })
-    setEditForm({ status:rec?.status||(hasLeave(u.id,d)?'leave':'present'), late_mins:rec?.late_mins||0, reason:rec?.reason||'', notes:rec?.notes||'' })
+    // v198.8: Default status:
+    //   - Đã có record → giữ status đó
+    //   - Có approved leave → 'leave'
+    //   - CN/Lễ Tết → 'leave' (default mặc định)
+    //   - Còn lại → 'present'
+    const defaultStatus = rec?.status 
+      || (hasLeave(u.id, d) ? 'leave' 
+      : (isDayOff(d) ? 'leave' : 'present'))
+    setEditForm({ status: defaultStatus, late_mins:rec?.late_mins||0, reason:rec?.reason||'', notes:rec?.notes||'' })
     setOutRecords(rec?.out_records || [])  // v116
     setOutForm({ at: new Date().toTimeString().slice(0,5), mins:15, reason:'' })
     setAddingOut(false)
@@ -4704,6 +4735,17 @@ function Attendance({ user, allUsers, leaveRequests, attendance, setAttendance, 
     let present=0,late=0,absent=0,leave=0,half=0,outMins=0
     monthDays.forEach(({ iso, isWeekend }) => {
       if (isWeekend) return
+      // v198.8: Skip ngày Lễ Tết khỏi tính ngày công (trừ khi NV vẫn đi làm thực tế = có record present)
+      if (specialDaySet.has(iso)) {
+        const rec = getRec(uid, iso)
+        // Nếu QM chấm NV present trong ngày Lễ → vẫn cộng vào present
+        if (rec && (rec.status === 'present' || rec.status === 'late' || rec.status === 'early_out')) {
+          present++
+          if (rec.status === 'late') late++
+          outMins += totalOutMins(rec)
+        }
+        return
+      }
       const s = getStatus(uid, iso)
       if (s==='present') present++
       else if (s==='late')       { present++; late++ }
@@ -4807,14 +4849,25 @@ function Attendance({ user, allUsers, leaveRequests, attendance, setAttendance, 
               <thead>
                 <tr style={{ background:T.bg }}>
                   <th style={{ padding:'10px 14px', textAlign:'left', fontSize:12, fontWeight:600, color:T.dark, borderBottom:`1px solid ${T.border}`, minWidth:130 }}>Nhân viên</th>
-                  {weekDays.map(d => (
-                    <th key={d.iso} style={{ padding:'10px 8px', textAlign:'center', fontSize:11, fontWeight:600,
-                      color:d.isToday?T.gold:T.light, borderBottom:`1px solid ${T.border}`,
-                      background:d.isToday?T.goldBg:'transparent', minWidth:65 }}>
-                      <div style={{ fontWeight:700 }}>{d.label}</div>
-                      <div style={{ fontSize:13, color:d.isToday?T.gold:T.dark }}>{d.dayNum}</div>
-                    </th>
-                  ))}
+                  {weekDays.map(d => {
+                    // v198.8: Tìm thông tin Lễ Tết của ngày này (nếu có)
+                    const sd = (specialDays || []).find((s: any) => String(s.date || '').slice(0, 10) === d.iso)
+                    const isHoliday = !!sd
+                    return (
+                      <th key={d.iso} style={{ padding:'10px 8px', textAlign:'center', fontSize:11, fontWeight:600,
+                        color:d.isToday?T.gold:T.light, borderBottom:`1px solid ${T.border}`,
+                        background: isHoliday ? '#FEF3C7' : (d.isToday?T.goldBg:'transparent'), minWidth:65 }}>
+                        <div style={{ fontWeight:700 }}>{d.label}</div>
+                        <div style={{ fontSize:13, color:d.isToday?T.gold:T.dark }}>{d.dayNum}</div>
+                        {isHoliday && (
+                          <div style={{ fontSize:9, color:'#92400E', fontWeight:700, marginTop:2 }}
+                            title={sd.label}>
+                            🎉 Lễ
+                          </div>
+                        )}
+                      </th>
+                    )
+                  })}
                   <th style={{ padding:'10px 8px', textAlign:'center', fontSize:11, fontWeight:600, color:T.light, borderBottom:`1px solid ${T.border}`, minWidth:70 }}>Tổng</th>
                 </tr>
               </thead>
@@ -4875,7 +4928,8 @@ function Attendance({ user, allUsers, leaveRequests, attendance, setAttendance, 
   )
 
   const renderMonth = () => {
-    const workDays = monthDays.filter(d => !d.isWeekend).length
+    // v198.8: Skip cả T7 (đã là isWeekend) và Lễ Tết khỏi workDays
+    const workDays = monthDays.filter(d => !d.isWeekend && !specialDaySet.has(d.iso)).length
     return (
       <div>
         <div style={{ display:'flex', justifyContent:'flex-end', marginBottom:14 }}>
