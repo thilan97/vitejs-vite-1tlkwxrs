@@ -117,7 +117,7 @@ const db = createClient(SUPABASE_URL, SUPABASE_KEY)
 // ⚠ TODO sau v198 (anh deploy thủ công):
 //   - Cập nhật edge function `kiotviet-sales-revenue` để auto sync luôn `kv_invoices` (anh paste code edge function cho em fix).
 //   - Setup pg_cron hoặc external cron (cron-job.org) để auto sync mỗi 1h. Hướng dẫn trong migration_62.sql.
-const APP_VERSION = '2026.05.02.v198.10.1'
+const APP_VERSION = '2026.05.02.v198.12'
 
 // ════════════════════════════════════════════════════════════════
 // v158: VersionBadge — Hiển thị APP_VERSION ở góc dưới phải
@@ -3690,7 +3690,7 @@ function Checklist({ user, checklist, setChecklist, addLog, allUsers, mobile }: 
       tone: 'danger',
     }))) return
     setChecklist((prev: any) => prev.filter((c: any) => c.id !== id))
-    await db.from('checklist').delete().eq('id', id)
+    await deleteWithAudit({ user, table: 'checklist', id: id })
   }
 
   const addSelfItem = async () => {
@@ -4041,7 +4041,7 @@ function Tasks({ user, tasks, setTasks, addLog, allUsers, mobile }: any) {
       tone: 'danger',
     }))) return
     setTasks((prev: any) => prev.filter((t: any) => t.id !== id))
-    await db.from('tasks').delete().eq('id', id)
+    await deleteWithAudit({ user, table: 'tasks', id: id })
   }
 
   const create = async () => {
@@ -4304,7 +4304,7 @@ function Templates({ templates, setTemplates, allUsers, mobile }: any) {
   const remove = async (id: string) => {
     if (!(await confirmDialog({ title: 'Xoá template này?', confirmText: 'Xoá', tone: 'danger' }))) return
     setTemplates((prev: any) => prev.filter((t: any) => t.id !== id))
-    await db.from('checklist_templates').delete().eq('id', id)
+    await deleteWithAudit({ user, table: 'checklist_templates', id: id })
   }
 
   const deptGroups = ['kho','sale','vp'].map(d => ({
@@ -5237,7 +5237,7 @@ function Overtime({ user, allUsers, mobile }: any) {
   const remove = async (id: string) => {
     if (!(await confirmDialog({ title: 'Xoá đơn OT này?', confirmText: 'Xoá', tone: 'danger' }))) return
     setRequests(prev => prev.filter((r: any) => r.id!==id))
-    await db.from('overtime_requests').delete().eq('id', id)
+    await deleteWithAudit({ user, table: 'overtime_requests', id: id })
   }
 
   const RS: any = {
@@ -5611,7 +5611,7 @@ function Leave({ user, allUsers, leaveRequests, setLeaveRequests, mobile }: any)
   const remove = async (id: string) => {
     if (!(await confirmDialog({ title: 'Xoá đơn nghỉ phép này?', confirmText: 'Xoá', tone: 'danger' }))) return
     setLeaveRequests((prev: any) => prev.filter((r: any) => r.id !== id))
-    await db.from('leave_requests').delete().eq('id', id)
+    await deleteWithAudit({ user, table: 'leave_requests', id: id })
     // Xóa khỏi localStorage backup
     try {
       const stored = JSON.parse(localStorage.getItem('la_leave_backup') || '[]')
@@ -5912,7 +5912,7 @@ function Announcements({ user, allUsers, mobile }: any) {
   const remove = async (id: string) => {
     if (!(await confirmDialog({ title: 'Xoá thông báo này?', confirmText: 'Xoá', tone: 'danger' }))) return
     setItems(prev => prev.filter(a => a.id!==id))
-    await db.from('announcements').delete().eq('id', id)
+    await deleteWithAudit({ user, table: 'announcements', id: id })
   }
 
   return (
@@ -6045,7 +6045,7 @@ function MgrShortageRow({ item, idx, total, products, norm, setItems, mobile: is
   const remove = async () => {
     if (!(await confirmDialog({ title: 'Xoá mã này?', confirmText: 'Xoá', tone: 'danger' }))) return
     setItems((prev: any) => prev.filter((i: any) => i.id!==item.id))
-    await db.from('shortage_items').delete().eq('id', item.id)
+    await deleteWithAudit({ user, table: 'shortage_items', id: item.id })
   }
 
   const ordered = prod?.ordered_qty ?? 0
@@ -6589,6 +6589,7 @@ function ShortageItems({ user, allUsers, mobile, products, setProducts }: any) {
                   }))) return
                   try {
                     const ids = arrivedList.map((i: any) => i.id)
+                    await logAudit({ user, action: 'bulk_delete', table: 'shortage_items', note: `Bulk delete ${ids.length} items` })
                     await db.from('shortage_items').delete().in('id', ids)
                     setItems((prev: any) => prev.filter((i: any) => !ids.includes(i.id)))
                     window.toast?.success(`Đã xóa ${ids.length} mục`)
@@ -6779,7 +6780,7 @@ function ShortageItems({ user, allUsers, mobile, products, setProducts }: any) {
                               e.stopPropagation()
                               if (!(await confirmDialog({ title: 'Xoá mã này khỏi danh sách?', confirmText: 'Xoá', tone: 'danger' }))) return
                               setItems(prev => prev.filter(i => i.id !== item.id))
-                              await db.from('shortage_items').delete().eq('id', item.id)
+                              await deleteWithAudit({ user, table: 'shortage_items', id: item.id })
                             }}
                               style={{ padding:'3px 9px', borderRadius:6, border:`1px solid ${T.redBg}`,
                                 background:T.redBg, cursor:'pointer', fontSize:11, fontFamily:'inherit', color:T.red }}>
@@ -6800,7 +6801,7 @@ function ShortageItems({ user, allUsers, mobile, products, setProducts }: any) {
                             const reporters = (item.reporters||[]).filter((r: any) => r.user_id !== user.id)
                             if (reporters.length === 0 || getPerm(user).viewAllDashboard) {
                               setItems(prev => prev.filter(i => i.id !== item.id))
-                              await db.from('shortage_items').delete().eq('id', item.id)
+                              await deleteWithAudit({ user, table: 'shortage_items', id: item.id })
                             } else {
                               await updateItem(item.id, { reporters })
                             }
@@ -7766,7 +7767,7 @@ function ReturnItems({ user, allUsers, products, mobile }: any) {
     if (!(await confirmDialog({ title: 'Xoá toàn bộ phiếu hoàn này?', confirmText: 'Xoá', tone: 'danger' }))) return
     const ids = items.filter((i: any) => (i.slip_id||i.id)===slip_id).map((i: any) => i.id)
     setItems(prev => prev.filter(i => !ids.includes(i.id)))
-    for (const id of ids) await db.from('return_items').delete().eq('id', id)
+    for (const id of ids) await deleteWithAudit({ user, table: 'return_items', id: id })
   }
 
   const toggleKiot = async (slip: any) => {
@@ -9180,6 +9181,12 @@ function PositionsManagement({ user, positions, setPositions, mobile }: any) {
       message: `Bạn sắp xóa vị trí "${pos.name}".`,
       detail: `Vị trí này nếu có NV đang giữ sẽ mất quyền truy cập. Đề nghị chuyển NV sang vị trí khác trước khi xóa.`,
       action: async () => {
+        // v198.12: Defense-in-depth — verify perm trước khi xóa
+        if (!getPerm(user).managePositions) {
+          toast.error('Bạn không có quyền xóa vị trí')
+          setConfirmDelete(null)
+          return
+        }
         await logAudit({
           user,
           action: 'delete',
@@ -9188,7 +9195,7 @@ function PositionsManagement({ user, positions, setPositions, mobile }: any) {
           snapshot: pos,
           note: `Xóa vị trí "${pos.name}"`,
         })
-        await db.from('positions').delete().eq('id', id)
+        await deleteWithAudit({ user, table: 'positions', id: id })
         setPositions((prev: any) => prev.filter((p: any) => p.id!==id))
         setConfirmDelete(null)
       }
@@ -11520,9 +11527,12 @@ export default function App() {
     if (r_monthly) {
       const dueIds = monthlyTmplDue.map(t => t.id)
       const oldMonthly = curCl.filter(c => c.freq==='Hàng tháng' && dueIds.includes(c.template_id))
-      for (const old of oldMonthly) await db.from('checklist').delete().eq('id', old.id)
+      for (const old of oldMonthly) await deleteWithAudit({ user, table: 'checklist', id: old.id })
     }
-    for (const freq of freqs) await db.from('checklist').delete().eq('freq', freq)
+    for (const freq of freqs) {
+      await logAudit({ user, action: 'bulk_delete', table: 'checklist', note: `Reset checklist freq=${freq}` })
+      await db.from('checklist').delete().eq('freq', freq)
+    }
 
     // ── Tạo checklist mới ─────────────────────────────────
     const dailyWeeklyTmpl = tmpl.filter(t => t.active && freqs.includes(t.freq))
@@ -12048,7 +12058,7 @@ function WrongOrders({ user, allUsers, wrongOrders, setWrongOrders, mobile }: an
   const del = async (id: string) => {
     if (!(await confirmDialog({ title: 'Xoá đơn sai này?', confirmText: 'Xoá', tone: 'danger' }))) return
     setWrongOrders((prev: any) => prev.filter((r: any) => r.id!==id))
-    await db.from('wrong_orders').delete().eq('id', id)
+    await deleteWithAudit({ user, table: 'wrong_orders', id: id })
   }
 
   const pendingMine = wrongOrders.filter((r: any) =>
@@ -13551,8 +13561,9 @@ function InventoryModule({ user, allUsers, products, invSessions, setInvSessions
                                     snapshot: { session: s, checks: sessChecks },
                                     note: `Xóa phiên KK ngày ${s.date} kèm ${sessChecks.length} bản ghi`,
                                   })
+                                  await logAudit({ user, action: 'bulk_delete', table: 'inventory_checks', note: `Delete checks of session ${s.id}` })
                                   await db.from('inventory_checks').delete().eq('session_id', s.id)
-                                  await db.from('inventory_sessions').delete().eq('id', s.id)
+                                  await deleteWithAudit({ user, table: 'inventory_sessions', id: s.id })
                                   setInvSessions((prev: any) => prev.filter((x: any) => x.id!==s.id))
                                   setChecks((prev: any) => prev.filter((c: any) => c.session_id!==s.id))
                                   setConfirmDelete(null)
@@ -15263,6 +15274,7 @@ function ExcludedTab({ products, excludedCodes, user, mobile, onAdd, onRemove }:
   const removeSelected = async () => {
     const toRm = [...selected].filter((c: string)=>excludedCodes.has(c))
     for (const code of toRm) {
+      await logAudit({ user, action: 'delete', table: 'kk_excluded_products', recordId: code, note: `Remove exclude ${code}` })
       await db.from('kk_excluded_products').delete().eq('product_code',code)
       onRemove(code)
     }
@@ -15659,7 +15671,7 @@ function PriceListTab({ user, mobile, products, allUsers,
 
     // Save tiers
     const oldTierIds = priceTiers.filter((t: any) => t.product_code===prod.code).map((t: any) => t.id)
-    for (const id of oldTierIds) await db.from('price_tiers').delete().eq('id', id)
+    for (const id of oldTierIds) await deleteWithAudit({ user, table: 'price_tiers', id: id })
     const newTiers = tiersForm.filter((t: any) => t.min_qty && t.price)
       .map((t: any, i: number) => ({
         id: 'pt_'+prod.code+'_'+i+'_'+Date.now(),
@@ -16064,8 +16076,13 @@ function BrandProgramsTab({ user, mobile, products, allUsers,
   }
 
   const deleteProg = async (id: string) => {
+    // v198.12: Defense-in-depth
+    if (!getPerm(user).managePrograms && !getPerm(user).viewAllDashboard) {
+      toast.error('Bạn không có quyền xóa chương trình thưởng')
+      return
+    }
     if (!(await confirmDialog({ title: 'Xoá chương trình này?', confirmText: 'Xoá', tone: 'danger' }))) return
-    await db.from('brand_programs').delete().eq('id', id)
+    await deleteWithAudit({ user, table: 'brand_programs', id: id })
     setBrandPrograms((prev: any[]) => prev.filter((p: any) => p.id!==id))
   }
 
@@ -16602,7 +16619,7 @@ function ExpiryModule({ user, mobile, products, batches, setBatches }: any) {
       confirmText: 'Xoá',
       tone: 'danger',
     }))) return
-    await db.from('product_batches').delete().eq('id', id)
+    await deleteWithAudit({ user, table: 'product_batches', id: id })
     setBatches((prev: any[]) => prev.filter((b: any) => b.id !== id))
   }
 
@@ -18257,6 +18274,12 @@ function PaymentModule({ user, mobile, allUsers }: any) {
       message: `Bạn sắp xóa lệnh thanh toán cho "${ord.supplier_name || 'supplier'}".`,
       detail: `Số tiền: ${(ord.amount||0).toLocaleString('vi-VN')}đ\nTrạng thái: ${status}\n\nThao tác này sẽ được ghi vào nhật ký.`,
       action: async () => {
+        // v198.12: Defense-in-depth — chỉ admin/QM mới xóa lệnh thanh toán
+        if (!getPerm(user).viewAllDashboard) {
+          toast.error('Bạn không có quyền xóa lệnh thanh toán')
+          setPaymentConfirmDelete(null)
+          return
+        }
         await logAudit({
           user,
           action: 'delete',
@@ -18265,7 +18288,7 @@ function PaymentModule({ user, mobile, allUsers }: any) {
           snapshot: ord,
           note: `Xóa lệnh ${label}: ${ord.supplier_name} - ${(ord.amount||0).toLocaleString('vi-VN')}đ`,
         })
-        const { error } = await db.from('payment_orders').delete().eq('id', id)
+        const { error } = await deleteWithAudit({ user, table: 'payment_orders', id: id })
         if (error) { toast.error('Lỗi xóa: ' + error.message); setPaymentConfirmDelete(null); return }
         setOrders(prev => prev.filter(o => o.id !== id))
         setPaymentConfirmDelete(null)
@@ -19747,6 +19770,7 @@ function PickingModule({ user, allUsers, mobile, products }: any) {
                 note: `Dọn dẹp đơn cũ (trước cutoff ${cutoffDate})`,
               })
             }
+            await logAudit({ user, action: 'bulk_delete', table: 'packing_workflow', note: `Bulk delete ${codes.length} orders: ${codes.slice(0, 3).join(',')}${codes.length > 3 ? '...' : ''}` })
             await db.from('packing_workflow').delete().in('order_code', codes)
             setOrders(prev => prev.filter(o => !codes.includes(o.order_code)))
             toast.success(`Đã xoá ${codes.length} đơn cũ. Đã ghi vào audit log.`)
@@ -23191,7 +23215,7 @@ function PersonalNotesModule({ user, mobile }: any) {
   // Delete note
   const deleteNote = async (id: string) => {
     if (!(await confirmDialog({ title: 'Xoá ghi chú này?', confirmText: 'Xoá', tone: 'danger' }))) return
-    const { error } = await db.from('personal_notes').delete().eq('id', id).eq('user_id', user.id)
+    const { error } = await deleteWithAudit({ user, table: 'personal_notes', id: id }).eq('user_id', user.id)
     if (error) { toast.error('Lỗi: ' + error.message); return }
     setNotes(notes.filter(n => n.id !== id))
     if (editingId === id) setEditingId(null)
@@ -23975,6 +23999,7 @@ function PayrollImportModule({ user, allUsers, mobile, attendance, setAttendance
         const userIds = Object.values(mappings).filter(Boolean)
         const fromDate = `${year}-${String(month).padStart(2, '0')}-01`
         const toDate = new Date(year, month, 0).toISOString().slice(0, 10)  // last day
+        await logAudit({ user, action: 'bulk_delete', table: 'attendance', note: `Overwrite import: delete attendance ${fromDate} to ${toDate} for ${userIds.length} users` })
         await db.from('attendance')
           .delete()
           .gte('date', fromDate)
@@ -25980,7 +26005,7 @@ function PayrollTabOverride({ user, mobile, usersWithSalary, month, year, overri
     if (!confirm(`Reset override "${meta.name}" của ${u.name}? Sẽ về số tự động.`)) return
     setWorking(true)
     try {
-      await db.from('payroll_overrides').delete().eq('id', existing.id)
+      await deleteWithAudit({ user, table: 'payroll_overrides', id: existing.id })
       toast.success(`✓ Đã reset`)
       onRefresh && onRefresh()
     } finally {
@@ -26254,7 +26279,7 @@ function PayrollTabBaseSalary({ user, mobile, allUsers, usersWithSalary, month, 
     if (!confirm(`Reset LCB của ${u.name} về mặc định?`)) return
     setWorking(true)
     try {
-      await db.from('payroll_overrides').delete().eq('id', existing.id)
+      await deleteWithAudit({ user, table: 'payroll_overrides', id: existing.id })
       toast.success('✓ Đã reset')
       onRefresh && onRefresh()
     } finally {
@@ -26713,9 +26738,15 @@ function PayrollTabSchedule({ user, mobile, positionWorkSchedule, setPositionWor
                         ✏ Sửa
                       </button>
                       <button onClick={async () => {
+                        // v198.12: Defense-in-depth
+                        if (!getPerm(user).viewAllDashboard) {
+                          toast.error('Bạn không có quyền xóa ngày Lễ Tết')
+                          return
+                        }
                         if (!confirm(`Xóa ngày "${sd.label}" (${sd.date})?`)) return
                         setWorking(true)
                         try {
+                          await logAudit({ user, action: 'delete', table: 'payroll_special_days', recordId: sd.date, note: `Delete special day ${sd.date} (${sd.label})` })
                           const { error } = await db.from('payroll_special_days').delete().eq('date', sd.date)
                           if (error) throw new Error(error.message)
                           const { data } = await db.from('payroll_special_days').select('*').order('date')
@@ -27519,7 +27550,7 @@ function PayrollTabAllowance({ user, mobile, usersWithSalary, month, year, overr
     if (!confirm('Xóa override này? Sẽ về dùng số mặc định theo vị trí.')) return
     setWorking(true)
     try {
-      const { error } = await db.from('payroll_overrides').delete().eq('id', existing.id)
+      const { error } = await deleteWithAudit({ user, table: 'payroll_overrides', id: existing.id })
       if (error) throw new Error(error.message)
       await onRefresh()
       toast.success('✓ Đã xóa override')
@@ -28098,9 +28129,15 @@ function PayrollTabKpiDebt({
   }
   
   const handleRemoveSnapshot = async () => {
+    // v198.12: Defense-in-depth
+    if (!getPerm(user).viewAllDashboard) {
+      toast.error('Bạn không có quyền xóa snapshot KPI')
+      return
+    }
     if (!confirm(`Xóa toàn bộ snapshot tháng ${month}/${year}?\n\nKhi xóa, KPI sẽ quay về realtime — tính theo data hiện tại của KV/KH.`)) return
     setWorking(true)
     try {
+      await logAudit({ user, action: 'bulk_delete', table: 'kpi_debt_snapshots', note: `Remove snapshots month ${month}/${year}` })
       const { error } = await db.from('kpi_debt_snapshots').delete().eq('month', month).eq('year', year)
       if (error) throw new Error(error.message)
       setKpiSnapshots([])
@@ -28141,11 +28178,17 @@ function PayrollTabKpiDebt({
   // v198.3: Toggle 1 user vào/ra khỏi eligible list
   const toggleEligible = async (userId: string, userName: string) => {
     if (!setKpiEligibleUsers) { toast.error('Không thể chỉnh sửa'); return }
+    // v198.12: Defense-in-depth
+    if (!getPerm(user).viewAllDashboard) {
+      toast.error('Bạn không có quyền chỉnh sửa danh sách KPI')
+      return
+    }
     const isCurrentlyEligible = eligibleSet.has(userId)
     setWorking(true)
     try {
       if (isCurrentlyEligible) {
         // Remove
+        await logAudit({ user, action: 'delete', table: 'kpi_debt_eligible_users', recordId: userId, note: `Remove KPI eligible: ${userName}` })
         const { error } = await db.from('kpi_debt_eligible_users').delete().eq('user_id', userId)
         if (error) throw new Error(error.message)
         toast.success(`✓ Đã loại ${userName} khỏi KPI`)
@@ -39158,7 +39201,7 @@ function NewCustomerRow({ row, user, isAdmin, selected, canSelect, onToggle, mon
     if (!confirm(`Hủy claim KH "${c.name}"?`)) return
     setWorking(true)
     try {
-      const { error } = await db.from('customer_new_claims').delete().eq('id', claim.id)
+      const { error } = await deleteWithAudit({ user, table: 'customer_new_claims', id: claim.id })
       if (error) toast.error('Lỗi: ' + error.message)
       else { toast.success(`✓ Đã hủy claim`); onRefresh && onRefresh() }
     } finally {
@@ -45466,12 +45509,29 @@ function LegacyGhtkLinkPanel({ user, mobile, orders, setOrders, fetchOrders }: a
 // Modal nhập + verify label_id cho 1 đơn cụ thể
 function LegacyGhtkLinkModal({ order, user, mobile, onCancel, onSaved }: any) {
   // Mỗi row = 1 thùng (1 label_id)
-  const [labels, setLabels] = useState<Array<{ label_id: string, box_no: number, verified?: 'ok'|'fail'|null, status_code?: string, status_text?: string, error?: string }>>([
+  const [labels, setLabels] = useState<Array<{ label_id: string, box_no: number, verified?: 'ok'|'fail'|null, status_code?: string, status_text?: string, error?: string, customer_name_ghtk?: string, customer_mismatch?: boolean }>>([
     { label_id: '', box_no: 1, verified: null }
   ])
   const [verifying, setVerifying] = useState(false)
   const [saving, setSaving] = useState(false)
   const [err, setErr] = useState('')
+  const [bulkInput, setBulkInput] = useState('')  // v198.10.2: Bulk paste textarea
+  const [showBulkPaste, setShowBulkPaste] = useState(false)
+  
+  // v198.10.2: Helper parse multi-label từ string (split bởi , ; space tab newline)
+  // Filter ra các string có >= 6 ký tự, alphanumeric với . - _
+  const parseMultiLabels = (raw: string): string[] => {
+    if (!raw) return []
+    // Split bởi nhiều delimiter: dấu phẩy, semicolon, space, tab, newline
+    const tokens = raw
+      .split(/[,;\s\n\t\r]+/)
+      .map(s => s.trim())
+      .filter(Boolean)
+    // Filter: label_id GHTK thường >= 8 ký tự, alphanumeric + . - _
+    return tokens.filter(t => 
+      t.length >= 6 && /^[A-Za-z0-9._\-]+$/.test(t)
+    )
+  }
   
   const addRow = () => {
     setLabels(prev => [...prev, { label_id: '', box_no: prev.length + 1, verified: null }])
@@ -45480,7 +45540,50 @@ function LegacyGhtkLinkModal({ order, user, mobile, onCancel, onSaved }: any) {
     setLabels(prev => prev.filter((_, i) => i !== idx).map((l, i) => ({ ...l, box_no: i + 1 })))
   }
   const updateRow = (idx: number, patch: any) => {
-    setLabels(prev => prev.map((l, i) => i === idx ? { ...l, ...patch, verified: null } : l))
+    setLabels(prev => prev.map((l, i) => i === idx ? { ...l, ...patch, verified: null, customer_mismatch: false } : l))
+  }
+  
+  // v198.10.2: Handle paste vào input — nếu paste có multi-label thì auto-split
+  const handleInputPaste = (idx: number, e: React.ClipboardEvent<HTMLInputElement>) => {
+    const pasted = e.clipboardData.getData('text') || ''
+    const parsed = parseMultiLabels(pasted)
+    if (parsed.length <= 1) return  // Single label paste → để default behavior
+    e.preventDefault()
+    // Multi-label → fill từ row idx và add thêm rows nếu cần
+    setLabels(prev => {
+      const next = [...prev]
+      parsed.forEach((labelId, i) => {
+        const targetIdx = idx + i
+        if (targetIdx < next.length) {
+          next[targetIdx] = { ...next[targetIdx], label_id: labelId, verified: null, customer_mismatch: false }
+        } else {
+          next.push({ label_id: labelId, box_no: targetIdx + 1, verified: null })
+        }
+      })
+      return next.map((l, i) => ({ ...l, box_no: i + 1 }))
+    })
+  }
+  
+  // v198.10.2: Bulk paste — anh paste 1 list label vào textarea, app tách auto
+  const applyBulkPaste = () => {
+    const parsed = parseMultiLabels(bulkInput)
+    if (parsed.length === 0) { setErr('Không tìm thấy label_id hợp lệ trong đoạn paste'); return }
+    setErr('')
+    // Thêm vào labels — giữ các row đã có label_id, append thêm parsed
+    setLabels(prev => {
+      const existing = prev.filter(l => l.label_id.trim()).map(l => l.label_id.trim())
+      const newOnes = parsed.filter(p => !existing.includes(p))  // dedup
+      const merged: any[] = [
+        ...prev.filter(l => l.label_id.trim()),  // giữ rows đã có
+        ...newOnes.map(label_id => ({ label_id, box_no: 0, verified: null }))
+      ]
+      // Nếu rỗng hoàn toàn → thêm 1 row trống đầu
+      if (merged.length === 0) merged.push({ label_id: '', box_no: 1, verified: null })
+      return merged.map((l, i) => ({ ...l, box_no: i + 1 }))
+    })
+    setBulkInput('')
+    setShowBulkPaste(false)
+    toast.success(`✓ Đã thêm ${parsed.length} label_id, bấm "🔍 Verify" để kiểm tra`)
   }
   
   // Verify TẤT CẢ label_id qua ghtk-track-status
@@ -45513,6 +45616,12 @@ function LegacyGhtkLinkModal({ order, user, mobile, onCancel, onSaved }: any) {
         if (r.label_id) resMap.set(String(r.label_id), r)
       }
       
+      // v198.10.2: Helper normalize tên KH để compare (loại dấu, lowercase, trim)
+      const normName = (s: string) => String(s || '').toLowerCase()
+        .normalize('NFD').replace(/[\u0300-\u036f]/g, '')
+        .replace(/đ/g, 'd').replace(/\s+/g, ' ').trim()
+      const orderCustomerName = normName(order.customer_name || '')
+      
       // Update từng row
       setLabels(prev => prev.map(l => {
         const trimmed = l.label_id.trim()
@@ -45520,11 +45629,26 @@ function LegacyGhtkLinkModal({ order, user, mobile, onCancel, onSaved }: any) {
         const r = resMap.get(trimmed)
         if (!r) return { ...l, verified: 'fail', error: 'Không tìm thấy trên GHTK' }
         if (r.success) {
+          // v198.10.2: Extract tên KH từ GHTK response để check mismatch
+          // Tên KH có thể nằm ở r.customer_name, r.customer_fullname, r.receiver_name...
+          const ghtkCustomer = r.customer_fullname || r.customer_name || r.receiver_name || r.receiver_fullname || ''
+          const ghtkCustomerNorm = normName(ghtkCustomer)
+          // Mismatch nếu cả 2 đều có giá trị NHƯNG normalize không khớp (1 phần)
+          // → check substring để tolerate khác biệt nhỏ
+          let mismatch = false
+          if (orderCustomerName && ghtkCustomerNorm) {
+            const longer = orderCustomerName.length >= ghtkCustomerNorm.length ? orderCustomerName : ghtkCustomerNorm
+            const shorter = orderCustomerName.length < ghtkCustomerNorm.length ? orderCustomerName : ghtkCustomerNorm
+            // Mismatch nếu shorter KHÔNG nằm trong longer (cả hai chiều)
+            mismatch = !longer.includes(shorter) && shorter.length >= 3
+          }
           return { 
             ...l, 
             verified: 'ok', 
             status_code: String(r.status || ''),
             status_text: r.status_text || r.message || '',
+            customer_name_ghtk: ghtkCustomer,
+            customer_mismatch: mismatch,
             error: ''
           }
         } else {
@@ -45586,6 +45710,7 @@ function LegacyGhtkLinkModal({ order, user, mobile, onCancel, onSaved }: any) {
   
   const okCount = labels.filter(l => l.verified === 'ok').length
   const failCount = labels.filter(l => l.verified === 'fail').length
+  const mismatchCount = labels.filter(l => l.verified === 'ok' && l.customer_mismatch).length  // v198.10.2
   
   return (
     <div style={{ position:'fixed', inset:0, background:'rgba(0,0,0,0.55)', zIndex:9999,
@@ -45610,31 +45735,87 @@ function LegacyGhtkLinkModal({ order, user, mobile, onCancel, onSaved }: any) {
         <div style={{ overflowY:'auto', padding:16, background:T.bg, flex:1 }}>
           <div style={{ marginBottom:10, fontSize:12, color:T.med }}>
             💡 Mỗi dòng = 1 thùng (label_id riêng). Bấm <b>"🔍 Verify"</b> để app gọi GHTK API kiểm tra label_id có thật không, sau đó mới lưu.
+            <br/>📋 <b>Tip</b>: Có thể paste 1 lúc nhiều label (cách nhau bởi dấu phẩy/space/Enter) — app tự tách thành nhiều thùng.
           </div>
+          
+          {/* v198.10.2: Bulk paste section (collapsible) */}
+          {!showBulkPaste ? (
+            <button onClick={() => setShowBulkPaste(true)}
+              style={{ marginBottom:10, padding:'6px 12px', borderRadius:6,
+                border:`1px dashed ${T.purple}`, background:'#fff', color:T.purple,
+                cursor:'pointer', fontSize:11, fontWeight:600, fontFamily:'inherit' }}>
+              📋 Paste nhiều label cùng lúc
+            </button>
+          ) : (
+            <div style={{ marginBottom:10, padding:12, background:'#fff', borderRadius:8,
+              border:`2px solid ${T.purple}` }}>
+              <div style={{ fontSize:11, color:T.dark, marginBottom:6, fontWeight:600 }}>
+                📋 Paste danh sách label_id (cách nhau bằng dấu phẩy, space, Enter, hoặc Tab):
+              </div>
+              <textarea value={bulkInput} onChange={e => setBulkInput(e.target.value)}
+                placeholder="vd:&#10;1529374785&#10;1529374786&#10;1529374787&#10;&#10;hoặc: S22.AAA, S22.BBB, S22.CCC"
+                rows={5}
+                style={{ width:'100%', padding:'8px 10px', borderRadius:6,
+                  border:`1px solid ${T.border}`, background:'#fff', color:T.dark,
+                  fontSize:12, fontFamily:'monospace', resize:'vertical' }}/>
+              <div style={{ marginTop:6, fontSize:10, color:T.med }}>
+                Phát hiện: <b style={{ color:T.purple }}>{parseMultiLabels(bulkInput).length}</b> label_id hợp lệ
+              </div>
+              <div style={{ marginTop:8, display:'flex', gap:6, justifyContent:'flex-end' }}>
+                <button onClick={() => { setBulkInput(''); setShowBulkPaste(false) }}
+                  style={{ padding:'5px 10px', borderRadius:6, border:`1px solid ${T.border}`,
+                    background:'#fff', color:T.med, cursor:'pointer', fontSize:11, fontFamily:'inherit' }}>
+                  Hủy
+                </button>
+                <button onClick={applyBulkPaste} disabled={parseMultiLabels(bulkInput).length === 0}
+                  style={{ padding:'5px 12px', borderRadius:6, border:'none',
+                    background: parseMultiLabels(bulkInput).length === 0 ? T.border : T.purple,
+                    color:'#fff', cursor: parseMultiLabels(bulkInput).length === 0 ? 'not-allowed' : 'pointer',
+                    fontSize:11, fontWeight:700, fontFamily:'inherit' }}>
+                  ✓ Áp dụng {parseMultiLabels(bulkInput).length} label
+                </button>
+              </div>
+            </div>
+          )}
           
           {labels.map((l, idx) => (
             <div key={idx} style={{ background:'#fff', borderRadius:8, padding:12,
-              border: l.verified === 'ok' ? `2px solid ${T.green}` 
+              border: l.verified === 'ok' && l.customer_mismatch ? `2px solid ${T.amber}`
+                    : l.verified === 'ok' ? `2px solid ${T.green}` 
                     : l.verified === 'fail' ? `2px solid ${T.red}` 
                     : `1px solid ${T.border}`,
               marginBottom:8, display:'flex', gap:10, alignItems:'flex-start' }}>
               <div style={{ flexShrink:0, width:30, height:30, borderRadius:'50%',
-                background: l.verified === 'ok' ? T.green : l.verified === 'fail' ? T.red : T.purple, 
+                background: l.verified === 'ok' && l.customer_mismatch ? T.amber
+                          : l.verified === 'ok' ? T.green 
+                          : l.verified === 'fail' ? T.red 
+                          : T.purple, 
                 color:'#fff', display:'flex', alignItems:'center', justifyContent:'center',
                 fontWeight:700, fontSize:13 }}>
                 {l.box_no}
               </div>
               <div style={{ flex:1, minWidth:0 }}>
                 <input type="text" value={l.label_id}
-                  placeholder="Nhập label_id GHTK (vd: S22.AAA.123)"
+                  placeholder="Nhập label_id GHTK (vd: S22.AAA.123) — có thể paste nhiều"
                   onChange={e => updateRow(idx, { label_id: e.target.value })}
+                  onPaste={e => handleInputPaste(idx, e)}
                   style={{ width:'100%', padding:'8px 10px', borderRadius:6, 
                     border:`1px solid ${T.border}`, background:'#fff', color:T.dark,
                     fontSize:13, fontFamily:'monospace' }}/>
                 
-                {l.verified === 'ok' && (
+                {l.verified === 'ok' && !l.customer_mismatch && (
                   <div style={{ marginTop:6, fontSize:11, color:T.green, fontWeight:600 }}>
                     ✓ Verify OK · Status: <b>{l.status_text || `code ${l.status_code}`}</b>
+                    {l.customer_name_ghtk && (
+                      <span style={{ color:T.med, fontWeight:400 }}> · KH GHTK: {l.customer_name_ghtk}</span>
+                    )}
+                  </div>
+                )}
+                {l.verified === 'ok' && l.customer_mismatch && (
+                  <div style={{ marginTop:6, padding:'6px 8px', background:'#FEF3C7',
+                    borderRadius:4, fontSize:11, color:'#92400E' }}>
+                    ⚠️ <b>Cảnh báo</b>: Tên KH trên GHTK ("{l.customer_name_ghtk}") khác KH đơn KV ("{order.customer_name}").
+                    <br/>Kiểm tra lại — có thể anh đang link nhầm đơn. Status: <b>{l.status_text || `code ${l.status_code}`}</b>
                   </div>
                 )}
                 {l.verified === 'fail' && (
@@ -45673,7 +45854,9 @@ function LegacyGhtkLinkModal({ order, user, mobile, onCancel, onSaved }: any) {
           display:'flex', gap:10, alignItems:'center' }}>
           <div style={{ flex:1, fontSize:11, color:T.med }}>
             {okCount > 0 && <span style={{ color:T.green, fontWeight:600 }}>✓ {okCount} OK</span>}
-            {okCount > 0 && failCount > 0 && ' · '}
+            {okCount > 0 && (failCount > 0 || mismatchCount > 0) && ' · '}
+            {mismatchCount > 0 && <span style={{ color:T.amber, fontWeight:600 }}>⚠️ {mismatchCount} sai KH</span>}
+            {mismatchCount > 0 && failCount > 0 && ' · '}
             {failCount > 0 && <span style={{ color:T.red, fontWeight:600 }}>✗ {failCount} Lỗi</span>}
           </div>
           <button onClick={onCancel} disabled={saving}
