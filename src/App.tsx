@@ -117,7 +117,7 @@ const db = createClient(SUPABASE_URL, SUPABASE_KEY)
 // ⚠ TODO sau v198 (anh deploy thủ công):
 //   - Cập nhật edge function `kiotviet-sales-revenue` để auto sync luôn `kv_invoices` (anh paste code edge function cho em fix).
 //   - Setup pg_cron hoặc external cron (cron-job.org) để auto sync mỗi 1h. Hướng dẫn trong migration_62.sql.
-const APP_VERSION = '2026.05.02.v198.7.1'
+const APP_VERSION = '2026.05.02.v198.7.2'
 
 // ════════════════════════════════════════════════════════════════
 // v158: VersionBadge — Hiển thị APP_VERSION ở góc dưới phải
@@ -13113,18 +13113,58 @@ function InventoryModule({ user, allUsers, products, invSessions, setInvSessions
   // Stats
   const totalProducts = products.length
   const checkedCodes  = new Set(checks.map((c: any) => c.product_code)).size
+  // v198.7.2: discrepancies cho badge tab — scan TẤT CẢ checks chưa resolve (legacy behavior)
   const discrepancies = checks.filter((c: any) => c.status==='discrepancy' && c.diff_status==='')
   const myChecks      = openSession ? checks.filter((c: any) => c.session_id===openSession.id && c.assigned_to===user.id) : []
 
   const [fy, fm] = monthFilter.split('-').map(Number)
-  // v144: Chỉ tính phiên có is_month_close=true → tab "Cuối tháng" sẽ chỉ tính tiền mất hàng
-  // dựa trên phiên chốt tháng, không phải mọi phiên kiểm kê hàng ngày/tuần
-  const monthChecks = checks.filter((c: any) => {
+  const monthPrefix = `${fy}-${String(fm).padStart(2, '0')}`  // "2026-04"
+  
+  // v198.7.2: Tách 2 biến cho 2 mục đích khác nhau
+  // monthChecksAll: TẤT CẢ phiên trong tháng (cho tab "Lệch kho" — xem mã đang lệch)
+  //   - Khi 1 SP xuất hiện ở nhiều phiên trong tháng → giữ check ở phiên GẦN NHẤT
+  //     (vì là lệch hiện tại nhất, đã được resolve ở phiên cũ rồi)
+  // monthChecksClose: chỉ phiên is_month_close=true (cho tab "Cuối tháng" — tính tiền mất)
+  
+  const monthChecksClose = checks.filter((c: any) => {
     const sess = invSessions.find((s: any) => s.id===c.session_id)
-    if (!sess || !sess.is_month_close) return false  // chỉ lấy phiên chốt tháng
-    const d = new Date(sess.date)
-    return d.getFullYear()===fy && d.getMonth()+1===fm
+    if (!sess || !sess.is_month_close) return false
+    const sessDateStr = String(sess.date || '').slice(0, 10)
+    return sessDateStr.startsWith(monthPrefix)
   })
+  
+  const monthChecksAll = (() => {
+    // Lấy tất cả checks thuộc phiên trong tháng
+    const inMonth = checks.filter((c: any) => {
+      const sess = invSessions.find((s: any) => s.id===c.session_id)
+      if (!sess) return false
+      const sessDateStr = String(sess.date || '').slice(0, 10)
+      return sessDateStr.startsWith(monthPrefix)
+    })
+    // Group by product_code → chỉ giữ check ở phiên GẦN NHẤT (date DESC)
+    // Tránh 1 SP bị duplicate khi có cả KK ngày + KK tuần + KK chốt tháng
+    const latestByProduct = new Map<string, any>()
+    for (const c of inMonth) {
+      const code = c.product_code
+      if (!code) continue
+      const sess = invSessions.find((s: any) => s.id===c.session_id)
+      const sessDate = String(sess?.date || '').slice(0, 10)
+      const existing = latestByProduct.get(code)
+      if (!existing) {
+        latestByProduct.set(code, c)
+      } else {
+        const existingSess = invSessions.find((s: any) => s.id===existing.session_id)
+        const existingDate = String(existingSess?.date || '').slice(0, 10)
+        if (sessDate > existingDate) {
+          latestByProduct.set(code, c)
+        }
+      }
+    }
+    return Array.from(latestByProduct.values())
+  })()
+  
+  // monthChecks alias = monthChecksClose (giữ backward compat — các tab Cuối tháng)
+  const monthChecks = monthChecksClose
 
   const exportKKForm = async (items: any[]) => {
     try {
@@ -13634,6 +13674,13 @@ function InventoryModule({ user, allUsers, products, invSessions, setInvSessions
               </div>
             )
           })()}
+          
+          {/* v198.7.2: Hint cho user — tab Lệch kho lấy từ TẤT CẢ phiên trong tháng */}
+          <div style={{ padding:'8px 12px', background:T.blueBg, borderRadius:8,
+            border:`1px solid ${T.blue}`, fontSize:11, color:T.dark }}>
+            💡 Tab này hiển thị mã đang lệch của <b>TẤT CẢ phiên KK trong tháng</b> (không cần phiên chốt tháng).
+            Nếu 1 mã có nhiều phiên KK → lấy phiên gần nhất (mới nhất).
+          </div>
 
           {/* Discrepancy table */}
           <div style={{background:T.card,borderRadius:12,border:`1px solid ${T.border}`,overflow:'hidden',boxShadow:'0 1px 4px rgba(0,0,0,0.06)'}}>
@@ -13654,7 +13701,9 @@ function InventoryModule({ user, allUsers, products, invSessions, setInvSessions
             )}
             {/* filtered computed outside for checkbox header access */}
             {(()=>{
-              const filtered=monthChecks.filter((c: any)=>{
+              // v198.7.2: Dùng monthChecksAll (TẤT CẢ phiên trong tháng, không chỉ chốt tháng)
+              // → để NV thấy mã lệch của bất kỳ phiên KK nào trong tháng
+              const filtered=monthChecksAll.filter((c: any)=>{
                 if (c.diff==null || c.diff===0) return false
                 if (diffFilter==='neg' && c.diff>=0) return false
                 if (diffFilter==='pos' && c.diff<=0) return false
