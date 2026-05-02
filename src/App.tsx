@@ -117,7 +117,7 @@ const db = createClient(SUPABASE_URL, SUPABASE_KEY)
 // ⚠ TODO sau v198 (anh deploy thủ công):
 //   - Cập nhật edge function `kiotviet-sales-revenue` để auto sync luôn `kv_invoices` (anh paste code edge function cho em fix).
 //   - Setup pg_cron hoặc external cron (cron-job.org) để auto sync mỗi 1h. Hướng dẫn trong migration_62.sql.
-const APP_VERSION = '2026.05.02.v198.9'
+const APP_VERSION = '2026.05.02.v198.10'
 
 // ════════════════════════════════════════════════════════════════
 // v158: VersionBadge — Hiển thị APP_VERSION ở góc dưới phải
@@ -36388,7 +36388,8 @@ function GhtkModule({ user, allUsers, mobile }: any) {
   const perm = getPerm(user)
 
   // Tabs mặc định theo quyền: Sale vào Chờ điền, Kho vào Chờ cân
-  const [tab, setTab] = useState<'pending_info'|'pending_choose'|'pending_link'|'pending_weight'|'ready'|'created'|'track'|'delivered'|'dropship'|'busship'|'settings'>(
+  // v198.10: Thêm tab 'legacy_link' — backfill đơn GHTK cũ tạo trên web GHTK trước khi triển khai app
+  const [tab, setTab] = useState<'pending_info'|'pending_choose'|'pending_link'|'pending_weight'|'ready'|'created'|'track'|'delivered'|'dropship'|'busship'|'legacy_link'|'settings'>(
     perm.ghtkFillCustomer && !perm.ghtkWeight ? 'pending_info' : 'pending_weight'
   )
 
@@ -36683,6 +36684,7 @@ function GhtkModule({ user, allUsers, mobile }: any) {
     { id:'dropship',       group:'kho',   label:'🏷 In mã dropship',  count: categorized.dropship_ghtk.length + categorized.dropship_vtp.length, show: perm.ghtkPrintLabel || perm.ghtkSettings },
     { id:'busship',        group:'kho',   label:'📄 In thông tin đơn', count: 0,                                  show: perm.ghtkPrintLabel || perm.ghtkSettings },
     // Nhóm Admin
+    { id:'legacy_link',    group:'admin', label:'🔗 Link GHTK cũ',    count: 0,                                  show: perm.ghtkSettings },  // v198.10
     { id:'settings',       group:'admin', label:'⚙️ Cấu hình',        count: 0,                                  show: perm.ghtkSettings },
   ].filter(t => t.show)
 
@@ -36810,6 +36812,10 @@ function GhtkModule({ user, allUsers, mobile }: any) {
       {/* Content */}
       {tab === 'settings' ? (
         <GhtkSettingsPanel user={user} mobile={mobile}/>
+      ) : tab === 'legacy_link' ? (
+        <LegacyGhtkLinkPanel user={user} mobile={mobile} 
+          orders={orders} setOrders={setOrders} 
+          fetchOrders={fetchOrders}/>
       ) : tab === 'dropship' ? (
         <>
           {/* v189/v190: Filter ngày cho tab "In mã dropship" — UI inline (panel có UI riêng) */}
@@ -45273,6 +45279,424 @@ function GhtkAutoSyncCard({ mobile }: any) {
         </div>
       )}
     </Card>
+  )
+}
+
+
+// ══════════════════════════════════════════════════════════════════════
+// v198.10: LegacyGhtkLinkPanel — Backfill đơn GHTK cũ
+//   - Chỉ admin (perm.ghtkSettings) thấy tab này
+//   - Liệt kê đơn KV chưa có ghtk_labels nhưng có dấu hiệu là GHTK 
+//     (description_kv chứa 'ghtk' / 'vtp' / 'viettel')
+//   - Search bar theo order_code / customer_name
+//   - Mỗi row có nút "🔗 Link GHTK cũ" → mở Modal
+//   - Modal: nhập 1+ label_id, mỗi label = 1 thùng. Verify qua ghtk-track-status.
+// ══════════════════════════════════════════════════════════════════════
+function LegacyGhtkLinkPanel({ user, mobile, orders, setOrders, fetchOrders }: any) {
+  const [searchQ, setSearchQ] = useState('')
+  const [linkingOrder, setLinkingOrder] = useState<any>(null)
+  const [filterMode, setFilterMode] = useState<'all_unlinked' | 'ghtk_hint' | 'last_30d'>('ghtk_hint')
+  
+  // Lọc đơn chưa có ghtk_labels
+  const unlinkedOrders = useMemo(() => {
+    let list = (orders || []).filter((o: any) => {
+      // Đã có ghtk_labels rồi → loại
+      const hasLabels = Array.isArray(o.ghtk_labels) && o.ghtk_labels.length > 0
+      if (hasLabels) return false
+      return true
+    })
+    
+    // Filter mode
+    if (filterMode === 'ghtk_hint') {
+      // Chỉ đơn có dấu hiệu là GHTK trong description_kv
+      list = list.filter((o: any) => {
+        const desc = String(o.description_kv || '').toLowerCase()
+        return desc.includes('ghtk') || desc.includes('vtp') || desc.includes('viettel') || desc.includes('giao hàng')
+      })
+    } else if (filterMode === 'last_30d') {
+      // Đơn 30 ngày gần đây
+      const cutoff = Date.now() - 30 * 24 * 60 * 60 * 1000
+      list = list.filter((o: any) => {
+        const t = new Date(o.purchase_date || o.created_at || 0).getTime()
+        return t >= cutoff
+      })
+    }
+    
+    // Search filter
+    const q = searchQ.toLowerCase().trim()
+    if (q) {
+      list = list.filter((o: any) => {
+        const hay = `${o.order_code || ''} ${o.customer_name || ''} ${o.description_kv || ''}`.toLowerCase()
+        return hay.includes(q)
+      })
+    }
+    
+    // Sort by purchase_date DESC
+    list = [...list].sort((a: any, b: any) => {
+      const da = new Date(a.purchase_date || a.created_at || 0).getTime()
+      const db_ = new Date(b.purchase_date || b.created_at || 0).getTime()
+      return db_ - da
+    })
+    
+    return list.slice(0, 200)  // safety: max 200 rows hiển thị
+  }, [orders, filterMode, searchQ])
+  
+  const fmtDate = (s: string) => {
+    if (!s) return '—'
+    const d = new Date(s)
+    return `${String(d.getDate()).padStart(2,'0')}/${String(d.getMonth()+1).padStart(2,'0')}/${d.getFullYear()}`
+  }
+  
+  return (
+    <div>
+      <Card style={{ padding:14, marginBottom:12, borderLeft:`4px solid ${T.purple}` }}>
+        <div style={{ fontSize:15, fontWeight:700, color:T.dark, marginBottom:6 }}>
+          🔗 Link đơn GHTK cũ với đơn KV
+        </div>
+        <div style={{ fontSize:12, color:T.med, lineHeight:1.5 }}>
+          Backfill đơn GHTK được tạo trên web GHTK <b>trước khi triển khai app</b> (chưa có <code style={{ 
+            padding:'1px 5px', background:T.bg, color:T.dark, border:`1px solid ${T.border}`,
+            borderRadius:3, fontFamily:'monospace', fontSize:11 }}>ghtk_labels</code>).
+          <br/>Chỉ admin/quản lý kho được thấy tab này. Mỗi label_id sẽ được verify qua GHTK API trước khi lưu.
+        </div>
+      </Card>
+      
+      {/* Filter + search */}
+      <Card style={{ padding:12, marginBottom:12 }}>
+        <div style={{ display:'flex', gap:8, alignItems:'center', flexWrap:'wrap' }}>
+          <div style={{ display:'flex', gap:6, flexWrap:'wrap' }}>
+            {[
+              { id:'ghtk_hint',    label:'🚚 Có dấu hiệu GHTK', hint:'description chứa ghtk/vtp/viettel' },
+              { id:'last_30d',     label:'📅 30 ngày gần đây',  hint:'tất cả đơn chưa link, 30 ngày' },
+              { id:'all_unlinked', label:'📋 Tất cả chưa link',  hint:'mọi đơn KV chưa có ghtk_labels' },
+            ].map((t: any) => (
+              <button key={t.id} onClick={() => setFilterMode(t.id)}
+                title={t.hint}
+                style={{ padding:'6px 12px', borderRadius:16, fontSize:11, fontWeight:600,
+                  border:`1px solid ${filterMode===t.id?T.purple:T.border}`,
+                  background: filterMode===t.id?T.purpleBg||'#F3E8FF':'#fff',
+                  color: filterMode===t.id?T.purple:T.med,
+                  cursor:'pointer', fontFamily:'inherit' }}>
+                {t.label}
+              </button>
+            ))}
+          </div>
+          <input type="search" value={searchQ} onChange={e => setSearchQ(e.target.value)}
+            placeholder="🔍 Tìm theo mã đơn / tên KH..."
+            style={{ flex:1, minWidth:200, padding:'7px 10px', border:`1px solid ${T.border}`,
+              borderRadius:6, background:'#fff', color:T.dark, fontSize:12, fontFamily:'inherit' }}/>
+        </div>
+        <div style={{ marginTop:8, fontSize:11, color:T.med }}>
+          Tìm thấy <b style={{ color:T.dark }}>{unlinkedOrders.length}</b> đơn KV chưa link GHTK
+          {unlinkedOrders.length === 200 && <span style={{ color:T.amber }}> (giới hạn 200, dùng search để thu hẹp)</span>}
+        </div>
+      </Card>
+      
+      {/* List orders */}
+      {unlinkedOrders.length === 0 ? (
+        <Card style={{ padding:30, textAlign:'center', color:T.light }}>
+          🎉 Không có đơn nào cần link
+        </Card>
+      ) : (
+        <Card style={{ padding:0, overflow:'hidden' }}>
+          <div style={{ maxHeight:'70vh', overflowY:'auto' }}>
+            <table style={{ width:'100%', borderCollapse:'collapse', fontSize:12 }}>
+              <thead style={{ background:T.bg, position:'sticky', top:0, zIndex:1 }}>
+                <tr style={{ borderBottom:`2px solid ${T.border}` }}>
+                  <th style={{ padding:'10px 12px', textAlign:'left', fontSize:11, fontWeight:700, color:T.med }}>Mã đơn</th>
+                  <th style={{ padding:'10px 12px', textAlign:'left', fontSize:11, fontWeight:700, color:T.med }}>Khách hàng</th>
+                  <th style={{ padding:'10px 12px', textAlign:'center', fontSize:11, fontWeight:700, color:T.med, width:100 }}>Ngày mua</th>
+                  <th style={{ padding:'10px 12px', textAlign:'right', fontSize:11, fontWeight:700, color:T.med, width:120 }}>Tổng tiền</th>
+                  <th style={{ padding:'10px 12px', textAlign:'left', fontSize:11, fontWeight:700, color:T.med }}>Ghi chú KV</th>
+                  <th style={{ padding:'10px 12px', textAlign:'center', fontSize:11, fontWeight:700, color:T.med, width:130 }}>Hành động</th>
+                </tr>
+              </thead>
+              <tbody>
+                {unlinkedOrders.map((o: any, i: number) => (
+                  <tr key={o.order_code} style={{ borderBottom:`1px solid ${T.border}`, background: i%2===0?'#fff':T.bg }}>
+                    <td style={{ padding:'8px 12px', fontWeight:700, color:T.dark, fontFamily:'monospace' }}>
+                      {o.order_code}
+                    </td>
+                    <td style={{ padding:'8px 12px', color:T.dark }}>
+                      {o.customer_name || '—'}
+                    </td>
+                    <td style={{ padding:'8px 12px', textAlign:'center', color:T.med, fontSize:11 }}>
+                      {fmtDate(o.purchase_date)}
+                    </td>
+                    <td style={{ padding:'8px 12px', textAlign:'right', fontVariantNumeric:'tabular-nums', color:T.dark }}>
+                      {Number(o.total_amount || 0).toLocaleString('vi-VN')}đ
+                    </td>
+                    <td style={{ padding:'8px 12px', color:T.med, fontSize:11, maxWidth:300, overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap' }}
+                      title={o.description_kv}>
+                      {o.description_kv || '—'}
+                    </td>
+                    <td style={{ padding:'8px 12px', textAlign:'center' }}>
+                      <button onClick={() => setLinkingOrder(o)}
+                        style={{ padding:'5px 12px', borderRadius:6, border:'none',
+                          background:T.purple, color:'#fff',
+                          cursor:'pointer', fontSize:11, fontWeight:600, fontFamily:'inherit' }}>
+                        🔗 Link GHTK cũ
+                      </button>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </Card>
+      )}
+      
+      {/* Modal nhập label_id */}
+      {linkingOrder && (
+        <LegacyGhtkLinkModal
+          order={linkingOrder}
+          user={user}
+          mobile={mobile}
+          onCancel={() => setLinkingOrder(null)}
+          onSaved={async () => {
+            setLinkingOrder(null)
+            await fetchOrders()
+          }}
+        />
+      )}
+    </div>
+  )
+}
+
+// Modal nhập + verify label_id cho 1 đơn cụ thể
+function LegacyGhtkLinkModal({ order, user, mobile, onCancel, onSaved }: any) {
+  // Mỗi row = 1 thùng (1 label_id)
+  const [labels, setLabels] = useState<Array<{ label_id: string, box_no: number, verified?: 'ok'|'fail'|null, status_code?: string, status_text?: string, error?: string }>>([
+    { label_id: '', box_no: 1, verified: null }
+  ])
+  const [verifying, setVerifying] = useState(false)
+  const [saving, setSaving] = useState(false)
+  const [err, setErr] = useState('')
+  
+  const addRow = () => {
+    setLabels(prev => [...prev, { label_id: '', box_no: prev.length + 1, verified: null }])
+  }
+  const removeRow = (idx: number) => {
+    setLabels(prev => prev.filter((_, i) => i !== idx).map((l, i) => ({ ...l, box_no: i + 1 })))
+  }
+  const updateRow = (idx: number, patch: any) => {
+    setLabels(prev => prev.map((l, i) => i === idx ? { ...l, ...patch, verified: null } : l))
+  }
+  
+  // Verify TẤT CẢ label_id qua ghtk-track-status
+  const verifyAll = async () => {
+    setErr('')
+    const ids = labels.map(l => l.label_id.trim()).filter(Boolean)
+    if (ids.length === 0) { setErr('Cần nhập ít nhất 1 label_id'); return }
+    // Check duplicate
+    const uniqueIds = new Set(ids)
+    if (uniqueIds.size !== ids.length) { setErr('Có label_id trùng nhau, vui lòng kiểm tra'); return }
+    
+    setVerifying(true)
+    try {
+      const res = await fetch(`${SUPABASE_URL}/functions/v1/ghtk-track-status`, {
+        method:'POST',
+        headers:{ 'Content-Type':'application/json', 'Authorization':`Bearer ${SUPABASE_ANON}` },
+        body: JSON.stringify({ label_ids: ids }),
+      })
+      if (!res.ok) {
+        setErr(`GHTK API lỗi: HTTP ${res.status}`)
+        setVerifying(false)
+        return
+      }
+      const json = await res.json()
+      const results: any[] = json.results || []
+      
+      // Map theo label_id
+      const resMap = new Map<string, any>()
+      for (const r of results) {
+        if (r.label_id) resMap.set(String(r.label_id), r)
+      }
+      
+      // Update từng row
+      setLabels(prev => prev.map(l => {
+        const trimmed = l.label_id.trim()
+        if (!trimmed) return { ...l, verified: null }
+        const r = resMap.get(trimmed)
+        if (!r) return { ...l, verified: 'fail', error: 'Không tìm thấy trên GHTK' }
+        if (r.success) {
+          return { 
+            ...l, 
+            verified: 'ok', 
+            status_code: String(r.status || ''),
+            status_text: r.status_text || r.message || '',
+            error: ''
+          }
+        } else {
+          return { ...l, verified: 'fail', error: r.message || 'Verify thất bại' }
+        }
+      }))
+    } catch (e: any) {
+      setErr('Lỗi kết nối GHTK: ' + e.message)
+    } finally {
+      setVerifying(false)
+    }
+  }
+  
+  // Lưu vào DB — chỉ những label_id verified ok
+  const handleSave = async () => {
+    setErr('')
+    const okLabels = labels.filter(l => l.verified === 'ok' && l.label_id.trim())
+    if (okLabels.length === 0) {
+      setErr('Vui lòng verify thành công ít nhất 1 label_id trước khi lưu')
+      return
+    }
+    
+    setSaving(true)
+    try {
+      const now = new Date().toISOString()
+      const ghtkLabelsPayload = okLabels.map(l => ({
+        label_id: l.label_id.trim(),
+        tracking_id: l.label_id.trim(),  // alias
+        box_no: l.box_no,
+        status: l.status_code || '',
+        status_text: l.status_text || '',
+        legacy: true,                    // mark là đơn legacy
+        linked_at: now,
+        linked_by: user.id,
+        linked_by_name: user.name,
+      }))
+      
+      const { error } = await db.from('payment_orders').update({
+        ghtk_labels: ghtkLabelsPayload,
+        ghtk_status: ghtkLabelsPayload[0].status || null,
+        ghtk_status_text: ghtkLabelsPayload[0].status_text || null,
+        ghtk_status_synced_at: now,
+        ghtk_legacy_linked_at: now,
+        ghtk_legacy_linked_by: user.id,
+        ghtk_legacy_linked_by_name: user.name,
+        is_ghtk_order: true,
+      }).eq('order_code', order.order_code)
+      
+      if (error) { setErr('Lưu thất bại: ' + error.message); setSaving(false); return }
+      
+      toast.success(`✓ Đã link ${okLabels.length} label_id với đơn ${order.order_code}`)
+      await onSaved()
+    } catch (e: any) {
+      setErr('Lỗi: ' + e.message)
+    } finally {
+      setSaving(false)
+    }
+  }
+  
+  const okCount = labels.filter(l => l.verified === 'ok').length
+  const failCount = labels.filter(l => l.verified === 'fail').length
+  
+  return (
+    <div style={{ position:'fixed', inset:0, background:'rgba(0,0,0,0.55)', zIndex:9999,
+      display:'flex', alignItems:'center', justifyContent:'center', padding:20 }}>
+      <div style={{ background:'#fff', borderRadius:12, width:mobile ? '100%' : 720,
+        maxHeight:'90vh', overflow:'hidden', display:'flex', flexDirection:'column' }}>
+        
+        {/* Header */}
+        <div style={{ padding:'16px 20px', borderBottom:`1px solid ${T.border}`,
+          background:'#F3E8FF' }}>
+          <div style={{ fontSize:15, fontWeight:700, color:T.dark }}>
+            🔗 Link đơn GHTK cũ
+          </div>
+          <div style={{ fontSize:12, color:T.med, marginTop:4 }}>
+            Đơn KV: <b style={{ color:T.dark, fontFamily:'monospace' }}>{order.order_code}</b>
+            {' · '}KH: <b style={{ color:T.dark }}>{order.customer_name || '—'}</b>
+            {' · '}Tổng: <b style={{ color:T.dark }}>{Number(order.total_amount||0).toLocaleString('vi-VN')}đ</b>
+          </div>
+        </div>
+        
+        {/* Body */}
+        <div style={{ overflowY:'auto', padding:16, background:T.bg, flex:1 }}>
+          <div style={{ marginBottom:10, fontSize:12, color:T.med }}>
+            💡 Mỗi dòng = 1 thùng (label_id riêng). Bấm <b>"🔍 Verify"</b> để app gọi GHTK API kiểm tra label_id có thật không, sau đó mới lưu.
+          </div>
+          
+          {labels.map((l, idx) => (
+            <div key={idx} style={{ background:'#fff', borderRadius:8, padding:12,
+              border: l.verified === 'ok' ? `2px solid ${T.green}` 
+                    : l.verified === 'fail' ? `2px solid ${T.red}` 
+                    : `1px solid ${T.border}`,
+              marginBottom:8, display:'flex', gap:10, alignItems:'flex-start' }}>
+              <div style={{ flexShrink:0, width:30, height:30, borderRadius:'50%',
+                background: l.verified === 'ok' ? T.green : l.verified === 'fail' ? T.red : T.purple, 
+                color:'#fff', display:'flex', alignItems:'center', justifyContent:'center',
+                fontWeight:700, fontSize:13 }}>
+                {l.box_no}
+              </div>
+              <div style={{ flex:1, minWidth:0 }}>
+                <input type="text" value={l.label_id}
+                  placeholder="Nhập label_id GHTK (vd: S22.AAA.123)"
+                  onChange={e => updateRow(idx, { label_id: e.target.value })}
+                  style={{ width:'100%', padding:'8px 10px', borderRadius:6, 
+                    border:`1px solid ${T.border}`, background:'#fff', color:T.dark,
+                    fontSize:13, fontFamily:'monospace' }}/>
+                
+                {l.verified === 'ok' && (
+                  <div style={{ marginTop:6, fontSize:11, color:T.green, fontWeight:600 }}>
+                    ✓ Verify OK · Status: <b>{l.status_text || `code ${l.status_code}`}</b>
+                  </div>
+                )}
+                {l.verified === 'fail' && (
+                  <div style={{ marginTop:6, fontSize:11, color:T.red, fontWeight:600 }}>
+                    ✗ {l.error || 'Verify thất bại'}
+                  </div>
+                )}
+              </div>
+              {labels.length > 1 && (
+                <button onClick={() => removeRow(idx)}
+                  style={{ padding:'4px 10px', borderRadius:6, border:`1px solid ${T.red}`,
+                    background:'#fff', color:T.red, cursor:'pointer', fontSize:11, fontFamily:'inherit' }}>
+                  ✕
+                </button>
+              )}
+            </div>
+          ))}
+          
+          <button onClick={addRow}
+            style={{ width:'100%', padding:'10px', borderRadius:8, border:`1px dashed ${T.purple}`,
+              background:'transparent', color:T.purple, cursor:'pointer', fontSize:12, fontWeight:600,
+              fontFamily:'inherit', marginTop:4 }}>
+            + Thêm thùng (label_id mới)
+          </button>
+          
+          {err && (
+            <div style={{ marginTop:10, padding:'8px 12px', background:'#FEE2E2',
+              border:`1px solid ${T.red}`, borderRadius:6, color:T.red, fontSize:12 }}>
+              ⚠️ {err}
+            </div>
+          )}
+        </div>
+        
+        {/* Footer */}
+        <div style={{ padding:'12px 20px', borderTop:`1px solid ${T.border}`, background:'#fff',
+          display:'flex', gap:10, alignItems:'center' }}>
+          <div style={{ flex:1, fontSize:11, color:T.med }}>
+            {okCount > 0 && <span style={{ color:T.green, fontWeight:600 }}>✓ {okCount} OK</span>}
+            {okCount > 0 && failCount > 0 && ' · '}
+            {failCount > 0 && <span style={{ color:T.red, fontWeight:600 }}>✗ {failCount} Lỗi</span>}
+          </div>
+          <button onClick={onCancel} disabled={saving}
+            style={{ padding:'8px 14px', borderRadius:6, border:`1px solid ${T.border}`,
+              background:'#fff', color:T.med, cursor:'pointer', fontSize:12, fontFamily:'inherit' }}>
+            Hủy
+          </button>
+          <button onClick={verifyAll} disabled={verifying || saving}
+            style={{ padding:'8px 14px', borderRadius:6, border:`1px solid ${T.blue}`,
+              background:'#fff', color:T.blue, cursor: verifying ? 'wait' : 'pointer', 
+              fontSize:12, fontWeight:700, fontFamily:'inherit' }}>
+            {verifying ? '⏳ Đang verify...' : '🔍 Verify với GHTK'}
+          </button>
+          <button onClick={handleSave} disabled={saving || verifying || okCount === 0}
+            style={{ padding:'8px 16px', borderRadius:6, border:'none',
+              background: okCount === 0 ? T.border : T.purple, color:'#fff',
+              cursor: (saving || okCount === 0) ? 'not-allowed' : 'pointer',
+              fontSize:12, fontWeight:700, fontFamily:'inherit' }}>
+            {saving ? '⏳ Đang lưu...' : `✅ Lưu ${okCount} label`}
+          </button>
+        </div>
+      </div>
+    </div>
   )
 }
 
