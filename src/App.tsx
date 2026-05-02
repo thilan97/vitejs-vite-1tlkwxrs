@@ -117,7 +117,7 @@ const db = createClient(SUPABASE_URL, SUPABASE_KEY)
 // ⚠ TODO sau v198 (anh deploy thủ công):
 //   - Cập nhật edge function `kiotviet-sales-revenue` để auto sync luôn `kv_invoices` (anh paste code edge function cho em fix).
 //   - Setup pg_cron hoặc external cron (cron-job.org) để auto sync mỗi 1h. Hướng dẫn trong migration_62.sql.
-const APP_VERSION = '2026.05.01.v198.5.2'
+const APP_VERSION = '2026.05.01.v198.5.3'
 
 // ════════════════════════════════════════════════════════════════
 // v158: VersionBadge — Hiển thị APP_VERSION ở góc dưới phải
@@ -25433,6 +25433,8 @@ function PayrollModule({ user, allUsers, mobile }: any) {
           positionWorkSchedule={positionWorkSchedule}
           positionsList={positionsList}
           isAdmin={isAdmin}
+          // v198.5: pass approved OT requests cho NV này
+          overtimeRequests={overtimeRequests.filter((o: any) => o.user_id === detailModalUser.id && o.status === 'approved')}
           // v193: pass special days
           specialDays={specialDays}
           onAttendanceUpdate={async () => {
@@ -28570,7 +28572,7 @@ const _payrollAttTdStyle: any = {
 
 
 
-function PayrollDetailModal({ user: nv, payroll, salaryConfig, otherIncomes, shortageLoss, revenue, paidLeaveDates, month, year, actor, onClose, onUpdate, attendanceMonth, positionWorkSchedule, positionsList, isAdmin, onAttendanceUpdate, specialDays }: any) {
+function PayrollDetailModal({ user: nv, payroll, salaryConfig, otherIncomes, shortageLoss, revenue, paidLeaveDates, month, year, actor, onClose, onUpdate, attendanceMonth, positionWorkSchedule, positionsList, isAdmin, onAttendanceUpdate, specialDays, overtimeRequests }: any) {
   const [manualAdjust, setManualAdjust] = useState(payroll?.manual_adjust || 0)
   const [manualReason, setManualReason] = useState(payroll?.manual_adjust_reason || '')
   const totalWorkingDays = countWorkingDaysInMonth(month, year, paidLeaveDates)
@@ -28603,6 +28605,12 @@ function PayrollDetailModal({ user: nv, payroll, salaryConfig, otherIncomes, sho
           <div style={{ fontWeight: 700, marginBottom: 8, color: T.dark }}>📊 Giờ công</div>
           <div style={{ display: 'grid', gridTemplateColumns: '2fr 1fr', gap: 6, fontSize: FS.sm }}>
             <span>Giờ BT (làm thực):</span> <span style={{ textAlign: 'right' }}>{(payroll.work_hours_regular || 0).toFixed(2)}h / {totalWorkingDays * stdHoursPerDay}h chuẩn</span>
+            {(payroll.ot_registered_hours || 0) > 0 && (
+              <>
+                <span style={{ color:T.purple }}>OT đăng ký (đã duyệt):</span>
+                <span style={{ textAlign: 'right', color:T.purple, fontWeight:600 }}>+{(payroll.ot_registered_hours || 0).toFixed(2)}h</span>
+              </>
+            )}
             <span>OT 150%:</span> <span style={{ textAlign: 'right' }}>{(payroll.ot_150_hours || 0).toFixed(2)}h</span>
             <span>OT 200%:</span> <span style={{ textAlign: 'right' }}>{(payroll.ot_200_hours || 0).toFixed(2)}h</span>
             <span>Ngày đi làm:</span> <span style={{ textAlign: 'right' }}>{payroll.total_work_days || 0}</span>
@@ -28754,6 +28762,7 @@ function PayrollDetailModal({ user: nv, payroll, salaryConfig, otherIncomes, sho
                     <th style={{ padding:'6px 8px', textAlign:'center', fontWeight:700, color:T.med, borderBottom:`1px solid ${T.border}` }}>Vào</th>
                     <th style={{ padding:'6px 8px', textAlign:'center', fontWeight:700, color:T.med, borderBottom:`1px solid ${T.border}` }}>Ra</th>
                     <th style={{ padding:'6px 8px', textAlign:'right', fontWeight:700, color:T.med, borderBottom:`1px solid ${T.border}` }}>Giờ BT</th>
+                    <th style={{ padding:'6px 8px', textAlign:'right', fontWeight:700, color:T.purple, borderBottom:`1px solid ${T.border}` }}>OT đăng ký</th>
                     <th style={{ padding:'6px 8px', textAlign:'right', fontWeight:700, color:T.med, borderBottom:`1px solid ${T.border}` }}>OT 150%</th>
                     <th style={{ padding:'6px 8px', textAlign:'right', fontWeight:700, color:T.med, borderBottom:`1px solid ${T.border}` }}>OT 200%</th>
                     <th style={{ padding:'6px 8px', textAlign:'center', fontWeight:700, color:T.med, borderBottom:`1px solid ${T.border}` }}>Trạng thái</th>
@@ -28766,11 +28775,22 @@ function PayrollDetailModal({ user: nv, payroll, salaryConfig, otherIncomes, sho
                     const dayLabels = ['CN','Thứ 2','Thứ 3','Thứ 4','Thứ 5','Thứ 6','Thứ 7']
                     const rows: any[] = []
                     let totalBt = 0, totalOt150 = 0, totalOt200 = 0, totalLunch = 0
+                    let totalOtReg = 0  // v198.5: OT đăng ký
                     // v193: Build special day map
                     const specialMap = new Map<string, any>()
                     for (const sd of (specialDays || [])) {
                       if (sd.date) specialMap.set(sd.date, sd)
                     }
+                    // v198.5: Build approved OT map (date → tổng giờ duyệt)
+                    const otByDate = new Map<string, number>()
+                    for (const o of (overtimeRequests || [])) {
+                      if (!o.date || o.status !== 'approved') continue
+                      const cur = otByDate.get(o.date) || 0
+                      otByDate.set(o.date, cur + Number(o.hours || 0))
+                    }
+                    // v198.5: stdHoursPerDay theo vị trí
+                    const isKhoForOt = ['Kho', 'Quản lý kho', 'Thử việc'].includes(salaryConfig?.position_type)
+                    const stdHoursForOt = isKhoForOt ? 8 : 7.5
                     for (let d = 1; d <= daysInMonth; d++) {
                       const dateStr = `${year}-${String(month).padStart(2,'0')}-${String(d).padStart(2,'0')}`
                       const att = attendanceMonth.find((a: any) => a.date === dateStr)
@@ -28778,10 +28798,16 @@ function PayrollDetailModal({ user: nv, payroll, salaryConfig, otherIncomes, sho
                       const isWeekend = dayOfWeek === 0
                       const cIn  = att?.check_in_final  || att?.check_in_machine  || ''
                       const cOut = att?.check_out_final || att?.check_out_machine || ''
-                      const bt = Number(att?.work_hours_regular || 0)
-                      const ot150 = Number(att?.ot_150_hours || 0)
+                      // v198.5: Lấy giờ chấm công + OT đăng ký, recompute base/ot per day
+                      const punchHours = Number(att?.work_hours_regular || 0) + Number(att?.ot_150_hours || 0)
+                      const otReg = otByDate.get(dateStr) || 0
+                      const totalDay = punchHours + otReg
+                      // Nếu có OT đăng ký → recompute, ngược lại giữ giá trị attendance gốc
+                      const bt    = otReg > 0 ? Math.min(totalDay, stdHoursForOt) : Number(att?.work_hours_regular || 0)
+                      const ot150 = otReg > 0 ? Math.max(0, totalDay - stdHoursForOt) : Number(att?.ot_150_hours || 0)
                       const ot200 = Number(att?.ot_200_hours || 0)
                       totalBt += bt; totalOt150 += ot150; totalOt200 += ot200
+                      totalOtReg += otReg
                       if (att?.lunch_eligible) totalLunch++
                       const status = att?.status || (isWeekend ? '' : 'Nghỉ')
                       // v193: Special day check
@@ -28805,6 +28831,7 @@ function PayrollDetailModal({ user: nv, payroll, salaryConfig, otherIncomes, sho
                           <td style={{ padding:'5px 8px', textAlign:'center', fontVariantNumeric:'tabular-nums', color:T.dark }}>{cIn ? cIn.slice(0,5) : '—'}</td>
                           <td style={{ padding:'5px 8px', textAlign:'center', fontVariantNumeric:'tabular-nums', color:T.dark }}>{cOut ? cOut.slice(0,5) : '—'}</td>
                           <td style={{ padding:'5px 8px', textAlign:'right', fontVariantNumeric:'tabular-nums', color:T.dark }}>{bt > 0 ? bt.toFixed(2) : '—'}</td>
+                          <td style={{ padding:'5px 8px', textAlign:'right', fontVariantNumeric:'tabular-nums', color: otReg > 0 ? T.purple : T.light, fontWeight: otReg > 0 ? 600 : 400 }}>{otReg > 0 ? `+${otReg.toFixed(2)}` : '—'}</td>
                           <td style={{ padding:'5px 8px', textAlign:'right', fontVariantNumeric:'tabular-nums', color: ot150 > 0 ? T.green : T.light }}>{ot150 > 0 ? ot150.toFixed(2) : '—'}</td>
                           <td style={{ padding:'5px 8px', textAlign:'right', fontVariantNumeric:'tabular-nums', color: ot200 > 0 ? T.green : T.light }}>{ot200 > 0 ? ot200.toFixed(2) : '—'}</td>
                           <td style={{ padding:'5px 8px', textAlign:'center', fontSize:10, color: status === 'Đi làm' ? T.green : status === 'Nghỉ không phép' || status === 'NKP' ? T.red : T.med }}>
@@ -28822,6 +28849,7 @@ function PayrollDetailModal({ user: nv, payroll, salaryConfig, otherIncomes, sho
                       <tr key="total" style={{ borderTop:`2px solid ${T.dark}`, background:'#fff8e1' }}>
                         <td colSpan={4} style={{ padding:'8px', textAlign:'right', fontWeight:700, color:T.dark }}>TỔNG THÁNG</td>
                         <td style={{ padding:'8px', textAlign:'right', fontWeight:700, color:T.dark, fontVariantNumeric:'tabular-nums' }}>{totalBt.toFixed(2)}</td>
+                        <td style={{ padding:'8px', textAlign:'right', fontWeight:700, color:T.purple, fontVariantNumeric:'tabular-nums' }}>{totalOtReg > 0 ? `+${totalOtReg.toFixed(2)}` : '—'}</td>
                         <td style={{ padding:'8px', textAlign:'right', fontWeight:700, color:T.green, fontVariantNumeric:'tabular-nums' }}>{totalOt150.toFixed(2)}</td>
                         <td style={{ padding:'8px', textAlign:'right', fontWeight:700, color:T.green, fontVariantNumeric:'tabular-nums' }}>{totalOt200.toFixed(2)}</td>
                         <td></td>
@@ -29216,6 +29244,9 @@ function MyPayslipModule({ user, allUsers, mobile }: any) {
           <div style={{ background: T.bg, padding: 14, borderRadius: RD.md, marginBottom: 10 }}>
             <div style={{ fontWeight: 700, marginBottom: 8, color: T.dark }}>📊 Giờ công</div>
             <Line label="Giờ BT thực" value={`${(payroll.work_hours_regular || 0).toFixed(1)}h`}/>
+            {(payroll.ot_registered_hours || 0) > 0 && (
+              <Line label="OT đăng ký (đã duyệt)" value={`+${(payroll.ot_registered_hours || 0).toFixed(1)}h`} colored={T.purple}/>
+            )}
             <Line label="OT 150%" value={`${(payroll.ot_150_hours || 0).toFixed(1)}h`}/>
             <Line label="OT 200%" value={`${(payroll.ot_200_hours || 0).toFixed(1)}h`}/>
             <Line label="Ngày đi làm" value={String(payroll.total_work_days || 0)}/>
