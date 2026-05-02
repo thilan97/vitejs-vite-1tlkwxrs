@@ -117,7 +117,7 @@ const db = createClient(SUPABASE_URL, SUPABASE_KEY)
 // ⚠ TODO sau v198 (anh deploy thủ công):
 //   - Cập nhật edge function `kiotviet-sales-revenue` để auto sync luôn `kv_invoices` (anh paste code edge function cho em fix).
 //   - Setup pg_cron hoặc external cron (cron-job.org) để auto sync mỗi 1h. Hướng dẫn trong migration_62.sql.
-const APP_VERSION = '2026.05.02.v198.10'
+const APP_VERSION = '2026.05.02.v198.10.1'
 
 // ════════════════════════════════════════════════════════════════
 // v158: VersionBadge — Hiển thị APP_VERSION ở góc dưới phải
@@ -45562,7 +45562,7 @@ function LegacyGhtkLinkModal({ order, user, mobile, onCancel, onSaved }: any) {
         linked_by_name: user.name,
       }))
       
-      const { error } = await db.from('payment_orders').update({
+      const { error } = await db.from('packing_workflow').update({
         ghtk_labels: ghtkLabelsPayload,
         ghtk_status: ghtkLabelsPayload[0].status || null,
         ghtk_status_text: ghtkLabelsPayload[0].status_text || null,
