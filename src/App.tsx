@@ -117,7 +117,7 @@ const db = createClient(SUPABASE_URL, SUPABASE_KEY)
 // ⚠ TODO sau v198 (anh deploy thủ công):
 //   - Cập nhật edge function `kiotviet-sales-revenue` để auto sync luôn `kv_invoices` (anh paste code edge function cho em fix).
 //   - Setup pg_cron hoặc external cron (cron-job.org) để auto sync mỗi 1h. Hướng dẫn trong migration_62.sql.
-const APP_VERSION = '2026.05.01.v198.5.3'
+const APP_VERSION = '2026.05.02.v198.6'
 
 // ════════════════════════════════════════════════════════════════
 // v158: VersionBadge — Hiển thị APP_VERSION ở góc dưới phải
@@ -20327,6 +20327,8 @@ function PackingModule({ user, allUsers, mobile, products }: any) {
   const [searchQ, setSearchQ] = useState('')
   const [joinConfirm, setJoinConfirm] = useState<any>(null)
   const [linkSuppOrder, setLinkSuppOrder] = useState<any>(null)  // đơn con đang chọn để link: open modal pick parent
+  // v198.6: Modal lịch sử đơn bổ sung của 1 đơn parent (xem + unlink)
+  const [showSuppHistoryFor, setShowSuppHistoryFor] = useState<any>(null)
   const [showAllowEdit, setShowAllowEdit] = useState<any>(null)  // đơn đang được QM cấp quyền sửa
   // v150: Admin delete order
   const [adminDeleteOrder, setAdminDeleteOrder] = useState<any>(null)
@@ -21013,11 +21015,14 @@ function PackingModule({ user, allUsers, mobile, products }: any) {
                         </span>
                       )}
                       {Array.isArray(o.supplementary_orders) && o.supplementary_orders.length > 0 && (
-                        <span style={{ padding:'1px 6px', borderRadius:10,
-                          background:T.blueBg, color:T.blue, fontWeight:700 }}
-                          title={`Đã link: ${o.supplementary_orders.map((s: any) => s.order_code).join(', ')}`}>
+                        <button onClick={(e) => { e.stopPropagation(); setShowSuppHistoryFor(o) }}
+                          style={{ padding:'2px 8px', borderRadius:10,
+                            background:T.blueBg, color:T.blue, fontWeight:700,
+                            border:`1px solid ${T.blue}`, fontSize:11,
+                            cursor:'pointer', fontFamily:'inherit' }}
+                          title="Click để xem lịch sử đơn bổ sung và bỏ link">
                           🔗 +{o.supplementary_orders.length} bổ sung
-                        </span>
+                        </button>
                       )}
                     </div>
                   </Card>
@@ -21100,6 +21105,26 @@ function PackingModule({ user, allUsers, mobile, products }: any) {
           onCancel={() => setLinkSuppOrder(null)}
           onConfirm={(parentCode: string) =>
             linkSupplementary(linkSuppOrder.order_code, parentCode)}
+        />
+      )}
+      
+      {/* v198.6: Modal lịch sử đơn bổ sung của 1 parent — xem + bỏ link */}
+      {showSuppHistoryFor && (
+        <SupplementaryHistoryModal
+          parent={showSuppHistoryFor}
+          allOrders={orders}
+          mobile={mobile}
+          onClose={() => setShowSuppHistoryFor(null)}
+          onUnlink={async (childCode: string) => {
+            await unlinkSupplementary(childCode)
+            // Refresh state local: đóng modal nếu parent không còn child
+            const refreshedParent = orders.find((x: any) => x.order_code === showSuppHistoryFor.order_code)
+            if (!refreshedParent || !Array.isArray(refreshedParent.supplementary_orders) || refreshedParent.supplementary_orders.length === 0) {
+              setShowSuppHistoryFor(null)
+            } else {
+              setShowSuppHistoryFor(refreshedParent)
+            }
+          }}
         />
       )}
 
@@ -21268,7 +21293,162 @@ function SupplementaryLinkModal({ child, allOrders, mobile, onCancel, onConfirm 
   )
 }
 
-// ── Modal xác nhận đóng cùng ──
+// ── v198.6: Modal lịch sử đơn bổ sung của 1 đơn parent ──
+// Liệt kê tất cả đơn bổ sung đã link cho parent + nút Bỏ link
+function SupplementaryHistoryModal({ parent, allOrders, mobile, onClose, onUnlink }: any) {
+  const [unlinking, setUnlinking] = useState<string | null>(null)
+  const supps: any[] = Array.isArray(parent?.supplementary_orders) ? parent.supplementary_orders : []
+  
+  // Enrich từng supp record với data full từ allOrders (để có thông tin chi tiết)
+  const suppsEnriched = supps.map((s: any) => {
+    const fullOrder = allOrders.find((o: any) => o.order_code === s.order_code)
+    return {
+      order_code: s.order_code,
+      linked_at: s.linked_at,
+      linked_by: s.linked_by,
+      linked_by_name: s.linked_by_name,
+      // Enriched từ allOrders nếu tìm thấy
+      created_at: fullOrder?.created_at,
+      total_value: fullOrder?.total_value,
+      sale_name: fullOrder?.sale_name,
+      cod: fullOrder?.cod,
+      ghtk_status_text: fullOrder?.ghtk_status_text,
+      box_count: fullOrder?.box_count,
+      hasFullData: !!fullOrder,
+    }
+  }).sort((a, b) => {
+    // Sort theo linked_at giảm dần (mới nhất trên cùng)
+    const ta = a.linked_at ? new Date(a.linked_at).getTime() : 0
+    const tb = b.linked_at ? new Date(b.linked_at).getTime() : 0
+    return tb - ta
+  })
+  
+  const fmtDate = (s: string) => {
+    if (!s) return '—'
+    const d = new Date(s)
+    return `${String(d.getDate()).padStart(2,'0')}/${String(d.getMonth()+1).padStart(2,'0')}/${d.getFullYear()} ${String(d.getHours()).padStart(2,'0')}:${String(d.getMinutes()).padStart(2,'0')}`
+  }
+  
+  const handleUnlink = async (childCode: string) => {
+    setUnlinking(childCode)
+    try {
+      await onUnlink(childCode)
+    } finally {
+      setUnlinking(null)
+    }
+  }
+  
+  return (
+    <div style={{ position:'fixed', inset:0, background:'rgba(0,0,0,0.55)', zIndex:9999,
+      display:'flex', alignItems:'center', justifyContent:'center', padding:20 }}>
+      <div style={{ background:'#fff', borderRadius:12, width:mobile ? '100%' : 720,
+        maxHeight:'85vh', overflow:'hidden', display:'flex', flexDirection:'column' }}>
+        
+        {/* Header */}
+        <div style={{ padding:'16px 20px', borderBottom:`1px solid ${T.border}`,
+          background:T.blueBg, display:'flex', justifyContent:'space-between', alignItems:'center' }}>
+          <div>
+            <div style={{ fontSize:15, fontWeight:700, color:T.dark }}>
+              🔗 Lịch sử đơn bổ sung
+            </div>
+            <div style={{ fontSize:12, color:T.med, marginTop:3 }}>
+              Đơn gốc: <b style={{ color:T.dark }}>{parent.order_code}</b>
+              {parent.customer_name && <> · KH: <b style={{ color:T.dark }}>{parent.customer_name}</b></>}
+              {' · '}<b style={{ color:T.blue }}>{supps.length}</b> đơn bổ sung
+            </div>
+          </div>
+          <button onClick={onClose}
+            style={{ padding:'6px 12px', background:'#fff', color:T.med,
+              border:`1px solid ${T.border}`, borderRadius:6, cursor:'pointer', fontSize:13 }}>
+            ✕ Đóng
+          </button>
+        </div>
+        
+        {/* List */}
+        <div style={{ overflowY:'auto', padding:16, background:T.bg }}>
+          {suppsEnriched.length === 0 ? (
+            <div style={{ padding:40, textAlign:'center', color:T.light, fontSize:13 }}>
+              📭 Đơn này chưa có đơn bổ sung nào
+            </div>
+          ) : (
+            <div style={{ display:'flex', flexDirection:'column', gap:10 }}>
+              {suppsEnriched.map((s: any, idx: number) => (
+                <div key={s.order_code}
+                  style={{ background:'#fff', borderRadius:8, padding:12,
+                    border:`1px solid ${T.border}`, display:'flex', gap:12, alignItems:'flex-start' }}>
+                  {/* Index circle */}
+                  <div style={{ flexShrink:0, width:30, height:30, borderRadius:'50%',
+                    background:T.blue, color:'#fff', display:'flex', alignItems:'center',
+                    justifyContent:'center', fontWeight:700, fontSize:13 }}>
+                    {idx + 1}
+                  </div>
+                  
+                  {/* Info */}
+                  <div style={{ flex:1, minWidth:0 }}>
+                    <div style={{ display:'flex', justifyContent:'space-between', alignItems:'flex-start', gap:8, flexWrap:'wrap' }}>
+                      <div>
+                        <div style={{ fontSize:14, fontWeight:700, color:T.dark }}>
+                          📦 {s.order_code}
+                          {!s.hasFullData && (
+                            <span style={{ marginLeft:6, padding:'1px 6px', background:T.amberBg, color:T.amber,
+                              borderRadius:4, fontSize:9, fontWeight:600 }}>
+                              ⚠ Đơn ngoài kỳ
+                            </span>
+                          )}
+                        </div>
+                        {s.hasFullData && (
+                          <div style={{ fontSize:11, color:T.med, marginTop:3, display:'flex', gap:8, flexWrap:'wrap' }}>
+                            {s.sale_name && <span>👤 {s.sale_name}</span>}
+                            {s.box_count > 0 && <span>📦 {s.box_count} thùng</span>}
+                            {s.cod > 0 && <span>💰 COD {Number(s.cod).toLocaleString('vi-VN')}đ</span>}
+                            {s.ghtk_status_text && (
+                              <span style={{ padding:'1px 6px', background:T.bg, borderRadius:4, color:T.dark }}>
+                                {s.ghtk_status_text}
+                              </span>
+                            )}
+                          </div>
+                        )}
+                      </div>
+                      
+                      {/* Unlink button */}
+                      <button onClick={() => handleUnlink(s.order_code)}
+                        disabled={unlinking === s.order_code}
+                        style={{ padding:'6px 12px', background:'#fff', color:T.red,
+                          border:`1px solid ${T.red}`, borderRadius:6,
+                          cursor: unlinking === s.order_code ? 'wait' : 'pointer',
+                          fontSize:11, fontWeight:600,
+                          opacity: unlinking === s.order_code ? 0.6 : 1 }}
+                        title={`Bỏ link đơn ${s.order_code} khỏi đơn gốc ${parent.order_code}`}>
+                        {unlinking === s.order_code ? '⏳ Đang bỏ...' : '🔓 Bỏ link'}
+                      </button>
+                    </div>
+                    
+                    {/* Link metadata */}
+                    <div style={{ marginTop:8, padding:'6px 8px', background:T.bg,
+                      borderRadius:4, fontSize:10, color:T.med, display:'flex', gap:10, flexWrap:'wrap' }}>
+                      <span>🕐 Link lúc: <b style={{ color:T.dark }}>{fmtDate(s.linked_at)}</b></span>
+                      {s.linked_by_name && (
+                        <span>👤 Bởi: <b style={{ color:T.dark }}>{s.linked_by_name}</b></span>
+                      )}
+                    </div>
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+        
+        {/* Footer */}
+        <div style={{ padding:'10px 16px', borderTop:`1px solid ${T.border}`, background:T.bg,
+          fontSize:11, color:T.med }}>
+          💡 Bỏ link để 2 đơn không còn được liên kết. Đơn bổ sung sẽ trở lại danh sách chính.
+        </div>
+      </div>
+    </div>
+  )
+}
+
+
 function JoinPackConfirmModal({ names, onCancel, onConfirm }: any) {
   return (
     <div style={{ position:'fixed', inset:0, background:'rgba(0,0,0,0.55)', zIndex:9999,
@@ -30672,6 +30852,7 @@ function WarehouseStatsModule({ user, allUsers, mobile }: any) {
   const [attendance, setAttendance] = useState<any[]>([])
   const [wrongOrders, setWrongOrders] = useState<any[]>([])
   const [returnSlips, setReturnSlips] = useState<any[]>([])
+  const [specialDays, setSpecialDays] = useState<any[]>([])  // v198.6: ngày Lễ Tết
   const [loading, setLoading] = useState(true)
   const [viewTab, setViewTab] = useState<'score'|'pack'|'pick'|'sale'>('score')
   // NV bị loại khỏi tính trung bình team — lưu/load từ settings DB
@@ -30709,7 +30890,7 @@ function WarehouseStatsModule({ user, allUsers, mobile }: any) {
     setLoading(true)
     const fromISO = new Date(fromDate + 'T00:00:00').toISOString()
     const toISO   = new Date(toDate   + 'T23:59:59').toISOString()
-    const [packRes, pickRes, attRes, wrongRes, returnRes] = await Promise.all([
+    const [packRes, pickRes, attRes, wrongRes, returnRes, sdRes] = await Promise.all([
       db.from('packing_workflow').select('*')
         .neq('is_deleted', true).gte('packed_at', fromISO).lte('packed_at', toISO).limit(5000),
       db.from('packing_workflow').select('*')
@@ -30720,6 +30901,8 @@ function WarehouseStatsModule({ user, allUsers, mobile }: any) {
         .gte('created_at', fromISO).lte('created_at', toISO).limit(5000),
       db.from('return_slips').select('*')
         .gte('date', fromDate).lte('date', toDate).limit(5000),
+      db.from('payroll_special_days').select('*')
+        .gte('date', fromDate).lte('date', toDate),  // v198.6
     ])
     const merged = new Map<string, any>()
     ;[...(packRes.data||[]), ...(pickRes.data||[])].forEach(o => merged.set(o.order_code, o))
@@ -30727,6 +30910,7 @@ function WarehouseStatsModule({ user, allUsers, mobile }: any) {
     setAttendance(attRes.data || [])
     setWrongOrders(wrongRes.data || [])
     setReturnSlips(returnRes.data || [])
+    setSpecialDays(sdRes.data || [])  // v198.6
     setLoading(false)
   }
 
@@ -30932,6 +31116,12 @@ function WarehouseStatsModule({ user, allUsers, mobile }: any) {
       const dateStr = d.toISOString().split('T')[0]
       daysInRange.push({ date: dateStr, isSunday: d.getDay() === 0 })
     }
+    
+    // v198.6: Build map ngày Lễ Tết để skip giờ làm chuẩn
+    const specialDayMap = new Map<string, any>()
+    for (const sd of specialDays) {
+      if (sd.date) specialDayMap.set(sd.date, sd)
+    }
 
     // Tính giờ làm (để so ops_per_hour) + breakdown chuyên cần
     const hoursByUser = new Map<string, number>()
@@ -30956,6 +31146,13 @@ function WarehouseStatsModule({ user, allUsers, mobile }: any) {
           if (rec) totalHours += computeAttHours(rec, u.dept_id)
           return
         }
+        // v198.6: Ngày Lễ Tết — nếu KHÔNG có attendance record (NV được nghỉ)
+        // → skip khỏi totalHours và chuyên cần (không penalize, không inflate baseline)
+        // Nếu CÓ record (NV đi làm trong ngày Lễ) → vẫn tính giờ thực tế bình thường
+        const sd = specialDayMap.get(date)
+        if (sd && !rec) {
+          return  // ngày Lễ + không đi làm → không cộng 8h default
+        }
         // T2-T7
         if (!rec) {
           // Không có record = đi làm bình thường (full 8h, không trừ điểm)
@@ -30978,7 +31175,10 @@ function WarehouseStatsModule({ user, allUsers, mobile }: any) {
           // v133: data cũ sick vẫn count như leave_excused (backward compat)
           score -= 2; breakdown.leave_excused++
         } else if (status === 'absent') {
-          score -= 15; breakdown.absent_unexcused++
+          // v198.6: nếu ngày này là Lễ Tết → KHÔNG penalize absent (vì NV được nghỉ)
+          if (!sd) {
+            score -= 15; breakdown.absent_unexcused++
+          }
         }
       })
       if (totalHours > 0) hoursByUser.set(u.id, totalHours)
@@ -30997,13 +31197,16 @@ function WarehouseStatsModule({ user, allUsers, mobile }: any) {
     })
 
     // ── 3. Build metrics per user ──
+    // v198.6: Đơn nhặt nhẹ hơn đơn đóng → áp tỉ lệ 0.5 cho cả total_ops và ops_per_hour
+    const PICK_WEIGHT = 0.5
     const metricsByUser = new Map<string, any>()
     khoUsers.forEach((u: any) => {
       const packer = packerStats.find((s: any) => s.user_id === u.id)
       const picker = pickerStats.find((s: any) => s.user_id === u.id)
       const packed = packer?.order_count || 0
       const picked = picker?.order_count || 0
-      const totalOps = packed + picked
+      const rawOps = packed + picked  // Raw count để hiển thị
+      const totalOps = packed + picked * PICK_WEIGHT  // v198.6: weighted (đơn nhặt × 0.5)
       const hours = hoursByUser.get(u.id) || 0
       const errors = errorsByUser.get(u.id) || 0
       const value = (packer?.total_value || 0)
@@ -31017,7 +31220,8 @@ function WarehouseStatsModule({ user, allUsers, mobile }: any) {
         user: u,
         orders_packed: packed,
         orders_picked: picked,
-        total_ops: totalOps,
+        total_ops: totalOps,           // v198.6: weighted
+        raw_ops: rawOps,               // v198.6: raw count để hiển thị
         working_hours: hours,
         total_value: value,
         total_items: items,
@@ -31025,8 +31229,8 @@ function WarehouseStatsModule({ user, allUsers, mobile }: any) {
         errors,
         attendance_score: attScore.score,
         attendance_breakdown: attScore.breakdown,
-        ops_per_hour: hours > 0 ? totalOps / hours : 0,
-        error_rate: totalOps > 0 ? errors / totalOps : 0,
+        ops_per_hour: hours > 0 ? totalOps / hours : 0,  // v198.6: dùng weighted
+        error_rate: rawOps > 0 ? errors / rawOps : 0,    // v198.6: dùng raw cho rate (1 lỗi/đơn thật)
       })
     })
 
@@ -31112,7 +31316,7 @@ function WarehouseStatsModule({ user, allUsers, mobile }: any) {
         grade, gradeLabel, gradeCode,
       }
     }).sort((a, b) => b.totalScore - a.totalScore)
-  }, [packerStats, pickerStats, attendance, wrongOrders, returnSlips, allUsers, fromDate, toDate, excludedFromAvg])
+  }, [packerStats, pickerStats, attendance, wrongOrders, returnSlips, allUsers, fromDate, toDate, excludedFromAvg, specialDays])
 
   // Team averages (để NV Kho thấy so sánh) — chỉ tính NV không bị loại khỏi avg
   const teamAverages = useMemo(() => {
