@@ -117,7 +117,7 @@ const db = createClient(SUPABASE_URL, SUPABASE_KEY)
 // ⚠ TODO sau v198 (anh deploy thủ công):
 //   - Cập nhật edge function `kiotviet-sales-revenue` để auto sync luôn `kv_invoices` (anh paste code edge function cho em fix).
 //   - Setup pg_cron hoặc external cron (cron-job.org) để auto sync mỗi 1h. Hướng dẫn trong migration_62.sql.
-const APP_VERSION = '2026.05.03.v198.18'
+const APP_VERSION = '2026.05.03.v198.19'
 
 // ════════════════════════════════════════════════════════════════
 // v158: VersionBadge — Hiển thị APP_VERSION ở góc dưới phải
@@ -33227,11 +33227,33 @@ function SaleOrderTrackingModule({ user, allUsers, mobile }: any) {
 
     // Phase B (v129+): GHTK shipment history (từ ghtk-tracking edge function)
     // v141: Field từ tracking-v3 = synced_at + new_status_text + box_no
+    // v198.19: Filter ra entries có synced_via thuộc về label CŨ đã relink
+    // (data ô nhiễm trước khi edge function v5 fix)
     const ghtkHistory = Array.isArray(o.ghtk_status_history) ? o.ghtk_status_history : []
+    
+    // v198.19: Build set của tất cả label_id hợp lệ hiện tại
+    const validLabelIds = new Set<string>()
+    for (const lbl of (o.ghtk_labels || [])) {
+      const id = String(lbl.label_id || lbl.tracking_id || '')
+      if (id) validLabelIds.add(id)
+      // Cũng include partner_id format (cho đơn chưa relink)
+      if (lbl.box_no) validLabelIds.add(`${o.order_code}_B${lbl.box_no}`)
+    }
+    
     for (let i = 0; i < ghtkHistory.length; i++) {
       const h = ghtkHistory[i]
       const ts = h.synced_at || h.time || h.action_time
       if (!ts) continue
+      
+      // v198.19: Nếu đơn đã relink, skip entries có synced_via không khớp với labels hiện tại
+      if (o.ghtk_relinked_at && h.synced_via && validLabelIds.size > 0) {
+        const syncedVia = String(h.synced_via)
+        if (!validLabelIds.has(syncedVia)) {
+          // Entry này thuộc label CŨ đã relink → bỏ qua
+          continue
+        }
+      }
+      
       const statusText = h.new_status_text || h.status_text || h.action || 'Cập nhật GHTK'
       const oldText = h.old_status_text
       const boxNo = h.box_no
