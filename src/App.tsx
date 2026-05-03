@@ -117,7 +117,7 @@ const db = createClient(SUPABASE_URL, SUPABASE_KEY)
 // ⚠ TODO sau v198 (anh deploy thủ công):
 //   - Cập nhật edge function `kiotviet-sales-revenue` để auto sync luôn `kv_invoices` (anh paste code edge function cho em fix).
 //   - Setup pg_cron hoặc external cron (cron-job.org) để auto sync mỗi 1h. Hướng dẫn trong migration_62.sql.
-const APP_VERSION = '2026.05.03.v198.19.3'
+const APP_VERSION = '2026.05.03.v198.20'
 
 // ════════════════════════════════════════════════════════════════
 // v158: VersionBadge — Hiển thị APP_VERSION ở góc dưới phải
@@ -33003,6 +33003,10 @@ function SaleOrderTrackingModule({ user, allUsers, mobile }: any) {
   const [statusFilter, setStatusFilter] = useState<string>('active')
   const [dayRange, setDayRange] = useState(7)
   const [expanded, setExpanded] = useState<string|null>(null)
+  // v198.20: Modal xóa đơn (chỉ admin/QM kho)
+  const [deleteOrder, setDeleteOrder] = useState<any|null>(null)
+  const [deleteReason, setDeleteReason] = useState('')
+  const [deleting, setDeleting] = useState(false)
   // v114: Mode filter cho tab "Hoàn tất" — default = today
   //   'today' = chỉ hôm nay, '3d' = 3 ngày gần, '7d' = 7 ngày gần, 'custom' = chọn ngày
   const [doneMode, setDoneMode] = useState<'today'|'3d'|'7d'|'custom'>('today')
@@ -33065,6 +33069,58 @@ function SaleOrderTrackingModule({ user, allUsers, mobile }: any) {
   useEffect(() => { fetchOrders() }, [dayRange])
 
   const getName = (id: string) => allUsers.find((u: any) => u.id === id)?.name || '?'
+  
+  // v198.20: Soft delete đơn (chỉ admin/QM)
+  const handleSoftDelete = async () => {
+    if (!deleteOrder) return
+    // Defense-in-depth: verify perm 1 lần nữa trước khi gọi DB
+    if (!isQM) {
+      toast.error('Bạn không có quyền xóa đơn')
+      setDeleteOrder(null)
+      return
+    }
+    if (deleteReason.trim().length < 5) {
+      toast.error('Vui lòng nhập lý do xóa (≥ 5 ký tự)')
+      return
+    }
+    setDeleting(true)
+    try {
+      const now = new Date().toISOString()
+      
+      // Audit log với full snapshot trước khi xóa
+      await logAudit({
+        user,
+        action: 'soft_delete',
+        table: 'packing_workflow',
+        recordId: deleteOrder.order_code,
+        snapshot: deleteOrder,
+        note: `Xóa đơn ${deleteOrder.order_code} (${deleteOrder.customer_name || '?'}). Lý do: ${deleteReason.trim()}`,
+      })
+      
+      // Soft delete
+      const { error } = await db.from('packing_workflow').update({
+        is_deleted: true,
+        deleted_at: now,
+        deleted_by: user.id,
+      }).eq('order_code', deleteOrder.order_code)
+      
+      if (error) {
+        toast.error('Lỗi xóa: ' + error.message)
+        setDeleting(false)
+        return
+      }
+      
+      toast.success(`✓ Đã xóa đơn ${deleteOrder.order_code}`)
+      // Xóa khỏi list local mà không cần fetch lại
+      setOrders(prev => prev.filter(o => o.order_code !== deleteOrder.order_code))
+      setDeleteOrder(null)
+      setDeleteReason('')
+    } catch (e: any) {
+      toast.error('Lỗi: ' + (e.message || String(e)))
+    } finally {
+      setDeleting(false)
+    }
+  }
 
   // Filter theo status tab
   // ── SPECIAL FILTERS (loại đơn test cũ) ──
@@ -33479,6 +33535,20 @@ function SaleOrderTrackingModule({ user, allUsers, mobile }: any) {
                           ⏱ {pendingDuration(pending.since, null)}
                         </div>
                       )}
+                      {/* v198.20: Nút xóa (chỉ admin/QM kho) */}
+                      {isQM && (
+                        <button onClick={(e) => {
+                          e.stopPropagation()  // Tránh trigger expand card
+                          setDeleteOrder(o)
+                          setDeleteReason('')
+                        }}
+                          title="Xóa đơn (admin/QM kho)"
+                          style={{ marginTop:6, padding:'3px 8px', borderRadius:RD.full,
+                            border:`1px solid ${T.red}`, background:'#fff', color:T.red,
+                            cursor:'pointer', fontSize:10, fontFamily:'inherit', fontWeight:600 }}>
+                          🗑 Xóa
+                        </button>
+                      )}
                     </div>
                   </div>
 
@@ -33654,6 +33724,73 @@ function SaleOrderTrackingModule({ user, allUsers, mobile }: any) {
               </Card>
             )
           })}
+        </div>
+      )}
+      
+      {/* v198.20: Modal xóa đơn (chỉ admin/QM) */}
+      {deleteOrder && (
+        <div style={{ position:'fixed', inset:0, background:'rgba(0,0,0,0.55)', zIndex:10000,
+          display:'flex', alignItems:'center', justifyContent:'center', padding:20 }}>
+          <div style={{ background:'#fff', borderRadius:12, width: mobile ? '100%' : 540,
+            maxHeight:'90vh', overflow:'hidden', display:'flex', flexDirection:'column' }}>
+            
+            {/* Header */}
+            <div style={{ padding:'16px 20px', borderBottom:`1px solid ${T.border}`,
+              background:'#FEE2E2' }}>
+              <div style={{ fontSize:15, fontWeight:700, color:T.dark }}>
+                🗑 Xóa đơn {deleteOrder.order_code}
+              </div>
+              <div style={{ fontSize:11, color:T.med, marginTop:4 }}>
+                KH: <b style={{ color:T.dark }}>{deleteOrder.customer_name || '?'}</b>
+                {Number(deleteOrder.total_amount) > 0 && (
+                  <> · Tổng: <b style={{ color:T.dark }}>{Number(deleteOrder.total_amount).toLocaleString('vi-VN')}đ</b></>
+                )}
+              </div>
+            </div>
+            
+            {/* Body */}
+            <div style={{ overflowY:'auto', padding:16, background:T.bg, flex:1 }}>
+              <div style={{ padding:'10px 14px', background:'#FEF3C7',
+                borderLeft:`4px solid ${T.amber}`, borderRadius:6, fontSize:12, 
+                color:'#92400E', marginBottom:14 }}>
+                ⚠️ Đơn sẽ được <b>archive</b> (soft delete) — có thể khôi phục từ DB nếu cần. 
+                Audit log sẽ ghi lại đầy đủ snapshot + người xóa + lý do.
+              </div>
+              
+              <label style={{ fontSize:12, fontWeight:700, color:T.dark, marginBottom:6, display:'block' }}>
+                📝 Lý do xóa <span style={{ color:T.red }}>*</span>
+              </label>
+              <textarea value={deleteReason} onChange={e => setDeleteReason(e.target.value)}
+                placeholder="vd: Đơn test, KH hủy đặt, sai thông tin không sửa được, trùng đơn..."
+                rows={3}
+                style={{ width:'100%', padding:'8px 10px', borderRadius:6,
+                  border:`1px solid ${deleteReason.trim().length < 5 ? T.amber : T.border}`,
+                  background:'#fff', color:T.dark,
+                  fontSize:12, fontFamily:'inherit', resize:'vertical' }}/>
+              <div style={{ marginTop:4, fontSize:10, color: deleteReason.trim().length < 5 ? T.amber : T.med }}>
+                {deleteReason.trim().length < 5 
+                  ? `⚠️ Tối thiểu 5 ký tự (hiện ${deleteReason.trim().length})` 
+                  : `✓ ${deleteReason.trim().length} ký tự`}
+              </div>
+            </div>
+            
+            {/* Footer */}
+            <div style={{ padding:'12px 20px', borderTop:`1px solid ${T.border}`, background:'#fff',
+              display:'flex', gap:8, justifyContent:'flex-end' }}>
+              <button onClick={() => { setDeleteOrder(null); setDeleteReason('') }} disabled={deleting}
+                style={{ padding:'7px 14px', borderRadius:6, border:`1px solid ${T.border}`,
+                  background:'#fff', color:T.med, cursor:'pointer', fontSize:11, fontFamily:'inherit' }}>
+                Hủy
+              </button>
+              <button onClick={handleSoftDelete} disabled={deleting || deleteReason.trim().length < 5}
+                style={{ padding:'7px 14px', borderRadius:6, border:'none',
+                  background: deleteReason.trim().length < 5 ? T.border : T.red, color:'#fff',
+                  cursor: (deleting || deleteReason.trim().length < 5) ? 'not-allowed' : 'pointer',
+                  fontSize:11, fontWeight:700, fontFamily:'inherit' }}>
+                {deleting ? '⏳ Đang xóa...' : '🗑 Xác nhận xóa'}
+              </button>
+            </div>
+          </div>
         </div>
       )}
     </PageContainer>
