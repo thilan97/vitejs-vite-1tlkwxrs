@@ -117,7 +117,7 @@ const db = createClient(SUPABASE_URL, SUPABASE_KEY)
 // ⚠ TODO sau v198 (anh deploy thủ công):
 //   - Cập nhật edge function `kiotviet-sales-revenue` để auto sync luôn `kv_invoices` (anh paste code edge function cho em fix).
 //   - Setup pg_cron hoặc external cron (cron-job.org) để auto sync mỗi 1h. Hướng dẫn trong migration_62.sql.
-const APP_VERSION = '2026.05.03.v198.19.2'
+const APP_VERSION = '2026.05.03.v198.19.3'
 
 // ════════════════════════════════════════════════════════════════
 // v158: VersionBadge — Hiển thị APP_VERSION ở góc dưới phải
@@ -46257,6 +46257,22 @@ function GhtkRelinkModal({ order, user, mobile, onCancel, onSaved }: any) {
         success: true,
       }))
       
+      // v198.19.3: Backfill initial entries vào ghtk_status_history
+      // Vì edge function chỉ push entry khi statusChanged. Nếu status sau relink
+      // = status hiện tại trên GHTK (vd "3" Đã lấy hàng) → sync sau đó sẽ KHÔNG
+      // push entry mới → timeline trống (chỉ có "Tạo nhãn GHTK", thiếu các step
+      // status thực tế). Backfill để timeline hiển thị đúng ngay sau relink.
+      const initialHistoryEntries = okLabels.map(l => ({
+        box_no: l.box_no,
+        old_status: null,
+        old_status_text: null,
+        new_status: l.status_code || '',
+        new_status_text: l.status_text || '',
+        synced_via: l.label_id.trim(),  // Label MỚI để pass filter v198.19
+        synced_at: now,
+        from_relink: true,  // flag để debug/audit
+      }))
+      
       const { error } = await db.from('packing_workflow').update({
         ghtk_labels: newGhtkLabels,
         ghtk_status: newGhtkLabels[0].status || null,
@@ -46268,7 +46284,7 @@ function GhtkRelinkModal({ order, user, mobile, onCancel, onSaved }: any) {
         // v198.17 FIX: Clear ghtk_status_history + reset ghtk_created_at
         // Vì SaleOrderTracking render timeline từ ghtk_status_history (events của đơn cũ)
         // → relink xong vẫn hiển thị status cũ vì history chứa events của label cũ
-        ghtk_status_history: [],                        // clear toàn bộ history events của đơn cũ
+        ghtk_status_history: initialHistoryEntries,    // v198.19.3: backfill initial state thay vì clear empty
         ghtk_created_at: now,                           // ngày tạo nhãn GHTK mới = lúc relink
         ghtk_relinked_at: now,
         ghtk_relinked_by: user.id,
