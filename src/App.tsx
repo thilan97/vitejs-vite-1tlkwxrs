@@ -117,7 +117,7 @@ const db = createClient(SUPABASE_URL, SUPABASE_KEY)
 // ⚠ TODO sau v198 (anh deploy thủ công):
 //   - Cập nhật edge function `kiotviet-sales-revenue` để auto sync luôn `kv_invoices` (anh paste code edge function cho em fix).
 //   - Setup pg_cron hoặc external cron (cron-job.org) để auto sync mỗi 1h. Hướng dẫn trong migration_62.sql.
-const APP_VERSION = '2026.05.03.v198.13'
+const APP_VERSION = '2026.05.03.v198.15'
 
 // ════════════════════════════════════════════════════════════════
 // v158: VersionBadge — Hiển thị APP_VERSION ở góc dưới phải
@@ -33124,6 +33124,15 @@ function SaleOrderTrackingModule({ user, allUsers, mobile }: any) {
     if (!searchQ.trim()) return true
     const tokens = norm(searchQ).split(/\s+/).filter(Boolean)
     const hay = norm(`${o.order_code} ${o.customer_name} ${o.sold_by_name}`)
+    // v198.15: Smart phone matching cho SĐT GHTK (ghtk_customer_info.tel)
+    // Áp dụng khi search là chuỗi >= 8 chữ số
+    const searchDigitsOnly = searchQ.replace(/\D/g, '')
+    const isPhoneSearch = searchDigitsOnly.length >= 8 && searchDigitsOnly.length <= 15
+    if (isPhoneSearch) {
+      const ghtkTelDigits = String(o.ghtk_customer_info?.tel || '').replace(/\D/g, '')
+      if (ghtkTelDigits.includes(searchDigitsOnly)) return true
+      if (searchDigitsOnly.length >= 4 && ghtkTelDigits.endsWith(searchDigitsOnly)) return true
+    }
     return tokens.every(t => hay.includes(t))
   })
 
@@ -33283,7 +33292,7 @@ function SaleOrderTrackingModule({ user, allUsers, mobile }: any) {
       {/* Filters */}
       <Card style={{ padding:12, marginBottom:12 }}>
         <input value={searchQ} onChange={e => setSearchQ(e.target.value)}
-          placeholder="🔍 Tìm theo mã đơn, tên KH..."
+          placeholder="🔍 Tìm theo mã đơn, tên KH, SĐT GHTK..."
           style={{ width:'100%', padding:'9px 12px', border:`1px solid ${T.border}`, borderRadius:8,
             fontSize:12, fontFamily:'inherit', color:T.dark, background:'#fff', outline:'none',
             boxSizing:'border-box' as any, marginBottom:10 }}/>
@@ -41258,7 +41267,9 @@ function GhtkTrackCard({ order: o, user, mobile, allOrders, onRefresh }: any) {
 
       {/* Modals */}
       {showDetail && (
-        <GhtkOrderDetailModal order={o} mobile={mobile} onClose={() => setShowDetail(false)}/>
+        <GhtkOrderDetailModal order={o} user={user} mobile={mobile} 
+          onClose={() => setShowDetail(false)}
+          onRelinked={() => { setShowDetail(false); onRefresh && onRefresh() }}/>
       )}
       {showEdit && (
         <GhtkEditAddressModal order={o} user={user} mobile={mobile}
@@ -41283,13 +41294,16 @@ function GhtkTrackCard({ order: o, user, mobile, allOrders, onRefresh }: any) {
 // ══════════════════════════════════════════════════════════════════════
 // v170: GhtkOrderDetailModal — modal xem chi tiết status từng thùng
 // ══════════════════════════════════════════════════════════════════════
-function GhtkOrderDetailModal({ order: o, mobile, onClose }: any) {
+function GhtkOrderDetailModal({ order: o, user, mobile, onClose, onRelinked }: any) {
   const labels = o.ghtk_labels || []
   const details = o.ghtk_status_details || []
   const customerInfo = o.ghtk_customer_info || {}
   const status = o.ghtk_status || ''
   const statusText = o.ghtk_status_text || GHTK_STATUS_TEXT[String(status)] || 'Chưa sync'
   const colors = ghtkStatusColor(status)
+  // v198.14: Modal đổi đơn GHTK (case QM hủy đơn cũ trên web GHTK + tạo đơn mới)
+  const [showRelink, setShowRelink] = useState(false)
+  const canRelink = user && getPerm(user).ghtkSettings  // chỉ admin/QM kho
 
   return (
     <Modal open wide title={`👁 Chi tiết đơn ${o.order_code}`} onClose={onClose}>
@@ -41389,7 +41403,36 @@ function GhtkOrderDetailModal({ order: o, mobile, onClose }: any) {
             Đóng
           </button>
         </div>
+        
+        {/* v198.14: Nút "Đổi đơn GHTK" — case QM hủy đơn cũ trên web GHTK + tạo đơn mới */}
+        {canRelink && labels.length > 0 && (
+          <div style={{ marginTop:14, paddingTop:14, borderTop:`1px solid ${T.border}` }}>
+            <div style={{ fontSize:11, color:T.med, marginBottom:8, lineHeight:1.5 }}>
+              💡 Trường hợp QM đã hủy đơn GHTK cũ và tạo đơn GHTK MỚI trên web — bấm nút dưới để gán đơn GHTK mới vào đơn KV này.
+            </div>
+            <button onClick={() => setShowRelink(true)}
+              style={{ padding:'8px 14px', borderRadius:8, border:`1px solid ${T.amber}`,
+                background:'#fff', color:T.amber, cursor:'pointer',
+                fontFamily:'inherit', fontSize:12, fontWeight:700 }}>
+              🔄 Đổi đơn GHTK (hủy link cũ + gán đơn mới)
+            </button>
+          </div>
+        )}
       </div>
+      
+      {/* v198.14: Modal đổi đơn GHTK */}
+      {showRelink && (
+        <GhtkRelinkModal
+          order={o}
+          user={user}
+          mobile={mobile}
+          onCancel={() => setShowRelink(false)}
+          onSaved={() => {
+            setShowRelink(false)
+            onRelinked && onRelinked()
+          }}
+        />
+      )}
     </Modal>
   )
 }
@@ -45888,6 +45931,482 @@ function LegacyGhtkLinkModal({ order, user, mobile, onCancel, onSaved }: any) {
               cursor: (saving || okCount === 0) ? 'not-allowed' : 'pointer',
               fontSize:12, fontWeight:700, fontFamily:'inherit' }}>
             {saving ? '⏳ Đang lưu...' : `✅ Lưu ${okCount} label`}
+          </button>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+
+// ══════════════════════════════════════════════════════════════════════
+// v198.14: GhtkRelinkModal — Đổi đơn GHTK
+//   Case: QM hủy đơn GHTK cũ trên web + tạo đơn mới (không qua app)
+//   Workflow:
+//     1. Hiển thị label_id cũ (read-only)
+//     2. Bắt buộc nhập lý do hủy
+//     3. Nhập label_id mới + verify qua GHTK API
+//     4. Save: replace ghtk_labels, lưu history vào ghtk_relinked_from
+//   Permission: chỉ admin/QM (perm.ghtkSettings)
+//   Lưu ý: KHÔNG gọi GHTK cancel API — assume QM đã hủy thủ công
+// ══════════════════════════════════════════════════════════════════════
+function GhtkRelinkModal({ order, user, mobile, onCancel, onSaved }: any) {
+  const oldLabels = Array.isArray(order.ghtk_labels) ? order.ghtk_labels : []
+  
+  // Form state
+  const [reason, setReason] = useState('')
+  const [labels, setLabels] = useState<Array<{ label_id: string, box_no: number, verified?: 'ok'|'fail'|null, status_code?: string, status_text?: string, error?: string, customer_name_ghtk?: string, customer_mismatch?: boolean }>>([
+    { label_id: '', box_no: 1, verified: null }
+  ])
+  const [verifying, setVerifying] = useState(false)
+  const [saving, setSaving] = useState(false)
+  const [err, setErr] = useState('')
+  const [bulkInput, setBulkInput] = useState('')
+  const [showBulkPaste, setShowBulkPaste] = useState(false)
+  
+  // Reuse logic từ LegacyGhtkLinkModal
+  const parseMultiLabels = (raw: string): string[] => {
+    if (!raw) return []
+    const tokens = raw.split(/[,;\s\n\t\r]+/).map(s => s.trim()).filter(Boolean)
+    return tokens.filter(t => t.length >= 6 && /^[A-Za-z0-9._\-]+$/.test(t))
+  }
+  
+  const addRow = () => setLabels(prev => [...prev, { label_id: '', box_no: prev.length + 1, verified: null }])
+  const removeRow = (idx: number) => setLabels(prev => prev.filter((_, i) => i !== idx).map((l, i) => ({ ...l, box_no: i + 1 })))
+  const updateRow = (idx: number, patch: any) => {
+    setLabels(prev => prev.map((l, i) => i === idx ? { ...l, ...patch, verified: null, customer_mismatch: false } : l))
+  }
+  
+  const handleInputPaste = (idx: number, e: React.ClipboardEvent<HTMLInputElement>) => {
+    const pasted = e.clipboardData.getData('text') || ''
+    const parsed = parseMultiLabels(pasted)
+    if (parsed.length <= 1) return
+    e.preventDefault()
+    setLabels(prev => {
+      const next = [...prev]
+      parsed.forEach((labelId, i) => {
+        const targetIdx = idx + i
+        if (targetIdx < next.length) {
+          next[targetIdx] = { ...next[targetIdx], label_id: labelId, verified: null, customer_mismatch: false }
+        } else {
+          next.push({ label_id: labelId, box_no: targetIdx + 1, verified: null })
+        }
+      })
+      return next.map((l, i) => ({ ...l, box_no: i + 1 }))
+    })
+  }
+  
+  const applyBulkPaste = () => {
+    const parsed = parseMultiLabels(bulkInput)
+    if (parsed.length === 0) { setErr('Không tìm thấy label_id hợp lệ'); return }
+    setErr('')
+    setLabels(prev => {
+      const existing = prev.filter(l => l.label_id.trim()).map(l => l.label_id.trim())
+      const newOnes = parsed.filter(p => !existing.includes(p))
+      const merged: any[] = [
+        ...prev.filter(l => l.label_id.trim()),
+        ...newOnes.map(label_id => ({ label_id, box_no: 0, verified: null }))
+      ]
+      if (merged.length === 0) merged.push({ label_id: '', box_no: 1, verified: null })
+      return merged.map((l, i) => ({ ...l, box_no: i + 1 }))
+    })
+    setBulkInput('')
+    setShowBulkPaste(false)
+    toast.success(`✓ Đã thêm ${parsed.length} label_id, bấm "🔍 Verify"`)
+  }
+  
+  const verifyAll = async () => {
+    setErr('')
+    const ids = labels.map(l => l.label_id.trim()).filter(Boolean)
+    if (ids.length === 0) { setErr('Cần nhập ít nhất 1 label_id'); return }
+    const uniqueIds = new Set(ids)
+    if (uniqueIds.size !== ids.length) { setErr('Có label_id trùng nhau'); return }
+    
+    // Check không được dùng trùng với label_id cũ (case typo)
+    const oldLabelIds = new Set(oldLabels.map((l: any) => l.label_id || l.tracking_id))
+    const stillOldIds = ids.filter(id => oldLabelIds.has(id))
+    if (stillOldIds.length > 0) {
+      setErr(`Label "${stillOldIds[0]}" là label CŨ đang muốn thay. Vui lòng nhập label MỚI.`)
+      return
+    }
+    
+    setVerifying(true)
+    try {
+      const res = await fetch(`${SUPABASE_URL}/functions/v1/ghtk-track-status`, {
+        method:'POST',
+        headers:{ 'Content-Type':'application/json', 'Authorization':`Bearer ${SUPABASE_ANON}` },
+        body: JSON.stringify({ label_ids: ids }),
+      })
+      if (!res.ok) {
+        setErr(`GHTK API lỗi: HTTP ${res.status}`)
+        setVerifying(false)
+        return
+      }
+      const json = await res.json()
+      const results: any[] = json.results || []
+      const resMap = new Map<string, any>()
+      for (const r of results) if (r.label_id) resMap.set(String(r.label_id), r)
+      
+      const normName = (s: string) => String(s || '').toLowerCase()
+        .normalize('NFD').replace(/[\u0300-\u036f]/g, '')
+        .replace(/đ/g, 'd').replace(/\s+/g, ' ').trim()
+      const orderCustomerName = normName(order.customer_name || order.ghtk_customer_info?.name || '')
+      
+      setLabels(prev => prev.map(l => {
+        const trimmed = l.label_id.trim()
+        if (!trimmed) return { ...l, verified: null }
+        const r = resMap.get(trimmed)
+        if (!r) return { ...l, verified: 'fail', error: 'Không tìm thấy trên GHTK' }
+        if (r.success) {
+          const ghtkCustomer = r.customer_fullname || r.customer_name || r.receiver_name || r.receiver_fullname || ''
+          const ghtkCustomerNorm = normName(ghtkCustomer)
+          let mismatch = false
+          if (orderCustomerName && ghtkCustomerNorm) {
+            const longer = orderCustomerName.length >= ghtkCustomerNorm.length ? orderCustomerName : ghtkCustomerNorm
+            const shorter = orderCustomerName.length < ghtkCustomerNorm.length ? orderCustomerName : ghtkCustomerNorm
+            mismatch = !longer.includes(shorter) && shorter.length >= 3
+          }
+          return { 
+            ...l, verified: 'ok', 
+            status_code: String(r.status || ''),
+            status_text: r.status_text || r.message || '',
+            customer_name_ghtk: ghtkCustomer,
+            customer_mismatch: mismatch,
+            error: ''
+          }
+        }
+        return { ...l, verified: 'fail', error: r.message || 'Verify thất bại' }
+      }))
+    } catch (e: any) {
+      setErr('Lỗi kết nối GHTK: ' + e.message)
+    } finally {
+      setVerifying(false)
+    }
+  }
+  
+  // Save: replace ghtk_labels + lưu history
+  const handleSave = async () => {
+    setErr('')
+    
+    // Validate reason
+    if (!reason.trim() || reason.trim().length < 5) {
+      setErr('Vui lòng nhập lý do hủy đơn cũ (tối thiểu 5 ký tự)')
+      return
+    }
+    
+    // Validate perm (defense-in-depth)
+    if (!getPerm(user).ghtkSettings) {
+      setErr('Bạn không có quyền đổi đơn GHTK')
+      return
+    }
+    
+    const okLabels = labels.filter(l => l.verified === 'ok' && l.label_id.trim())
+    if (okLabels.length === 0) {
+      setErr('Cần verify thành công ít nhất 1 label_id mới')
+      return
+    }
+    
+    // Confirm cuối — irreversible action
+    const confirmMsg = `Xác nhận đổi đơn GHTK:\n\n` +
+      `Cũ: ${oldLabels.map((l: any) => l.label_id || l.tracking_id).join(', ')}\n` +
+      `Mới: ${okLabels.map(l => l.label_id).join(', ')}\n\n` +
+      `Lý do: ${reason.trim()}\n\n` +
+      `Hành động này KHÔNG thể hoàn tác qua app. Tiếp tục?`
+    if (!confirm(confirmMsg)) return
+    
+    setSaving(true)
+    try {
+      const now = new Date().toISOString()
+      
+      // Build new ghtk_labels payload
+      const newGhtkLabels = okLabels.map(l => ({
+        label_id: l.label_id.trim(),
+        tracking_id: l.label_id.trim(),
+        box_no: l.box_no,
+        status: l.status_code || '',
+        status_text: l.status_text || '',
+        relinked: true,
+        linked_at: now,
+        linked_by: user.id,
+        linked_by_name: user.name,
+      }))
+      
+      // Build history entry
+      const historyEntry = {
+        old_labels: oldLabels.map((l: any) => ({
+          label_id: l.label_id || l.tracking_id || '',
+          status: l.status || '',
+          status_text: l.status_text || '',
+        })),
+        new_labels: okLabels.map(l => ({
+          label_id: l.label_id.trim(),
+          status: l.status_code || '',
+          status_text: l.status_text || '',
+        })),
+        reason: reason.trim(),
+        relinked_at: now,
+        relinked_by: user.id,
+        relinked_by_name: user.name,
+      }
+      
+      // Append vào ghtk_relinked_from history (array, có thể relink nhiều lần)
+      const existingHistory: any[] = Array.isArray(order.ghtk_relinked_from) ? order.ghtk_relinked_from : []
+      const newHistory = [...existingHistory, historyEntry]
+      
+      // Audit log
+      await logAudit({
+        user,
+        action: 'ghtk_relink',
+        table: 'packing_workflow',
+        recordId: order.order_code,
+        snapshot: { old_labels: oldLabels, new_labels: newGhtkLabels, reason: reason.trim() },
+        note: `Đổi đơn GHTK: ${oldLabels.map((l: any) => l.label_id || l.tracking_id).join(',')} → ${okLabels.map(l => l.label_id).join(',')}. Lý do: ${reason.trim()}`,
+      })
+      
+      // Update DB
+      const { error } = await db.from('packing_workflow').update({
+        ghtk_labels: newGhtkLabels,
+        ghtk_status: newGhtkLabels[0].status || null,
+        ghtk_status_text: newGhtkLabels[0].status_text || null,
+        ghtk_status_synced_at: now,
+        ghtk_relinked_at: now,
+        ghtk_relinked_by: user.id,
+        ghtk_relinked_by_name: user.name,
+        ghtk_relinked_from: newHistory,
+        ghtk_relink_reason: reason.trim(),
+      }).eq('order_code', order.order_code)
+      
+      if (error) {
+        setErr('Lưu thất bại: ' + error.message)
+        setSaving(false)
+        return
+      }
+      
+      toast.success(`✓ Đã đổi đơn GHTK của ${order.order_code}`)
+      await onSaved()
+    } catch (e: any) {
+      setErr('Lỗi: ' + e.message)
+    } finally {
+      setSaving(false)
+    }
+  }
+  
+  const okCount = labels.filter(l => l.verified === 'ok').length
+  const failCount = labels.filter(l => l.verified === 'fail').length
+  const mismatchCount = labels.filter(l => l.verified === 'ok' && l.customer_mismatch).length
+  
+  return (
+    <div style={{ position:'fixed', inset:0, background:'rgba(0,0,0,0.55)', zIndex:10000,
+      display:'flex', alignItems:'center', justifyContent:'center', padding:20 }}>
+      <div style={{ background:'#fff', borderRadius:12, width:mobile ? '100%' : 760,
+        maxHeight:'92vh', overflow:'hidden', display:'flex', flexDirection:'column' }}>
+        
+        {/* Header */}
+        <div style={{ padding:'16px 20px', borderBottom:`1px solid ${T.border}`,
+          background:'#FEF3C7' }}>
+          <div style={{ fontSize:15, fontWeight:700, color:T.dark }}>
+            🔄 Đổi đơn GHTK cho đơn {order.order_code}
+          </div>
+          <div style={{ fontSize:11, color:T.med, marginTop:4 }}>
+            KH: <b style={{ color:T.dark }}>{order.customer_name || order.ghtk_customer_info?.name || '—'}</b>
+            {' · '}Tổng: <b style={{ color:T.dark }}>{Number(order.total_amount||0).toLocaleString('vi-VN')}đ</b>
+          </div>
+        </div>
+        
+        {/* Body */}
+        <div style={{ overflowY:'auto', padding:16, background:T.bg, flex:1 }}>
+          
+          {/* Phần A: Đơn GHTK cũ (read-only) */}
+          <div style={{ background:'#fff', borderRadius:8, padding:12, marginBottom:14,
+            border:`1px solid ${T.border}` }}>
+            <div style={{ fontSize:12, fontWeight:700, color:T.dark, marginBottom:8 }}>
+              📦 Đơn GHTK CŨ (sẽ bị hủy link)
+            </div>
+            {oldLabels.length === 0 ? (
+              <div style={{ fontSize:11, color:T.light, fontStyle:'italic' }}>Không có label cũ</div>
+            ) : (
+              <div style={{ display:'flex', flexDirection:'column', gap:6 }}>
+                {oldLabels.map((l: any, i: number) => (
+                  <div key={i} style={{ display:'flex', alignItems:'center', gap:8,
+                    padding:'6px 10px', background:T.bg, borderRadius:6,
+                    fontSize:12 }}>
+                    <span style={{ flexShrink:0, padding:'2px 6px', background:T.red, color:'#fff',
+                      borderRadius:10, fontSize:10, fontWeight:700 }}>HỦY</span>
+                    <span style={{ flex:1, fontFamily:'monospace', color:T.dark, textDecoration:'line-through' }}>
+                      {l.label_id || l.tracking_id || '?'}
+                    </span>
+                    {l.status_text && (
+                      <span style={{ fontSize:10, color:T.med }}>{l.status_text}</span>
+                    )}
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+          
+          {/* Phần B: Lý do hủy (bắt buộc) */}
+          <div style={{ marginBottom:14 }}>
+            <label style={{ fontSize:12, fontWeight:700, color:T.dark, marginBottom:6, display:'block' }}>
+              📝 Lý do hủy đơn GHTK cũ <span style={{ color:T.red }}>*</span>
+            </label>
+            <textarea value={reason} onChange={e => setReason(e.target.value)}
+              placeholder="vd: Sai địa chỉ KH, KH đổi ý đổi giờ giao, đơn cũ bị thất lạc, GHTK trả về..."
+              rows={3}
+              style={{ width:'100%', padding:'8px 10px', borderRadius:6,
+                border:`1px solid ${reason.trim().length < 5 ? T.amber : T.border}`,
+                background:'#fff', color:T.dark,
+                fontSize:12, fontFamily:'inherit', resize:'vertical' }}/>
+            <div style={{ marginTop:4, fontSize:10, color:reason.trim().length < 5 ? T.amber : T.med }}>
+              {reason.trim().length < 5 
+                ? `⚠️ Tối thiểu 5 ký tự (hiện ${reason.trim().length})` 
+                : `✓ ${reason.trim().length} ký tự`}
+            </div>
+          </div>
+          
+          {/* Phần C: Đơn GHTK mới */}
+          <div style={{ background:'#fff', borderRadius:8, padding:12, marginBottom:14,
+            border:`2px solid ${T.green}` }}>
+            <div style={{ fontSize:12, fontWeight:700, color:T.dark, marginBottom:8 }}>
+              📦 Đơn GHTK MỚI (gán vào DH này)
+            </div>
+            <div style={{ fontSize:11, color:T.med, marginBottom:10 }}>
+              Nhập label_id của đơn GHTK mới (đã tạo trên web GHTK). App sẽ verify qua API trước khi lưu.
+            </div>
+            
+            {/* Bulk paste */}
+            {!showBulkPaste ? (
+              <button onClick={() => setShowBulkPaste(true)}
+                style={{ marginBottom:8, padding:'5px 10px', borderRadius:6,
+                  border:`1px dashed ${T.purple}`, background:'#fff', color:T.purple,
+                  cursor:'pointer', fontSize:10, fontWeight:600, fontFamily:'inherit' }}>
+                📋 Paste nhiều label cùng lúc
+              </button>
+            ) : (
+              <div style={{ marginBottom:10, padding:10, background:T.bg, borderRadius:6,
+                border:`1px solid ${T.purple}` }}>
+                <textarea value={bulkInput} onChange={e => setBulkInput(e.target.value)}
+                  placeholder="Paste label_id, mỗi dòng 1 cái hoặc cách nhau bằng dấu phẩy..."
+                  rows={3}
+                  style={{ width:'100%', padding:'6px 8px', borderRadius:4,
+                    border:`1px solid ${T.border}`, background:'#fff', color:T.dark,
+                    fontSize:11, fontFamily:'monospace', resize:'vertical' }}/>
+                <div style={{ marginTop:4, fontSize:10, color:T.med }}>
+                  Phát hiện: <b style={{ color:T.purple }}>{parseMultiLabels(bulkInput).length}</b> label hợp lệ
+                </div>
+                <div style={{ marginTop:6, display:'flex', gap:6, justifyContent:'flex-end' }}>
+                  <button onClick={() => { setBulkInput(''); setShowBulkPaste(false) }}
+                    style={{ padding:'4px 8px', borderRadius:4, border:`1px solid ${T.border}`,
+                      background:'#fff', color:T.med, cursor:'pointer', fontSize:10, fontFamily:'inherit' }}>
+                    Hủy
+                  </button>
+                  <button onClick={applyBulkPaste} disabled={parseMultiLabels(bulkInput).length === 0}
+                    style={{ padding:'4px 10px', borderRadius:4, border:'none',
+                      background: parseMultiLabels(bulkInput).length === 0 ? T.border : T.purple,
+                      color:'#fff', cursor: parseMultiLabels(bulkInput).length === 0 ? 'not-allowed' : 'pointer',
+                      fontSize:10, fontWeight:700, fontFamily:'inherit' }}>
+                    ✓ Áp dụng {parseMultiLabels(bulkInput).length}
+                  </button>
+                </div>
+              </div>
+            )}
+            
+            {/* Label rows */}
+            {labels.map((l, idx) => (
+              <div key={idx} style={{ background:T.bg, borderRadius:6, padding:8,
+                border: l.verified === 'ok' && l.customer_mismatch ? `2px solid ${T.amber}`
+                      : l.verified === 'ok' ? `2px solid ${T.green}` 
+                      : l.verified === 'fail' ? `2px solid ${T.red}` 
+                      : `1px solid ${T.border}`,
+                marginBottom:6, display:'flex', gap:8, alignItems:'flex-start' }}>
+                <div style={{ flexShrink:0, width:24, height:24, borderRadius:'50%',
+                  background: l.verified === 'ok' && l.customer_mismatch ? T.amber
+                            : l.verified === 'ok' ? T.green 
+                            : l.verified === 'fail' ? T.red 
+                            : T.green, 
+                  color:'#fff', display:'flex', alignItems:'center', justifyContent:'center',
+                  fontWeight:700, fontSize:11 }}>
+                  {l.box_no}
+                </div>
+                <div style={{ flex:1, minWidth:0 }}>
+                  <input type="text" value={l.label_id}
+                    placeholder="label_id mới (vd: S22.AAA.123)"
+                    onChange={e => updateRow(idx, { label_id: e.target.value })}
+                    onPaste={e => handleInputPaste(idx, e)}
+                    style={{ width:'100%', padding:'6px 8px', borderRadius:4, 
+                      border:`1px solid ${T.border}`, background:'#fff', color:T.dark,
+                      fontSize:12, fontFamily:'monospace' }}/>
+                  
+                  {l.verified === 'ok' && !l.customer_mismatch && (
+                    <div style={{ marginTop:4, fontSize:10, color:T.green, fontWeight:600 }}>
+                      ✓ {l.status_text || `code ${l.status_code}`}
+                      {l.customer_name_ghtk && <span style={{ color:T.med, fontWeight:400 }}> · {l.customer_name_ghtk}</span>}
+                    </div>
+                  )}
+                  {l.verified === 'ok' && l.customer_mismatch && (
+                    <div style={{ marginTop:4, padding:'4px 6px', background:'#FEF3C7',
+                      borderRadius:3, fontSize:10, color:'#92400E' }}>
+                      ⚠️ KH GHTK ("{l.customer_name_ghtk}") khác KH đơn KV
+                    </div>
+                  )}
+                  {l.verified === 'fail' && (
+                    <div style={{ marginTop:4, fontSize:10, color:T.red, fontWeight:600 }}>
+                      ✗ {l.error}
+                    </div>
+                  )}
+                </div>
+                {labels.length > 1 && (
+                  <button onClick={() => removeRow(idx)}
+                    style={{ padding:'2px 8px', borderRadius:4, border:`1px solid ${T.red}`,
+                      background:'#fff', color:T.red, cursor:'pointer', fontSize:10, fontFamily:'inherit' }}>
+                    ✕
+                  </button>
+                )}
+              </div>
+            ))}
+            
+            <button onClick={addRow}
+              style={{ width:'100%', padding:'7px', borderRadius:6, border:`1px dashed ${T.green}`,
+                background:'transparent', color:T.green, cursor:'pointer', fontSize:11, fontWeight:600,
+                fontFamily:'inherit', marginTop:4 }}>
+              + Thêm thùng
+            </button>
+          </div>
+          
+          {err && (
+            <div style={{ padding:'8px 12px', background:'#FEE2E2',
+              border:`1px solid ${T.red}`, borderRadius:6, color:T.red, fontSize:12 }}>
+              ⚠️ {err}
+            </div>
+          )}
+        </div>
+        
+        {/* Footer */}
+        <div style={{ padding:'12px 20px', borderTop:`1px solid ${T.border}`, background:'#fff',
+          display:'flex', gap:8, alignItems:'center' }}>
+          <div style={{ flex:1, fontSize:11, color:T.med }}>
+            {okCount > 0 && <span style={{ color:T.green, fontWeight:600 }}>✓ {okCount} OK</span>}
+            {okCount > 0 && (failCount > 0 || mismatchCount > 0) && ' · '}
+            {mismatchCount > 0 && <span style={{ color:T.amber, fontWeight:600 }}>⚠️ {mismatchCount} sai KH</span>}
+            {(okCount > 0 || mismatchCount > 0) && failCount > 0 && ' · '}
+            {failCount > 0 && <span style={{ color:T.red, fontWeight:600 }}>✗ {failCount} Lỗi</span>}
+          </div>
+          <button onClick={onCancel} disabled={saving}
+            style={{ padding:'7px 12px', borderRadius:6, border:`1px solid ${T.border}`,
+              background:'#fff', color:T.med, cursor:'pointer', fontSize:11, fontFamily:'inherit' }}>
+            Hủy
+          </button>
+          <button onClick={verifyAll} disabled={verifying || saving}
+            style={{ padding:'7px 12px', borderRadius:6, border:`1px solid ${T.blue}`,
+              background:'#fff', color:T.blue, cursor: verifying ? 'wait' : 'pointer', 
+              fontSize:11, fontWeight:700, fontFamily:'inherit' }}>
+            {verifying ? '⏳ Verify...' : '🔍 Verify với GHTK'}
+          </button>
+          <button onClick={handleSave} disabled={saving || verifying || okCount === 0 || reason.trim().length < 5}
+            style={{ padding:'7px 14px', borderRadius:6, border:'none',
+              background: (okCount === 0 || reason.trim().length < 5) ? T.border : T.amber, color:'#fff',
+              cursor: (saving || okCount === 0 || reason.trim().length < 5) ? 'not-allowed' : 'pointer',
+              fontSize:11, fontWeight:700, fontFamily:'inherit' }}>
+            {saving ? '⏳ Đang lưu...' : `🔄 Đổi sang ${okCount} label`}
           </button>
         </div>
       </div>
