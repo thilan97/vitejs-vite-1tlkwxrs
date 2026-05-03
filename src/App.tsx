@@ -117,7 +117,7 @@ const db = createClient(SUPABASE_URL, SUPABASE_KEY)
 // ⚠ TODO sau v198 (anh deploy thủ công):
 //   - Cập nhật edge function `kiotviet-sales-revenue` để auto sync luôn `kv_invoices` (anh paste code edge function cho em fix).
 //   - Setup pg_cron hoặc external cron (cron-job.org) để auto sync mỗi 1h. Hướng dẫn trong migration_62.sql.
-const APP_VERSION = '2026.05.03.v198.16'
+const APP_VERSION = '2026.05.03.v198.17'
 
 // ════════════════════════════════════════════════════════════════
 // v158: VersionBadge — Hiển thị APP_VERSION ở góc dưới phải
@@ -46181,6 +46181,11 @@ function GhtkRelinkModal({ order, user, mobile, onCancel, onSaved }: any) {
         ghtk_status_synced_at: now,
         // v198.16: Reset các field tracking cũ vì đơn GHTK đã đổi sang đơn mới
         ghtk_printed_at: null,                          // hủy "đã in nhãn" của đơn cũ
+        // v198.17 FIX: Clear ghtk_status_history + reset ghtk_created_at
+        // Vì SaleOrderTracking render timeline từ ghtk_status_history (events của đơn cũ)
+        // → relink xong vẫn hiển thị status cũ vì history chứa events của label cũ
+        ghtk_status_history: [],                        // clear toàn bộ history events của đơn cũ
+        ghtk_created_at: now,                           // ngày tạo nhãn GHTK mới = lúc relink
         ghtk_relinked_at: now,
         ghtk_relinked_by: user.id,
         ghtk_relinked_by_name: user.name,
