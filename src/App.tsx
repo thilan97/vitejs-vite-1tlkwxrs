@@ -117,7 +117,7 @@ const db = createClient(SUPABASE_URL, SUPABASE_KEY)
 // ⚠ TODO sau v198 (anh deploy thủ công):
 //   - Cập nhật edge function `kiotviet-sales-revenue` để auto sync luôn `kv_invoices` (anh paste code edge function cho em fix).
 //   - Setup pg_cron hoặc external cron (cron-job.org) để auto sync mỗi 1h. Hướng dẫn trong migration_62.sql.
-const APP_VERSION = '2026.05.03.v198.19.1'
+const APP_VERSION = '2026.05.03.v198.19.2'
 
 // ════════════════════════════════════════════════════════════════
 // v158: VersionBadge — Hiển thị APP_VERSION ở góc dưới phải
@@ -33230,6 +33230,7 @@ function SaleOrderTrackingModule({ user, allUsers, mobile }: any) {
     // v198.19: Filter ra entries có synced_via thuộc về label CŨ đã relink
     // (data ô nhiễm trước khi edge function v5 fix)
     // v198.19.1: Add console.log debug để verify filter
+    // v198.19.2: ADD timestamp-based filter — entries TRƯỚC ghtk_relinked_at đều là của đơn cũ
     const ghtkHistory = Array.isArray(o.ghtk_status_history) ? o.ghtk_status_history : []
     
     // v198.19: Build set của tất cả label_id hợp lệ hiện tại
@@ -33241,13 +33242,21 @@ function SaleOrderTrackingModule({ user, allUsers, mobile }: any) {
       if (lbl.box_no) validLabelIds.add(`${o.order_code}_B${lbl.box_no}`)
     }
     
+    // v198.19.2: Compute relinked timestamp once để dùng nhiều lần
+    const relinkedMs = o.ghtk_relinked_at ? new Date(o.ghtk_relinked_at).getTime() : 0
+    
     // v198.19.1: Debug log cho đơn đã relink
     if (o.ghtk_relinked_at && ghtkHistory.length > 0) {
       console.log(`[FILTER ${o.order_code}] relinked_at=${o.ghtk_relinked_at}`)
       console.log(`[FILTER ${o.order_code}] validLabelIds:`, Array.from(validLabelIds))
       console.log(`[FILTER ${o.order_code}] history entries:`, ghtkHistory.length)
       for (const h of ghtkHistory) {
-        console.log(`  - synced_via="${h.synced_via}" → ${validLabelIds.has(String(h.synced_via)) ? '✓ KEEP' : '✗ SKIP'}`)
+        const ts = h.synced_at || h.time || h.action_time
+        const tsMs = ts ? new Date(ts).getTime() : 0
+        const beforeRelink = tsMs > 0 && tsMs < relinkedMs
+        const labelMismatch = h.synced_via && !validLabelIds.has(String(h.synced_via))
+        const willSkip = beforeRelink || labelMismatch
+        console.log(`  - synced_via="${h.synced_via}" ts="${ts}" beforeRelink=${beforeRelink} labelMismatch=${labelMismatch} → ${willSkip ? '✗ SKIP' : '✓ KEEP'}`)
       }
     }
     
@@ -33256,11 +33265,20 @@ function SaleOrderTrackingModule({ user, allUsers, mobile }: any) {
       const ts = h.synced_at || h.time || h.action_time
       if (!ts) continue
       
-      // v198.19: Nếu đơn đã relink, skip entries có synced_via không khớp với labels hiện tại
+      // v198.19.2: Filter 1 — Skip entries có timestamp TRƯỚC ghtk_relinked_at
+      // (đảm bảo bắt được mọi entry của đơn cũ, không phụ thuộc field synced_via)
+      if (relinkedMs > 0) {
+        const tsMs = new Date(ts).getTime()
+        if (tsMs > 0 && tsMs < relinkedMs) {
+          continue  // Entry trước thời điểm relink → thuộc đơn cũ → skip
+        }
+      }
+      
+      // v198.19: Filter 2 — Skip entries có synced_via không khớp với labels hiện tại
+      // (defense-in-depth, bắt entries có synced_via sai dù timestamp sau relink)
       if (o.ghtk_relinked_at && h.synced_via && validLabelIds.size > 0) {
         const syncedVia = String(h.synced_via)
         if (!validLabelIds.has(syncedVia)) {
-          // Entry này thuộc label CŨ đã relink → bỏ qua
           continue
         }
       }
