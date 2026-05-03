@@ -117,7 +117,7 @@ const db = createClient(SUPABASE_URL, SUPABASE_KEY)
 // ⚠ TODO sau v198 (anh deploy thủ công):
 //   - Cập nhật edge function `kiotviet-sales-revenue` để auto sync luôn `kv_invoices` (anh paste code edge function cho em fix).
 //   - Setup pg_cron hoặc external cron (cron-job.org) để auto sync mỗi 1h. Hướng dẫn trong migration_62.sql.
-const APP_VERSION = '2026.05.02.v198.12'
+const APP_VERSION = '2026.05.03.v198.13'
 
 // ════════════════════════════════════════════════════════════════
 // v158: VersionBadge — Hiển thị APP_VERSION ở góc dưới phải
@@ -36640,8 +36640,20 @@ function GhtkModule({ user, allUsers, mobile }: any) {
     
     if (searchQ.trim()) {
       const tokens = norm2(searchQ).split(/\s+/).filter(Boolean)
+      // v198.13: Smart phone matching — strip non-digit khỏi SĐT GHTK
+      // để match được mọi format ('0987.654.321', '0987 654 321', '+84987654321'...)
+      // Áp dụng KHI token là chuỗi >= 8 chữ số → coi là SĐT
+      const searchDigitsOnly = searchQ.replace(/\D/g, '')
+      const isPhoneSearch = searchDigitsOnly.length >= 8 && searchDigitsOnly.length <= 15
       list = list.filter((o: any) => {
         const hay = norm2(`${o.order_code} ${o.customer_name || ''} ${o.ghtk_customer_info?.name || ''} ${o.ghtk_customer_info?.tel || ''} ${o.description_kv || ''}`)
+        // Match SĐT GHTK: bóc số khỏi ghtk_customer_info.tel rồi match
+        if (isPhoneSearch) {
+          const ghtkTelDigits = String(o.ghtk_customer_info?.tel || '').replace(/\D/g, '')
+          if (ghtkTelDigits.includes(searchDigitsOnly)) return true
+          // Match thêm số đuôi (KH thường nhớ 4-5 số cuối)
+          if (searchDigitsOnly.length >= 4 && ghtkTelDigits.endsWith(searchDigitsOnly)) return true
+        }
         return tokens.every(t => hay.includes(t))
       })
     }
@@ -36938,7 +36950,7 @@ function GhtkModule({ user, allUsers, mobile }: any) {
           {/* Search */}
           <Card style={{ padding:12, marginBottom:12 }}>
             <input value={searchQ} onChange={e => setSearchQ(e.target.value)}
-              placeholder="🔍 Tìm theo mã đơn, tên KH, SĐT..."
+              placeholder="🔍 Tìm theo mã đơn, tên KH, SĐT GHTK (mọi format)..."
               style={{ width:'100%', padding:'9px 12px', border:`1px solid ${T.border}`, borderRadius:8,
                 fontSize:12, fontFamily:'inherit', color:T.dark, background:'#fff', outline:'none',
                 boxSizing:'border-box' as any }}/>
