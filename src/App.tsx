@@ -117,7 +117,7 @@ const db = createClient(SUPABASE_URL, SUPABASE_KEY)
 // ⚠ TODO sau v198 (anh deploy thủ công):
 //   - Cập nhật edge function `kiotviet-sales-revenue` để auto sync luôn `kv_invoices` (anh paste code edge function cho em fix).
 //   - Setup pg_cron hoặc external cron (cron-job.org) để auto sync mỗi 1h. Hướng dẫn trong migration_62.sql.
-const APP_VERSION = '2026.05.03.v198.19'
+const APP_VERSION = '2026.05.03.v198.19.1'
 
 // ════════════════════════════════════════════════════════════════
 // v158: VersionBadge — Hiển thị APP_VERSION ở góc dưới phải
@@ -33229,6 +33229,7 @@ function SaleOrderTrackingModule({ user, allUsers, mobile }: any) {
     // v141: Field từ tracking-v3 = synced_at + new_status_text + box_no
     // v198.19: Filter ra entries có synced_via thuộc về label CŨ đã relink
     // (data ô nhiễm trước khi edge function v5 fix)
+    // v198.19.1: Add console.log debug để verify filter
     const ghtkHistory = Array.isArray(o.ghtk_status_history) ? o.ghtk_status_history : []
     
     // v198.19: Build set của tất cả label_id hợp lệ hiện tại
@@ -33238,6 +33239,16 @@ function SaleOrderTrackingModule({ user, allUsers, mobile }: any) {
       if (id) validLabelIds.add(id)
       // Cũng include partner_id format (cho đơn chưa relink)
       if (lbl.box_no) validLabelIds.add(`${o.order_code}_B${lbl.box_no}`)
+    }
+    
+    // v198.19.1: Debug log cho đơn đã relink
+    if (o.ghtk_relinked_at && ghtkHistory.length > 0) {
+      console.log(`[FILTER ${o.order_code}] relinked_at=${o.ghtk_relinked_at}`)
+      console.log(`[FILTER ${o.order_code}] validLabelIds:`, Array.from(validLabelIds))
+      console.log(`[FILTER ${o.order_code}] history entries:`, ghtkHistory.length)
+      for (const h of ghtkHistory) {
+        console.log(`  - synced_via="${h.synced_via}" → ${validLabelIds.has(String(h.synced_via)) ? '✓ KEEP' : '✗ SKIP'}`)
+      }
     }
     
     for (let i = 0; i < ghtkHistory.length; i++) {
