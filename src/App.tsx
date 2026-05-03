@@ -117,7 +117,7 @@ const db = createClient(SUPABASE_URL, SUPABASE_KEY)
 // ⚠ TODO sau v198 (anh deploy thủ công):
 //   - Cập nhật edge function `kiotviet-sales-revenue` để auto sync luôn `kv_invoices` (anh paste code edge function cho em fix).
 //   - Setup pg_cron hoặc external cron (cron-job.org) để auto sync mỗi 1h. Hướng dẫn trong migration_62.sql.
-const APP_VERSION = '2026.05.03.v198.15'
+const APP_VERSION = '2026.05.03.v198.16'
 
 // ════════════════════════════════════════════════════════════════
 // v158: VersionBadge — Hiển thị APP_VERSION ở góc dưới phải
@@ -46164,11 +46164,23 @@ function GhtkRelinkModal({ order, user, mobile, onCancel, onSaved }: any) {
       })
       
       // Update DB
+      // v198.16 FIX: Cũng update `ghtk_status_details` để khớp với labels mới
+      // Nếu không sẽ bị bug: detail[] giữ data của label CŨ → modal hiển thị status cũ
+      const newStatusDetails = okLabels.map(l => ({
+        label_id: l.label_id.trim(),
+        status: l.status_code || '',
+        status_text: l.status_text || '',
+        success: true,
+      }))
+      
       const { error } = await db.from('packing_workflow').update({
         ghtk_labels: newGhtkLabels,
         ghtk_status: newGhtkLabels[0].status || null,
         ghtk_status_text: newGhtkLabels[0].status_text || null,
+        ghtk_status_details: newStatusDetails,         // v198.16 FIX
         ghtk_status_synced_at: now,
+        // v198.16: Reset các field tracking cũ vì đơn GHTK đã đổi sang đơn mới
+        ghtk_printed_at: null,                          // hủy "đã in nhãn" của đơn cũ
         ghtk_relinked_at: now,
         ghtk_relinked_by: user.id,
         ghtk_relinked_by_name: user.name,
@@ -46182,7 +46194,55 @@ function GhtkRelinkModal({ order, user, mobile, onCancel, onSaved }: any) {
         return
       }
       
-      toast.success(`✓ Đã đổi đơn GHTK của ${order.order_code}`)
+      // v198.16 FIX: Sau khi relink, tự động gọi lại GHTK API để lấy LIVE status
+      // (vì status từ verify có thể đã cũ — đơn có thể đã chuyển sang đang giao/đã giao)
+      try {
+        const labelIds = newGhtkLabels.map(l => l.label_id)
+        const liveRes = await fetch(`${SUPABASE_URL}/functions/v1/ghtk-track-status`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${SUPABASE_ANON}` },
+          body: JSON.stringify({ label_ids: labelIds }),
+        })
+        if (liveRes.ok) {
+          const liveJson = await liveRes.json()
+          const liveResults = (liveJson.results || []).filter((r: any) => r.success)
+          if (liveResults.length > 0) {
+            // Aggregate worst status (giống logic hiện có)
+            const priority = (code: string) => {
+              const c = String(code)
+              if (c === '-1') return 100
+              if (['11','12','13','20','21'].includes(c)) return 90
+              if (['1','2'].includes(c)) return 80
+              if (['3','4','5'].includes(c)) return 50
+              if (['6','9'].includes(c)) return 10
+              return 60
+            }
+            const worst = liveResults.reduce((acc: any, r: any) =>
+              priority(r.status) > priority(acc.status) ? r : acc
+            , liveResults[0])
+            // Build labels mới với status live
+            const refreshedLabels = newGhtkLabels.map(l => {
+              const live = liveResults.find((r: any) => r.label_id === l.label_id)
+              if (live) {
+                return { ...l, status: String(live.status || ''), status_text: live.status_text || '' }
+              }
+              return l
+            })
+            await db.from('packing_workflow').update({
+              ghtk_labels: refreshedLabels,
+              ghtk_status: worst.status,
+              ghtk_status_text: worst.status_text,
+              ghtk_status_details: liveResults,
+              ghtk_status_synced_at: new Date().toISOString(),
+            }).eq('order_code', order.order_code)
+          }
+        }
+      } catch (syncErr) {
+        // Không fail flow nếu sync lỗi — relink đã thành công, anh có thể bấm Refresh sau
+        console.warn('[Relink] Live sync sau relink thất bại:', syncErr)
+      }
+      
+      toast.success(`✓ Đã đổi đơn GHTK của ${order.order_code} + sync live status`)
       await onSaved()
     } catch (e: any) {
       setErr('Lỗi: ' + e.message)
