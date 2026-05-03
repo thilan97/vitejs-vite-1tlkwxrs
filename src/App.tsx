@@ -117,7 +117,7 @@ const db = createClient(SUPABASE_URL, SUPABASE_KEY)
 // ⚠ TODO sau v198 (anh deploy thủ công):
 //   - Cập nhật edge function `kiotviet-sales-revenue` để auto sync luôn `kv_invoices` (anh paste code edge function cho em fix).
 //   - Setup pg_cron hoặc external cron (cron-job.org) để auto sync mỗi 1h. Hướng dẫn trong migration_62.sql.
-const APP_VERSION = '2026.05.03.v198.17'
+const APP_VERSION = '2026.05.03.v198.18'
 
 // ════════════════════════════════════════════════════════════════
 // v158: VersionBadge — Hiển thị APP_VERSION ở góc dưới phải
@@ -41403,6 +41403,39 @@ function GhtkOrderDetailModal({ order: o, user, mobile, onClose, onRelinked }: a
             Đóng
           </button>
         </div>
+        
+        {/* v198.18: Debug panel — chỉ admin */}
+        {canRelink && (
+          <details style={{ marginTop:14, padding:'10px', background:T.bg, borderRadius:6,
+            fontSize:11, border:`1px solid ${T.border}` }}>
+            <summary style={{ cursor:'pointer', color:T.med, fontWeight:600 }}>
+              🔍 Debug — Raw data của đơn này (chỉ admin)
+            </summary>
+            <div style={{ marginTop:8, fontFamily:'monospace', fontSize:10, color:T.dark }}>
+              <div><b>Workflow status</b>: status={String(o.status)}, detected_at={String(o.detected_at || '—')}, picked_at={String(o.picked_at || '—')}, packed_at={String(o.packed_at || '—')}</div>
+              <div style={{ marginTop:4 }}><b>GHTK fields</b>: ghtk_status={String(o.ghtk_status || '—')}, ghtk_status_text={String(o.ghtk_status_text || '—')}, ghtk_created_at={String(o.ghtk_created_at || '—')}, ghtk_printed_at={String(o.ghtk_printed_at || '—')}, ghtk_status_synced_at={String(o.ghtk_status_synced_at || '—')}</div>
+              <div style={{ marginTop:4 }}><b>Relink</b>: relinked_at={String(o.ghtk_relinked_at || '—')}, reason={String(o.ghtk_relink_reason || '—')}, history={Array.isArray(o.ghtk_relinked_from) ? o.ghtk_relinked_from.length : 0} entries</div>
+              <div style={{ marginTop:4 }}><b>Counts</b>: ghtk_labels={Array.isArray(o.ghtk_labels) ? o.ghtk_labels.length : 0}, ghtk_status_details={Array.isArray(o.ghtk_status_details) ? o.ghtk_status_details.length : 0}, ghtk_status_history={Array.isArray(o.ghtk_status_history) ? o.ghtk_status_history.length : 0}</div>
+              <div style={{ marginTop:8 }}>
+                <b>Full JSON:</b>
+                <pre style={{ maxHeight:200, overflow:'auto', background:'#fff', padding:6,
+                  borderRadius:4, border:`1px solid ${T.border}`, fontSize:9, marginTop:4 }}>
+{JSON.stringify({
+  status: o.status, detected_at: o.detected_at, picked_at: o.picked_at, packed_at: o.packed_at,
+  ghtk_status: o.ghtk_status, ghtk_status_text: o.ghtk_status_text,
+  ghtk_created_at: o.ghtk_created_at, ghtk_printed_at: o.ghtk_printed_at,
+  ghtk_status_synced_at: o.ghtk_status_synced_at,
+  ghtk_relinked_at: o.ghtk_relinked_at, ghtk_relink_reason: o.ghtk_relink_reason,
+  ghtk_labels: o.ghtk_labels, 
+  ghtk_status_details: o.ghtk_status_details,
+  ghtk_status_history: o.ghtk_status_history,
+  ghtk_relinked_from: o.ghtk_relinked_from,
+}, null, 2)}
+                </pre>
+              </div>
+            </div>
+          </details>
+        )}
         
         {/* v198.14: Nút "Đổi đơn GHTK" — case QM hủy đơn cũ trên web GHTK + tạo đơn mới */}
         {canRelink && labels.length > 0 && (
