@@ -117,7 +117,7 @@ const db = createClient(SUPABASE_URL, SUPABASE_KEY)
 // ⚠ TODO sau v198 (anh deploy thủ công):
 //   - Cập nhật edge function `kiotviet-sales-revenue` để auto sync luôn `kv_invoices` (anh paste code edge function cho em fix).
 //   - Setup pg_cron hoặc external cron (cron-job.org) để auto sync mỗi 1h. Hướng dẫn trong migration_62.sql.
-const APP_VERSION = '2026.05.04.v198.30.3'
+const APP_VERSION = '2026.05.04.v198.30.4'
 
 // ════════════════════════════════════════════════════════════════
 // v158: VersionBadge — Hiển thị APP_VERSION ở góc dưới phải
@@ -25866,6 +25866,7 @@ function PayrollModule({ user, allUsers, mobile }: any) {
             overrides={overrides}
             positionsList={positionsList}
             setPositionsList={setPositionsList}
+            positionWorkSchedule={positionWorkSchedule}
             onRefresh={refreshOverrides}/>
         ) : adminTab === 'schedule' ? (
           <PayrollTabSchedule user={user} mobile={mobile}
@@ -26448,9 +26449,12 @@ function PayrollTabOverride({ user, mobile, usersWithSalary, month, year, overri
 // ══════════════════════════════════════════════════════════════════════
 // v191: PayrollTabBaseSalary — LCB theo vị trí + override per-NV
 // ══════════════════════════════════════════════════════════════════════
-function PayrollTabBaseSalary({ user, mobile, allUsers, usersWithSalary, month, year, overrides, positionsList, setPositionsList, onRefresh }: any) {
+function PayrollTabBaseSalary({ user, mobile, allUsers, usersWithSalary, month, year, overrides, positionsList, setPositionsList, positionWorkSchedule, onRefresh }: any) {
   const [editingPosId, setEditingPosId] = useState<string|null>(null)
   const [editPosValue, setEditPosValue] = useState('')
+  // v198.30.4: Edit work_schedule_type cho mỗi vị trí
+  const [editingWsPosId, setEditingWsPosId] = useState<string|null>(null)
+  const [editWsValue, setEditWsValue] = useState('')
   const [editingNvUid, setEditingNvUid] = useState<string|null>(null)
   const [editNvValue, setEditNvValue] = useState('')
   const [editNvNote, setEditNvNote] = useState('')
@@ -26463,6 +26467,36 @@ function PayrollTabBaseSalary({ user, mobile, allUsers, usersWithSalary, month, 
     if (!u.position_id) return 0
     const pos = positionsList.find((p: any) => p.id === u.position_id)
     return Number(pos?.base_salary || 0)
+  }
+  
+  // v198.30.4: Danh sách unique position_type từ position_work_schedule (cho dropdown)
+  const wsTypeOptions = useMemo(() => {
+    const set = new Set<string>()
+    for (const w of (positionWorkSchedule || [])) {
+      if (w.position_type) set.add(w.position_type)
+    }
+    return Array.from(set).sort()
+  }, [positionWorkSchedule])
+  
+  // v198.30.4: Save work_schedule_type cho vị trí
+  const handleSaveWs = async (positionId: string) => {
+    setWorking(true)
+    try {
+      const wsType = editWsValue.trim() || null  // empty → NULL (không tính giờ)
+      const { error } = await db.from('positions').update({
+        work_schedule_type: wsType,
+      }).eq('id', positionId)
+      if (error) throw new Error(error.message)
+      
+      const { data } = await db.from('positions').select('*').order('name')
+      setPositionsList(data || [])
+      setEditingWsPosId(null)
+      toast.success(`✓ Cập nhật lịch giờ làm`)
+    } catch (e: any) {
+      toast.error('Lỗi: ' + e.message)
+    } finally {
+      setWorking(false)
+    }
   }
 
   const handleSavePos = async (positionId: string) => {
@@ -26556,13 +26590,14 @@ function PayrollTabBaseSalary({ user, mobile, allUsers, usersWithSalary, month, 
               <th style={_payrollThStyle}>Phòng ban</th>
               <th style={{ ..._payrollThStyle, textAlign:'right' }}>Số NV</th>
               <th style={{ ..._payrollThStyle, textAlign:'right' }}>LCB mặc định</th>
+              <th style={_payrollThStyle}>Giờ làm theo lịch</th>
               <th style={{ ..._payrollThStyle, textAlign:'center' }}>Hành động</th>
             </tr>
           </thead>
           <tbody>
             {positionsList.length === 0 ? (
               <tr>
-                <td colSpan={5} style={{ padding:20, textAlign:'center', color:T.light }}>
+                <td colSpan={6} style={{ padding:20, textAlign:'center', color:T.light }}>
                   📭 Chưa có vị trí nào. Vào "Quản trị → Vị trí" để tạo.
                 </td>
               </tr>
@@ -26588,6 +26623,26 @@ function PayrollTabBaseSalary({ user, mobile, allUsers, usersWithSalary, month, 
                       <span style={{ color:T.light, fontStyle:'italic' }}>chưa thiết lập</span>
                     )}
                   </td>
+                  {/* v198.30.4: Cell work_schedule_type */}
+                  <td style={{ padding:10, fontSize:11 }}>
+                    {editingWsPosId === p.id ? (
+                      <div style={{ display:'flex', gap:4, alignItems:'center' }}>
+                        <select value={editWsValue}
+                          onChange={e => setEditWsValue(e.target.value)}
+                          style={{ flex:1, padding:'4px 6px', border:`1px solid ${T.border}`, borderRadius:4,
+                            background:'#fff', color:T.dark, fontSize:11, fontFamily:'inherit' }}>
+                          <option value="" style={{ background:'#fff', color:T.dark }}>— Không tính giờ —</option>
+                          {wsTypeOptions.map((opt: string) => (
+                            <option key={opt} value={opt} style={{ background:'#fff', color:T.dark }}>{opt}</option>
+                          ))}
+                        </select>
+                      </div>
+                    ) : p.work_schedule_type ? (
+                      <span style={{ color:T.dark, fontWeight:600 }}>{p.work_schedule_type}</span>
+                    ) : (
+                      <span style={{ color:T.light, fontStyle:'italic' }}>không tính giờ</span>
+                    )}
+                  </td>
                   <td style={{ padding:10, textAlign:'center' }}>
                     {isEditing ? (
                       <div style={{ display:'inline-flex', gap:4 }}>
@@ -26602,12 +26657,32 @@ function PayrollTabBaseSalary({ user, mobile, allUsers, usersWithSalary, month, 
                           Hủy
                         </button>
                       </div>
+                    ) : editingWsPosId === p.id ? (
+                      <div style={{ display:'inline-flex', gap:4 }}>
+                        <button onClick={() => handleSaveWs(p.id)} disabled={working}
+                          style={{ padding:'4px 10px', borderRadius:4, border:'none',
+                            background:T.gold, color:'#fff', cursor:'pointer', fontFamily:'inherit', fontSize:11, fontWeight:600 }}>
+                          Lưu
+                        </button>
+                        <button onClick={() => setEditingWsPosId(null)}
+                          style={{ padding:'4px 10px', borderRadius:4, border:`1px solid ${T.border}`,
+                            background:'#fff', color:T.med, cursor:'pointer', fontFamily:'inherit', fontSize:11 }}>
+                          Hủy
+                        </button>
+                      </div>
                     ) : (
-                      <button onClick={() => { setEditingPosId(p.id); setEditPosValue(String(Math.round(Number(p.base_salary || 0)))) }}
-                        style={{ padding:'4px 10px', borderRadius:4, border:`1px solid ${T.gold}`,
-                          background:'#fff', color:T.gold, cursor:'pointer', fontFamily:'inherit', fontSize:11, fontWeight:600 }}>
-                        ✏ Sửa LCB
-                      </button>
+                      <div style={{ display:'inline-flex', gap:4 }}>
+                        <button onClick={() => { setEditingPosId(p.id); setEditPosValue(String(Math.round(Number(p.base_salary || 0)))) }}
+                          style={{ padding:'4px 10px', borderRadius:4, border:`1px solid ${T.gold}`,
+                            background:'#fff', color:T.gold, cursor:'pointer', fontFamily:'inherit', fontSize:11, fontWeight:600 }}>
+                          ✏ Sửa LCB
+                        </button>
+                        <button onClick={() => { setEditingWsPosId(p.id); setEditWsValue(p.work_schedule_type || '') }}
+                          style={{ padding:'4px 10px', borderRadius:4, border:`1px solid ${T.border}`,
+                            background:'#fff', color:T.med, cursor:'pointer', fontFamily:'inherit', fontSize:11 }}>
+                          🕐 Lịch
+                        </button>
+                      </div>
                     )}
                   </td>
                 </tr>
@@ -28961,17 +29036,22 @@ function PayrollTabAttendance({
   
   // Lấy std_hours_per_day theo vị trí của NV
   // v198.30: Dùng effective schedule theo NGÀY GIỮA THÁNG đang xem (đại diện cho cả tháng)
+  // v198.30.4: Map qua positions.work_schedule_type (chuẩn) với fallback về sc.position_type (legacy)
   const stdHoursPerDay = useMemo(() => {
     if (!selectedUser) return 8
     const sc = selectedUser._salary
-    const positionType = sc?.position_type || ''
+    // v198.30.4: Ưu tiên work_schedule_type từ positions table
+    const userPos = (positionsList || []).find((p: any) => p.id === selectedUser.position_id)
+    const wsType = userPos?.work_schedule_type || sc?.position_type || ''
+    // Giám đốc / vị trí không tính giờ → wsType = NULL → trả 8h default
+    if (!wsType) return 8
     // Dùng ngày 15 của tháng để chọn schedule đại diện
     const midMonth = `${year}-${String(month).padStart(2, '0')}-15`
-    const ws = getEffectiveSchedule(positionType, midMonth)
+    const ws = getEffectiveSchedule(wsType, midMonth)
     if (ws?.std_hours_per_day) return Number(ws.std_hours_per_day)
     // Fallback: Kho = 8, Sales/khác = 7.5
-    return ['Kho', 'Quản lý kho', 'Thử việc kho', 'Thử việc'].includes(positionType) ? 8 : 7.5
-  }, [selectedUser, positionWorkSchedule, month, year])
+    return ['Kho', 'Quản lý kho', 'Thử việc kho', 'Thử việc', 'Phó kho'].includes(wsType) ? 8 : 7.5
+  }, [selectedUser, positionsList, positionWorkSchedule, month, year])
   
   // Map approvedOT theo date của user đang chọn
   const otByDate = useMemo(() => {
@@ -29690,13 +29770,22 @@ function AttendanceEditModal({ user: nv, month, year, actor, attendanceMonth, po
   
   // v198.30: Helper chọn schedule đúng theo position + date (effective_from/effective_to)
   // Mục đích: T4 và T5 có thể có lunch khác nhau → tính lương theo từng ngày phải dùng schedule khớp
+  // v198.30.4: Ưu tiên positions.work_schedule_type (chuẩn) với fallback các name khác (legacy)
   const getEffectiveScheduleForUser = (dateStr: string): any => {
     if (!positionWorkSchedule) return null
-    const candidates = (positionWorkSchedule || []).filter((s: any) => 
-      s.position_type === userPosition?.name ||
-      s.position_type === nv._salary?.position_type ||
-      s.position_type === userPosition?.dept_id
-    )
+    // v198.30.4: Match qua work_schedule_type trước
+    const wsType = userPosition?.work_schedule_type
+    let candidates = wsType 
+      ? (positionWorkSchedule || []).filter((s: any) => s.position_type === wsType)
+      : []
+    // Fallback: tìm theo các tên khác (backward compat)
+    if (candidates.length === 0) {
+      candidates = (positionWorkSchedule || []).filter((s: any) => 
+        s.position_type === userPosition?.name ||
+        s.position_type === nv._salary?.position_type ||
+        s.position_type === userPosition?.dept_id
+      )
+    }
     if (candidates.length === 0) return null
     // Sort theo effective_from desc (mới nhất trước)
     const sorted = candidates.slice().sort((a: any, b: any) => 
