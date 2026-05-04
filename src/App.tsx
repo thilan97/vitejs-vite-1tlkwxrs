@@ -117,7 +117,7 @@ const db = createClient(SUPABASE_URL, SUPABASE_KEY)
 // ⚠ TODO sau v198 (anh deploy thủ công):
 //   - Cập nhật edge function `kiotviet-sales-revenue` để auto sync luôn `kv_invoices` (anh paste code edge function cho em fix).
 //   - Setup pg_cron hoặc external cron (cron-job.org) để auto sync mỗi 1h. Hướng dẫn trong migration_62.sql.
-const APP_VERSION = '2026.05.04.v198.30.4'
+const APP_VERSION = '2026.05.04.v198.30.5'
 
 // ════════════════════════════════════════════════════════════════
 // v158: VersionBadge — Hiển thị APP_VERSION ở góc dưới phải
@@ -23929,8 +23929,20 @@ function computeWorkHours(
   const morningH = parseTime(morningStart)
   const afternoonH = parseTime(afternoonStart)
 
-  // Clamp check_in to morning start if too early
-  const effIn = Math.max(inH, morningH)
+  // v198.30.5: GRACE PERIOD 14 phút cho IN
+  // Nếu IN trong khoảng [morningStart, morningStart + 14 phút] → coi như đến đúng giờ (clamp xuống morningStart)
+  // Nếu IN sớm hơn morningStart → cũng clamp về morningStart (KHÔNG tính OT vào sớm)
+  // Nếu IN > morningStart + 14 phút → đi muộn, tính từ thực tế (không clamp)
+  const graceMinutes = 14
+  const graceEndH = morningH + graceMinutes / 60  // 08:00 + 0.233 = 08:14
+  let effIn: number
+  if (inH <= graceEndH) {
+    // Trong grace period (hoặc vào sớm) → clamp về schedStart
+    effIn = morningH
+  } else {
+    // Đi muộn → tính từ giờ thực tế
+    effIn = inH
+  }
 
   // Raw worked hours
   let rawHours = outH - effIn
@@ -23949,6 +23961,8 @@ function computeWorkHours(
   }
 
   // Split regular + OT
+  // v198.30.5: KHÔNG tính OT cho phần vào sớm (chỉ tính OT cho phần ra muộn)
+  // → OT chỉ là phần rawHours - standardHrs (nếu rawHours > standardHrs do ra muộn)
   const regular = Math.min(rawHours, standardHrs)
   const ot = Math.max(0, rawHours - standardHrs)
 
@@ -29834,8 +29848,25 @@ function AttendanceEditModal({ user: nv, month, year, actor, attendanceMonth, po
     const lunchEndMin   = sched.lunch_end_time   ? toMin((sched.lunch_end_time).slice(0, 5))   : 0
     const lunchDuration = (lunchEndMin > lunchStartMin) ? (lunchEndMin - lunchStartMin) : 0
     
-    // Giờ làm thực = min(out, schedEnd) - max(in, schedStart) - lunch (nếu vắt qua trưa)
-    const effectiveIn  = Math.max(inMin, schedStartMin)
+    // v198.30.5: GRACE PERIOD — chỉ áp dụng cho IN
+    //   Block 15 phút đầu (vd 08:00-08:14): IN trong block này → coi như đến đúng giờ chuẩn
+    //   Vd: schedStart=08:00, in=08:09 → effectiveIn=08:00 (clamp xuống)
+    //       schedStart=08:00, in=08:15 → effectiveIn=08:15 (tính trễ thật)
+    //   14 phút CỐ ĐỊNH cho mọi vị trí, theo rule Excel cũ
+    const GRACE_MINUTES = 14
+    let effectiveIn: number
+    if (inMin <= schedStartMin) {
+      // Đến sớm hoặc đúng giờ → clamp lên schedStart cho regular hours (OT tính riêng phía dưới)
+      effectiveIn = schedStartMin
+    } else if (inMin <= schedStartMin + GRACE_MINUTES) {
+      // Trong grace period → coi như đến đúng giờ
+      effectiveIn = schedStartMin
+    } else {
+      // Trễ quá grace → tính từ giờ thật
+      effectiveIn = inMin
+    }
+    
+    // Giờ làm thực = min(out, schedEnd) - effectiveIn - lunch (nếu vắt qua trưa)
     const effectiveOut = Math.min(outMin, schedEndMin)
     let regularMin = Math.max(0, effectiveOut - effectiveIn)
     
@@ -29846,10 +29877,10 @@ function AttendanceEditModal({ user: nv, month, year, actor, attendanceMonth, po
       regularMin -= Math.max(0, overlapEnd - overlapStart)
     }
     
-    // OT = giờ ngoài schedule (sau giờ tan + trước giờ vào)
-    const otBeforeMin = Math.max(0, schedStartMin - inMin)
+    // OT = chỉ tính phần ra trễ (sau schedEnd)
+    // v198.30.5: BỎ otBeforeMin — vào sớm hơn schedStart KHÔNG được tính OT
     const otAfterMin = Math.max(0, outMin - schedEndMin)
-    const otTotalMin = otBeforeMin + otAfterMin
+    const otTotalMin = otAfterMin
     
     // Eligible ăn trưa: làm cả buổi sáng + chiều (vắt qua giờ nghỉ trưa)
     const lunchEligible = lunchDuration > 0 && effectiveIn <= lunchStartMin && effectiveOut >= lunchEndMin
