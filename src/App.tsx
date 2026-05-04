@@ -117,7 +117,7 @@ const db = createClient(SUPABASE_URL, SUPABASE_KEY)
 // ⚠ TODO sau v198 (anh deploy thủ công):
 //   - Cập nhật edge function `kiotviet-sales-revenue` để auto sync luôn `kv_invoices` (anh paste code edge function cho em fix).
 //   - Setup pg_cron hoặc external cron (cron-job.org) để auto sync mỗi 1h. Hướng dẫn trong migration_62.sql.
-const APP_VERSION = '2026.05.04.v198.30.1'
+const APP_VERSION = '2026.05.04.v198.30.2'
 
 // ════════════════════════════════════════════════════════════════
 // v158: VersionBadge — Hiển thị APP_VERSION ở góc dưới phải
@@ -24342,18 +24342,20 @@ function PayrollImportModule({ user, allUsers, mobile, attendance, setAttendance
             <div>
               <label style={{ fontSize: FS.sm, color: T.med, fontWeight: 600 }}>Tháng:</label>
               <select value={month} onChange={e => setMonth(Number(e.target.value))}
-                style={{ marginLeft: 6, padding: 8, borderRadius: RD.sm, border: `1px solid ${T.border}` }}>
+                style={{ marginLeft: 6, padding: 8, borderRadius: RD.sm, border: `1px solid ${T.border}`,
+                  background:'#fff', color:T.dark, fontFamily:'inherit', fontSize:13 }}>
                 {Array.from({ length: 12 }, (_, i) => i + 1).map(m => (
-                  <option key={m} value={m}>Tháng {m}</option>
+                  <option key={m} value={m} style={{ background:'#fff', color:T.dark }}>Tháng {m}</option>
                 ))}
               </select>
             </div>
             <div>
               <label style={{ fontSize: FS.sm, color: T.med, fontWeight: 600 }}>Năm:</label>
               <select value={year} onChange={e => setYear(Number(e.target.value))}
-                style={{ marginLeft: 6, padding: 8, borderRadius: RD.sm, border: `1px solid ${T.border}` }}>
+                style={{ marginLeft: 6, padding: 8, borderRadius: RD.sm, border: `1px solid ${T.border}`,
+                  background:'#fff', color:T.dark, fontFamily:'inherit', fontSize:13 }}>
                 {[2025, 2026, 2027].map(y => (
-                  <option key={y} value={y}>{y}</option>
+                  <option key={y} value={y} style={{ background:'#fff', color:T.dark }}>{y}</option>
                 ))}
               </select>
             </div>
@@ -24474,10 +24476,12 @@ function PayrollImportModule({ user, allUsers, mobile, attendance, setAttendance
                             padding: 6, borderRadius: RD.sm, width: '100%',
                             border: `1px solid ${mappedUid ? T.green : T.amber}`,
                             background: mappedUid ? '#F0FDF4' : '#FFFBEB',
+                            color: T.dark,
+                            fontFamily: 'inherit', fontSize: 13,
                           }}>
-                          <option value="">— Chọn NV / Bỏ qua —</option>
+                          <option value="" style={{ background: '#fff', color: T.dark }}>— Chọn NV / Bỏ qua —</option>
                           {allUsers.filter((u: any) => !u.is_test_account).map((u: any) => (
-                            <option key={u.id} value={u.id}>
+                            <option key={u.id} value={u.id} style={{ background: '#fff', color: T.dark }}>
                               {u.name} ({getPosition(u.id) || '—'})
                             </option>
                           ))}
