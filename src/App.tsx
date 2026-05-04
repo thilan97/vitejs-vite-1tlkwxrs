@@ -117,7 +117,7 @@ const db = createClient(SUPABASE_URL, SUPABASE_KEY)
 // ⚠ TODO sau v198 (anh deploy thủ công):
 //   - Cập nhật edge function `kiotviet-sales-revenue` để auto sync luôn `kv_invoices` (anh paste code edge function cho em fix).
 //   - Setup pg_cron hoặc external cron (cron-job.org) để auto sync mỗi 1h. Hướng dẫn trong migration_62.sql.
-const APP_VERSION = '2026.05.04.v198.29.3'
+const APP_VERSION = '2026.05.04.v198.30'
 
 // ════════════════════════════════════════════════════════════════
 // v158: VersionBadge — Hiển thị APP_VERSION ở góc dưới phải
@@ -26723,7 +26723,8 @@ function PayrollTabSchedule({ user, mobile, positionWorkSchedule, setPositionWor
   }
 
   const startEdit = (p: any) => {
-    setEditing(p.position_type)
+    // v198.30: Dùng id (auto PK) thay position_type vì giờ 1 vị trí có thể có nhiều rows
+    setEditing(p.id || p.position_type)
     setEditForm({
       start_time: p.start_time || '08:00:00',
       end_time: p.end_time || '17:00:00',
@@ -26733,7 +26734,7 @@ function PayrollTabSchedule({ user, mobile, positionWorkSchedule, setPositionWor
     })
   }
 
-  const handleSave = async (positionType: string) => {
+  const handleSave = async (rowKey: any, positionType: string) => {
     setWorking(true)
     try {
       const payload: any = {
@@ -26745,9 +26746,15 @@ function PayrollTabSchedule({ user, mobile, positionWorkSchedule, setPositionWor
         updated_at: new Date().toISOString(),
         updated_by: user.id,
       }
-      const existing = positionWorkSchedule.find((x: any) => x.position_type === positionType)
+      // v198.30: Update theo id (PK mới) hoặc position_type nếu rowKey là string (legacy)
+      const existing = positionWorkSchedule.find((x: any) => (x.id || x.position_type) === rowKey)
       if (existing) {
-        await db.from('position_work_schedule').update(payload).eq('position_type', positionType)
+        if (existing.id) {
+          await db.from('position_work_schedule').update(payload).eq('id', existing.id)
+        } else {
+          // Legacy: chưa có id → update theo position_type (chỉ row duy nhất)
+          await db.from('position_work_schedule').update(payload).eq('position_type', positionType)
+        }
       } else {
         await db.from('position_work_schedule').insert({ ...payload, position_type: positionType })
       }
@@ -26778,6 +26785,7 @@ function PayrollTabSchedule({ user, mobile, positionWorkSchedule, setPositionWor
           <thead style={{ background:T.bg }}>
             <tr>
               <th style={_payrollThStyle}>Vị trí</th>
+              <th style={{ ..._payrollThStyle, textAlign:'center' }}>Áp dụng từ</th>
               <th style={{ ..._payrollThStyle, textAlign:'center' }}>Bắt đầu</th>
               <th style={{ ..._payrollThStyle, textAlign:'center' }}>Kết thúc</th>
               <th style={{ ..._payrollThStyle, textAlign:'center' }}>Nghỉ trưa</th>
@@ -26787,11 +26795,35 @@ function PayrollTabSchedule({ user, mobile, positionWorkSchedule, setPositionWor
             </tr>
           </thead>
           <tbody>
-            {positionWorkSchedule.map((p: any) => {
-              const isEditing = editing === p.position_type
+            {(positionWorkSchedule || []).slice().sort((a: any, b: any) => {
+              const ap = String(a.position_type || '')
+              const bp = String(b.position_type || '')
+              if (ap !== bp) return ap.localeCompare(bp)
+              // Cùng position_type → sort theo effective_from DESC (mới nhất trước)
+              return String(b.effective_from || '').localeCompare(String(a.effective_from || ''))
+            }).map((p: any) => {
+              const isEditing = editing === (p.id || p.position_type)
+              const fmtDate = (d: string) => {
+                if (!d) return '—'
+                const [y, m, dd] = d.split('-')
+                return `${dd}/${m}/${y}`
+              }
               return (
-                <tr key={p.position_type} style={{ borderBottom:`1px solid ${T.border}` }}>
-                  <td style={{ padding:10, fontWeight:600, color:T.dark }}>{p.position_type}</td>
+                <tr key={p.id || p.position_type} style={{ borderBottom:`1px solid ${T.border}` }}>
+                  <td style={{ padding:10, fontWeight:600, color:T.dark }}>
+                    {p.position_type}
+                    {p.effective_to && (
+                      <div style={{ fontSize:9, color:T.light, fontWeight:400, marginTop:2 }}>
+                        (Đến {fmtDate(p.effective_to)})
+                      </div>
+                    )}
+                  </td>
+                  <td style={{ padding:10, textAlign:'center', fontSize:11, color:T.med, fontVariantNumeric:'tabular-nums' }}>
+                    {p.effective_from ? fmtDate(p.effective_from) : <span style={{ color:T.light }}>—</span>}
+                    {p.effective_to === null && (
+                      <div style={{ fontSize:9, color:T.green, marginTop:2 }}>● Đang áp dụng</div>
+                    )}
+                  </td>
                   <td style={{ padding:10, textAlign:'center' }}>
                     {isEditing ? (
                       <input type="time" value={editForm.start_time?.slice(0, 5) || ''}
@@ -26841,7 +26873,7 @@ function PayrollTabSchedule({ user, mobile, positionWorkSchedule, setPositionWor
                   <td style={{ padding:10, textAlign:'center' }}>
                     {isEditing ? (
                       <div style={{ display:'inline-flex', gap:4 }}>
-                        <button onClick={() => handleSave(p.position_type)} disabled={working}
+                        <button onClick={() => handleSave(p.id || p.position_type, p.position_type)} disabled={working}
                           style={{ padding:'4px 10px', borderRadius:4, border:'none',
                             background:T.gold, color:'#fff', cursor:'pointer', fontFamily:'inherit', fontSize:11, fontWeight:600 }}>
                           Lưu
@@ -28885,16 +28917,43 @@ function PayrollTabAttendance({
   
   const selectedUser = useMemo(() => sortedUsers.find((u: any) => u.id === selectedUserId), [sortedUsers, selectedUserId])
   
+  // v198.30: Helper chọn schedule đúng theo position + date (effective_from/effective_to)
+  // Mục đích: Tháng 4 cấu hình Kho lunch 12:30-13:30 (1h), tháng 5 đổi thành 12:30-14:00 (1h30)
+  // → Khi tính lương T4, phải dùng cấu hình T4 (effective_from <= '2026-04-30')
+  // → Khi tính lương T5, phải dùng cấu hình T5 (effective_from <= '2026-05-31')
+  // Trả về row khớp đầu tiên (effective_from <= date AND (effective_to IS NULL OR effective_to >= date))
+  // Nếu không tìm được → fallback row mới nhất (effective_to = NULL) cho position đó
+  const getEffectiveSchedule = (positionType: string, dateStr: string): any => {
+    if (!positionType || !positionWorkSchedule) return null
+    const candidates = (positionWorkSchedule || []).filter((w: any) => w.position_type === positionType)
+    if (candidates.length === 0) return null
+    // Sort theo effective_from desc → row mới nhất trước
+    const sorted = candidates.slice().sort((a: any, b: any) => 
+      String(b.effective_from || '').localeCompare(String(a.effective_from || ''))
+    )
+    // Tìm row khớp với date
+    for (const w of sorted) {
+      const from = w.effective_from || '1900-01-01'
+      const to = w.effective_to || '9999-12-31'
+      if (dateStr >= from && dateStr <= to) return w
+    }
+    // Fallback: row mới nhất
+    return sorted[0] || null
+  }
+  
   // Lấy std_hours_per_day theo vị trí của NV
+  // v198.30: Dùng effective schedule theo NGÀY GIỮA THÁNG đang xem (đại diện cho cả tháng)
   const stdHoursPerDay = useMemo(() => {
     if (!selectedUser) return 8
     const sc = selectedUser._salary
     const positionType = sc?.position_type || ''
-    const ws = (positionWorkSchedule || []).find((w: any) => w.position_type === positionType)
+    // Dùng ngày 15 của tháng để chọn schedule đại diện
+    const midMonth = `${year}-${String(month).padStart(2, '0')}-15`
+    const ws = getEffectiveSchedule(positionType, midMonth)
     if (ws?.std_hours_per_day) return Number(ws.std_hours_per_day)
     // Fallback: Kho = 8, Sales/khác = 7.5
-    return ['Kho', 'Quản lý kho', 'Thử việc'].includes(positionType) ? 8 : 7.5
-  }, [selectedUser, positionWorkSchedule])
+    return ['Kho', 'Quản lý kho', 'Thử việc kho', 'Thử việc'].includes(positionType) ? 8 : 7.5
+  }, [selectedUser, positionWorkSchedule, month, year])
   
   // Map approvedOT theo date của user đang chọn
   const otByDate = useMemo(() => {
@@ -29610,24 +29669,49 @@ function AttendanceEditModal({ user: nv, month, year, actor, attendanceMonth, po
   // Xác định position của NV này → lấy work_schedule
   // Tìm position_id của user nv
   const userPosition = positionsList?.find((p: any) => p.id === nv.position_id)
-  // Map position name → position_type cho work_schedule (vì work_schedule key bằng position_type text)
-  // Nếu không có schedule khớp, fallback default
-  const userSchedule = positionWorkSchedule?.find((s: any) => 
-    s.position_type === userPosition?.name ||
-    s.position_type === nv._salary?.position_type ||
-    s.position_type === userPosition?.dept_id
-  ) || positionWorkSchedule?.[0] || {
+  
+  // v198.30: Helper chọn schedule đúng theo position + date (effective_from/effective_to)
+  // Mục đích: T4 và T5 có thể có lunch khác nhau → tính lương theo từng ngày phải dùng schedule khớp
+  const getEffectiveScheduleForUser = (dateStr: string): any => {
+    if (!positionWorkSchedule) return null
+    const candidates = (positionWorkSchedule || []).filter((s: any) => 
+      s.position_type === userPosition?.name ||
+      s.position_type === nv._salary?.position_type ||
+      s.position_type === userPosition?.dept_id
+    )
+    if (candidates.length === 0) return null
+    // Sort theo effective_from desc (mới nhất trước)
+    const sorted = candidates.slice().sort((a: any, b: any) => 
+      String(b.effective_from || '').localeCompare(String(a.effective_from || ''))
+    )
+    // Tìm row khớp date
+    for (const w of sorted) {
+      const from = w.effective_from || '1900-01-01'
+      const to = w.effective_to || '9999-12-31'
+      if (dateStr >= from && dateStr <= to) return w
+    }
+    // Fallback: row mới nhất
+    return sorted[0] || null
+  }
+  
+  // userSchedule (snapshot) — dùng cho UI display, lấy theo giữa tháng đang xem
+  const midMonth = `${year}-${String(month).padStart(2, '0')}-15`
+  const userSchedule = getEffectiveScheduleForUser(midMonth) || positionWorkSchedule?.[0] || {
     start_time: '08:00:00', end_time: '17:30:00',
     lunch_start_time: '12:00:00', lunch_end_time: '13:00:00',
     std_hours_per_day: 8,
   }
 
   // v192: Helper compute work_hours từ check_in + check_out theo schedule
+  // v198.30: Nhận thêm param `dateStr` để chọn schedule đúng theo ngày (T4 vs T5)
   // Trả về { work_hours_regular, ot_150, ot_200, lunch_eligible }
-  const computeHoursFromCheckInOut = (checkInStr: string, checkOutStr: string, status: string): any => {
+  const computeHoursFromCheckInOut = (checkInStr: string, checkOutStr: string, status: string, dateStr?: string): any => {
     if (status !== 'Đi làm' || !checkInStr || !checkOutStr) {
       return { work_hours_regular: 0, ot_150_hours: 0, ot_200_hours: 0, lunch_eligible: false }
     }
+    
+    // v198.30: Lấy schedule khớp với ngày đang compute (fallback userSchedule snapshot nếu không có dateStr)
+    const sched = dateStr ? (getEffectiveScheduleForUser(dateStr) || userSchedule) : userSchedule
     
     const toMin = (hm: string) => {
       const [h, m] = hm.split(':').map(Number)
@@ -29637,10 +29721,10 @@ function AttendanceEditModal({ user: nv, month, year, actor, attendanceMonth, po
     const outMin = toMin(checkOutStr)
     if (outMin <= inMin) return { work_hours_regular: 0, ot_150_hours: 0, ot_200_hours: 0, lunch_eligible: false }
     
-    const schedStartMin = toMin((userSchedule.start_time || '08:00').slice(0, 5))
-    const schedEndMin   = toMin((userSchedule.end_time || '17:30').slice(0, 5))
-    const lunchStartMin = userSchedule.lunch_start_time ? toMin((userSchedule.lunch_start_time).slice(0, 5)) : 0
-    const lunchEndMin   = userSchedule.lunch_end_time   ? toMin((userSchedule.lunch_end_time).slice(0, 5))   : 0
+    const schedStartMin = toMin((sched.start_time || '08:00').slice(0, 5))
+    const schedEndMin   = toMin((sched.end_time || '17:30').slice(0, 5))
+    const lunchStartMin = sched.lunch_start_time ? toMin((sched.lunch_start_time).slice(0, 5)) : 0
+    const lunchEndMin   = sched.lunch_end_time   ? toMin((sched.lunch_end_time).slice(0, 5))   : 0
     const lunchDuration = (lunchEndMin > lunchStartMin) ? (lunchEndMin - lunchStartMin) : 0
     
     // Giờ làm thực = min(out, schedEnd) - max(in, schedStart) - lunch (nếu vắt qua trưa)
@@ -29689,7 +29773,7 @@ function AttendanceEditModal({ user: nv, month, year, actor, attendanceMonth, po
       for (const [date, e] of edits.entries()) {
         const checkIn = e.check_in_final && e.check_in_final.length === 5 ? e.check_in_final + ':00' : null
         const checkOut = e.check_out_final && e.check_out_final.length === 5 ? e.check_out_final + ':00' : null
-        const computed = computeHoursFromCheckInOut(e.check_in_final || '', e.check_out_final || '', e.status)
+        const computed = computeHoursFromCheckInOut(e.check_in_final || '', e.check_out_final || '', e.status, date)
         
         upserts.push({
           id: `att_${nv.id}_${date.replace(/-/g, '')}`,
