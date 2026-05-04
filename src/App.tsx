@@ -117,7 +117,7 @@ const db = createClient(SUPABASE_URL, SUPABASE_KEY)
 // ⚠ TODO sau v198 (anh deploy thủ công):
 //   - Cập nhật edge function `kiotviet-sales-revenue` để auto sync luôn `kv_invoices` (anh paste code edge function cho em fix).
 //   - Setup pg_cron hoặc external cron (cron-job.org) để auto sync mỗi 1h. Hướng dẫn trong migration_62.sql.
-const APP_VERSION = '2026.05.04.v198.30.6'
+const APP_VERSION = '2026.05.04.v198.30.7'
 
 // ════════════════════════════════════════════════════════════════
 // v158: VersionBadge — Hiển thị APP_VERSION ở góc dưới phải
@@ -24782,7 +24782,11 @@ function computeSalaryAmounts(opts: {
 }): { workAmount: number, ot150Amount: number, ot200Amount: number } {
   const { positionType, baseSalary, workHoursRegular, ot150Hours, ot200Hours, totalWorkingDaysInMonth } = opts
 
-  const isKho = positionType === 'Kho' || positionType === 'Quản lý kho'
+  // v198.30.6: Gộp các vị trí Kho-style vào isKho (cùng cách tính lương)
+  // 'Phó kho' và 'Thử việc kho' dùng giờ làm như Kho → tính lương cùng công thức
+  const isKho = positionType === 'Kho' || positionType === 'Quản lý kho' 
+                 || positionType === 'Phó kho' || positionType === 'Thử việc kho'
+                 || positionType === 'Thử việc'
   const isSale = positionType === 'Sales'
   const isKT = positionType === 'Kế toán' || positionType === 'Kế toán thuế'
   const isPartTime = positionType === 'Part-time'
@@ -24922,7 +24926,8 @@ function computeMonthlyPayroll(opts: {
   let cnBuDays = 0  // Số ngày CN đi làm bù cho ngày nghỉ khác
   
   // v198.5: stdHoursPerDay theo vị trí (8 cho Kho, 7.5 cho khác)
-  const isKhoForOT = ['Kho', 'Quản lý kho', 'Thử việc'].includes(sc.position_type)
+  // v198.30.6: Bao gồm Phó kho + Thử việc kho (cũng dùng std=8h)
+  const isKhoForOT = ['Kho', 'Quản lý kho', 'Thử việc', 'Thử việc kho', 'Phó kho'].includes(sc.position_type)
   const stdHoursPerDayForOT = isKhoForOT ? 8 : 7.5
   
   // v198.5: approvedOTByDate (map date → giờ OT đã duyệt)
@@ -25719,11 +25724,14 @@ function PayrollModule({ user, allUsers, mobile }: any) {
       : 0
     
     // v192: Lấy LCB từ positions.base_salary nếu có
-    const positionLcb = u.position_id 
-      ? Number(positionsList.find((p: any) => p.id === u.position_id)?.base_salary || 0)
-      : 0
-    const effectiveSc = positionLcb > 0
-      ? { ...sc, base_salary: positionLcb }
+    // v198.30.6: Cũng override position_type qua positions.work_schedule_type (chuẩn)
+    //   Lý do: salary_config có thể out-of-date (vd Phan Văn Chính: positions=Phó kho 7.5tr nhưng sc=Quản lý kho 8tr)
+    //   work_schedule_type ưu tiên hơn name vì group đúng vào nhóm lương (Phó kho dùng schedule Phó kho nhưng tính lương như Kho)
+    const userPos = u.position_id ? positionsList.find((p: any) => p.id === u.position_id) : null
+    const positionLcb = Number(userPos?.base_salary || 0)
+    const positionType = userPos?.work_schedule_type || userPos?.name || sc.position_type
+    const effectiveSc = (positionLcb > 0 || positionType !== sc.position_type)
+      ? { ...sc, base_salary: positionLcb || sc.base_salary, position_type: positionType }
       : sc
 
     return computeMonthlyPayroll({
@@ -29520,7 +29528,30 @@ function PayrollDetailModal({ user: nv, payroll, salaryConfig, otherIncomes, sho
   const [manualAdjust, setManualAdjust] = useState(payroll?.manual_adjust || 0)
   const [manualReason, setManualReason] = useState(payroll?.manual_adjust_reason || '')
   const totalWorkingDays = countWorkingDaysInMonth(month, year, paidLeaveDates)
-  const stdHoursPerDay = (salaryConfig.position_type === 'Kho' || salaryConfig.position_type === 'Quản lý kho') ? 8 : 7.5
+  // v198.30.6: stdHoursPerDay từ positions.work_schedule_type → position_work_schedule (chuẩn)
+  // Fallback: hardcode theo salaryConfig.position_type (legacy)
+  const stdHoursPerDay = (() => {
+    const userPos = (positionsList || []).find((p: any) => p.id === nv.position_id)
+    const wsType = userPos?.work_schedule_type
+    if (wsType) {
+      const midMonth = `${year}-${String(month).padStart(2, '0')}-15`
+      // Tìm schedule khớp ngày 15 tháng (đại diện cho cả tháng)
+      const candidates = (positionWorkSchedule || []).filter((w: any) => w.position_type === wsType)
+      const sorted = candidates.slice().sort((a: any, b: any) => 
+        String(b.effective_from || '').localeCompare(String(a.effective_from || ''))
+      )
+      for (const w of sorted) {
+        const from = w.effective_from || '1900-01-01'
+        const to = w.effective_to || '9999-12-31'
+        if (midMonth >= from && midMonth <= to) {
+          return Number(w.std_hours_per_day) || 8
+        }
+      }
+      if (sorted[0]?.std_hours_per_day) return Number(sorted[0].std_hours_per_day)
+    }
+    // Fallback legacy
+    return (salaryConfig.position_type === 'Kho' || salaryConfig.position_type === 'Quản lý kho') ? 8 : 7.5
+  })()
   
   // v192: Modal sửa chấm công
   const [showAttendanceEdit, setShowAttendanceEdit] = useState(false)
@@ -29541,7 +29572,19 @@ function PayrollDetailModal({ user: nv, payroll, salaryConfig, otherIncomes, sho
         </div>
 
         <div style={{ fontSize: FS.sm, color: T.med, marginBottom: 12 }}>
-          Vị trí: <b>{salaryConfig.position_type}</b> | LCB: <b>{fmtVND(salaryConfig.base_salary)}đ</b> | Ngày làm chuẩn tháng: <b>{totalWorkingDays}</b>
+          {(() => {
+            // v198.30.6: Lookup vị trí + LCB qua positions table (chuẩn) thay vì salaryConfig (legacy)
+            // Lý do: salaryConfig.position_type/base_salary có thể OUT-OF-DATE
+            //        nếu admin đã đổi position_id của NV trong tab Quản trị → Vị trí
+            const userPos = (positionsList || []).find((p: any) => p.id === nv.position_id)
+            const displayPosition = userPos?.name || salaryConfig.position_type || '—'
+            const displayLcb = userPos?.base_salary || salaryConfig.base_salary || 0
+            return (
+              <>
+                Vị trí: <b>{displayPosition}</b> | LCB: <b>{fmtVND(displayLcb)}đ</b> | Ngày làm chuẩn tháng: <b>{totalWorkingDays}</b>
+              </>
+            )
+          })()}
         </div>
 
         {/* Breakdown sections */}
