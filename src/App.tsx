@@ -117,7 +117,7 @@ const db = createClient(SUPABASE_URL, SUPABASE_KEY)
 // ⚠ TODO sau v198 (anh deploy thủ công):
 //   - Cập nhật edge function `kiotviet-sales-revenue` để auto sync luôn `kv_invoices` (anh paste code edge function cho em fix).
 //   - Setup pg_cron hoặc external cron (cron-job.org) để auto sync mỗi 1h. Hướng dẫn trong migration_62.sql.
-const APP_VERSION = '2026.05.03.v198.23'
+const APP_VERSION = '2026.05.03.v198.24'
 
 // ════════════════════════════════════════════════════════════════
 // v158: VersionBadge — Hiển thị APP_VERSION ở góc dưới phải
@@ -36689,6 +36689,98 @@ function GhtkModule({ user, allUsers, mobile }: any) {
   // v150: Admin delete order modal
   const [adminDeleteOrder, setAdminDeleteOrder] = useState<any>(null)
   const isAdmin = perm.viewAllDashboard
+  
+  // v198.24: Bulk select + delete (chỉ admin)
+  const [selectedCodes, setSelectedCodes] = useState<Set<string>>(new Set())
+  const [showBulkDelete, setShowBulkDelete] = useState(false)
+  const [bulkDeleteReason, setBulkDeleteReason] = useState('')
+  const [bulkDeleting, setBulkDeleting] = useState(false)
+  
+  // Reset selection khi đổi tab
+  useEffect(() => {
+    setSelectedCodes(new Set())
+  }, [tab])
+  
+  const toggleSelect = (orderCode: string) => {
+    setSelectedCodes(prev => {
+      const next = new Set(prev)
+      if (next.has(orderCode)) next.delete(orderCode)
+      else next.add(orderCode)
+      return next
+    })
+  }
+  
+  const toggleSelectAll = (allCodes: string[]) => {
+    setSelectedCodes(prev => {
+      // Nếu đã chọn tất cả → bỏ chọn hết
+      if (allCodes.every(c => prev.has(c))) {
+        const next = new Set(prev)
+        allCodes.forEach(c => next.delete(c))
+        return next
+      }
+      // Nếu chưa → chọn hết
+      const next = new Set(prev)
+      allCodes.forEach(c => next.add(c))
+      return next
+    })
+  }
+  
+  const handleBulkDelete = async () => {
+    if (!isAdmin) {
+      toast.error('Chỉ admin được xóa hàng loạt')
+      return
+    }
+    if (bulkDeleteReason.trim().length < 5) {
+      toast.error('Vui lòng nhập lý do xóa (≥ 5 ký tự)')
+      return
+    }
+    if (selectedCodes.size === 0) {
+      toast.error('Chưa chọn đơn nào')
+      return
+    }
+    setBulkDeleting(true)
+    try {
+      const now = new Date().toISOString()
+      const codesArray = Array.from(selectedCodes)
+      const ordersToDelete = orders.filter(o => selectedCodes.has(o.order_code))
+      
+      // Audit log từng đơn (snapshot full record)
+      for (const o of ordersToDelete) {
+        await logAudit({
+          user,
+          action: 'soft_delete',
+          table: 'packing_workflow',
+          recordId: o.order_code,
+          snapshot: o,
+          note: `Bulk delete đơn ${o.order_code} (tab: ${tab}, ${ordersToDelete.length} đơn). Lý do: ${bulkDeleteReason.trim()}`,
+        })
+      }
+      
+      // Bulk soft delete
+      const { error } = await db.from('packing_workflow').update({
+        is_deleted: true,
+        deleted_at: now,
+        deleted_by: user.id,
+      }).in('order_code', codesArray)
+      
+      if (error) {
+        toast.error('Lỗi xóa: ' + error.message)
+        setBulkDeleting(false)
+        return
+      }
+      
+      toast.success(`✓ Đã xóa ${codesArray.length} đơn`)
+      // Optimistic update
+      setOrders(prev => prev.filter(o => !selectedCodes.has(o.order_code)))
+      setSelectedCodes(new Set())
+      setShowBulkDelete(false)
+      setBulkDeleteReason('')
+    } catch (e: any) {
+      toast.error('Lỗi: ' + (e.message || String(e)))
+    } finally {
+      setBulkDeleting(false)
+    }
+  }
 
   const norm2 = (s: string) => (s||'').toLowerCase().normalize('NFD')
     .replace(/[\u0300-\u036f]/g,'').replace(/đ/g,'d').trim()
@@ -37367,9 +37459,39 @@ function GhtkModule({ user, allUsers, mobile }: any) {
             </div>
           ) : (
             <div style={{ display:'flex', flexDirection:'column', gap:8 }}>
+              {/* v198.24: Bulk action bar — chỉ admin, chỉ tabs có order list (không phải track) */}
+              {isAdmin && filtered.length > 0 && (
+                <Card style={{ padding:'10px 14px', display:'flex', gap:10, alignItems:'center',
+                  flexWrap:'wrap', background:'#FEF3C7', border:`1px solid #F59E0B` }}>
+                  <button onClick={() => toggleSelectAll(filtered.map((o: any) => o.order_code))}
+                    style={{ padding:'5px 12px', borderRadius:14, fontSize:11, fontWeight:600,
+                      border:`1px solid ${T.border}`, background:'#fff', color:T.dark,
+                      cursor:'pointer', fontFamily:'inherit' }}>
+                    {filtered.every((o: any) => selectedCodes.has(o.order_code)) 
+                      ? `☑ Bỏ chọn tất cả (${filtered.length})`
+                      : `☐ Chọn tất cả (${filtered.length})`}
+                  </button>
+                  <span style={{ fontSize:12, color:'#92400E', fontWeight:600 }}>
+                    Đã chọn: <b>{filtered.filter((o: any) => selectedCodes.has(o.order_code)).length}</b> / {filtered.length}
+                  </span>
+                  <div style={{ flex:1 }}/>
+                  <button onClick={() => setShowBulkDelete(true)} 
+                    disabled={selectedCodes.size === 0}
+                    style={{ padding:'6px 14px', borderRadius:14, fontSize:11, fontWeight:700,
+                      border:'none', 
+                      background: selectedCodes.size === 0 ? T.border : T.red, 
+                      color:'#fff',
+                      cursor: selectedCodes.size === 0 ? 'not-allowed' : 'pointer',
+                      fontFamily:'inherit' }}>
+                    🗑 Xóa {selectedCodes.size > 0 ? `${selectedCodes.size} đơn ` : ''}đã chọn
+                  </button>
+                </Card>
+              )}
               {filtered.map((o: any) => (
                 <GhtkOrderRow key={o.order_code} order={o} tab={tab} mobile={mobile}
                   onRefresh={fetchOrders} user={user}
+                  isSelected={selectedCodes.has(o.order_code)}
+                  onToggleSelect={isAdmin ? () => toggleSelect(o.order_code) : undefined}
                   onFillInfo={() => setFillInfoOrder(o)}
                   onEditBoxes={() => setEditBoxesOrder(o)}
                   onCreateOrder={(order: any) => setCreateOrderTarget(order)}
@@ -37464,6 +37586,102 @@ function GhtkModule({ user, allUsers, mobile }: any) {
         <AdminDeleteOrderModal ord={adminDeleteOrder} user={user} mobile={mobile}
           onClose={() => setAdminDeleteOrder(null)}
           onDeleted={() => { setAdminDeleteOrder(null); fetchOrders() }}/>
+      )}
+      
+      {/* v198.24: Modal xóa hàng loạt (chỉ admin) */}
+      {showBulkDelete && (
+        <div style={{ position:'fixed', inset:0, background:'rgba(0,0,0,0.55)', zIndex:10000,
+          display:'flex', alignItems:'center', justifyContent:'center', padding:20 }}>
+          <div style={{ background:'#fff', borderRadius:12, width: mobile ? '100%' : 600,
+            maxHeight:'90vh', overflow:'hidden', display:'flex', flexDirection:'column' }}>
+            
+            {/* Header */}
+            <div style={{ padding:'16px 20px', borderBottom:`1px solid ${T.border}`,
+              background:'#FEE2E2' }}>
+              <div style={{ fontSize:15, fontWeight:700, color:T.dark }}>
+                🗑 Xóa hàng loạt {selectedCodes.size} đơn
+              </div>
+              <div style={{ fontSize:11, color:T.med, marginTop:4 }}>
+                Tab: <b style={{ color:T.dark }}>{tab}</b> · Quyền: <b style={{ color:T.dark }}>Admin only</b>
+              </div>
+            </div>
+            
+            {/* Body */}
+            <div style={{ overflowY:'auto', padding:16, background:T.bg, flex:1 }}>
+              <div style={{ padding:'10px 14px', background:'#FEF3C7',
+                borderLeft:`4px solid ${T.amber}`, borderRadius:6, fontSize:12, 
+                color:'#92400E', marginBottom:14 }}>
+                ⚠️ Tất cả đơn được chọn sẽ <b>archive</b> (soft delete) — có thể khôi phục từ DB nếu cần. 
+                Audit log sẽ ghi lại đầy đủ snapshot từng đơn + người xóa + lý do.
+              </div>
+              
+              {/* List đơn sẽ xóa (max 8 để không quá dài) */}
+              <div style={{ marginBottom:14 }}>
+                <div style={{ fontSize:11, fontWeight:700, color:T.med, marginBottom:6 }}>
+                  📋 Danh sách đơn ({selectedCodes.size}):
+                </div>
+                <div style={{ maxHeight:200, overflowY:'auto', background:'#fff', 
+                  border:`1px solid ${T.border}`, borderRadius:6, padding:8 }}>
+                  {Array.from(selectedCodes).slice(0, 50).map(code => {
+                    const ord = orders.find(o => o.order_code === code)
+                    return (
+                      <div key={code} style={{ fontSize:11, padding:'4px 8px',
+                        borderBottom:`1px solid ${T.border}`, display:'flex', gap:8 }}>
+                        <b style={{ color:T.dark, minWidth:90 }}>{code}</b>
+                        <span style={{ color:T.med, flex:1 }}>{ord?.customer_name || '?'}</span>
+                        {ord?.total_amount ? (
+                          <span style={{ color:T.goldText, fontWeight:600 }}>
+                            {Number(ord.total_amount).toLocaleString('vi-VN')}đ
+                          </span>
+                        ) : null}
+                      </div>
+                    )
+                  })}
+                  {selectedCodes.size > 50 && (
+                    <div style={{ padding:'6px 8px', fontSize:10, color:T.light, fontStyle:'italic' }}>
+                      ... và {selectedCodes.size - 50} đơn khác
+                    </div>
+                  )}
+                </div>
+              </div>
+              
+              <label style={{ fontSize:12, fontWeight:700, color:T.dark, marginBottom:6, display:'block' }}>
+                📝 Lý do xóa <span style={{ color:T.red }}>*</span>
+              </label>
+              <textarea value={bulkDeleteReason} onChange={e => setBulkDeleteReason(e.target.value)}
+                placeholder="vd: Dọn đơn cũ đã xong, các đơn này đã ship qua bookship/ngoài hệ thống GHTK, không cần gán nữa..."
+                rows={3}
+                style={{ width:'100%', padding:'8px 10px', borderRadius:6,
+                  border:`1px solid ${bulkDeleteReason.trim().length < 5 ? T.amber : T.border}`,
+                  background:'#fff', color:T.dark,
+                  fontSize:12, fontFamily:'inherit', resize:'vertical' }}/>
+              <div style={{ marginTop:4, fontSize:10, color: bulkDeleteReason.trim().length < 5 ? T.amber : T.med }}>
+                {bulkDeleteReason.trim().length < 5 
+                  ? `⚠️ Tối thiểu 5 ký tự (hiện ${bulkDeleteReason.trim().length})` 
+                  : `✓ ${bulkDeleteReason.trim().length} ký tự`}
+              </div>
+            </div>
+            
+            {/* Footer */}
+            <div style={{ padding:'12px 20px', borderTop:`1px solid ${T.border}`, background:'#fff',
+              display:'flex', gap:8, justifyContent:'flex-end' }}>
+              <button onClick={() => { setShowBulkDelete(false); setBulkDeleteReason('') }} 
+                disabled={bulkDeleting}
+                style={{ padding:'7px 14px', borderRadius:6, border:`1px solid ${T.border}`,
+                  background:'#fff', color:T.med, cursor:'pointer', fontSize:11, fontFamily:'inherit' }}>
+                Hủy
+              </button>
+              <button onClick={handleBulkDelete} 
+                disabled={bulkDeleting || bulkDeleteReason.trim().length < 5}
+                style={{ padding:'7px 14px', borderRadius:6, border:'none',
+                  background: bulkDeleteReason.trim().length < 5 ? T.border : T.red, color:'#fff',
+                  cursor: (bulkDeleting || bulkDeleteReason.trim().length < 5) ? 'not-allowed' : 'pointer',
+                  fontSize:11, fontWeight:700, fontFamily:'inherit' }}>
+                {bulkDeleting ? '⏳ Đang xóa...' : `🗑 Xác nhận xóa ${selectedCodes.size} đơn`}
+              </button>
+            </div>
+          </div>
+        </div>
       )}
     </PageContainer>
   )
@@ -39550,7 +39768,7 @@ function NewCustomerRow({ row, user, isAdmin, selected, canSelect, onToggle, mon
 
 
 // ── GHTK Order Row ──
-function GhtkOrderRow({ order: o, tab, mobile, onRefresh, user, onFillInfo, onEditBoxes, onChooseShipType, onCreateOrder, onLinkSupp, onAdminDelete }: any) {
+function GhtkOrderRow({ order: o, tab, mobile, onRefresh, user, onFillInfo, onEditBoxes, onChooseShipType, onCreateOrder, onLinkSupp, onAdminDelete, isSelected, onToggleSelect }: any) {
   const info = o.ghtk_customer_info || {}
   const boxes = o.ghtk_boxes || []
   const labels = o.ghtk_labels || []
@@ -39567,8 +39785,19 @@ function GhtkOrderRow({ order: o, tab, mobile, onRefresh, user, onFillInfo, onEd
   ].filter(Boolean).join(', ')
 
   return (
-    <Card style={{ padding:12 }}>
+    <Card style={{ padding:12, 
+      // v198.24: Highlight row khi được chọn (admin bulk delete)
+      ...(isSelected ? { background:'#FEF3C7', border:`2px solid #F59E0B` } : {}) }}>
       <div style={{ display:'flex', alignItems:'flex-start', gap:12, flexWrap:'wrap' }}>
+        {/* v198.24: Checkbox bulk select (chỉ admin) */}
+        {onToggleSelect && (
+          <div style={{ display:'flex', alignItems:'center', paddingTop:2 }}>
+            <input type="checkbox" checked={!!isSelected} 
+              onChange={(e) => { e.stopPropagation(); onToggleSelect() }}
+              onClick={(e) => e.stopPropagation()}
+              style={{ width:18, height:18, cursor:'pointer', accentColor:'#F59E0B' }}/>
+          </div>
+        )}
         <div style={{ flex:1, minWidth:200 }}>
           <div style={{ fontSize:13, fontWeight:700, color:T.dark }}>
             📦 {o.order_code}
