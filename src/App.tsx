@@ -117,7 +117,7 @@ const db = createClient(SUPABASE_URL, SUPABASE_KEY)
 // ⚠ TODO sau v198 (anh deploy thủ công):
 //   - Cập nhật edge function `kiotviet-sales-revenue` để auto sync luôn `kv_invoices` (anh paste code edge function cho em fix).
 //   - Setup pg_cron hoặc external cron (cron-job.org) để auto sync mỗi 1h. Hướng dẫn trong migration_62.sql.
-const APP_VERSION = '2026.05.03.v198.24'
+const APP_VERSION = '2026.05.04.v198.25'
 
 // ════════════════════════════════════════════════════════════════
 // v158: VersionBadge — Hiển thị APP_VERSION ở góc dưới phải
@@ -36873,6 +36873,8 @@ function GhtkModule({ user, allUsers, mobile }: any) {
       const boxes = o.ghtk_boxes || []
       const labels = o.ghtk_labels || []
       const hasCreatedLabels = labels.length > 0
+      // v198.25: Đơn pre-info — Sale điền info sớm, chưa "đã đóng" trên KV
+      const isPreInfo = o.is_pre_info === true
 
       if (hasCreatedLabels) {
         const allDone = labels.every((l: any) =>
@@ -36885,6 +36887,24 @@ function GhtkModule({ user, allUsers, mobile }: any) {
         // v141: Đơn dropship đã in mã → đưa vào tab "Đã tạo đơn" để theo dõi
         // (timestamp dropship_printed_at đủ thông tin, không cần sync status từ GHTK)
         result.created.push(o)
+      } else if (isPreInfo) {
+        // v198.25: Đơn pre-info → BUỘC ở tab "Chờ điền info" hoặc "Đơn bổ sung"
+        // KHÔNG cho phép sang pending_weight/ready vì Kho chưa "đã đóng" trong KV
+        // → tránh Kho cân/tạo nhãn cho đơn KH chưa chắc chắn
+        const intent = parseShipIntent(o.description_kv || '')
+        const enriched = { ...o, _intent: intent }
+        if (intent.type === 'supplementary') {
+          if (isMyOrder(o)) result.pending_link.push(enriched)
+        } else if (intent.type === 'ghtk_dropship') {
+          result.dropship_ghtk.push(enriched)
+        } else if (intent.type === 'vtp_dropship') {
+          result.dropship_vtp.push(enriched)
+        } else if (intent.type === 'ambiguous') {
+          if (isMyOrder(o)) result.pending_choose.push(enriched)
+        } else {
+          // hasInfo=true vẫn ở pending_info (đợi Kho ghi "đã đóng" → flip sang flow chuẩn)
+          if (isMyOrder(o)) result.pending_info.push(enriched)
+        }
       } else if (!hasInfo) {
         // v125: Chưa có info → phân loại theo intent của note
         const intent = parseShipIntent(o.description_kv || '')
@@ -39805,6 +39825,15 @@ function GhtkOrderRow({ order: o, tab, mobile, onRefresh, user, onFillInfo, onEd
             {Number(o.total_amount) > 0 && (
               <span style={{ marginLeft:8, fontSize:12, color:T.goldText, fontWeight:700 }}>
                 • {Number(o.total_amount).toLocaleString('vi-VN')}đ
+              </span>
+            )}
+            {/* v198.25: Badge pre-info — đơn Sale điền sớm, Kho chưa "đã đóng" */}
+            {o.is_pre_info === true && (
+              <span style={{ marginLeft:8, padding:'2px 8px', borderRadius:10,
+                background:'#DBEAFE', color:'#1E40AF', fontSize:10, fontWeight:700,
+                border:`1px solid #93C5FD`, verticalAlign:'middle' }}
+                title="Đơn pre-info: Sale có thể điền info ngay, đợi Kho ghi 'đã đóng' trên KV thì đơn sẽ vào flow Đóng đơn">
+                ✨ Pre-info
               </span>
             )}
             {/* v150: Admin xóa đơn — icon nhỏ ở cuối tên */}
