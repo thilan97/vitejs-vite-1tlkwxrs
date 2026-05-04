@@ -117,7 +117,7 @@ const db = createClient(SUPABASE_URL, SUPABASE_KEY)
 // ⚠ TODO sau v198 (anh deploy thủ công):
 //   - Cập nhật edge function `kiotviet-sales-revenue` để auto sync luôn `kv_invoices` (anh paste code edge function cho em fix).
 //   - Setup pg_cron hoặc external cron (cron-job.org) để auto sync mỗi 1h. Hướng dẫn trong migration_62.sql.
-const APP_VERSION = '2026.05.04.v198.30'
+const APP_VERSION = '2026.05.04.v198.30.1'
 
 // ════════════════════════════════════════════════════════════════
 // v158: VersionBadge — Hiển thị APP_VERSION ở góc dưới phải
@@ -20921,11 +20921,20 @@ function PackingModule({ user, allUsers, mobile, products }: any) {
       toast.error(`Cần tối thiểu ${min} ảnh thùng hàng (hiện có ${packed}).\nNếu đơn bookship không đóng thùng, hãy tick vào ô "Đơn bookship — không đóng thùng".`)
       return
     }
-    // v134: Bắt buộc cân thùng — chỉ áp dụng cho đơn GHTK (bookship không cần)
-    if (ord.is_ghtk_order && !ord.no_box) {
-      const boxes = ord.ghtk_boxes || []
+    // v134: Bắt buộc cân thùng — chỉ áp dụng cho đơn GHTK (bookship/dropship không cần)
+    // v198.30 FIX:
+    //   1. Skip nếu là đơn DROPSHIP (Sale tự lo bên carrier khác)
+    //   2. Đợi 100ms để pending blur events từ input số cân kịp save vào state
+    //      → tránh false-positive "chưa nhập cân" khi user gõ xong rồi bấm Hoàn tất ngay
+    const isDropship = !!ord.dropship_carrier || !!ord.dropship_code
+    if (ord.is_ghtk_order && !ord.no_box && !isDropship) {
+      // Đợi pending input updates kịp commit state
+      await new Promise(resolve => setTimeout(resolve, 150))
+      // Re-read ord từ orders state mới nhất (sau khi blur events đã update)
+      const latestOrd = (orders || []).find((o: any) => o.order_code === ord.order_code) || ord
+      const boxes = latestOrd.ghtk_boxes || []
       if (boxes.length === 0) {
-        toast.error('Đơn GHTK cần nhập số thùng và cân nặng trước khi hoàn tất.')
+        toast.error('Đơn GHTK cần nhập số thùng và cân nặng trước khi hoàn tất.\nNếu bạn vừa nhập xong, vui lòng click ra ngoài input rồi thử lại.')
         return
       }
       const invalidBox = boxes.find((b: any) => !Number(b.weight_kg) || Number(b.weight_kg) <= 0)
@@ -22857,8 +22866,9 @@ function PackingDetailPanel({ ord, mobile, user, allUsers, products, allOrders, 
           )}
 
           {/* v134: BoxesSection — chỉ hiện cho đơn GHTK (bookship/đơn thường không cần cân)
+              v198.30: Skip cả đơn DROPSHIP (Sale tự lo bên carrier khác)
               State boxes lưu vào field ghtk_boxes (giữ tên cũ để tránh migration). */}
-          {ord.is_ghtk_order && !ord.no_box && (
+          {ord.is_ghtk_order && !ord.no_box && !ord.dropship_carrier && !ord.dropship_code && (
             <BoxesSection ord={ord} user={user} mobile={mobile}
               onChange={(newBoxes) => {
                 // Update state local để finishPacking thấy đủ boxes ngay
@@ -36921,6 +36931,8 @@ function categorizeGhtkOrder(o: any): {
   const boxes = o.ghtk_boxes || []
   const labels = o.ghtk_labels || []
   const hasCreatedLabels = labels.length > 0
+  // v198.30: Đơn dropship (Sale tự book carrier khác) → skip cân
+  const isDropshipOrder = !!o.dropship_carrier || !!o.dropship_code
 
   if (hasCreatedLabels) {
     const allDone = labels.every((l: any) =>
@@ -36936,6 +36948,8 @@ function categorizeGhtkOrder(o: any): {
     if (intent.type === 'ambiguous')     return { bucket: 'pending_choose', intent }
     return { bucket: 'pending_info', intent }
   }
+  // v198.30: Dropship → đi thẳng sang ready, KHÔNG cần qua bước nhập cân
+  if (isDropshipOrder) return { bucket: 'ready' }
   if (boxes.length === 0) return { bucket: 'pending_weight' }
   return { bucket: 'ready' }
 }
