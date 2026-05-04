@@ -117,7 +117,7 @@ const db = createClient(SUPABASE_URL, SUPABASE_KEY)
 // ⚠ TODO sau v198 (anh deploy thủ công):
 //   - Cập nhật edge function `kiotviet-sales-revenue` để auto sync luôn `kv_invoices` (anh paste code edge function cho em fix).
 //   - Setup pg_cron hoặc external cron (cron-job.org) để auto sync mỗi 1h. Hướng dẫn trong migration_62.sql.
-const APP_VERSION = '2026.05.03.v198.22.1'
+const APP_VERSION = '2026.05.03.v198.22.2'
 
 // ════════════════════════════════════════════════════════════════
 // v158: VersionBadge — Hiển thị APP_VERSION ở góc dưới phải
@@ -36582,9 +36582,12 @@ function parseShipIntentGlobal(note: string): {
   const hasVtp  = /\b(vtp|viettel\s*post|viettelpost|viettel)\b/i.test(note)
   if (!hasGhtk && !hasVtp) return { type: 'none' }
 
+  // v198.22.2: Pattern theo đúng business rule:
+  // - GHTK: 10 số, bắt đầu bằng 1 (vd: 1032165431)
+  // - VTP:  11-12 số, bắt đầu bằng 1 (vd: 14091003573, 140910035738)
   const ghtkDropMatch = note.match(/(?:^|\D)(1\d{9})(?:\D|$)/)
   const telMatch = note.match(/(?:^|\D)(0\d{9,10})(?:\D|$)/)
-  const vtpMatch = note.match(/(?:^|\D)([1-9]\d{10,14})(?:\D|$)/)
+  const vtpMatch = note.match(/(?:^|\D)(1\d{10,11})(?:\D|$)/)
 
   if (hasVtp) {
     if (vtpMatch) return { type: 'vtp_dropship', code: vtpMatch[1] }
@@ -36653,16 +36656,17 @@ function GhtkModule({ user, allUsers, mobile }: any) {
   const [dateTo, setDateTo] = useState<string>('')
   
   // v190: Field date dùng để filter — tùy tab
+  // v198.22.2: packing_workflow KHÔNG có created_at → fallback purchase_date
   const getDateFieldValue = (o: any, currentTab: string): string | null => {
     if (currentTab === 'dropship_mine' || currentTab === 'dropship') {
-      // Tab dropship → ngày in nhãn dropship
-      return o.dropship_printed_at || o.created_at || null
+      // Tab dropship → ngày in nhãn dropship; chưa in → fallback purchase_date
+      return o.dropship_printed_at || o.purchase_date || null
     }
     if (currentTab === 'created' || currentTab === 'track' || currentTab === 'delivered') {
       // Tab GHTK → ngày tạo nhãn GHTK (fallback dropship cho đơn dropship)
-      return o.ghtk_created_at || o.dropship_printed_at || o.created_at || null
+      return o.ghtk_created_at || o.dropship_printed_at || o.purchase_date || null
     }
-    return o.created_at || null
+    return o.purchase_date || null
   }
   // v169: State cho "Sync tất cả"
   const [syncingAll, setSyncingAll] = useState(false)
@@ -37134,7 +37138,9 @@ function GhtkModule({ user, allUsers, mobile }: any) {
               const endMs = dateFilter === 'custom' && dateTo
                 ? new Date(dateTo + 'T23:59:59').getTime() : Date.now()
               return categorized.dropship_ghtk.filter((o: any) => {
-                const dateStr = o.dropship_printed_at || o.created_at
+                // v198.22.2: Đơn ĐÃ in → dùng dropship_printed_at; đơn CHƯA in → fallback purchase_date
+                // (packing_workflow KHÔNG có created_at — đây là bug từ trước, đơn chưa in bị filter mất)
+                const dateStr = o.dropship_printed_at || o.purchase_date
                 const ts = dateStr ? new Date(dateStr).getTime() : 0
                 return ts >= cutoffMs && ts <= endMs
               })
@@ -37150,7 +37156,8 @@ function GhtkModule({ user, allUsers, mobile }: any) {
               const endMs = dateFilter === 'custom' && dateTo
                 ? new Date(dateTo + 'T23:59:59').getTime() : Date.now()
               return categorized.dropship_vtp.filter((o: any) => {
-                const dateStr = o.dropship_printed_at || o.created_at
+                // v198.22.2: Tương tự — fallback purchase_date thay vì created_at
+                const dateStr = o.dropship_printed_at || o.purchase_date
                 const ts = dateStr ? new Date(dateStr).getTime() : 0
                 return ts >= cutoffMs && ts <= endMs
               })
