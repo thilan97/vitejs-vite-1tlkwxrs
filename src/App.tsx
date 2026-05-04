@@ -117,7 +117,7 @@ const db = createClient(SUPABASE_URL, SUPABASE_KEY)
 // ⚠ TODO sau v198 (anh deploy thủ công):
 //   - Cập nhật edge function `kiotviet-sales-revenue` để auto sync luôn `kv_invoices` (anh paste code edge function cho em fix).
 //   - Setup pg_cron hoặc external cron (cron-job.org) để auto sync mỗi 1h. Hướng dẫn trong migration_62.sql.
-const APP_VERSION = '2026.05.04.v198.26'
+const APP_VERSION = '2026.05.04.v198.27'
 
 // ════════════════════════════════════════════════════════════════
 // v158: VersionBadge — Hiển thị APP_VERSION ở góc dưới phải
@@ -36829,6 +36829,23 @@ function GhtkModule({ user, allUsers, mobile }: any) {
   }
 
   useEffect(() => { fetchOrders() }, [])
+
+  // v198.27: Auto-refresh 60s/lần cho 5 tabs Sale làm việc thường xuyên
+  // Mục đích: Sale không phải bấm Refresh mỗi khi có đơn mới từ KV (cron sync 30s/lần)
+  // Tabs: in mã dropship, sẵn sàng tạo, đơn bổ sung, chờ điền info, sale chọn loại
+  useEffect(() => {
+    const AUTO_REFRESH_TABS = ['dropship', 'ready', 'pending_link', 'pending_info', 'pending_choose']
+    if (!AUTO_REFRESH_TABS.includes(tab)) return
+    
+    const interval = setInterval(() => {
+      // Chỉ refresh khi tab đang focus (tránh refresh ngầm khi user đang ở tab khác trên browser)
+      if (document.visibilityState === 'visible') {
+        fetchOrders()
+      }
+    }, 60000)  // 60 giây
+    
+    return () => clearInterval(interval)
+  }, [tab])
 
   // Categorize orders theo tab
   // v125: Parse ghi chú đơn KV để detect intent dropship
