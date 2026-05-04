@@ -117,7 +117,7 @@ const db = createClient(SUPABASE_URL, SUPABASE_KEY)
 // ⚠ TODO sau v198 (anh deploy thủ công):
 //   - Cập nhật edge function `kiotviet-sales-revenue` để auto sync luôn `kv_invoices` (anh paste code edge function cho em fix).
 //   - Setup pg_cron hoặc external cron (cron-job.org) để auto sync mỗi 1h. Hướng dẫn trong migration_62.sql.
-const APP_VERSION = '2026.05.03.v198.22.2'
+const APP_VERSION = '2026.05.03.v198.23'
 
 // ════════════════════════════════════════════════════════════════
 // v158: VersionBadge — Hiển thị APP_VERSION ở góc dưới phải
@@ -347,7 +347,8 @@ const Ico: any = {
 const DEPT_COLOR: any = { kho:'#1A56A8', sale:'#15803D', vp:'#C2410C', all:'#6B7280' }
 const DEPT_NAME: any  = { kho:'Kho', sale:'Sale', vp:'Văn phòng', all:'Tất cả' }
 const SCHEDULE: any = {
-  kho:  { in:'08:30', breakStart:'12:30', breakEnd:'13:30', out:'17:30' },
+  // v198.23: Cập nhật giờ làm Kho — vào 8:30, nghỉ trưa 12:30-14:00 (1.5h), tan 18:00 → 8h chuẩn
+  kho:  { in:'08:30', breakStart:'12:30', breakEnd:'14:00', out:'18:00' },
   sale: { in:'08:00', breakStart:'12:30', breakEnd:'14:00', out:'17:00' },
   vp:   { in:'08:00', breakStart:'12:30', breakEnd:'14:00', out:'17:00' },
 }
@@ -355,7 +356,7 @@ const SCHEDULE: any = {
 // ── HELPER: Tính giờ làm từ record chấm công ──
 // Attendance không lưu check_in/check_out mà chỉ lưu status + late_mins
 // → suy ra giờ làm dựa vào SCHEDULE của phòng ban + status
-// - present: full schedule hours (VD kho: 08:30-17:30 trừ 1h nghỉ trưa = 8h)
+// - present: full schedule hours (VD kho: 08:30-18:00 trừ 1.5h nghỉ trưa = 8h)
 // - late: full - late_mins/60
 // - early_out: full - late_mins/60 (reuse late_mins cho số phút về sớm)
 // - half: full/2 (nửa ngày)
@@ -23673,9 +23674,10 @@ function computeWorkHours(
   const isPartTime = position === 'Part-time'
 
   // Schedule
+  // v198.23: Cập nhật giờ làm Kho — afternoon_start 14:00 (thay vì 13:30), nghỉ trưa 1.5h
   const morningStart = isKho ? (payrollConfig?.morning_start_kho || '08:30') : (payrollConfig?.morning_start_other || '08:00')
-  const afternoonStart = isKho ? (payrollConfig?.afternoon_start_kho || '13:30') : (payrollConfig?.afternoon_start_other || '14:00')
-  const breakHrs = isKho ? 1.0 : 1.5
+  const afternoonStart = isKho ? (payrollConfig?.afternoon_start_kho || '14:00') : (payrollConfig?.afternoon_start_other || '14:00')
+  const breakHrs = isKho ? 1.5 : 1.5
   const standardHrs = isKho ? 8.0 : 7.5
 
   const parseTime = (t: string) => {
