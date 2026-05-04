@@ -117,7 +117,7 @@ const db = createClient(SUPABASE_URL, SUPABASE_KEY)
 // ⚠ TODO sau v198 (anh deploy thủ công):
 //   - Cập nhật edge function `kiotviet-sales-revenue` để auto sync luôn `kv_invoices` (anh paste code edge function cho em fix).
 //   - Setup pg_cron hoặc external cron (cron-job.org) để auto sync mỗi 1h. Hướng dẫn trong migration_62.sql.
-const APP_VERSION = '2026.05.04.v198.30.2'
+const APP_VERSION = '2026.05.04.v198.30.3'
 
 // ════════════════════════════════════════════════════════════════
 // v158: VersionBadge — Hiển thị APP_VERSION ở góc dưới phải
@@ -23831,9 +23831,13 @@ async function parseMachineAttendanceFile(file: File): Promise<any[]> {
       
       const thu = String(row[1] || '').trim()
       
-      // Thu thập time cells từ col 2-14 — giờ là number fraction (0-1) thay vì string
+      // v198.30.3 FIX: Excel cấu trúc TỐI ĐA 3 lần check/ngày, chỉ đọc cột Vào/Ra
+      //   Header row 6: Ngày, Thứ, 1, _, 2, _, 3, _, Trễ, Sớm, Về trễ, Giờ, Công, T.Ca1, T.Ca2, Ký hiệu
+      //   Header row 7:           Vào,Ra,Vào,Ra,Vào,Ra
+      //   → Time chỉ ở cột [2..7]; cột [8..14] là SỐ PHÚT/GIỜ/CÔNG (KHÔNG phải time)
+      // BUG cũ: loop j=2..14 đọc TẤT CẢ → nhầm 'Công' (vd 0.88) thành time fraction → 21:07
       const times: string[] = []
-      for (let j = 2; j <= 14; j++) {
+      for (let j = 2; j <= 7; j++) {
         const v = row[j]
         if (typeof v === 'number' && v > 0 && v < 1) {
           // Excel time fraction (0.5 = 12:00)
