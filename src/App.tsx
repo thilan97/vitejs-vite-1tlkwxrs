@@ -117,7 +117,7 @@ const db = createClient(SUPABASE_URL, SUPABASE_KEY)
 // ⚠ TODO sau v198 (anh deploy thủ công):
 //   - Cập nhật edge function `kiotviet-sales-revenue` để auto sync luôn `kv_invoices` (anh paste code edge function cho em fix).
 //   - Setup pg_cron hoặc external cron (cron-job.org) để auto sync mỗi 1h. Hướng dẫn trong migration_62.sql.
-const APP_VERSION = '2026.05.03.v198.22'
+const APP_VERSION = '2026.05.03.v198.22.1'
 
 // ════════════════════════════════════════════════════════════════
 // v158: VersionBadge — Hiển thị APP_VERSION ở góc dưới phải
@@ -36573,7 +36573,9 @@ function parseShipIntentGlobal(note: string): {
   // BS giữ nguyên word boundary để không match "bsx" (vd "abs", "lbs")
   const noteNFC = note.normalize('NFC')
   // BS pattern: 'bs01', 'bs1', 'bs' đứng sau whitespace/dash hoặc đầu chuỗi (tránh 'absurd', 'lbs')
-  const hasSupp = /(^|[\s\-])bs\d*\b/i.test(noteNFC) || /(bổ\s*sung|bo\s*sung|bookship)/i.test(noteNFC)
+  // v198.22.1: BỎ 'bookship' — đây là phương thức ship (sàn book), KHÔNG phải đơn bổ sung
+  // Chỉ "bs" / "bổ sung" / "bo sung" là indicator thật của đơn bổ sung
+  const hasSupp = /(^|[\s\-])bs\d*\b/i.test(noteNFC) || /(bổ\s*sung|bo\s*sung)/i.test(noteNFC)
   if (hasSupp) return { type: 'supplementary' }
 
   const hasGhtk = /\bghtk\b/i.test(note)
@@ -36703,8 +36705,8 @@ function GhtkModule({ user, allUsers, mobile }: any) {
       const { data, error } = await db.from('packing_workflow')
         .select('*')
         // v161: bắt cả đơn VTP dropship (is_ghtk_order=false)
-        // v198.22: bắt cả đơn bổ sung không có keyword ghtk/vtp (vd: "bổ sung bookship", "bổ sung GỬI XE")
-        // Pattern: "bổ sung", "bs ", "bookship" — match chữ thường + chữ hoa (ilike đã case-insensitive)
+        // v198.22: bắt cả đơn bổ sung không có keyword ghtk/vtp (vd: "bổ sung")
+        // v198.22.1: BỎ 'bookship' khỏi filter — bookship là phương thức ship (sàn book), không phải đơn bổ sung
         .or([
           'is_ghtk_order.eq.true',
           'description_kv.ilike.%ghtk%',
@@ -36712,7 +36714,6 @@ function GhtkModule({ user, allUsers, mobile }: any) {
           'description_kv.ilike.%viettel%',
           'description_kv.ilike.%bổ sung%',     // v198.22
           'description_kv.ilike.%bo sung%',     // v198.22 (no diacritics)
-          'description_kv.ilike.%bookship%',    // v198.22
         ].join(','))
         .neq('is_deleted', true)                  // v159: filter đơn đã soft delete
         .gte('purchase_date', effectiveFrom)
