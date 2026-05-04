@@ -117,7 +117,7 @@ const db = createClient(SUPABASE_URL, SUPABASE_KEY)
 // ⚠ TODO sau v198 (anh deploy thủ công):
 //   - Cập nhật edge function `kiotviet-sales-revenue` để auto sync luôn `kv_invoices` (anh paste code edge function cho em fix).
 //   - Setup pg_cron hoặc external cron (cron-job.org) để auto sync mỗi 1h. Hướng dẫn trong migration_62.sql.
-const APP_VERSION = '2026.05.04.v198.25'
+const APP_VERSION = '2026.05.04.v198.26'
 
 // ════════════════════════════════════════════════════════════════
 // v158: VersionBadge — Hiển thị APP_VERSION ở góc dưới phải
@@ -47542,19 +47542,8 @@ function PhotoZoomViewer({ photos, startIdx, mobile, onClose, onRotate }: any) {
       {/* Top bar */}
       <div style={{ display:'flex', alignItems:'center', justifyContent:'space-between',
         padding:'10px 14px', color:'#fff', fontSize:13, gap:10 }}>
-        {/* v188: Nút ← Đóng phía trái rõ ràng (cho mobile, vì nút ✕ phải có thể bị che bởi notch) */}
-        <button onClick={onClose}
-          style={{ display:'flex', alignItems:'center', gap:6,
-            background:'rgba(255,255,255,0.2)', border:'none', color:'#fff',
-            padding:'8px 14px', borderRadius:20, cursor:'pointer',
-            fontSize:14, fontWeight:600, fontFamily:'inherit',
-            minHeight:36, whiteSpace:'nowrap' }}>
-          ← Đóng
-        </button>
-        <div style={{ flex:1, textAlign:'center', fontSize:13, fontWeight:600 }}>
-          {idx + 1} / {photos.length}
-        </div>
-        <div style={{ display:'flex', gap:6, flexWrap:'wrap', justifyContent:'flex-end' }}>
+        {/* v198.26: Controls (zoom/rotate/open) phía trái */}
+        <div style={{ display:'flex', gap:6, flexWrap:'wrap' }}>
           {/* Zoom controls */}
           <button onClick={() => setZoom(z => Math.max(z / 1.3, 0.5))}
             style={{ background:'rgba(255,255,255,0.15)', border:'none', color:'#fff',
@@ -47578,6 +47567,18 @@ function PhotoZoomViewer({ photos, startIdx, mobile, onClose, onRotate }: any) {
             style={{ background:'rgba(255,255,255,0.15)', border:'none', color:'#fff',
               width:36, height:36, borderRadius:18, cursor:'pointer', fontSize:14 }}>↗</button>
         </div>
+        <div style={{ flex:1, textAlign:'center', fontSize:13, fontWeight:600 }}>
+          {idx + 1} / {photos.length}
+        </div>
+        {/* v198.26: Nút Đóng chuyển sang góc trên PHẢI */}
+        <button onClick={onClose}
+          style={{ display:'flex', alignItems:'center', gap:6,
+            background:'rgba(239,68,68,0.85)', border:'none', color:'#fff',
+            padding:'8px 16px', borderRadius:20, cursor:'pointer',
+            fontSize:14, fontWeight:600, fontFamily:'inherit',
+            minHeight:36, whiteSpace:'nowrap' }}>
+          ✕ Đóng
+        </button>
       </div>
 
       {/* Image area */}
