@@ -117,7 +117,7 @@ const db = createClient(SUPABASE_URL, SUPABASE_KEY)
 // ⚠ TODO sau v198 (anh deploy thủ công):
 //   - Cập nhật edge function `kiotviet-sales-revenue` để auto sync luôn `kv_invoices` (anh paste code edge function cho em fix).
 //   - Setup pg_cron hoặc external cron (cron-job.org) để auto sync mỗi 1h. Hướng dẫn trong migration_62.sql.
-const APP_VERSION = '2026.05.04.v198.30.7'
+const APP_VERSION = '2026.05.04.v198.30.8'
 
 // ════════════════════════════════════════════════════════════════
 // v158: VersionBadge — Hiển thị APP_VERSION ở góc dưới phải
@@ -29064,7 +29064,7 @@ function computeDailyHoursActual(opts: {
   const punchIn = (att?.check_in_final || att?.check_in_machine || '').slice(0, 5)
   const punchOut = (att?.check_out_final || att?.check_out_machine || '').slice(0, 5)
   const wr = Number(att?.work_hours_regular || 0)
-  const ot150 = Number(att?.ot_150 || 0)
+  const ot150 = Number(att?.ot_150_hours || att?.ot_150 || 0)  // v198.30.7: Đọc ot_150_hours (column thật) với fallback ot_150 (legacy)
   const punchHours = wr + ot150
   const otRegistered = Number(approvedOTHours || 0)
   const totalHours = punchHours + otRegistered
@@ -29220,7 +29220,7 @@ function PayrollTabAttendance({
         check_in_machine: att?.check_in_machine || null,
         check_out_machine: att?.check_out_machine || null,
         work_hours_regular: hours.work_hours_regular,
-        ot_150: hours.ot_150,
+        ot_150_hours: hours.ot_150,  // v198.30.7: Sửa tên column từ ot_150 → ot_150_hours
         lunch_eligible: hours.lunch_eligible,
         status: att?.status || 'Đi làm',
       }
