@@ -117,7 +117,7 @@ const db = createClient(SUPABASE_URL, SUPABASE_KEY)
 // ⚠ TODO sau v198 (anh deploy thủ công):
 //   - Cập nhật edge function `kiotviet-sales-revenue` để auto sync luôn `kv_invoices` (anh paste code edge function cho em fix).
 //   - Setup pg_cron hoặc external cron (cron-job.org) để auto sync mỗi 1h. Hướng dẫn trong migration_62.sql.
-const APP_VERSION = '2026.05.04.v198.30.5'
+const APP_VERSION = '2026.05.04.v198.30.6'
 
 // ════════════════════════════════════════════════════════════════
 // v158: VersionBadge — Hiển thị APP_VERSION ở góc dưới phải
@@ -23898,26 +23898,53 @@ async function parseMachineAttendanceFile(file: File): Promise<any[]> {
 
 // ── Compute work hours ──
 // Returns: { work_hours_regular, ot_150, lunch_eligible }
-// Follows Excel policy: different schedule for Kho vs other positions
+// Follows Excel policy: schedule from position_work_schedule (per-position)
+// v198.30.5: Dùng schedule object thay vì hardcode Kho/non-Kho
 function computeWorkHours(
   check_in: string,    // HH:MM:SS
   check_out: string,   // HH:MM:SS
   position: string,    // 'Kho' | 'Sales' | ...
-  payrollConfig: any
+  payrollConfig: any,
+  workSchedule?: any   // v198.30.5: Optional schedule từ position_work_schedule (start_time, end_time, lunch_*, std_hours_per_day)
 ): { work_hours_regular: number, ot_150: number, lunch_eligible: boolean } {
   if (!check_in || !check_out) {
     return { work_hours_regular: 0, ot_150: 0, lunch_eligible: false }
   }
 
-  const isKho = ['Kho', 'Quản lý kho', 'Thử việc'].includes(position)
   const isPartTime = position === 'Part-time'
 
-  // Schedule
-  // v198.23: Cập nhật giờ làm Kho — afternoon_start 14:00 (thay vì 13:30), nghỉ trưa 1.5h
-  const morningStart = isKho ? (payrollConfig?.morning_start_kho || '08:30') : (payrollConfig?.morning_start_other || '08:00')
-  const afternoonStart = isKho ? (payrollConfig?.afternoon_start_kho || '14:00') : (payrollConfig?.afternoon_start_other || '14:00')
-  const breakHrs = isKho ? 1.5 : 1.5
-  const standardHrs = isKho ? 8.0 : 7.5
+  // v198.30.5: Ưu tiên dùng workSchedule từ position_work_schedule (chuẩn nhất)
+  // Fallback: hardcode theo isKho (legacy)
+  const isKho = ['Kho', 'Quản lý kho', 'Thử việc', 'Thử việc kho', 'Phó kho'].includes(position)
+  
+  let morningStart: string
+  let afternoonStart: string
+  let breakHrs: number
+  let standardHrs: number
+  
+  if (workSchedule) {
+    // Dùng schedule chính xác từ DB
+    morningStart = (workSchedule.start_time || '08:00').slice(0, 5)
+    // afternoonStart = lunch_end_time (nếu có lunch) hoặc giờ chuẩn
+    const lunchStart = workSchedule.lunch_start_time ? workSchedule.lunch_start_time.slice(0, 5) : null
+    const lunchEnd = workSchedule.lunch_end_time ? workSchedule.lunch_end_time.slice(0, 5) : null
+    afternoonStart = lunchEnd || '14:00'
+    // breakHrs từ lunch duration
+    if (lunchStart && lunchEnd) {
+      const [lsh, lsm] = lunchStart.split(':').map(Number)
+      const [leh, lem] = lunchEnd.split(':').map(Number)
+      breakHrs = (leh + lem/60) - (lsh + lsm/60)
+    } else {
+      breakHrs = 0
+    }
+    standardHrs = Number(workSchedule.std_hours_per_day) || (isKho ? 8.0 : 7.5)
+  } else {
+    // Fallback legacy: hardcode theo isKho
+    morningStart = isKho ? (payrollConfig?.morning_start_kho || '08:30') : (payrollConfig?.morning_start_other || '08:00')
+    afternoonStart = isKho ? (payrollConfig?.afternoon_start_kho || '14:00') : (payrollConfig?.afternoon_start_other || '14:00')
+    breakHrs = 1.5
+    standardHrs = isKho ? 8.0 : 7.5
+  }
 
   const parseTime = (t: string) => {
     const [h, m] = t.split(':').map(Number)
@@ -23995,6 +24022,9 @@ function PayrollImportModule({ user, allUsers, mobile, attendance, setAttendance
   const [mergeMode, setMergeMode] = useState<'overwrite' | 'merge' | null>(null)
   const [previewComputed, setPreviewComputed] = useState<any[]>([])  // computed attendance records
   const [importHistory, setImportHistory] = useState<any[]>([])
+  // v198.30.5: Load positions + position_work_schedule để pass đúng schedule cho computeWorkHours
+  const [positionsList, setPositionsList] = useState<any[]>([])
+  const [positionWorkSchedule, setPositionWorkSchedule] = useState<any[]>([])
 
   // ── PERM CHECK ──
   if (!perm.viewAllDashboard) {
@@ -24008,15 +24038,20 @@ function PayrollImportModule({ user, allUsers, mobile, attendance, setAttendance
 
   // ── Load config + history ──
   const fetchInitData = async () => {
-    const [pc, sc, ih] = await Promise.all([
+    const [pc, sc, ih, pos, pws] = await Promise.all([
       db.from('payroll_config').select('*').eq('id', 1).single(),
       db.from('salary_config').select('*').is('effective_to', null),
       db.from('attendance_imports').select('*')
-        .order('uploaded_at', { ascending: false }).limit(20)
+        .order('uploaded_at', { ascending: false }).limit(20),
+      // v198.30.5: Load positions + work_schedule để pass đúng cho computeWorkHours
+      db.from('positions').select('*'),
+      db.from('position_work_schedule').select('*'),
     ])
     if (pc.data) setPayrollConfig(pc.data)
     if (sc.data) setSalaryConfigs(sc.data)
     if (ih.data) setImportHistory(ih.data)
+    if (pos.data) setPositionsList(pos.data)
+    if (pws.data) setPositionWorkSchedule(pws.data)
   }
 
   useEffect(() => { fetchInitData() }, [])
@@ -24025,6 +24060,39 @@ function PayrollImportModule({ user, allUsers, mobile, attendance, setAttendance
   const getPosition = (userId: string) => {
     const sc = salaryConfigs.find(s => s.user_id === userId)
     return sc?.position_type || ''
+  }
+  
+  // v198.30.5: Helper — lấy work_schedule chính xác cho user theo NGÀY
+  // Logic: user.position_id → positions.work_schedule_type → position_work_schedule
+  // Chọn schedule có effective_from ≤ date ≤ effective_to (hoặc effective_to NULL)
+  const getWorkScheduleForUser = (userId: string, dateStr: string): any => {
+    const u = (allUsers || []).find((x: any) => x.id === userId)
+    if (!u) return null
+    // Ưu tiên positions.work_schedule_type
+    const pos = positionsList.find((p: any) => p.id === u.position_id)
+    const wsType = pos?.work_schedule_type
+    // Fallback: salary_config.position_type
+    const sc = salaryConfigs.find(s => s.user_id === userId)
+    const fallbackType = sc?.position_type
+    
+    // Try wsType first, then fallback
+    for (const tryType of [wsType, fallbackType, pos?.name].filter(Boolean)) {
+      const candidates = (positionWorkSchedule || []).filter((w: any) => w.position_type === tryType)
+      if (candidates.length === 0) continue
+      // Sort theo effective_from desc
+      const sorted = candidates.slice().sort((a: any, b: any) => 
+        String(b.effective_from || '').localeCompare(String(a.effective_from || ''))
+      )
+      // Tìm row khớp date
+      for (const w of sorted) {
+        const from = w.effective_from || '1900-01-01'
+        const to = w.effective_to || '9999-12-31'
+        if (dateStr >= from && dateStr <= to) return w
+      }
+      // Fallback: row mới nhất cho type này
+      return sorted[0]
+    }
+    return null
   }
 
   // ── STEP 1: Parse files ──
@@ -24148,7 +24216,9 @@ function PayrollImportModule({ user, allUsers, mobile, attendance, setAttendance
         // Lấy min(check_ins) + max(check_outs) khi merge nhiều codes
         const check_in = r.check_ins.length > 0 ? r.check_ins.sort()[0] : ''
         const check_out = r.check_outs.length > 0 ? r.check_outs.sort().reverse()[0] : ''
-        const hours = computeWorkHours(check_in, check_out, position, payrollConfig)
+        // v198.30.5: Pass workSchedule để dùng giờ làm + std chính xác từ DB
+        const ws = getWorkScheduleForUser(userId, date)
+        const hours = computeWorkHours(check_in, check_out, position, payrollConfig, ws)
 
         // Determine status
         let status = 'absent'
@@ -28979,8 +29049,8 @@ function computeDailyHoursActual(opts: {
   punchHours: number,           // tổng giờ chấm công (work_hours_regular + ot_150)
   otRegistered: number,         // OT đã đăng ký + duyệt (làm thêm ở nhà)
   totalHours: number,           // = punch + ot_registered
-  baseHours: number,            // min(total, std)
-  overtimeHours: number,        // max(0, total - std)
+  baseHours: number,            // = work_hours_regular (đã capped tại import)
+  overtimeHours: number,        // = ot_150 + otRegistered
 } {
   const { att, approvedOTHours, stdHoursPerDay } = opts
   const punchIn = (att?.check_in_final || att?.check_in_machine || '').slice(0, 5)
@@ -28990,8 +29060,12 @@ function computeDailyHoursActual(opts: {
   const punchHours = wr + ot150
   const otRegistered = Number(approvedOTHours || 0)
   const totalHours = punchHours + otRegistered
-  const baseHours = Math.min(totalHours, stdHoursPerDay)
-  const overtimeHours = Math.max(0, totalHours - stdHoursPerDay)
+  // v198.30.5: KHÔNG recompute base/OT từ totalHours
+  // Logic CŨ (sai): baseHours = min(total, std), overtimeHours = max(0, total - std)
+  //   → Bug: nếu wr=7.5 (capped) + ot150=0.5 thì total=8, base=8, OT=0 — mất OT!
+  // Logic MỚI: dùng wr trực tiếp (đã capped tại import), OT = ot_150 + otRegistered
+  const baseHours = Math.min(wr, stdHoursPerDay)
+  const overtimeHours = ot150 + otRegistered
   return { punchIn, punchOut, punchHours, otRegistered, totalHours, baseHours, overtimeHours }
 }
 
@@ -29117,11 +29191,16 @@ function PayrollTabAttendance({
       
       // Recompute hours
       const positionType = selectedUser?._salary?.position_type || ''
+      // v198.30.5: Pass workSchedule chính xác để dùng std_hours_per_day từ DB
+      const userPos = (positionsList || []).find((p: any) => p.id === selectedUser?.position_id)
+      const wsType = userPos?.work_schedule_type || positionType
+      const ws = getEffectiveSchedule(wsType, dateStr)
       const hours = computeWorkHours(
         newIn ? `${newIn}:00` : '',
         newOut ? `${newOut}:00` : '',
         positionType,
-        payrollConfig
+        payrollConfig,
+        ws
       )
       
       const payload: any = {
