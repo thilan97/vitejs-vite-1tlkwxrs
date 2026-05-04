@@ -117,7 +117,7 @@ const db = createClient(SUPABASE_URL, SUPABASE_KEY)
 // ⚠ TODO sau v198 (anh deploy thủ công):
 //   - Cập nhật edge function `kiotviet-sales-revenue` để auto sync luôn `kv_invoices` (anh paste code edge function cho em fix).
 //   - Setup pg_cron hoặc external cron (cron-job.org) để auto sync mỗi 1h. Hướng dẫn trong migration_62.sql.
-const APP_VERSION = '2026.05.03.v198.20'
+const APP_VERSION = '2026.05.03.v198.22'
 
 // ════════════════════════════════════════════════════════════════
 // v158: VersionBadge — Hiển thị APP_VERSION ở góc dưới phải
@@ -36569,7 +36569,11 @@ function parseShipIntentGlobal(note: string): {
   if (!note) return { type: 'none' }
   // v135: Detect đơn bổ sung — note có "bs" hoặc "bổ sung" (kể cả "bo sung")
   // Match: "bs", "bs01", "bổ sung", "bổ sung đơn", "bo sung"
-  const hasSupp = /\b(bs|bổ\s*sung|bo\s*sung)\b/i.test(note.normalize('NFC'))
+  // v198.22: Bỏ word boundary trước "bổ sung" / "bo sung" để bắt cả case "VATbổ sung" (Sale gõ liền)
+  // BS giữ nguyên word boundary để không match "bsx" (vd "abs", "lbs")
+  const noteNFC = note.normalize('NFC')
+  // BS pattern: 'bs01', 'bs1', 'bs' đứng sau whitespace/dash hoặc đầu chuỗi (tránh 'absurd', 'lbs')
+  const hasSupp = /(^|[\s\-])bs\d*\b/i.test(noteNFC) || /(bổ\s*sung|bo\s*sung|bookship)/i.test(noteNFC)
   if (hasSupp) return { type: 'supplementary' }
 
   const hasGhtk = /\bghtk\b/i.test(note)
@@ -36608,7 +36612,8 @@ function categorizeGhtkOrder(o: any): {
     return { bucket: allDone ? 'delivered' : 'created' }
   }
   if (!hasInfo) {
-    if (o.dropship_printed_at) return { bucket: 'skip' }
+    // v198.21: BỎ skip — đơn đã in dropship vẫn hiện trong tab để Sale tra cứu / in lại
+    // Logic cũ: if (o.dropship_printed_at) return { bucket: 'skip' }
     const intent = parseShipIntentGlobal(o.description_kv || '')
     if (intent.type === 'ghtk_dropship') return { bucket: 'dropship_ghtk', intent }
     if (intent.type === 'vtp_dropship')  return { bucket: 'dropship_vtp', intent }
@@ -36697,7 +36702,18 @@ function GhtkModule({ user, allUsers, mobile }: any) {
 
       const { data, error } = await db.from('packing_workflow')
         .select('*')
-        .or('is_ghtk_order.eq.true,description_kv.ilike.%ghtk%,description_kv.ilike.%vtp%,description_kv.ilike.%viettel%')  // v161: bắt cả đơn VTP dropship (is_ghtk_order=false)
+        // v161: bắt cả đơn VTP dropship (is_ghtk_order=false)
+        // v198.22: bắt cả đơn bổ sung không có keyword ghtk/vtp (vd: "bổ sung bookship", "bổ sung GỬI XE")
+        // Pattern: "bổ sung", "bs ", "bookship" — match chữ thường + chữ hoa (ilike đã case-insensitive)
+        .or([
+          'is_ghtk_order.eq.true',
+          'description_kv.ilike.%ghtk%',
+          'description_kv.ilike.%vtp%',
+          'description_kv.ilike.%viettel%',
+          'description_kv.ilike.%bổ sung%',     // v198.22
+          'description_kv.ilike.%bo sung%',     // v198.22 (no diacritics)
+          'description_kv.ilike.%bookship%',    // v198.22
+        ].join(','))
         .neq('is_deleted', true)                  // v159: filter đơn đã soft delete
         .gte('purchase_date', effectiveFrom)
         .order('purchase_date', { ascending: false })
@@ -36933,7 +36949,7 @@ function GhtkModule({ user, allUsers, mobile }: any) {
     { id:'created',        group:'kho',   label:'🖨 Đã tạo đơn',      count: categorized.created.length,        show: true },
     { id:'track',          group:'kho',   label:'📊 Theo dõi đơn',    count: categorized.track.length,          show: true },
     { id:'delivered',      group:'kho',   label:'📦 Đã giao',         count: categorized.delivered.length,      show: true },
-    { id:'dropship',       group:'kho',   label:'🏷 In mã dropship',  count: categorized.dropship_ghtk.length + categorized.dropship_vtp.length, show: perm.ghtkPrintLabel || perm.ghtkSettings },
+    { id:'dropship',       group:'kho',   label:'🏷 In mã dropship',  count: categorized.dropship_ghtk.filter((o: any) => !o.dropship_printed_at).length + categorized.dropship_vtp.filter((o: any) => !o.dropship_printed_at).length, show: perm.ghtkPrintLabel || perm.ghtkSettings },
     { id:'busship',        group:'kho',   label:'📄 In thông tin đơn', count: 0,                                  show: perm.ghtkPrintLabel || perm.ghtkSettings },
     // Nhóm Admin
     { id:'legacy_link',    group:'admin', label:'🔗 Link GHTK cũ',    count: 0,                                  show: perm.ghtkSettings },  // v198.10
@@ -43133,6 +43149,17 @@ function GhtkDropshipPrintPanel({ user, mobile, dropshipGhtk, dropshipVtp, onRef
       ...(dropshipGhtk || []).map((o: any) => ({...o, _kind: 'ghtk'})),
       ...(dropshipVtp || []).map((o: any) => ({...o, _kind: 'vtp'})),
     ]
+    // v198.21: Sort — chưa in lên đầu, đã in xuống dưới (theo printed_at desc trong nhóm đã in)
+    list.sort((a, b) => {
+      const aPrinted = !!a.dropship_printed_at
+      const bPrinted = !!b.dropship_printed_at
+      if (aPrinted !== bPrinted) return aPrinted ? 1 : -1  // chưa in lên đầu
+      if (aPrinted && bPrinted) {
+        // Cả 2 đã in → sắp xếp theo printed_at desc (mới in trước)
+        return new Date(b.dropship_printed_at).getTime() - new Date(a.dropship_printed_at).getTime()
+      }
+      return 0
+    })
     return list
   }, [dropshipGhtk, dropshipVtp])
 
@@ -43274,24 +43301,39 @@ ${body}
               const isGhtk = o._kind === 'ghtk' || o.dropship_carrier === 'ghtk'
               const detectedCode = intent.code || o.dropship_code || ''
               const isSelected = linkedOrderCode === o.order_code
+              // v198.21: Đã in chưa?
+              const alreadyPrinted = !!o.dropship_printed_at
+              const printedTime = alreadyPrinted ? new Date(o.dropship_printed_at).toLocaleString('vi-VN', { 
+                day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' 
+              }) : null
               return (
                 <div key={o.order_code}
                   onClick={() => {
+                    // v198.21: Đơn đã in vẫn cho click để re-print (anh có thể cần in lại)
                     setCarrier(isGhtk ? 'ghtk' : 'viettel_post')
-                    setCode(detectedCode)
+                    setCode(detectedCode || o.dropship_code || '')
                     setLinkedOrderCode(o.order_code)
                     setNote(`Đơn ${o.order_code} — ${o.customer_name || ''}`.trim())
                   }}
                   style={{ padding:'10px 12px', borderRadius:8, cursor:'pointer',
-                    background:'#fff',
+                    background: alreadyPrinted ? '#F9FAFB' : '#fff',
                     border:`2px solid ${isSelected ? (isGhtk ? T.green : T.red) : T.border}`,
                     display:'flex', gap:10, alignItems:'center', flexWrap:'wrap',
+                    opacity: alreadyPrinted ? 0.75 : 1,
                     transition:'all 0.15s' }}>
                   <span style={{ fontSize:10, padding:'2px 8px', borderRadius:10,
                     background: isGhtk ? T.green : T.red, color:'#fff', fontWeight:700,
                     whiteSpace:'nowrap' }}>
                     {isGhtk ? 'GHTK' : 'VTP'}
                   </span>
+                  {/* v198.21: Badge "✅ Đã in" cho đơn đã in */}
+                  {alreadyPrinted && (
+                    <span style={{ fontSize:10, padding:'2px 8px', borderRadius:10,
+                      background: T.greenBg, color: T.green, fontWeight:700, whiteSpace:'nowrap',
+                      border:`1px solid ${T.green}` }}>
+                      ✅ Đã in {printedTime}
+                    </span>
+                  )}
                   <div style={{ flex:1, minWidth:180 }}>
                     <div style={{ display:'flex', gap:8, alignItems:'center', flexWrap:'wrap' }}>
                       <span style={{ fontWeight:700, color:T.dark, fontSize:13 }}>{o.order_code}</span>
