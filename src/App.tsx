@@ -117,7 +117,7 @@ const db = createClient(SUPABASE_URL, SUPABASE_KEY)
 // ⚠ TODO sau v198 (anh deploy thủ công):
 //   - Cập nhật edge function `kiotviet-sales-revenue` để auto sync luôn `kv_invoices` (anh paste code edge function cho em fix).
 //   - Setup pg_cron hoặc external cron (cron-job.org) để auto sync mỗi 1h. Hướng dẫn trong migration_62.sql.
-const APP_VERSION = '2026.05.04.v198.30.8'
+const APP_VERSION = '2026.05.05.v198.30.9'
 
 // ════════════════════════════════════════════════════════════════
 // v158: VersionBadge — Hiển thị APP_VERSION ở góc dưới phải
@@ -24863,7 +24863,91 @@ function isAttendanceBonusEligible(positionType: string, leaveDays: number, nkpD
 
 
 // Compute toàn bộ lương 1 NV (tổng hợp từ attendance + config + other income + revenue)
-function computeMonthlyPayroll(opts: {
+// ══════════════════════════════════════════════════════════════════════
+// v198.30.9: Helper phân loại CN-Bù vs CN-OT200% theo logic Excel
+// ══════════════════════════════════════════════════════════════════════
+// Logic Excel:
+//   - Đếm số ngày NGHỈ trong tháng (status='Nghỉ' || 'NKP', loại trừ paid leave công ty)
+//   - Tìm tất cả CN có status='Đi làm', sort theo ngày tăng dần
+//   - CN thứ 1..X = CN-Bù (X = số ngày nghỉ)
+//        → BT = min(rawHours, std), OT150 = 0, OT200 = 0
+//   - CN thứ X+1 trở đi = CN-OT200%
+//        → BT = 0, OT150 = 0, OT200 = rawHours
+//
+// Trả về NEW array attendance records với fields đã được điều chỉnh.
+// Original records không bị mutate.
+function classifyAttendanceWithSundayPay(
+  attendanceRecords: any[],
+  paidLeaveDates: string[],
+  positionType: string,
+): any[] {
+  const stdHoursPerDay = ['Kho', 'Quản lý kho', 'Thử việc', 'Thử việc kho', 'Phó kho'].includes(positionType) ? 8 : 7.5
+  
+  // Đếm số ngày nghỉ thật (loại trừ paid leave công ty)
+  const paidLeaveSet = new Set(paidLeaveDates)
+  let leaveCount = 0
+  for (const a of attendanceRecords) {
+    if (a.status === 'Nghỉ' || a.status === 'NKP' || a.status === 'Nghỉ không phép') {
+      if (!paidLeaveSet.has(a.date)) leaveCount++
+    }
+  }
+  
+  // Tìm tất cả CN có 'Đi làm', sort theo ngày
+  const sundayWorkDates = attendanceRecords
+    .filter(a => {
+      if (a.status !== 'Đi làm') return false
+      const d = new Date(a.date)
+      return d.getDay() === 0  // 0 = Sunday
+    })
+    .sort((a, b) => String(a.date).localeCompare(String(b.date)))
+    .map(a => a.date)
+  
+  // Phân loại từng CN
+  const sundayClassMap = new Map<string, 'CN-Bù' | 'CN-OT200%'>()
+  sundayWorkDates.forEach((date, idx) => {
+    const sundayIdx = idx + 1  // 1-indexed
+    if (sundayIdx <= leaveCount) {
+      sundayClassMap.set(date, 'CN-Bù')
+    } else {
+      sundayClassMap.set(date, 'CN-OT200%')
+    }
+  })
+  
+  // Apply classification → trả về new records
+  return attendanceRecords.map(a => {
+    const sundayType = sundayClassMap.get(a.date)
+    if (!sundayType) {
+      // Ngày thường — giữ nguyên BT/OT150/OT200 từ data input
+      return { ...a, sunday_type: null }
+    }
+    
+    const wr = Number(a.work_hours_regular || 0)
+    const ot150 = Number(a.ot_150_hours || 0)
+    const rawHours = wr + ot150  // tổng giờ làm thực tế (trước khi cap std)
+    
+    if (sundayType === 'CN-Bù') {
+      // CN-Bù: BT = min(rawHours, std), OT150 = 0, OT200 = 0
+      return {
+        ...a,
+        sunday_type: 'CN-Bù',
+        work_hours_regular: Math.min(rawHours, stdHoursPerDay),
+        ot_150_hours: 0,
+        ot_200_hours: 0,
+      }
+    } else {
+      // CN-OT200%: BT = 0, OT150 = 0, OT200 = toàn bộ giờ làm
+      return {
+        ...a,
+        sunday_type: 'CN-OT200%',
+        work_hours_regular: 0,
+        ot_150_hours: 0,
+        ot_200_hours: rawHours,
+      }
+    }
+  })
+}
+
+
   user: any,           // { id, name, dept_id }
   salaryConfig: any,   // { position_type, base_salary, has_bhxh, has_attendance_bonus, has_inspection_bonus, is_sale_manager }
   attendanceRecords: any[],  // attendance của NV trong tháng đó
@@ -24920,6 +25004,10 @@ function computeMonthlyPayroll(opts: {
 
   // 1. Tổng hợp attendance
   // v198.5: Tính per-day với cộng OT đã duyệt (overtime_requests đăng ký làm thêm tại nhà)
+  // v198.30.9: Apply classifyAttendanceWithSundayPay → records có CN-Bù/CN-OT200% được điều chỉnh
+  const classifiedRecords = classifyAttendanceWithSundayPay(
+    attendanceRecords, paidLeaveDates, sc.position_type
+  )
   let workHoursRegular = 0, ot150Hours = 0, ot200Hours = 0
   let otRegisteredHours = 0  // v198.5: tổng giờ OT đăng ký đã duyệt
   let totalWorkDays = 0, totalLeaveDays = 0, totalNkpDays = 0, lunchDays = 0
@@ -24935,7 +25023,7 @@ function computeMonthlyPayroll(opts: {
   // Track ngày OT đã được xử lý qua attendance loop (để xử lý ngày OT KHÔNG có attendance bên dưới)
   const attendanceDateSet = new Set<string>()
 
-  for (const a of attendanceRecords) {
+  for (const a of classifiedRecords) {
     attendanceDateSet.add(a.date)
     const punchDay = Number(a.work_hours_regular || 0) + Number(a.ot_150_hours || 0)
     const otRegDay = Number(approvedOTMap.get(a.date) || 0)
@@ -26029,7 +26117,8 @@ function PayrollModule({ user, allUsers, mobile }: any) {
             overtimeRequests={overtimeRequests}
             payrollConfig={payrollConfig}
             positionsList={positionsList}
-            positionWorkSchedule={positionWorkSchedule}/>
+            positionWorkSchedule={positionWorkSchedule}
+            paidLeaveDates={paidLeaveDates}/>
         ) : (
           <PayrollTabOverride user={user} mobile={mobile}
             usersWithSalary={usersWithSalary}
@@ -29080,7 +29169,7 @@ function computeDailyHoursActual(opts: {
 function PayrollTabAttendance({
   user, mobile, allUsers, usersWithSalary, month, year, setMonth, setYear,
   attendanceMonth, setAttendanceMonth, overtimeRequests, payrollConfig,
-  positionsList, positionWorkSchedule,
+  positionsList, positionWorkSchedule, paidLeaveDates,
 }: any) {
   const [subTab, setSubTab] = useState<'gio_cham_cong'|'diem_danh'>('gio_cham_cong')
   const [selectedUserId, setSelectedUserId] = useState<string>('')
@@ -29163,15 +29252,20 @@ function PayrollTabAttendance({
   }, [overtimeRequests, selectedUserId])
   
   // Map attendance theo date của user đang chọn
+  // v198.30.9: Apply classifyAttendanceWithSundayPay → CN-Bù vs CN-OT200%
   const attByDate = useMemo(() => {
     const m = new Map<string, any>()
     if (!selectedUserId) return m
-    for (const a of (attendanceMonth || [])) {
-      if (a.user_id !== selectedUserId) continue
+    const positionType = selectedUser?._salary?.position_type || ''
+    const userRecords = (attendanceMonth || []).filter((a: any) => a.user_id === selectedUserId)
+    const classified = classifyAttendanceWithSundayPay(
+      userRecords, paidLeaveDates || [], positionType
+    )
+    for (const a of classified) {
       m.set(a.date, a)
     }
     return m
-  }, [attendanceMonth, selectedUserId])
+  }, [attendanceMonth, selectedUserId, selectedUser, paidLeaveDates])
   
   // Generate list ngày trong tháng
   const daysInMonth = useMemo(() => {
