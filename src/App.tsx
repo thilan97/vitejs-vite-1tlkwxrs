@@ -24948,6 +24948,7 @@ function classifyAttendanceWithSundayPay(
 }
 
 
+function computeMonthlyPayroll(opts: {
   user: any,           // { id, name, dept_id }
   salaryConfig: any,   // { position_type, base_salary, has_bhxh, has_attendance_bonus, has_inspection_bonus, is_sale_manager }
   attendanceRecords: any[],  // attendance của NV trong tháng đó
