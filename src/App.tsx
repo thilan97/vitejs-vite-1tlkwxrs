@@ -117,7 +117,7 @@ const db = createClient(SUPABASE_URL, SUPABASE_KEY)
 // ⚠ TODO sau v198 (anh deploy thủ công):
 //   - Cập nhật edge function `kiotviet-sales-revenue` để auto sync luôn `kv_invoices` (anh paste code edge function cho em fix).
 //   - Setup pg_cron hoặc external cron (cron-job.org) để auto sync mỗi 1h. Hướng dẫn trong migration_62.sql.
-const APP_VERSION = '2026.05.05.v198.31.2'
+const APP_VERSION = '2026.05.05.v198.31.4'
 
 // ════════════════════════════════════════════════════════════════
 // v158: VersionBadge — Hiển thị APP_VERSION ở góc dưới phải
@@ -24230,10 +24230,11 @@ function PayrollImportModule({ user, allUsers, mobile, attendance, setAttendance
           import_source = 'machine'
           needs_qm_review = false
         } else if (!check_in && !check_out) {
-          // Máy không có data → cần QM xác nhận
-          needs_qm_review = true
+          // v198.31.4: Mặc định "Nghỉ" thay "Chờ xác nhận" cho ngày không có data
+          // Lý do: ngày không có giờ chấm công = NV không đi làm = Nghỉ (admin sẽ chỉnh thành 'Nghỉ phép' / 'NKP' / lễ nếu cần)
+          needs_qm_review = false
           import_source = 'missing'
-          status = 'Chờ xác nhận'
+          status = 'Nghỉ'
         } else {
           // Chỉ có 1 chiều (vào hoặc ra), thiếu → cần QM
           needs_qm_review = true
@@ -24880,16 +24881,25 @@ function classifyAttendanceWithSundayPay(
   attendanceRecords: any[],
   paidLeaveDates: string[],
   positionType: string,
+  specialImmunityDates?: string[],  // v198.31.4: ngày lễ có immunity (không tính vào leaveCount)
 ): any[] {
   const stdHoursPerDay = ['Kho', 'Quản lý kho', 'Thử việc', 'Thử việc kho', 'Phó kho'].includes(positionType) ? 8 : 7.5
   
-  // Đếm số ngày nghỉ thật (loại trừ paid leave công ty)
+  // v198.31.4: Đếm số ngày nghỉ THỰC TẾ (cần CN-Bù):
+  // - Treat 'Chờ xác nhận' = 'Nghỉ' (data legacy chưa migrate)
+  // - LOẠI TRỪ: CN (chỉ đếm ngày làm việc bị nghỉ), paid leave, ngày lễ immunity
   const paidLeaveSet = new Set(paidLeaveDates)
+  const immunitySet = new Set(specialImmunityDates || [])
   let leaveCount = 0
   for (const a of attendanceRecords) {
-    if (a.status === 'Nghỉ' || a.status === 'NKP' || a.status === 'Nghỉ không phép') {
-      if (!paidLeaveSet.has(a.date)) leaveCount++
-    }
+    const isLeaveStatus = a.status === 'Nghỉ' || a.status === 'NKP' || a.status === 'Nghỉ không phép' || a.status === 'Chờ xác nhận'
+    if (!isLeaveStatus) continue
+    // Chỉ tính ngày làm việc thường (không phải CN, không phải paid leave, không phải lễ immunity)
+    const dow = new Date(a.date).getDay()
+    if (dow === 0) continue                  // CN: không tính
+    if (paidLeaveSet.has(a.date)) continue   // Paid leave công ty: không tính
+    if (immunitySet.has(a.date)) continue    // Ngày lễ immunity: không tính
+    leaveCount++
   }
   
   // Tìm tất cả CN có 'Đi làm', sort theo ngày
@@ -25006,8 +25016,9 @@ function computeMonthlyPayroll(opts: {
   // 1. Tổng hợp attendance
   // v198.5: Tính per-day với cộng OT đã duyệt (overtime_requests đăng ký làm thêm tại nhà)
   // v198.30.9: Apply classifyAttendanceWithSundayPay → records có CN-Bù/CN-OT200% được điều chỉnh
+  // v198.31.4: Pass specialImmunityDates để loại trừ ngày lễ khỏi leaveCount
   const classifiedRecords = classifyAttendanceWithSundayPay(
-    attendanceRecords, paidLeaveDates, sc.position_type
+    attendanceRecords, paidLeaveDates, sc.position_type, specialImmunityDates
   )
   let workHoursRegular = 0, ot150Hours = 0, ot200Hours = 0
   let otRegisteredHours = 0  // v198.5: tổng giờ OT đăng ký đã duyệt
@@ -26164,7 +26175,8 @@ function PayrollModule({ user, allUsers, mobile }: any) {
             payrollConfig={payrollConfig}
             positionsList={positionsList}
             positionWorkSchedule={positionWorkSchedule}
-            paidLeaveDates={paidLeaveDates}/>
+            paidLeaveDates={paidLeaveDates}
+            specialDays={specialDays}/>
         ) : (
           <PayrollTabOverride user={user} mobile={mobile}
             usersWithSalary={usersWithSalary}
@@ -29215,7 +29227,7 @@ function computeDailyHoursActual(opts: {
 function PayrollTabAttendance({
   user, mobile, allUsers, usersWithSalary, month, year, setMonth, setYear,
   attendanceMonth, setAttendanceMonth, overtimeRequests, payrollConfig,
-  positionsList, positionWorkSchedule, paidLeaveDates,
+  positionsList, positionWorkSchedule, paidLeaveDates, specialDays,
 }: any) {
   const [subTab, setSubTab] = useState<'gio_cham_cong'|'diem_danh'>('gio_cham_cong')
   const [selectedUserId, setSelectedUserId] = useState<string>('')
@@ -29299,19 +29311,23 @@ function PayrollTabAttendance({
   
   // Map attendance theo date của user đang chọn
   // v198.30.9: Apply classifyAttendanceWithSundayPay → CN-Bù vs CN-OT200%
+  // v198.31.4: Pass specialImmunityDates để loại trừ ngày lễ khỏi leaveCount
   const attByDate = useMemo(() => {
     const m = new Map<string, any>()
     if (!selectedUserId) return m
     const positionType = selectedUser?._salary?.position_type || ''
     const userRecords = (attendanceMonth || []).filter((a: any) => a.user_id === selectedUserId)
+    const immunityDates = (specialDays || [])
+      .filter((sd: any) => sd?.attendance_immunity)
+      .map((sd: any) => sd.date)
     const classified = classifyAttendanceWithSundayPay(
-      userRecords, paidLeaveDates || [], positionType
+      userRecords, paidLeaveDates || [], positionType, immunityDates
     )
     for (const a of classified) {
       m.set(a.date, a)
     }
     return m
-  }, [attendanceMonth, selectedUserId, selectedUser, paidLeaveDates])
+  }, [attendanceMonth, selectedUserId, selectedUser, paidLeaveDates, specialDays])
   
   // Generate list ngày trong tháng
   const daysInMonth = useMemo(() => {
@@ -29394,7 +29410,7 @@ function PayrollTabAttendance({
   
   // Stats: tổng giờ làm thực tế, tổng OT đăng ký, tổng tăng ca
   const stats = useMemo(() => {
-    let totalPunch = 0, totalOTReg = 0, totalBase = 0, totalOT = 0, daysWithPunch = 0
+    let totalPunch = 0, totalOTReg = 0, totalBase = 0, totalOT = 0, totalOT200 = 0, daysWithPunch = 0
     for (const d of daysInMonth) {
       const att = attByDate.get(d.date)
       const otApproved = otByDate.get(d.date) || 0
@@ -29404,8 +29420,9 @@ function PayrollTabAttendance({
       totalOTReg += c.otRegistered
       totalBase += c.baseHours
       totalOT += c.overtimeHours
+      totalOT200 += Number(att?.ot_200_hours || 0)  // v198.31.3: từ classified records
     }
-    return { totalPunch, totalOTReg, totalBase, totalOT, daysWithPunch }
+    return { totalPunch, totalOTReg, totalBase, totalOT, totalOT200, daysWithPunch }
   }, [daysInMonth, attByDate, otByDate, stdHoursPerDay])
   
   const fmtHours = (n: number) => Number(n || 0).toFixed(2).replace(/\.00$/, '').replace(/(\.\d)0$/, '$1')
@@ -29591,8 +29608,8 @@ function PayrollTabAttendance({
                           {c.otRegistered > 0 ? `+${fmtHours(c.otRegistered)}` : '—'}
                         </td>
                         {/* Trạng thái */}
-                        <td style={{ ..._payrollAttTdStyle, textAlign:'center', fontWeight:600, color: att?.sunday_type === 'CN-OT200%' ? '#C62828' : att?.sunday_type === 'CN-Bù' ? T.purple : att?.status === 'Đi làm' ? T.green : att?.status === 'Nghỉ' ? T.amber : att?.status === 'NKP' || att?.status === 'Nghỉ không phép' ? T.red : T.light }}>
-                          {att?.sunday_type || att?.status || (d.isWeekend ? 'CN' : '—')}
+                        <td style={{ ..._payrollAttTdStyle, textAlign:'center', fontWeight:600, color: att?.sunday_type === 'CN-OT200%' ? '#C62828' : att?.sunday_type === 'CN-Bù' ? T.purple : att?.status === 'Đi làm' ? T.green : (att?.status === 'Nghỉ' || att?.status === 'Chờ xác nhận') ? T.amber : att?.status === 'NKP' || att?.status === 'Nghỉ không phép' ? T.red : T.light }}>
+                          {att?.sunday_type || (att?.status === 'Chờ xác nhận' ? 'Nghỉ' : att?.status) || (d.isWeekend ? 'CN' : '—')}
                         </td>
                         {/* Ăn trưa */}
                         <td style={{ ..._payrollAttTdStyle, textAlign:'center', color: att?.lunch_eligible ? T.green : T.light }}>
@@ -29608,10 +29625,7 @@ function PayrollTabAttendance({
                     <td style={{ ..._payrollAttTdStyle, textAlign:'right', fontVariantNumeric:'tabular-nums', fontWeight:700, background:'#E8F5E9', color:'#2E7D32' }}>{fmtHours(stats.totalBase)}h</td>
                     <td style={{ ..._payrollAttTdStyle, textAlign:'right', fontVariantNumeric:'tabular-nums', fontWeight:700, background:'#FFF3E0', color:'#F57C00' }}>{fmtHours(stats.totalOT)}h</td>
                     <td style={{ ..._payrollAttTdStyle, textAlign:'right', fontVariantNumeric:'tabular-nums', fontWeight:700, background:'#FFEBEE', color:'#C62828' }}>
-                      {(() => {
-                        const totalOT200 = (attendanceMonth || []).filter((a:any) => a.user_id === selectedUserId).reduce((s:number, a:any) => s + Number(a.ot_200_hours || 0), 0)
-                        return totalOT200 > 0 ? `${fmtHours(totalOT200)}h` : '0h'
-                      })()}
+                      {stats.totalOT200 > 0 ? `${fmtHours(stats.totalOT200)}h` : '0h'}
                     </td>
                     <td style={{ ..._payrollAttTdStyle, textAlign:'right', fontVariantNumeric:'tabular-nums', fontWeight:700, color:T.purple }}>{fmtHours(stats.totalOTReg)}h</td>
                     <td colSpan={2}></td>
@@ -29944,8 +29958,12 @@ function PayrollDetailModal({ user: nv, payroll, salaryConfig, otherIncomes, sho
                     const isKhoForOt = ['Kho', 'Quản lý kho', 'Thử việc'].includes(salaryConfig?.position_type)
                     const stdHoursForOt = isKhoForOt ? 8 : 7.5
                     // v198.31.1: Apply classifyAttendanceWithSundayPay → CN-Bù vs CN-OT200% chuẩn xác
+                    // v198.31.4: Pass specialImmunityDates để loại trừ ngày lễ khỏi leaveCount
+                    const _immunityDates = (specialDays || [])
+                      .filter((sd: any) => sd?.attendance_immunity)
+                      .map((sd: any) => sd.date)
                     const classifiedMonth = classifyAttendanceWithSundayPay(
-                      attendanceMonth || [], paidLeaveDates || [], salaryConfig?.position_type || ''
+                      attendanceMonth || [], paidLeaveDates || [], salaryConfig?.position_type || '', _immunityDates
                     )
                     const classifiedByDate = new Map<string, any>()
                     for (const a of classifiedMonth) classifiedByDate.set(a.date, a)
