@@ -117,7 +117,7 @@ const db = createClient(SUPABASE_URL, SUPABASE_KEY)
 // ⚠ TODO sau v198 (anh deploy thủ công):
 //   - Cập nhật edge function `kiotviet-sales-revenue` để auto sync luôn `kv_invoices` (anh paste code edge function cho em fix).
 //   - Setup pg_cron hoặc external cron (cron-job.org) để auto sync mỗi 1h. Hướng dẫn trong migration_62.sql.
-const APP_VERSION = '2026.05.05.v198.31.13'
+const APP_VERSION = '2026.05.05.v198.31.15'
 
 // ════════════════════════════════════════════════════════════════
 // v158: VersionBadge — Hiển thị APP_VERSION ở góc dưới phải
@@ -31647,18 +31647,44 @@ function OrderLookupTab({ user, allUsers, mobile }: any) {
   }
 
   // Fetch data — bỏ silent refresh phức tạp, dùng manual refresh button thay thế
+  // v198.31.15: ROOT CAUSE FIX
+  // - Bug cũ: .limit(2000) bị Supabase cap về 1000 → đơn cũ trong range bị cut
+  // - Fix: Khi có search query → dùng DB-side ILIKE 4 fields, bỏ cutoff date
+  //        → tìm được mọi đơn trong toàn DB không phụ thuộc range
+  // - Khi KHÔNG search → giữ cũ (load theo range cho gợi ý + filter)
   const fetchOrders = async () => {
     setLoading(true)
     try {
-      const fromISO = new Date(dateFrom + 'T00:00:00').toISOString()
-      const toISO   = new Date(dateTo   + 'T23:59:59').toISOString()
-      const { data } = await db.from('packing_workflow').select('*')
-        .neq('is_deleted', true)
-        .gte('purchase_date', fromISO)
-        .lte('purchase_date', toISO)
-        .order('purchase_date', { ascending: false })
-        .limit(2000)
-      setAllOrders(data || [])
+      const hasSearch = !!(debouncedQ || '').trim()
+
+      if (hasSearch) {
+        // ── SEARCH MODE: DB-side ILIKE (bypass range, bypass cap) ──
+        const term = debouncedQ.trim().replace(/[%_,()]/g, ' ')
+        const orFilter = [
+          `order_code.ilike.%${term}%`,
+          `linked_to_order_code.ilike.%${term}%`,
+          `customer_name.ilike.%${term}%`,
+          `sold_by_name.ilike.%${term}%`,
+        ].join(',')
+        const { data } = await db.from('packing_workflow').select('*')
+          .neq('is_deleted', true)
+          .or(orFilter)
+          .order('purchase_date', { ascending: false })
+          .limit(500)
+        setAllOrders(data || [])
+      } else {
+        // ── DEFAULT MODE: load theo range để build gợi ý ──
+        // v198.31.14: Dùng explicit timezone +07:00 (giờ VN) cho purchase_date range
+        const fromISO = dateFrom + 'T00:00:00+07:00'
+        const toISO   = dateTo   + 'T23:59:59+07:00'
+        const { data } = await db.from('packing_workflow').select('*')
+          .neq('is_deleted', true)
+          .gte('purchase_date', fromISO)
+          .lte('purchase_date', toISO)
+          .order('purchase_date', { ascending: false })
+          .limit(1000)
+        setAllOrders(data || [])
+      }
     } catch (e) {
       console.error('[OrderLookup] fetch error:', e)
     } finally {
@@ -31666,7 +31692,8 @@ function OrderLookupTab({ user, allUsers, mobile }: any) {
     }
   }
 
-  useEffect(() => { fetchOrders() }, [dateFrom, dateTo])
+  // v198.31.15: Re-fetch khi search query hoặc range thay đổi
+  useEffect(() => { fetchOrders() }, [dateFrom, dateTo, debouncedQ])
 
   // ═══ Gợi ý (dropdown) ═══
   // Build list unique KH + SP từ allOrders để gợi ý
@@ -31793,6 +31820,38 @@ function OrderLookupTab({ user, allUsers, mobile }: any) {
     setDateTo(todayStr())
   }
 
+  // v198.31.14: Helpers cho DD/MM/YYYY input (VN convention)
+  const isoToVN = (iso: string): string => {
+    if (!iso) return ''
+    const [y, m, d] = iso.split('-')
+    return `${d}/${m}/${y}`
+  }
+  const vnToISO = (vn: string): string | null => {
+    const m = vn.trim().match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})$/)
+    if (!m) return null
+    const day = m[1].padStart(2, '0')
+    const mon = m[2].padStart(2, '0')
+    const year = m[3]
+    // Validate
+    const dayNum = parseInt(day, 10), monNum = parseInt(mon, 10)
+    if (dayNum < 1 || dayNum > 31 || monNum < 1 || monNum > 12) return null
+    return `${year}-${mon}-${day}`
+  }
+  const [dateFromVN, setDateFromVN] = useState(isoToVN(dateFrom))
+  const [dateToVN,   setDateToVN]   = useState(isoToVN(dateTo))
+  // Sync VN inputs khi dateFrom/dateTo thay đổi từ preset
+  useEffect(() => { setDateFromVN(isoToVN(dateFrom)) }, [dateFrom])
+  useEffect(() => { setDateToVN(isoToVN(dateTo)) }, [dateTo])
+
+  // Số ngày range hiện tại (để auto-expand banner)
+  const currentRangeDays = useMemo(() => {
+    try {
+      const f = new Date(dateFrom + 'T00:00:00')
+      const t = new Date(dateTo + 'T00:00:00')
+      return Math.max(1, Math.round((t.getTime() - f.getTime()) / 86400000) + 1)
+    } catch { return 0 }
+  }, [dateFrom, dateTo])
+
   return (
     <div>
       {/* Filters */}
@@ -31869,38 +31928,52 @@ function OrderLookupTab({ user, allUsers, mobile }: any) {
         <div style={{ display:'flex', gap:8, flexWrap:'wrap', alignItems:'flex-end' }}>
           <div>
             <label style={{ fontSize:10, color:T.med, fontWeight:600, display:'block', marginBottom:3 }}>
-              Từ ngày
+              Từ ngày <span style={{ color:T.light, fontWeight:400 }}>(dd/mm/yyyy)</span>
             </label>
-            <input type="date" value={dateFrom}
-              onChange={e => { setDateFrom(e.target.value)  }}
-              max={dateTo}
+            <input type="text" value={dateFromVN} placeholder="dd/mm/yyyy"
+              onChange={e => setDateFromVN(e.target.value)}
+              onBlur={() => {
+                const iso = vnToISO(dateFromVN)
+                if (iso) setDateFrom(iso)
+                else setDateFromVN(isoToVN(dateFrom))  // revert nếu nhập sai
+              }}
               style={{ padding:'6px 10px', border:`1px solid ${T.border}`, borderRadius:6,
-                fontSize:11, fontFamily:"inherit", background:"#fff", color:T.dark, outline:"none" }}/>
+                fontSize:11, fontFamily:"inherit", background:"#fff", color:T.dark, outline:"none",
+                width:110 }}/>
           </div>
           <div>
             <label style={{ fontSize:10, color:T.med, fontWeight:600, display:'block', marginBottom:3 }}>
-              Đến ngày
+              Đến ngày <span style={{ color:T.light, fontWeight:400 }}>(dd/mm/yyyy)</span>
             </label>
-            <input type="date" value={dateTo}
-              onChange={e => { setDateTo(e.target.value)  }}
-              min={dateFrom} max={todayStr()}
+            <input type="text" value={dateToVN} placeholder="dd/mm/yyyy"
+              onChange={e => setDateToVN(e.target.value)}
+              onBlur={() => {
+                const iso = vnToISO(dateToVN)
+                if (iso) setDateTo(iso)
+                else setDateToVN(isoToVN(dateTo))
+              }}
               style={{ padding:'6px 10px', border:`1px solid ${T.border}`, borderRadius:6,
-                fontSize:11, fontFamily:"inherit", background:"#fff", color:T.dark, outline:"none" }}/>
+                fontSize:11, fontFamily:"inherit", background:"#fff", color:T.dark, outline:"none",
+                width:110 }}/>
           </div>
           <div>
             <label style={{ fontSize:10, color:T.med, fontWeight:600, display:'block', marginBottom:3 }}>
               Nhanh
             </label>
             <div style={{ display:'flex', gap:4 }}>
-              {[3, 7, 15, 30].map(d => (
-                <button key={d} onClick={() => { setPreset(d) }}
-                  style={{ padding:'6px 9px', borderRadius:6,
-                    border:`1px solid ${T.border}`, background:'#fff',
-                    color:T.med, cursor:'pointer', fontFamily:'inherit',
-                    fontSize:10, fontWeight:600 }}>
-                  {d}N
-                </button>
-              ))}
+              {[3, 7, 15, 30, 90].map(d => {
+                const isActive = currentRangeDays === d + 1 || currentRangeDays === d
+                return (
+                  <button key={d} onClick={() => { setPreset(d) }}
+                    style={{ padding:'6px 9px', borderRadius:6,
+                      border:`1px solid ${isActive ? T.gold : T.border}`,
+                      background: isActive ? T.goldBg : '#fff',
+                      color: isActive ? T.goldText : T.med, cursor:'pointer', fontFamily:'inherit',
+                      fontSize:10, fontWeight:600 }}>
+                    {d}N
+                  </button>
+                )
+              })}
             </div>
           </div>
           <div>
@@ -31944,7 +32017,7 @@ function OrderLookupTab({ user, allUsers, mobile }: any) {
         <>
           <div style={{ padding:'8px 12px', marginBottom:10, background:T.goldBg,
             borderRadius:6, fontSize:12, color:T.goldText, fontWeight:600 }}>
-            Tìm thấy <b>{filtered.length}</b> đơn có chứa "{searchQ}" từ {new Date(dateFrom).toLocaleDateString('vi-VN')} đến {new Date(dateTo).toLocaleDateString('vi-VN')}
+            Tìm thấy <b>{filtered.length}</b> đơn có chứa "{searchQ}" <span style={{ color:T.light, fontWeight:400 }}>(quét toàn bộ DB)</span>
           </div>
 
           <div style={{ display:'flex', flexDirection:'column', gap:8 }}>
@@ -32091,8 +32164,14 @@ function OrderLookupTab({ user, allUsers, mobile }: any) {
           </div>
 
           {filtered.length === 0 && (
-            <div style={{ padding:'40px 20px', textAlign:'center', color:T.light, fontSize:13 }}>
-              Không tìm thấy đơn nào chứa "{searchQ}" từ {new Date(dateFrom).toLocaleDateString('vi-VN')} đến {new Date(dateTo).toLocaleDateString('vi-VN')}
+            <div style={{ padding:'24px 20px', textAlign:'center' }}>
+              <div style={{ color:T.med, fontSize:13, marginBottom:8 }}>
+                Không tìm thấy đơn nào chứa "<b>{searchQ}</b>"
+              </div>
+              <div style={{ fontSize:11, color:T.light }}>
+                💡 Search đã quét toàn bộ DB (mã đơn / KH / Sale).
+                Thử từ khoá khác hoặc kiểm tra chính tả.
+              </div>
             </div>
           )}
         </>
