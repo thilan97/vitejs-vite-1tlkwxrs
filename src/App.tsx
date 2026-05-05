@@ -117,7 +117,7 @@ const db = createClient(SUPABASE_URL, SUPABASE_KEY)
 // ⚠ TODO sau v198 (anh deploy thủ công):
 //   - Cập nhật edge function `kiotviet-sales-revenue` để auto sync luôn `kv_invoices` (anh paste code edge function cho em fix).
 //   - Setup pg_cron hoặc external cron (cron-job.org) để auto sync mỗi 1h. Hướng dẫn trong migration_62.sql.
-const APP_VERSION = '2026.05.05.v198.31.15'
+const APP_VERSION = '2026.05.05.v198.31.16'
 
 // ════════════════════════════════════════════════════════════════
 // v158: VersionBadge — Hiển thị APP_VERSION ở góc dưới phải
@@ -213,6 +213,59 @@ async function deleteWithAudit(opts: {
     note: opts.note,
   })
   return { error: null, snapshot }
+}
+
+// v198.31.16: Helper tính order_value cho GHTK
+// - Nếu đơn có total_amount > 0 → dùng (× 1000 vì KV currency convention)
+// - Nếu = 0 (đơn tặng) → tính tổng giá vốn từ products.base_price × items[].qty
+// - Nếu giá vốn cũng = 0 hoặc không có items → fallback 500.000đ
+// - Cap tối đa 3.000.000đ (giới hạn GHTK)
+async function computeGhtkOrderValue(ord: any): Promise<{ value: number, source: string, detail?: string }> {
+  const MAX_VALUE = 3000000
+  const FALLBACK_VALUE = 500000
+
+  // Step 1: Có total_amount > 0 → dùng như cũ
+  const kvTotal = Number(ord.total_amount || 0) * 1000
+  if (kvTotal > 0) {
+    return { value: Math.min(kvTotal, MAX_VALUE), source: 'kv_total' }
+  }
+
+  // Step 2: Đơn 0đ — tính tổng giá vốn từ products
+  const items = Array.isArray(ord.items) ? ord.items : []
+  const codes = items.map((it: any) => it?.code).filter(Boolean)
+  if (codes.length === 0) {
+    return { value: FALLBACK_VALUE, source: 'fallback_no_items' }
+  }
+
+  try {
+    const { data: prods } = await db.from('products')
+      .select('code, base_price')
+      .in('code', codes)
+    const costMap = new Map<string, number>()
+    ;(prods || []).forEach((p: any) => {
+      costMap.set(p.code, Number(p.base_price || 0))
+    })
+
+    // Tính tổng cost — base_price chia 1000 (currency convention) → × 1000 để ra VND
+    const totalCost = items.reduce((sum: number, it: any) => {
+      const qty = Number(it.qty || it.quantity || 1)
+      const cost = costMap.get(it.code) || 0
+      return sum + qty * cost * 1000
+    }, 0)
+
+    if (totalCost <= 0) {
+      return { value: FALLBACK_VALUE, source: 'fallback_zero_cost', detail: `${codes.length} SP nhưng tổng giá vốn = 0` }
+    }
+
+    return {
+      value: Math.min(totalCost, MAX_VALUE),
+      source: 'cost_price',
+      detail: `${codes.length} SP × giá vốn = ${totalCost.toLocaleString('vi-VN')}đ`,
+    }
+  } catch (e) {
+    console.error('[computeGhtkOrderValue] error:', e)
+    return { value: FALLBACK_VALUE, source: 'fallback_error' }
+  }
 }
 
 // ════════════════════════════════════════════════════════════════
@@ -41904,7 +41957,19 @@ function GhtkPackingSection({ ord, user, mobile }: any) {
     try {
       await saveBoxes()  // lưu cân trước
 
-      const totalAmountVnd = Math.min(Number(ord.total_amount || 0) * 1000, 3000000)
+      // v198.31.16: Đơn 0đ → dùng giá vốn (fallback 500k) thay vì 0 (GHTK reject)
+      const orderValueInfo = await computeGhtkOrderValue(ord)
+      const totalAmountVnd = orderValueInfo.value
+      if (orderValueInfo.source !== 'kv_total') {
+        const sourceLabel: any = {
+          cost_price: '📦 giá vốn SP',
+          fallback_zero_cost: '⚠️ giá vốn = 0, fallback 500k',
+          fallback_no_items: '⚠️ không có items, fallback 500k',
+          fallback_error: '⚠️ lỗi load giá vốn, fallback 500k',
+        }
+        toast.info(`Đơn 0đ — GHTK dùng ${totalAmountVnd.toLocaleString('vi-VN')}đ (${sourceLabel[orderValueInfo.source] || orderValueInfo.source})`)
+        console.log(`[GHTK] Đơn ${ord.order_code} 0đ — dùng ${totalAmountVnd.toLocaleString('vi-VN')}đ (${orderValueInfo.source}${orderValueInfo.detail ? ' — ' + orderValueInfo.detail : ''})`)
+      }
 
       const payload = {
         order_code: ord.order_code,
@@ -42317,7 +42382,19 @@ function GhtkCreateOrderModal({ order: ord, user, mobile, onClose, onCreated }: 
   const handleCreate = async () => {
     setCreating(true); setResult(null)
     try {
-      const totalAmountVnd = Math.min(Number(ord.total_amount || 0) * 1000, 3000000)
+      // v198.31.16: Đơn 0đ → dùng giá vốn (fallback 500k) thay vì 0 (GHTK reject)
+      const orderValueInfo = await computeGhtkOrderValue(ord)
+      const totalAmountVnd = orderValueInfo.value
+      if (orderValueInfo.source !== 'kv_total') {
+        const sourceLabel: any = {
+          cost_price: '📦 giá vốn SP',
+          fallback_zero_cost: '⚠️ giá vốn = 0, fallback 500k',
+          fallback_no_items: '⚠️ không có items, fallback 500k',
+          fallback_error: '⚠️ lỗi load giá vốn, fallback 500k',
+        }
+        toast.info(`Đơn 0đ — GHTK dùng ${totalAmountVnd.toLocaleString('vi-VN')}đ (${sourceLabel[orderValueInfo.source] || orderValueInfo.source})`)
+        console.log(`[GHTK Bulk] Đơn ${ord.order_code} 0đ — dùng ${totalAmountVnd.toLocaleString('vi-VN')}đ (${orderValueInfo.source}${orderValueInfo.detail ? ' — ' + orderValueInfo.detail : ''})`)
+      }
       const payload = {
         order_code: ord.order_code,
         customer_info: {
