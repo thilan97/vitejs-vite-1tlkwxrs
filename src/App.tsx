@@ -117,7 +117,7 @@ const db = createClient(SUPABASE_URL, SUPABASE_KEY)
 // ⚠ TODO sau v198 (anh deploy thủ công):
 //   - Cập nhật edge function `kiotviet-sales-revenue` để auto sync luôn `kv_invoices` (anh paste code edge function cho em fix).
 //   - Setup pg_cron hoặc external cron (cron-job.org) để auto sync mỗi 1h. Hướng dẫn trong migration_62.sql.
-const APP_VERSION = '2026.05.05.v198.31.9'
+const APP_VERSION = '2026.05.05.v198.31.10'
 
 // ════════════════════════════════════════════════════════════════
 // v158: VersionBadge — Hiển thị APP_VERSION ở góc dưới phải
@@ -21035,12 +21035,13 @@ function PackingModule({ user, allUsers, mobile, products }: any) {
     const { data: pendingData } = await db.from('packing_workflow').select('*')
       .neq('is_deleted', true).eq('status', 'packing')
       .order('picked_at', { ascending: true })
-    const threeDaysAgo = new Date(Date.now() - 3*86400000).toISOString()
+    // v198.31.10: Mở rộng query done 3d → 30d để search tìm được đơn cũ hơn
+    const thirtyDaysAgo = new Date(Date.now() - 30*86400000).toISOString()
     const { data: doneData } = await db.from('packing_workflow').select('*')
       .neq('is_deleted', true).eq('status', 'done')
-      .gte('packed_at', threeDaysAgo)
+      .gte('packed_at', thirtyDaysAgo)
       .order('packed_at', { ascending: false })
-      .limit(500)
+      .limit(2000)
     const { data: syncStatus } = await db.from('kv_sync_status')
       .select('last_success_at').eq('id', 'picking').maybeSingle()
     setOrders([...(pendingData||[]), ...(doneData||[])])
@@ -21105,9 +21106,12 @@ function PackingModule({ user, allUsers, mobile, products }: any) {
   const isSearching = !!(searchQ || '').trim()
   const visibleOrders = isSearching ? orders : orders.filter((o: any) => !o.is_supplementary)
   const pendingOrds = filterByQ(visibleOrders.filter((o: any) => o.status === 'packing'))
-  const doneTodayOrds = filterByQ(visibleOrders.filter((o: any) =>
-    o.status === 'done' && o.packed_at && new Date(o.packed_at) >= todayStart
-  ))
+  // v198.31.10: Khi search, hiện đơn done trong toàn bộ 30 ngày (không chỉ today)
+  const doneTodayOrds = filterByQ(visibleOrders.filter((o: any) => {
+    if (o.status !== 'done' || !o.packed_at) return false
+    if (isSearching) return true   // search → match trong toàn bộ pool 30 ngày
+    return new Date(o.packed_at) >= todayStart  // mặc định chỉ today
+  }))
 
   const finishPacking = async (orderCode: string) => {
     const ord = orders.find((o: any) => o.order_code === orderCode)
@@ -21585,7 +21589,9 @@ function PackingModule({ user, allUsers, mobile, products }: any) {
       <div style={{ display:'flex', gap:6, marginBottom:14, flexWrap:'wrap' }}>
         {[
           { id:'pending',    label:`📦 Chờ đóng${pendingOrds.length?` (${pendingOrds.length})`:''}` },
-          { id:'done_today', label:`✅ Xong hôm nay${doneTodayOrds.length?` (${doneTodayOrds.length})`:''}` },
+          { id:'done_today', label: isSearching
+              ? `✅ Đã xong (30 ngày)${doneTodayOrds.length?` (${doneTodayOrds.length})`:''}`
+              : `✅ Xong hôm nay${doneTodayOrds.length?` (${doneTodayOrds.length})`:''}` },
           { id:'lookup',     label:`🔍 Tra cứu đơn` },
         ].map((t: any) => (
           <button key={t.id} onClick={() => { setTab(t.id as any); setSelectedCode(null) }}
@@ -34202,6 +34208,7 @@ function SaleOrderTrackingModule({ user, allUsers, mobile }: any) {
   const [orders, setOrders] = useState<any[]>([])
   const [loading, setLoading] = useState(true)
   const [searchQ, setSearchQ] = useState('')
+  const [searchQDeb, setSearchQDeb] = useState('')  // v198.31.10: debounced
   const [statusFilter, setStatusFilter] = useState<string>('active')
   const [dayRange, setDayRange] = useState(7)
   const [expanded, setExpanded] = useState<string|null>(null)
@@ -34225,12 +34232,24 @@ function SaleOrderTrackingModule({ user, allUsers, mobile }: any) {
 
   const fetchOrders = async () => {
     setLoading(true)
-    const fromDate = new Date(Date.now() - dayRange * 86400000).toISOString()
+    // v198.31.10: Khi có search, bỏ cutoff date + dùng DB-side ILIKE để tìm được đơn cũ
+    // (đơn DH009158 có purchase_date xa nhưng packed_at gần đây → cutoff làm miss)
+    const hasSearch = !!(searchQDeb || '').trim()
     let query = db.from('packing_workflow').select('*')
       .neq('is_deleted', true)
-      .gte('purchase_date', fromDate)
       .order('purchase_date', { ascending: false })
-      .limit(1000)
+      .limit(hasSearch ? 200 : 1000)
+
+    if (hasSearch) {
+      // Search mode: bỏ cutoff date, query DB-side ILIKE 3 field
+      // Escape % và _ để tránh injection wildcards
+      const term = searchQDeb.trim().replace(/[%_,()]/g, ' ')
+      query = query.or(`order_code.ilike.%${term}%,customer_name.ilike.%${term}%,sold_by_name.ilike.%${term}%`)
+    } else {
+      // Default mode: cutoff theo dayRange (chỉ load đơn gần đây cho list mặc định)
+      const fromDate = new Date(Date.now() - dayRange * 86400000).toISOString()
+      query = query.gte('purchase_date', fromDate)
+    }
 
     // Sale chỉ thấy đơn của mình
     // Kho/QM/Admin thấy tất cả
@@ -34268,7 +34287,13 @@ function SaleOrderTrackingModule({ user, allUsers, mobile }: any) {
     setLoading(false)
   }
 
-  useEffect(() => { fetchOrders() }, [dayRange])
+  useEffect(() => { fetchOrders() }, [dayRange, searchQDeb])
+
+  // v198.31.10: Debounce search 300ms
+  useEffect(() => {
+    const t = setTimeout(() => setSearchQDeb(searchQ), 300)
+    return () => clearTimeout(t)
+  }, [searchQ])
 
   const getName = (id: string) => allUsers.find((u: any) => u.id === id)?.name || '?'
   
