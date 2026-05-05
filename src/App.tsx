@@ -117,7 +117,7 @@ const db = createClient(SUPABASE_URL, SUPABASE_KEY)
 // ⚠ TODO sau v198 (anh deploy thủ công):
 //   - Cập nhật edge function `kiotviet-sales-revenue` để auto sync luôn `kv_invoices` (anh paste code edge function cho em fix).
 //   - Setup pg_cron hoặc external cron (cron-job.org) để auto sync mỗi 1h. Hướng dẫn trong migration_62.sql.
-const APP_VERSION = '2026.05.05.v198.31.7'
+const APP_VERSION = '2026.05.05.v198.31.8'
 
 // ════════════════════════════════════════════════════════════════
 // v158: VersionBadge — Hiển thị APP_VERSION ở góc dưới phải
@@ -1306,9 +1306,10 @@ const POSITION_GROUP_MAP_GLOBAL: Record<string, { groupName: string, order: numb
 }
 
 // Helper: trả về groupName của 1 user
-// Ưu tiên: u._salary.position_type → u.position_name → u.dept_name → u.dept_id
+// v198.31.8: Ưu tiên _effectivePositionType (vị trí của tháng đang xem trong module Tính lương)
+// Fallback: _salary.position_type → position_name → dept
 function getUserGroupName(u: any): string {
-  const pt = u?._salary?.position_type || u?.position_name || ''
+  const pt = u?._effectivePositionType || u?._salary?.position_type || u?.position_name || ''
   if (pt && POSITION_GROUP_MAP_GLOBAL[pt]) return POSITION_GROUP_MAP_GLOBAL[pt].groupName
   // Fallback theo dept_id (cho dropdown chỗ chưa join salary)
   const dept = u?.dept_id || ''
@@ -1342,6 +1343,44 @@ function groupUsersByPosition(users: any[]): { groupName: string, users: any[] }
 // v198.31.7: Sel upgrade — thêm prop `optgroups` để render <optgroup>
 // Backward compat: vẫn dùng `options` flat được như cũ.
 // optgroups: [{ label, options: [{value, label}] }] — render optgroup trong select
+// v198.31.8: Helper get position của user TẠI 1 tháng cụ thể
+// Dùng để tính lương đúng vị trí khi NV chuyển vị trí qua các tháng.
+// Cách dùng:
+//   const pos = getUserPositionAtMonth(userId, 4, 2026, history, positionsList, fallbackUser)
+// Trả về object position từ positionsList, hoặc null nếu không tìm thấy.
+//
+// Logic match:
+//   1. Tìm record trong history có (effective_from <= cuối_tháng) AND (effective_to IS NULL OR effective_to >= đầu_tháng)
+//   2. Nếu nhiều record overlap → chọn record có effective_from gần nhất (mới nhất)
+//   3. Nếu KHÔNG có record → fallback về fallbackUser.position_id (vị trí hiện tại)
+function getUserPositionAtMonth(
+  userId: string, month: number, year: number,
+  history: any[], positions: any[], fallbackUser?: any
+): any {
+  if (!userId) return null
+  const monthStart = new Date(year, month - 1, 1)
+  const monthEnd   = new Date(year, month, 0)  // ngày cuối tháng
+
+  const userRecords = (history || []).filter((h: any) => h.user_id === userId)
+  // Sort theo effective_from DESC để khớp record mới nhất khi overlap
+  const sorted = userRecords.slice().sort((a: any, b: any) =>
+    String(b.effective_from || '').localeCompare(String(a.effective_from || '')))
+
+  for (const h of sorted) {
+    const efFrom = h.effective_from ? new Date(h.effective_from + 'T00:00:00') : null
+    const efTo   = h.effective_to   ? new Date(h.effective_to   + 'T23:59:59') : null
+    if (efFrom && efFrom > monthEnd)   continue  // record bắt đầu sau khi tháng kết thúc
+    if (efTo   && efTo   < monthStart) continue  // record kết thúc trước khi tháng bắt đầu
+    return positions.find((p: any) => p.id === h.position_id) || null
+  }
+
+  // Fallback: dùng position_id hiện tại trên user
+  if (fallbackUser?.position_id) {
+    return positions.find((p: any) => p.id === fallbackUser.position_id) || null
+  }
+  return null
+}
+
 const Sel = ({ label, value, onChange, options, optgroups, disabled }: any) => {
   const [focused, setFocused] = useState(false)
   return (
@@ -25723,6 +25762,7 @@ function PayrollModule({ user, allUsers, mobile }: any) {
   const [overrides, setOverrides] = useState<any[]>([])  // payroll_overrides của tháng này
   const [positionsList, setPositionsList] = useState<any[]>([])  // v192: bảng positions từ Quản trị
   const [positionWorkSchedule, setPositionWorkSchedule] = useState<any[]>([])
+  const [userPositionHistory, setUserPositionHistory] = useState<any[]>([])  // v198.31.8: lịch sử vị trí từng NV
   const [specialDays, setSpecialDays] = useState<any[]>([])  // v193: ngày lễ/đặc biệt
   // v191: tabs
   const [adminTab, setAdminTab] = useState<'overview'|'attendance'|'shortage_loss'|'return_loss'|'mbo_bonus'|'inspection_bonus'|'allowance'|'base_salary'|'schedule'|'sales_revenue'|'bhxh'|'kpi_debt'>('overview')
@@ -25776,7 +25816,7 @@ function PayrollModule({ user, allUsers, mobile }: any) {
           return all
         }
         
-        const [sc, pc, pr, oi, sl, rv, att, ovr, pos, pws, sd, ri, ic, is_, ksd, kviNc, mbg, pa, kpt, kps, keu, otr, kpc] = await Promise.all([
+        const [sc, pc, pr, oi, sl, rv, att, ovr, pos, pws, sd, ri, ic, is_, ksd, kviNc, mbg, pa, kpt, kps, keu, otr, kpc, uph] = await Promise.all([
           db.from('salary_config').select('*').is('effective_to', null),
           db.from('payroll_config').select('*').maybeSingle(),
           db.from('monthly_payroll').select('*').eq('month', month).eq('year', year),
@@ -25801,6 +25841,7 @@ function PayrollModule({ user, allUsers, mobile }: any) {
           db.from('overtime_requests').select('*').gte('date', fromDate).lte('date', toDate),  // v198.5
           // v197.1: pagination loop cho customers (>2500 rows)
           fetchAllCustomers().then((data: any[]) => ({ data })),
+          db.from('user_position_history').select('*'),  // v198.31.8: lịch sử vị trí
         ])
         setSalaryConfigs(sc.data || [])
         setPayrollConfig(pc.data || {})
@@ -25838,6 +25879,8 @@ function PayrollModule({ user, allUsers, mobile }: any) {
         setKpiEligibleUsers(keu.data || [])
         // v198.5
         setOvertimeRequests(otr.data || [])
+        // v198.31.8
+        setUserPositionHistory(uph.data || [])
       } catch (e: any) {
         setError('Lỗi load data: ' + e.message)
       } finally {
@@ -26046,14 +26089,35 @@ function PayrollModule({ user, allUsers, mobile }: any) {
 
   // Users có salary_config (19 NV)
   const usersWithSalary = useMemo(() => {
-    return salaryConfigs
+    const enriched = salaryConfigs
       .map(sc => {
         const u = allUsers.find((au: any) => au.id === sc.user_id)
-        return u ? { ...u, _salary: sc } : null
+        if (!u) return null
+        // v198.31.8: Lấy vị trí TẠI tháng đang xem (không phải vị trí hiện tại)
+        // Fallback chain: history record của tháng này → users.position_id → salary_config
+        const effectivePos = getUserPositionAtMonth(u.id, month, year, userPositionHistory, positionsList, u)
+        const _effectivePositionType = effectivePos?.work_schedule_type || effectivePos?.name || sc.position_type
+        return { ...u, _salary: sc, _effectivePositionType, _effectivePosition: effectivePos }
       })
-      .filter(Boolean)
-      .sort((a: any, b: any) => (a._salary.position_type || '').localeCompare(b._salary.position_type || ''))
-  }, [salaryConfigs, allUsers])
+      .filter(Boolean) as any[]
+    // v198.31.8: Sort theo group order (Quản lý → Sales → Kho → Kế toán → Phụ trách → Khác)
+    // thay vì sort alphabet position_type
+    const GROUP_ORDER: Record<string, number> = {
+      '👔 Quản lý': 1, '💼 Sales': 2, '📦 Kho': 3,
+      '🧾 Kế toán': 4, '🧾 Văn phòng': 4, '⭐ Phụ trách': 5, '🔧 Khác': 99,
+    }
+    return enriched.sort((a: any, b: any) => {
+      // Tạo proxy user với _salary.position_type = effective để feed vào getUserGroupName
+      const proxyA = { _salary: { position_type: a._effectivePositionType }, dept_id: a.dept_id }
+      const proxyB = { _salary: { position_type: b._effectivePositionType }, dept_id: b.dept_id }
+      const ga = getUserGroupName(proxyA)
+      const gb = getUserGroupName(proxyB)
+      const oa = GROUP_ORDER[ga] || 99
+      const ob = GROUP_ORDER[gb] || 99
+      if (oa !== ob) return oa - ob
+      return (a.name || '').localeCompare(b.name || '', 'vi')
+    })
+  }, [salaryConfigs, allUsers, month, year, userPositionHistory, positionsList])
 
   // Compute lương cho 1 NV (không save)
   const computeForUser = (u: any): any => {
@@ -26093,7 +26157,9 @@ function PayrollModule({ user, allUsers, mobile }: any) {
     // v198.30.6: Cũng override position_type qua positions.work_schedule_type (chuẩn)
     //   Lý do: salary_config có thể out-of-date (vd Phan Văn Chính: positions=Phó kho 7.5tr nhưng sc=Quản lý kho 8tr)
     //   work_schedule_type ưu tiên hơn name vì group đúng vào nhóm lương (Phó kho dùng schedule Phó kho nhưng tính lương như Kho)
-    const userPos = u.position_id ? positionsList.find((p: any) => p.id === u.position_id) : null
+    // v198.31.8: Dùng getUserPositionAtMonth — vị trí TẠI tháng đang tính (không phải vị trí hiện tại)
+    //   → Tính lương T3 cho Chính: ra QL Kho (8tr); T4: ra Phó kho (7.5tr)
+    const userPos = getUserPositionAtMonth(u.id, month, year, userPositionHistory, positionsList, u)
     const positionLcb = Number(userPos?.base_salary || 0)
     const positionType = userPos?.work_schedule_type || userPos?.name || sc.position_type
     const effectiveSc = (positionLcb > 0 || positionType !== sc.position_type)
@@ -26512,7 +26578,7 @@ function PayrollModule({ user, allUsers, mobile }: any) {
                     {users.map((u: any) => (
                       <option key={u.id} value={u.id}
                         style={{ background:'#fff', color:T.dark, fontFamily:'inherit', fontWeight:400 }}>
-                        {u.name} ({u._salary?.position_type || '—'})
+                        {u.name} ({u._effectivePositionType || u._salary?.position_type || '—'})
                       </option>
                     ))}
                   </optgroup>
@@ -29774,12 +29840,16 @@ function PayrollTabAttendance({
                 {groupedUsers.map(({ groupName, users }) => (
                   <optgroup key={groupName} label={groupName}
                     style={{ background:'#fff', color:T.dark, fontFamily:'inherit', fontWeight:700 }}>
-                    {users.map((u: any) => (
-                      <option key={u.id} value={u.id}
-                        style={{ background:'#fff', color:T.dark, fontFamily:'inherit', fontWeight:400 }}>
-                        {u.name} {u._salary?.position_type ? `· ${u._salary.position_type}` : ''}
-                      </option>
-                    ))}
+                    {users.map((u: any) => {
+                      // v198.31.8: ưu tiên _effectivePositionType (vị trí của tháng đang xem)
+                      const posLabel = u._effectivePositionType || u._salary?.position_type || ''
+                      return (
+                        <option key={u.id} value={u.id}
+                          style={{ background:'#fff', color:T.dark, fontFamily:'inherit', fontWeight:400 }}>
+                          {u.name} {posLabel ? `· ${posLabel}` : ''}
+                        </option>
+                      )
+                    })}
                   </optgroup>
                 ))}
               </select>
