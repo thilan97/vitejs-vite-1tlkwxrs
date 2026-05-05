@@ -117,7 +117,7 @@ const db = createClient(SUPABASE_URL, SUPABASE_KEY)
 // ⚠ TODO sau v198 (anh deploy thủ công):
 //   - Cập nhật edge function `kiotviet-sales-revenue` để auto sync luôn `kv_invoices` (anh paste code edge function cho em fix).
 //   - Setup pg_cron hoặc external cron (cron-job.org) để auto sync mỗi 1h. Hướng dẫn trong migration_62.sql.
-const APP_VERSION = '2026.05.05.v198.31.6'
+const APP_VERSION = '2026.05.05.v198.31.7'
 
 // ════════════════════════════════════════════════════════════════
 // v158: VersionBadge — Hiển thị APP_VERSION ở góc dưới phải
@@ -1288,7 +1288,61 @@ const Inp = ({ label, value, onChange, type='text', placeholder, min, max, disab
   )
 }
 
-const Sel = ({ label, value, onChange, options, disabled }: any) => {
+// ════════════════════════════════════════════════════════════════
+// v198.31.7: Helper global — group users theo position_type
+// Mục đích: Dùng cho mọi dropdown chọn NV trong app (Tính lương, Đơn sai, Excel mapping…)
+// Order: Quản lý → Sales → Kho → Kế toán → Phụ trách → Khác
+// ────────────────────────────────────────────────────────────────
+const POSITION_GROUP_MAP_GLOBAL: Record<string, { groupName: string, order: number }> = {
+  'Quản lý Sale':     { groupName: '👔 Quản lý',      order: 1 },
+  'Quản lý kho':      { groupName: '👔 Quản lý',      order: 1 },
+  'Phó kho':          { groupName: '👔 Quản lý',      order: 1 },
+  'Sales':            { groupName: '💼 Sales',        order: 2 },
+  'Kho':              { groupName: '📦 Kho',          order: 3 },
+  'Thử việc kho':     { groupName: '📦 Kho',          order: 3 },
+  'Kế toán':          { groupName: '🧾 Kế toán',      order: 4 },
+  'Kế toán thuế':     { groupName: '🧾 Kế toán',      order: 4 },
+  'Phụ trách chung':  { groupName: '⭐ Phụ trách',     order: 5 },
+}
+
+// Helper: trả về groupName của 1 user
+// Ưu tiên: u._salary.position_type → u.position_name → u.dept_name → u.dept_id
+function getUserGroupName(u: any): string {
+  const pt = u?._salary?.position_type || u?.position_name || ''
+  if (pt && POSITION_GROUP_MAP_GLOBAL[pt]) return POSITION_GROUP_MAP_GLOBAL[pt].groupName
+  // Fallback theo dept_id (cho dropdown chỗ chưa join salary)
+  const dept = u?.dept_id || ''
+  if (dept === 'sale')  return '💼 Sales'
+  if (dept === 'kho')   return '📦 Kho'
+  if (dept === 'vp')    return '🧾 Văn phòng'
+  return '🔧 Khác'
+}
+
+// Helper: group + sort users
+// Trả về array [{ groupName, users }] đã sắp xếp đúng thứ tự
+function groupUsersByPosition(users: any[]): { groupName: string, users: any[] }[] {
+  const groups = new Map<string, { order: number, users: any[] }>()
+  const FALLBACK_ORDER: Record<string, number> = {
+    '👔 Quản lý': 1, '💼 Sales': 2, '📦 Kho': 3,
+    '🧾 Kế toán': 4, '🧾 Văn phòng': 4, '⭐ Phụ trách': 5, '🔧 Khác': 99,
+  }
+  for (const u of (users || [])) {
+    const groupName = getUserGroupName(u)
+    const order = FALLBACK_ORDER[groupName] || 99
+    if (!groups.has(groupName)) groups.set(groupName, { order, users: [] })
+    groups.get(groupName)!.users.push(u)
+  }
+  // Sort users trong mỗi group theo tên Vietnamese locale
+  groups.forEach(g => g.users.sort((a: any, b: any) => (a.name || '').localeCompare(b.name || '', 'vi')))
+  return Array.from(groups.entries())
+    .sort(([, a], [, b]) => a.order - b.order)
+    .map(([groupName, { users }]) => ({ groupName, users }))
+}
+
+// v198.31.7: Sel upgrade — thêm prop `optgroups` để render <optgroup>
+// Backward compat: vẫn dùng `options` flat được như cũ.
+// optgroups: [{ label, options: [{value, label}] }] — render optgroup trong select
+const Sel = ({ label, value, onChange, options, optgroups, disabled }: any) => {
   const [focused, setFocused] = useState(false)
   return (
     <div style={{ marginBottom:SP[3] }}>
@@ -1307,7 +1361,29 @@ const Sel = ({ label, value, onChange, options, disabled }: any) => {
           transition: 'border-color .15s, box-shadow .15s',
           boxShadow: focused ? `0 0 0 3px rgba(196,151,58,0.1)` : 'none',
         }}>
-        {options.map((o: any) => <option key={o.value} value={o.value}>{o.label}</option>)}
+        {Array.isArray(optgroups) && optgroups.length > 0
+          ? optgroups.map((g: any, gi: number) => (
+              <React.Fragment key={g.label || gi}>
+                {/* Placeholder option (nếu group đầu có item value='') chuyển ra ngoài optgroup */}
+                {gi === 0 && Array.isArray(g.options) && g.options.length > 0 && g.options[0].value === '' && (
+                  <option value="" style={{ background:'#fff', color:T.dark, fontFamily:'inherit' }}>
+                    {g.options[0].label}
+                  </option>
+                )}
+                <optgroup label={g.label}
+                  style={{ background:'#fff', color:T.dark, fontFamily:'inherit', fontWeight:700 }}>
+                  {(g.options || []).filter((o: any, oi: number) => !(gi === 0 && oi === 0 && o.value === ''))
+                    .map((o: any) => (
+                      <option key={o.value} value={o.value}
+                        style={{ background:'#fff', color:T.dark, fontFamily:'inherit', fontWeight:400 }}>
+                        {o.label}
+                      </option>
+                    ))}
+                </optgroup>
+              </React.Fragment>
+            ))
+          : (options || []).map((o: any) => <option key={o.value} value={o.value}>{o.label}</option>)
+        }
       </select>
     </div>
   )
@@ -12436,10 +12512,21 @@ function WrongOrders({ user, allUsers, wrongOrders, setWrongOrders, mobile }: an
           <Inp label="Mã đơn hàng *" value={form.order_code} onChange={(v) => setForm((f: any) => ({...f,order_code:v}))} placeholder="VD: DH006994"/>
           <Inp label="Tên khách hàng" value={form.customer_name} onChange={(v) => setForm((f: any) => ({...f,customer_name:v}))} placeholder="Tên KH..."/>
         </div>
+        {/* v198.31.7: dùng optgroups thay flat options để dễ tìm */}
         <Sel label="Sale phụ trách" value={form.sale_id} onChange={(v) => setForm((f: any) => ({...f,sale_id:v}))}
-          options={[{value:'',label:'— Chọn sale —'},...allUsers.filter((u: any)=>u.dept_id==='sale').map((u: any)=>({value:u.id,label:u.name}))]}/>
+          optgroups={[
+            { label: '', options: [{value:'',label:'— Chọn sale —'}] },
+            ...groupUsersByPosition(allUsers.filter((u: any)=>u.dept_id==='sale'))
+              .map(g => ({ label: g.groupName,
+                options: g.users.map((u: any)=>({ value:u.id, label:u.name })) }))
+          ]}/>
         <Sel label="Nhân viên vi phạm (Kho/Sale)" value={form.violator_id} onChange={(v) => setForm((f: any) => ({...f,violator_id:v}))}
-          options={[{value:'',label:'— Chọn NV —'},...allUsers.filter((u: any)=>u.dept_id==='kho'||u.dept_id==='sale').map((u: any)=>({value:u.id,label:`${u.name} (${u.dept_name||u.dept_id})`}))]}/>
+          optgroups={[
+            { label: '', options: [{value:'',label:'— Chọn NV —'}] },
+            ...groupUsersByPosition(allUsers.filter((u: any)=>u.dept_id==='kho'||u.dept_id==='sale'))
+              .map(g => ({ label: g.groupName,
+                options: g.users.map((u: any)=>({ value:u.id, label:u.name })) }))
+          ]}/>
         <div style={{ marginBottom:13 }}>
           <div style={{ fontSize:12, fontWeight:500, color:T.med, marginBottom:5 }}>Chi tiết đơn sai *</div>
           <textarea value={form.detail} onChange={e => setForm((f: any) => ({...f,detail:e.target.value}))}
@@ -24738,10 +24825,16 @@ function PayrollImportModule({ user, allUsers, mobile, attendance, setAttendance
                             fontFamily: 'inherit', fontSize: 13,
                           }}>
                           <option value="" style={{ background: '#fff', color: T.dark }}>— Chọn NV / Bỏ qua —</option>
-                          {allUsers.filter((u: any) => !u.is_test_account).map((u: any) => (
-                            <option key={u.id} value={u.id} style={{ background: '#fff', color: T.dark }}>
-                              {u.name} ({getPosition(u.id) || '—'})
-                            </option>
+                          {groupUsersByPosition(allUsers.filter((u: any) => !u.is_test_account)).map(({ groupName, users }) => (
+                            <optgroup key={groupName} label={groupName}
+                              style={{ background:'#fff', color:T.dark, fontFamily:'inherit', fontWeight:700 }}>
+                              {users.map((u: any) => (
+                                <option key={u.id} value={u.id}
+                                  style={{ background: '#fff', color: T.dark, fontFamily:'inherit', fontWeight:400 }}>
+                                  {u.name} ({getPosition(u.id) || '—'})
+                                </option>
+                              ))}
+                            </optgroup>
                           ))}
                         </select>
                       </td>
@@ -26412,9 +26505,17 @@ function PayrollModule({ user, allUsers, mobile }: any) {
                 style={{ padding:'7px 10px', borderRadius:RD.sm, border:`1px solid ${T.border}`,
                   background:'#fff', color:T.dark, fontFamily:'inherit', fontSize:12,
                   minWidth:180 }}>
-                <option value="">— Chọn NV —</option>
-                {usersWithSalary.map((u: any) => (
-                  <option key={u.id} value={u.id}>{u.name} ({u._salary?.position_type})</option>
+                <option value="" style={{ background:'#fff', color:T.dark, fontFamily:'inherit' }}>— Chọn NV —</option>
+                {groupUsersByPosition(usersWithSalary || []).map(({ groupName, users }) => (
+                  <optgroup key={groupName} label={groupName}
+                    style={{ background:'#fff', color:T.dark, fontFamily:'inherit', fontWeight:700 }}>
+                    {users.map((u: any) => (
+                      <option key={u.id} value={u.id}
+                        style={{ background:'#fff', color:T.dark, fontFamily:'inherit', fontWeight:400 }}>
+                        {u.name} ({u._salary?.position_type || '—'})
+                      </option>
+                    ))}
+                  </optgroup>
                 ))}
               </select>
             </div>
@@ -29414,32 +29515,8 @@ function PayrollTabAttendance({
   }, [usersWithSalary, allUsers])
 
   // v198.31.5: Group NV theo position_type cho dropdown <optgroup>
-  // Order: Quản lý → Sales → Kho → Kế toán → Phụ trách → Khác
-  const POSITION_GROUP_MAP: Record<string, { groupName: string, order: number }> = {
-    'Quản lý Sale':     { groupName: '👔 Quản lý',      order: 1 },
-    'Quản lý kho':      { groupName: '👔 Quản lý',      order: 1 },
-    'Phó kho':          { groupName: '👔 Quản lý',      order: 1 },
-    'Sales':            { groupName: '💼 Sales',        order: 2 },
-    'Kho':              { groupName: '📦 Kho',          order: 3 },
-    'Thử việc kho':     { groupName: '📦 Kho',          order: 3 },
-    'Kế toán':          { groupName: '🧾 Kế toán',      order: 4 },
-    'Kế toán thuế':     { groupName: '🧾 Kế toán',      order: 4 },
-    'Phụ trách chung':  { groupName: '⭐ Phụ trách',     order: 5 },
-  }
-  const groupedUsers = useMemo(() => {
-    const groups = new Map<string, { order: number, users: any[] }>()
-    for (const u of sortedUsers) {
-      const pt = u._salary?.position_type || ''
-      const map = POSITION_GROUP_MAP[pt]
-      const groupName = map?.groupName || '🔧 Khác'
-      const order = map?.order || 99
-      if (!groups.has(groupName)) groups.set(groupName, { order, users: [] })
-      groups.get(groupName)!.users.push(u)
-    }
-    return Array.from(groups.entries())
-      .sort(([, a], [, b]) => a.order - b.order)
-      .map(([groupName, { users }]) => ({ groupName, users }))
-  }, [sortedUsers])
+  // v198.31.7: Refactor — dùng helper global groupUsersByPosition()
+  const groupedUsers = useMemo(() => groupUsersByPosition(sortedUsers), [sortedUsers])
   
   // Default chọn NV đầu tiên
   useEffect(() => {
@@ -39932,9 +40009,17 @@ function NotFoundUserSection({ result, user, onAliasAdded }: any) {
               style={{ flex:'1 1 160px', padding:'5px 8px', border:`1px solid ${T.border}`,
                 borderRadius:4, fontSize:11, fontFamily:'inherit',
                 background:'#fff', color:T.dark, minWidth:140 }}>
-              <option value="">— Chọn user app —</option>
-              {allUsers.map(u => (
-                <option key={u.id} value={u.id}>{u.name}</option>
+              <option value="" style={{ background:'#fff', color:T.dark, fontFamily:'inherit' }}>— Chọn user app —</option>
+              {groupUsersByPosition(allUsers).map(({ groupName, users }) => (
+                <optgroup key={groupName} label={groupName}
+                  style={{ background:'#fff', color:T.dark, fontFamily:'inherit', fontWeight:700 }}>
+                  {users.map((u: any) => (
+                    <option key={u.id} value={u.id}
+                      style={{ background:'#fff', color:T.dark, fontFamily:'inherit', fontWeight:400 }}>
+                      {u.name}
+                    </option>
+                  ))}
+                </optgroup>
               ))}
             </select>
             <button 
