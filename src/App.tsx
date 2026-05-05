@@ -117,7 +117,7 @@ const db = createClient(SUPABASE_URL, SUPABASE_KEY)
 // ⚠ TODO sau v198 (anh deploy thủ công):
 //   - Cập nhật edge function `kiotviet-sales-revenue` để auto sync luôn `kv_invoices` (anh paste code edge function cho em fix).
 //   - Setup pg_cron hoặc external cron (cron-job.org) để auto sync mỗi 1h. Hướng dẫn trong migration_62.sql.
-const APP_VERSION = '2026.05.05.v198.31.10'
+const APP_VERSION = '2026.05.05.v198.31.11'
 
 // ════════════════════════════════════════════════════════════════
 // v158: VersionBadge — Hiển thị APP_VERSION ở góc dưới phải
@@ -11795,7 +11795,7 @@ export default function App() {
         const sevenDaysAgo = new Date(Date.now() - 7*86400000).toISOString()
         db.from('packing_workflow')
           .select('order_code, customer_name, description_kv, ghtk_customer_info, ghtk_boxes, ghtk_labels, ghtk_created_at, ghtk_printed_at, dropship_printed_at, dropship_carrier, dropship_code, purchase_date, status')
-          .neq('is_deleted', true)
+          .neq('is_deleted', true).neq('is_hidden', true)
           .or('ghtk_labels.not.is.null,description_kv.ilike.%ghtk%,description_kv.ilike.%vtp%,description_kv.ilike.%viettel%')
           .gte('purchase_date', sevenDaysAgo)
           .order('purchase_date', { ascending: false })
@@ -19497,13 +19497,17 @@ function PickingModule({ user, allUsers, mobile, products }: any) {
     })
   }
   
-  const handleBulkDeletePick = async () => {
+  // v198.31.11: Đổi từ "Xóa" thành "Ẩn"
+  // - is_hidden=true → ẩn khỏi tab pending (Nhặt/Đóng/GHTK)
+  // - VẪN HIỆN ở Theo dõi đơn, Gallery, Báo cáo (giữ lịch sử)
+  // - is_deleted vẫn giữ riêng cho trường hợp xóa thật sự (đơn fake/test)
+  const handleBulkHide = async () => {
     if (!isAdmin) {
-      toast.error('Chỉ admin được xóa hàng loạt')
+      toast.error('Chỉ admin được ẩn hàng loạt')
       return
     }
     if (bulkDeleteReason.trim().length < 5) {
-      toast.error('Vui lòng nhập lý do xóa (≥ 5 ký tự)')
+      toast.error('Vui lòng nhập lý do ẩn (≥ 5 ký tự)')
       return
     }
     if (selectedCodes.size === 0) {
@@ -19512,34 +19516,31 @@ function PickingModule({ user, allUsers, mobile, products }: any) {
     }
     setBulkDeleting(true)
     try {
-      const now = new Date().toISOString()
       const codesArray = Array.from(selectedCodes)
-      const ordersToDelete = orders.filter((o: any) => selectedCodes.has(o.order_code))
-      
-      for (const o of ordersToDelete) {
+      const ordersToHide = orders.filter((o: any) => selectedCodes.has(o.order_code))
+
+      for (const o of ordersToHide) {
         await logAudit({
           user,
-          action: 'soft_delete',
+          action: 'hide',
           table: 'packing_workflow',
           recordId: o.order_code,
           snapshot: o,
-          note: `Bulk delete đơn ${o.order_code} từ module Nhặt hàng (${ordersToDelete.length} đơn). Lý do: ${bulkDeleteReason.trim()}`,
+          note: `Bulk hide đơn ${o.order_code} từ module Nhặt hàng (${ordersToHide.length} đơn). Lý do: ${bulkDeleteReason.trim()}`,
         })
       }
-      
+
       const { error } = await db.from('packing_workflow').update({
-        is_deleted: true,
-        deleted_at: now,
-        deleted_by: user.id,
+        is_hidden: true,
       }).in('order_code', codesArray)
-      
+
       if (error) {
-        toast.error('Lỗi xóa: ' + error.message)
+        toast.error('Lỗi ẩn: ' + error.message)
         setBulkDeleting(false)
         return
       }
-      
-      toast.success(`✓ Đã xóa ${codesArray.length} đơn`)
+
+      toast.success(`✓ Đã ẩn ${codesArray.length} đơn`)
       setOrders((prev: any[]) => prev.filter((o: any) => !selectedCodes.has(o.order_code)))
       if (selectedCode && selectedCodes.has(selectedCode)) {
         setSelectedCode(null)
@@ -19564,13 +19565,15 @@ function PickingModule({ user, allUsers, mobile, products }: any) {
   const fetchData = async (quiet=false) => {
     if (!quiet) setSyncing(true)
     // Query 1: ALL orders đang picking
+    // v198.31.11: thêm filter is_hidden — đơn đã ẩn không hiện ở pending
     const { data: pickingData } = await db.from('packing_workflow').select('*')
-      .neq('is_deleted', true).eq('status', 'picking')
+      .neq('is_deleted', true).neq('is_hidden', true).eq('status', 'picking')
       .order('purchase_date', { ascending: false })
     // Query 2: orders đã nhặt trong 3 ngày gần nhất
+    // v198.31.11: thêm filter is_hidden
     const threeDaysAgo = new Date(Date.now() - 3*86400000).toISOString()
     const { data: donePickData } = await db.from('packing_workflow').select('*')
-      .neq('is_deleted', true).in('status', ['packing','done'])
+      .neq('is_deleted', true).neq('is_hidden', true).in('status', ['packing','done'])
       .gte('picked_at', threeDaysAgo)
       .order('picked_at', { ascending: false })
       .limit(500)
@@ -19906,11 +19909,11 @@ function PickingModule({ user, allUsers, mobile, products }: any) {
                     disabled={selectedCodes.size === 0}
                     style={{ padding:'5px 12px', borderRadius:12, fontSize:10, fontWeight:700,
                       border:'none', 
-                      background: selectedCodes.size === 0 ? T.border : T.red, 
+                      background: selectedCodes.size === 0 ? T.border : T.blue, 
                       color:'#fff',
                       cursor: selectedCodes.size === 0 ? 'not-allowed' : 'pointer',
                       fontFamily:'inherit' }}>
-                    🗑 Xóa {selectedCodes.size > 0 ? `${selectedCodes.size} đơn ` : ''}đã chọn
+                    🙈 Ẩn {selectedCodes.size > 0 ? `${selectedCodes.size} đơn ` : ''}đã chọn
                   </button>
                 </Card>
               )}
@@ -19972,12 +19975,12 @@ function PickingModule({ user, allUsers, mobile, products }: any) {
                           {/* v150: Admin xóa đơn */}
                           {isAdmin && (
                             <button onClick={(e) => { e.stopPropagation(); setAdminDeleteOrder(o) }}
-                              title="Admin xóa đơn"
+                              title="Admin ẩn đơn (giữ lịch sử)"
                               style={{ marginLeft:6, padding:'1px 5px', borderRadius:3,
-                                border:`1px solid ${T.red}40`, background:'transparent',
-                                color:T.red, cursor:'pointer', fontSize:10, lineHeight:1,
+                                border:`1px solid ${T.blue}40`, background:'transparent',
+                                color:T.blue, cursor:'pointer', fontSize:10, lineHeight:1,
                                 fontFamily:'inherit', verticalAlign:'middle' }}>
-                              🗑️
+                              🙈
                             </button>
                           )}
                         </div>
@@ -20133,30 +20136,31 @@ function PickingModule({ user, allUsers, mobile, products }: any) {
           display:'flex', alignItems:'center', justifyContent:'center', padding:20 }}>
           <div style={{ background:'#fff', borderRadius:12, width: mobile ? '100%' : 600,
             maxHeight:'90vh', overflow:'hidden', display:'flex', flexDirection:'column' }}>
-            
+
             <div style={{ padding:'16px 20px', borderBottom:`1px solid ${T.border}`,
-              background:'#FEE2E2' }}>
+              background:'#FEF3C7' }}>
               <div style={{ fontSize:15, fontWeight:700, color:T.dark }}>
-                🗑 Xóa hàng loạt {selectedCodes.size} đơn
+                🙈 Ẩn hàng loạt {selectedCodes.size} đơn
               </div>
               <div style={{ fontSize:11, color:T.med, marginTop:4 }}>
                 Module: <b style={{ color:T.dark }}>Nhặt hàng</b> · Tab: <b style={{ color:T.dark }}>{tab === 'todo' ? 'Chờ nhặt' : 'Đã xong hôm nay'}</b> · Quyền: <b style={{ color:T.dark }}>Admin only</b>
               </div>
             </div>
-            
+
             <div style={{ overflowY:'auto', padding:16, background:T.bg, flex:1 }}>
-              <div style={{ padding:'10px 14px', background:'#FEF3C7',
-                borderLeft:`4px solid #F59E0B`, borderRadius:6, fontSize:12, 
-                color:'#92400E', marginBottom:14 }}>
-                ⚠️ Tất cả đơn được chọn sẽ <b>archive</b> (soft delete) — có thể khôi phục từ DB nếu cần. 
-                Audit log sẽ ghi lại đầy đủ snapshot từng đơn + người xóa + lý do.
+              <div style={{ padding:'10px 14px', background:'#DBEAFE',
+                borderLeft:`4px solid #3B82F6`, borderRadius:6, fontSize:12,
+                color:'#1E40AF', marginBottom:14 }}>
+                💡 Đơn được chọn sẽ <b>ẨN</b> khỏi danh sách Nhặt/Đóng/GHTK.
+                <br/>Đơn vẫn xem được ở <b>Theo dõi đơn</b> + <b>Gallery</b> + <b>Báo cáo doanh thu</b> (giữ lịch sử).
+                <br/>Admin có thể bỏ ẩn từ Theo dõi đơn nếu cần.
               </div>
-              
+
               <div style={{ marginBottom:14 }}>
                 <div style={{ fontSize:11, fontWeight:700, color:T.med, marginBottom:6 }}>
                   📋 Danh sách đơn ({selectedCodes.size}):
                 </div>
-                <div style={{ maxHeight:200, overflowY:'auto', background:'#fff', 
+                <div style={{ maxHeight:200, overflowY:'auto', background:'#fff',
                   border:`1px solid ${T.border}`, borderRadius:6, padding:8 }}>
                   {Array.from(selectedCodes).slice(0, 50).map(code => {
                     const ord = orders.find((o: any) => o.order_code === code)
@@ -20180,39 +20184,39 @@ function PickingModule({ user, allUsers, mobile, products }: any) {
                   )}
                 </div>
               </div>
-              
+
               <label style={{ fontSize:12, fontWeight:700, color:T.dark, marginBottom:6, display:'block' }}>
-                📝 Lý do xóa <span style={{ color:T.red }}>*</span>
+                📝 Lý do ẩn <span style={{ color:T.red }}>*</span>
               </label>
               <textarea value={bulkDeleteReason} onChange={e => setBulkDeleteReason(e.target.value)}
-                placeholder="vd: Đơn KH hủy, đơn test, dọn dẹp đơn lỗi tồn đọng..."
+                placeholder="vd: Đơn cũ tồn đọng, dọn list, đã xử lý ngoài hệ thống..."
                 rows={3}
                 style={{ width:'100%', padding:'8px 10px', borderRadius:6,
                   border:`1px solid ${bulkDeleteReason.trim().length < 5 ? '#F59E0B' : T.border}`,
                   background:'#fff', color:T.dark,
                   fontSize:12, fontFamily:'inherit', resize:'vertical' }}/>
               <div style={{ marginTop:4, fontSize:10, color: bulkDeleteReason.trim().length < 5 ? '#F59E0B' : T.med }}>
-                {bulkDeleteReason.trim().length < 5 
-                  ? `⚠️ Tối thiểu 5 ký tự (hiện ${bulkDeleteReason.trim().length})` 
+                {bulkDeleteReason.trim().length < 5
+                  ? `⚠️ Tối thiểu 5 ký tự (hiện ${bulkDeleteReason.trim().length})`
                   : `✓ ${bulkDeleteReason.trim().length} ký tự`}
               </div>
             </div>
-            
+
             <div style={{ padding:'12px 20px', borderTop:`1px solid ${T.border}`, background:'#fff',
               display:'flex', gap:8, justifyContent:'flex-end' }}>
-              <button onClick={() => { setShowBulkDelete(false); setBulkDeleteReason('') }} 
+              <button onClick={() => { setShowBulkDelete(false); setBulkDeleteReason('') }}
                 disabled={bulkDeleting}
                 style={{ padding:'7px 14px', borderRadius:6, border:`1px solid ${T.border}`,
                   background:'#fff', color:T.med, cursor:'pointer', fontSize:11, fontFamily:'inherit' }}>
                 Hủy
               </button>
-              <button onClick={handleBulkDeletePick} 
+              <button onClick={handleBulkHide}
                 disabled={bulkDeleting || bulkDeleteReason.trim().length < 5}
                 style={{ padding:'7px 14px', borderRadius:6, border:'none',
-                  background: bulkDeleteReason.trim().length < 5 ? T.border : T.red, color:'#fff',
+                  background: bulkDeleteReason.trim().length < 5 ? T.border : T.blue, color:'#fff',
                   cursor: (bulkDeleting || bulkDeleteReason.trim().length < 5) ? 'not-allowed' : 'pointer',
                   fontSize:11, fontWeight:700, fontFamily:'inherit' }}>
-                {bulkDeleting ? '⏳ Đang xóa...' : `🗑 Xác nhận xóa ${selectedCodes.size} đơn`}
+                {bulkDeleting ? '⏳ Đang ẩn...' : `🙈 Xác nhận ẩn ${selectedCodes.size} đơn`}
               </button>
             </div>
           </div>
@@ -20831,40 +20835,34 @@ function AdminDeleteOrderModal({ ord, user, mobile, onClose, onDeleted }: any) {
   const dropshipPrinted = !!ord.dropship_printed_at
 
   const validateNote = () => {
-    if (note.trim().length < 10) return 'Lý do xóa cần ≥10 ký tự'
+    if (note.trim().length < 10) return 'Lý do ẩn cần ≥10 ký tự'
     return null
   }
 
+  // v198.31.11: Đổi từ "Xóa" thành "Ẩn" — vẫn giữ ở Theo dõi/Gallery
   const handleDelete = async () => {
     const err = validateNote()
     if (err) { window.toast?.error(err); return }
     setDeleting(true)
     try {
-      const now = new Date().toISOString()
-      // Lưu snapshot full đơn vào audit_log TRƯỚC khi soft delete
+      // Audit log với full snapshot
       await logAudit({
         user,
-        action: 'delete',
+        action: 'hide',
         table: 'packing_workflow',
         recordId: String(ord.order_code),
         snapshot: ord,
-        note: `Admin xóa đơn ${ord.order_code} (${ord.customer_name||'?'} - ${(ord.total_amount||0).toLocaleString('vi-VN')}đ). Lý do: ${note.trim()}`,
+        note: `Admin ẩn đơn ${ord.order_code} (${ord.customer_name||'?'} - ${(ord.total_amount||0).toLocaleString('vi-VN')}đ). Lý do: ${note.trim()}`,
       })
-      // Soft delete
+      // Hide
       const { error } = await db.from('packing_workflow')
-        .update({
-          is_deleted: true,
-          deleted_at: now,
-          deleted_by: user.id,
-          delete_reason: note.trim(),
-          updated_at: now,
-        })
+        .update({ is_hidden: true })
         .eq('order_code', ord.order_code)
       if (error) {
         window.toast?.error('Lỗi: ' + error.message)
         return
       }
-      window.toast?.success(`✅ Đã xóa đơn ${ord.order_code}`)
+      window.toast?.success(`✅ Đã ẩn đơn ${ord.order_code}`)
       onDeleted()
     } catch (e: any) {
       window.toast?.error('Lỗi: ' + (e.message || String(e)))
@@ -20874,7 +20872,7 @@ function AdminDeleteOrderModal({ ord, user, mobile, onClose, onDeleted }: any) {
   }
 
   return (
-    <Modal open onClose={onClose} title={`🗑️ Admin xóa đơn — ${ord.order_code}`}>
+    <Modal open onClose={onClose} title={`🙈 Ẩn đơn — ${ord.order_code}`}>
       {/* Order summary */}
       <div style={{ padding:'12px 14px', background:T.bg, borderRadius:8, marginBottom:14 }}>
         <div style={{ fontSize:13, fontWeight:700, color:T.dark }}>
@@ -20890,12 +20888,22 @@ function AdminDeleteOrderModal({ ord, user, mobile, onClose, onDeleted }: any) {
         </div>
       </div>
 
+      {/* Info: ẩn không phá lịch sử */}
+      <div style={{ padding:'10px 14px', borderRadius:8, marginBottom:14,
+        background:'#DBEAFE', borderLeft:`4px solid #3B82F6` }}>
+        <div style={{ fontSize:12, color:'#1E40AF', lineHeight:1.6 }}>
+          💡 <b>Đây là hành động "ẨN"</b>, không phải xóa hẳn.
+          <br/>Đơn sẽ ẩn khỏi tab Nhặt/Đóng/GHTK nhưng vẫn còn ở <b>Theo dõi đơn</b> + <b>Gallery</b> + <b>Báo cáo</b>.
+          <br/>Có thể bỏ ẩn từ Theo dõi đơn (nút "↩️ Bỏ ẩn") nếu cần.
+        </div>
+      </div>
+
       {/* Warning đặc biệt cho đơn GHTK đã có nhãn */}
       {hasLabels && (
         <div style={{ padding:'12px 14px', borderRadius:8, marginBottom:14,
           background:'#FEE2E2', border:`2px solid ${T.red}` }}>
           <div style={{ fontSize:13, fontWeight:700, color:T.red, marginBottom:6 }}>
-            🚨 CẢNH BÁO NẶNG — Đơn đã có nhãn GHTK!
+            🚨 CẢNH BÁO — Đơn đã có nhãn GHTK!
           </div>
           <div style={{ fontSize:11, color:T.dark, lineHeight:1.6 }}>
             <b>Đơn này đã được tạo trên hệ thống GHTK</b> với {labels.length} nhãn:
@@ -20906,7 +20914,7 @@ function AdminDeleteOrderModal({ ord, user, mobile, onClose, onDeleted }: any) {
             <div style={{ marginTop:8, padding:'6px 10px', background:'#FEF3C7',
               borderRadius:4, fontSize:11 }}>
               ⚠️ <b>App KHÔNG hủy đơn trên GHTK!</b> Bạn cần vào GHTK trực tiếp để hủy
-              các đơn này nếu cần. Việc xóa ở đây chỉ ẩn đơn khỏi app của mình.
+              các đơn này nếu cần. Việc ẩn ở đây chỉ giấu đơn khỏi list pending.
             </div>
           </div>
         </div>
@@ -20921,7 +20929,7 @@ function AdminDeleteOrderModal({ ord, user, mobile, onClose, onDeleted }: any) {
           </div>
           <div style={{ fontSize:11, color:T.dark, marginTop:4 }}>
             Mã: {ord.dropship_code||'?'} — đơn đã được tạo trên tài khoản KH.
-            Việc xóa chỉ ẩn khỏi app, không ảnh hưởng đến đơn vận chuyển thực tế.
+            Việc ẩn chỉ giấu khỏi app, không ảnh hưởng đến đơn vận chuyển thực tế.
           </div>
         </div>
       )}
@@ -20930,13 +20938,13 @@ function AdminDeleteOrderModal({ ord, user, mobile, onClose, onDeleted }: any) {
       {!confirmStep && (
         <>
           <div style={{ fontSize:12, fontWeight:700, color:T.dark, marginBottom:6 }}>
-            Lý do xóa <span style={{ color:T.red }}>*</span>
+            Lý do ẩn <span style={{ color:T.red }}>*</span>
             <span style={{ fontSize:10, fontWeight:400, color:T.light, marginLeft:6 }}>
               (≥10 ký tự — sẽ được lưu vào audit log)
             </span>
           </div>
           <textarea value={note} onChange={e => setNote(e.target.value)}
-            placeholder="VD: Đơn KH hủy không lấy / Tạo nhầm trùng đơn DH00xxx / Sale tạo test..."
+            placeholder="VD: Đơn KH hủy không lấy / Tạo nhầm trùng đơn DH00xxx / Đơn cũ tồn đọng..."
             rows={3}
             style={{ width:'100%', padding:'10px 12px', border:`1.5px solid ${T.border}`,
               borderRadius:8, fontSize:13, fontFamily:'inherit', color:T.dark,
@@ -20961,7 +20969,7 @@ function AdminDeleteOrderModal({ ord, user, mobile, onClose, onDeleted }: any) {
               }}
               disabled={note.trim().length < 10}
               style={{ padding:'8px 16px', borderRadius:8, border:'none',
-                background: note.trim().length < 10 ? T.gray : T.red,
+                background: note.trim().length < 10 ? T.gray : T.blue,
                 cursor: note.trim().length < 10 ? 'not-allowed' : 'pointer',
                 fontSize:12, fontFamily:'inherit', color:'#fff', fontWeight:700 }}>
               Tiếp tục →
@@ -20973,14 +20981,14 @@ function AdminDeleteOrderModal({ ord, user, mobile, onClose, onDeleted }: any) {
       {/* Step 2: Confirm cuối */}
       {confirmStep && (
         <>
-          <div style={{ padding:'14px 16px', background:'#FEE2E2', borderRadius:8,
-            border:`2px solid ${T.red}`, marginBottom:14 }}>
-            <div style={{ fontSize:13, fontWeight:700, color:T.red, marginBottom:8 }}>
-              ⚠️ Xác nhận xóa cuối cùng
+          <div style={{ padding:'14px 16px', background:'#DBEAFE', borderRadius:8,
+            border:`2px solid #3B82F6`, marginBottom:14 }}>
+            <div style={{ fontSize:13, fontWeight:700, color:'#1E40AF', marginBottom:8 }}>
+              💡 Xác nhận ẩn đơn
             </div>
             <div style={{ fontSize:12, color:T.dark, lineHeight:1.6 }}>
-              Bạn đang chuẩn bị xóa đơn <b>{ord.order_code}</b>.<br/>
-              Đơn sẽ bị ẩn khỏi tất cả các tab trong app. Có thể khôi phục qua audit log nếu cần.<br/>
+              Bạn đang chuẩn bị ẩn đơn <b>{ord.order_code}</b>.<br/>
+              Đơn sẽ ẩn khỏi tab Nhặt/Đóng/GHTK. Vẫn xem được ở Theo dõi đơn + Gallery.<br/>
               <div style={{ marginTop:8, padding:'6px 10px', background:'#fff', borderRadius:4 }}>
                 <b>Lý do:</b> {note.trim()}
               </div>
@@ -20997,10 +21005,10 @@ function AdminDeleteOrderModal({ ord, user, mobile, onClose, onDeleted }: any) {
             </button>
             <button onClick={handleDelete} disabled={deleting}
               style={{ padding:'8px 16px', borderRadius:8, border:'none',
-                background: T.red,
+                background: T.blue,
                 cursor: deleting?'not-allowed':'pointer', opacity: deleting?0.6:1,
                 fontSize:12, fontFamily:'inherit', color:'#fff', fontWeight:700 }}>
-              {deleting ? '⏳ Đang xóa...' : '🗑️ Xóa đơn'}
+              {deleting ? '⏳ Đang ẩn...' : '🙈 Ẩn đơn'}
             </button>
           </div>
         </>
@@ -21032,13 +21040,14 @@ function PackingModule({ user, allUsers, mobile, products }: any) {
 
   const fetchData = async () => {
     setLoading(true)
+    // v198.31.11: thêm filter is_hidden — đơn đã ẩn không hiện ở pending
     const { data: pendingData } = await db.from('packing_workflow').select('*')
-      .neq('is_deleted', true).eq('status', 'packing')
+      .neq('is_deleted', true).neq('is_hidden', true).eq('status', 'packing')
       .order('picked_at', { ascending: true })
     // v198.31.10: Mở rộng query done 3d → 30d để search tìm được đơn cũ hơn
     const thirtyDaysAgo = new Date(Date.now() - 30*86400000).toISOString()
     const { data: doneData } = await db.from('packing_workflow').select('*')
-      .neq('is_deleted', true).eq('status', 'done')
+      .neq('is_deleted', true).neq('is_hidden', true).eq('status', 'done')
       .gte('packed_at', thirtyDaysAgo)
       .order('packed_at', { ascending: false })
       .limit(2000)
@@ -21704,12 +21713,12 @@ function PackingModule({ user, allUsers, mobile, products }: any) {
                       {/* v150: Admin xóa đơn */}
                       {isAdmin && (
                         <button onClick={(e) => { e.stopPropagation(); setAdminDeleteOrder(o) }}
-                          title="Admin xóa đơn"
+                          title="Admin ẩn đơn (giữ lịch sử)"
                           style={{ marginLeft:6, padding:'1px 5px', borderRadius:3,
-                            border:`1px solid ${T.red}40`, background:'transparent',
-                            color:T.red, cursor:'pointer', fontSize:10, lineHeight:1,
+                            border:`1px solid ${T.blue}40`, background:'transparent',
+                            color:T.blue, cursor:'pointer', fontSize:10, lineHeight:1,
                             fontFamily:'inherit', verticalAlign:'middle' }}>
-                          🗑️
+                          🙈
                         </button>
                       )}
                     </div>
@@ -34298,46 +34307,43 @@ function SaleOrderTrackingModule({ user, allUsers, mobile }: any) {
   const getName = (id: string) => allUsers.find((u: any) => u.id === id)?.name || '?'
   
   // v198.20: Soft delete đơn (chỉ admin/QM)
+  // v198.31.11: Đổi thành "Ẩn" (is_hidden=true) — vẫn giữ ở Theo dõi đơn để admin xem được
   const handleSoftDelete = async () => {
     if (!deleteOrder) return
     // Defense-in-depth: verify perm 1 lần nữa trước khi gọi DB
     if (!isQM) {
-      toast.error('Bạn không có quyền xóa đơn')
+      toast.error('Bạn không có quyền ẩn đơn')
       setDeleteOrder(null)
       return
     }
     if (deleteReason.trim().length < 5) {
-      toast.error('Vui lòng nhập lý do xóa (≥ 5 ký tự)')
+      toast.error('Vui lòng nhập lý do ẩn (≥ 5 ký tự)')
       return
     }
     setDeleting(true)
     try {
-      const now = new Date().toISOString()
-      
-      // Audit log với full snapshot trước khi xóa
+      // Audit log với full snapshot
       await logAudit({
         user,
-        action: 'soft_delete',
+        action: 'hide',
         table: 'packing_workflow',
         recordId: deleteOrder.order_code,
         snapshot: deleteOrder,
-        note: `Xóa đơn ${deleteOrder.order_code} (${deleteOrder.customer_name || '?'}). Lý do: ${deleteReason.trim()}`,
+        note: `Ẩn đơn ${deleteOrder.order_code} (${deleteOrder.customer_name || '?'}). Lý do: ${deleteReason.trim()}`,
       })
-      
-      // Soft delete
+
+      // Hide (chỉ set is_hidden, KHÔNG soft delete để giữ lịch sử)
       const { error } = await db.from('packing_workflow').update({
-        is_deleted: true,
-        deleted_at: now,
-        deleted_by: user.id,
+        is_hidden: true,
       }).eq('order_code', deleteOrder.order_code)
-      
+
       if (error) {
-        toast.error('Lỗi xóa: ' + error.message)
+        toast.error('Lỗi ẩn: ' + error.message)
         setDeleting(false)
         return
       }
-      
-      toast.success(`✓ Đã xóa đơn ${deleteOrder.order_code}`)
+
+      toast.success(`✓ Đã ẩn đơn ${deleteOrder.order_code}`)
       // Xóa khỏi list local mà không cần fetch lại
       setOrders(prev => prev.filter(o => o.order_code !== deleteOrder.order_code))
       setDeleteOrder(null)
@@ -34735,6 +34741,16 @@ function SaleOrderTrackingModule({ user, allUsers, mobile }: any) {
                             • {Number(o.total_amount).toLocaleString('vi-VN')}đ
                           </span>
                         )}
+                        {/* v198.31.11: Badge "Đã ẩn" */}
+                        {o.is_hidden && (
+                          <span style={{ padding:'2px 8px', borderRadius:RD.full,
+                            background:'#9CA3AF20', color:'#6B7280',
+                            fontSize:FS.xs, fontWeight:700,
+                            border:'1px solid #9CA3AF' }}
+                            title="Đơn này đã được ẩn khỏi tab Nhặt/Đóng/GHTK — chỉ admin/QM kho mới xem được">
+                            🙈 Đã ẩn
+                          </span>
+                        )}
                       </div>
                       <div style={{ fontSize:FS.xs, color:T.light, marginTop:3, display:'flex',
                         gap:SP[2], flexWrap:'wrap' }}>
@@ -34762,18 +34778,44 @@ function SaleOrderTrackingModule({ user, allUsers, mobile }: any) {
                           ⏱ {pendingDuration(pending.since, null)}
                         </div>
                       )}
-                      {/* v198.20: Nút xóa (chỉ admin/QM kho) */}
-                      {isQM && (
+                      {/* v198.20: Nút xóa (chỉ admin/QM kho) — v198.31.11: đổi thành "Ẩn"/"Bỏ ẩn" */}
+                      {isQM && !o.is_hidden && (
                         <button onClick={(e) => {
                           e.stopPropagation()  // Tránh trigger expand card
                           setDeleteOrder(o)
                           setDeleteReason('')
                         }}
-                          title="Xóa đơn (admin/QM kho)"
+                          title="Ẩn đơn khỏi tab Nhặt/Đóng/GHTK (vẫn còn lịch sử ở đây)"
                           style={{ marginTop:6, padding:'3px 8px', borderRadius:RD.full,
-                            border:`1px solid ${T.red}`, background:'#fff', color:T.red,
+                            border:`1px solid ${T.blue}`, background:'#fff', color:T.blue,
                             cursor:'pointer', fontSize:10, fontFamily:'inherit', fontWeight:600 }}>
-                          🗑 Xóa
+                          🙈 Ẩn
+                        </button>
+                      )}
+                      {isQM && o.is_hidden && (
+                        <button onClick={async (e) => {
+                          e.stopPropagation()
+                          if (!confirm(`Bỏ ẩn đơn ${o.order_code}? Đơn sẽ hiện lại ở các tab Nhặt/Đóng/GHTK.`)) return
+                          const { error } = await db.from('packing_workflow')
+                            .update({ is_hidden: false })
+                            .eq('order_code', o.order_code)
+                          if (error) {
+                            toast.error('Lỗi: ' + error.message)
+                            return
+                          }
+                          await logAudit({
+                            user, action: 'unhide', table: 'packing_workflow',
+                            recordId: o.order_code, snapshot: o,
+                            note: `Bỏ ẩn đơn ${o.order_code}`,
+                          })
+                          toast.success(`✓ Đã bỏ ẩn đơn ${o.order_code}`)
+                          fetchOrders()
+                        }}
+                          title="Bỏ ẩn — đơn hiện lại ở Nhặt/Đóng/GHTK"
+                          style={{ marginTop:6, padding:'3px 8px', borderRadius:RD.full,
+                            border:`1px solid ${T.green}`, background:'#fff', color:T.green,
+                            cursor:'pointer', fontSize:10, fontFamily:'inherit', fontWeight:600 }}>
+                          ↩️ Bỏ ẩn
                         </button>
                       )}
                     </div>
@@ -34963,9 +35005,9 @@ function SaleOrderTrackingModule({ user, allUsers, mobile }: any) {
             
             {/* Header */}
             <div style={{ padding:'16px 20px', borderBottom:`1px solid ${T.border}`,
-              background:'#FEE2E2' }}>
+              background:'#FEF3C7' }}>
               <div style={{ fontSize:15, fontWeight:700, color:T.dark }}>
-                🗑 Xóa đơn {deleteOrder.order_code}
+                🙈 Ẩn đơn {deleteOrder.order_code}
               </div>
               <div style={{ fontSize:11, color:T.med, marginTop:4 }}>
                 KH: <b style={{ color:T.dark }}>{deleteOrder.customer_name || '?'}</b>
@@ -34977,18 +35019,19 @@ function SaleOrderTrackingModule({ user, allUsers, mobile }: any) {
             
             {/* Body */}
             <div style={{ overflowY:'auto', padding:16, background:T.bg, flex:1 }}>
-              <div style={{ padding:'10px 14px', background:'#FEF3C7',
-                borderLeft:`4px solid ${T.amber}`, borderRadius:6, fontSize:12, 
-                color:'#92400E', marginBottom:14 }}>
-                ⚠️ Đơn sẽ được <b>archive</b> (soft delete) — có thể khôi phục từ DB nếu cần. 
-                Audit log sẽ ghi lại đầy đủ snapshot + người xóa + lý do.
+              <div style={{ padding:'10px 14px', background:'#DBEAFE',
+                borderLeft:`4px solid #3B82F6`, borderRadius:6, fontSize:12, 
+                color:'#1E40AF', marginBottom:14 }}>
+                💡 Đơn sẽ <b>ẨN</b> khỏi tab Nhặt/Đóng/GHTK.
+                <br/>Đơn vẫn xem được ở <b>Theo dõi đơn</b> + <b>Gallery</b> + <b>Báo cáo</b> (giữ lịch sử).
+                <br/>Có thể bỏ ẩn bằng nút "↩️ Bỏ ẩn" tại đây.
               </div>
               
               <label style={{ fontSize:12, fontWeight:700, color:T.dark, marginBottom:6, display:'block' }}>
-                📝 Lý do xóa <span style={{ color:T.red }}>*</span>
+                📝 Lý do ẩn <span style={{ color:T.red }}>*</span>
               </label>
               <textarea value={deleteReason} onChange={e => setDeleteReason(e.target.value)}
-                placeholder="vd: Đơn test, KH hủy đặt, sai thông tin không sửa được, trùng đơn..."
+                placeholder="vd: Đơn cũ tồn đọng, đã xử lý ngoài hệ thống, KH hủy..."
                 rows={3}
                 style={{ width:'100%', padding:'8px 10px', borderRadius:6,
                   border:`1px solid ${deleteReason.trim().length < 5 ? T.amber : T.border}`,
@@ -35011,10 +35054,10 @@ function SaleOrderTrackingModule({ user, allUsers, mobile }: any) {
               </button>
               <button onClick={handleSoftDelete} disabled={deleting || deleteReason.trim().length < 5}
                 style={{ padding:'7px 14px', borderRadius:6, border:'none',
-                  background: deleteReason.trim().length < 5 ? T.border : T.red, color:'#fff',
+                  background: deleteReason.trim().length < 5 ? T.border : T.blue, color:'#fff',
                   cursor: (deleting || deleteReason.trim().length < 5) ? 'not-allowed' : 'pointer',
                   fontSize:11, fontWeight:700, fontFamily:'inherit' }}>
-                {deleting ? '⏳ Đang xóa...' : '🗑 Xác nhận xóa'}
+                {deleting ? '⏳ Đang ẩn...' : '🙈 Xác nhận ẩn'}
               </button>
             </div>
           </div>
@@ -37954,13 +37997,14 @@ function GhtkModule({ user, allUsers, mobile }: any) {
     })
   }
   
+  // v198.31.11: Đổi từ "Xóa" thành "Ẩn" — vẫn giữ lịch sử ở Theo dõi/Gallery
   const handleBulkDelete = async () => {
     if (!isAdmin) {
-      toast.error('Chỉ admin được xóa hàng loạt')
+      toast.error('Chỉ admin được ẩn hàng loạt')
       return
     }
     if (bulkDeleteReason.trim().length < 5) {
-      toast.error('Vui lòng nhập lý do xóa (≥ 5 ký tự)')
+      toast.error('Vui lòng nhập lý do ẩn (≥ 5 ký tự)')
       return
     }
     if (selectedCodes.size === 0) {
@@ -37969,36 +38013,33 @@ function GhtkModule({ user, allUsers, mobile }: any) {
     }
     setBulkDeleting(true)
     try {
-      const now = new Date().toISOString()
       const codesArray = Array.from(selectedCodes)
-      const ordersToDelete = orders.filter(o => selectedCodes.has(o.order_code))
-      
+      const ordersToHide = orders.filter(o => selectedCodes.has(o.order_code))
+
       // Audit log từng đơn (snapshot full record)
-      for (const o of ordersToDelete) {
+      for (const o of ordersToHide) {
         await logAudit({
           user,
-          action: 'soft_delete',
+          action: 'hide',
           table: 'packing_workflow',
           recordId: o.order_code,
           snapshot: o,
-          note: `Bulk delete đơn ${o.order_code} (tab: ${tab}, ${ordersToDelete.length} đơn). Lý do: ${bulkDeleteReason.trim()}`,
+          note: `Bulk hide đơn ${o.order_code} (tab: ${tab}, ${ordersToHide.length} đơn). Lý do: ${bulkDeleteReason.trim()}`,
         })
       }
-      
-      // Bulk soft delete
+
+      // Bulk hide
       const { error } = await db.from('packing_workflow').update({
-        is_deleted: true,
-        deleted_at: now,
-        deleted_by: user.id,
+        is_hidden: true,
       }).in('order_code', codesArray)
-      
+
       if (error) {
-        toast.error('Lỗi xóa: ' + error.message)
+        toast.error('Lỗi ẩn: ' + error.message)
         setBulkDeleting(false)
         return
       }
-      
-      toast.success(`✓ Đã xóa ${codesArray.length} đơn`)
+
+      toast.success(`✓ Đã ẩn ${codesArray.length} đơn`)
       // Optimistic update
       setOrders(prev => prev.filter(o => !selectedCodes.has(o.order_code)))
       setSelectedCodes(new Set())
@@ -38043,6 +38084,7 @@ function GhtkModule({ user, allUsers, mobile }: any) {
           'description_kv.ilike.%bo sung%',     // v198.22 (no diacritics)
         ].join(','))
         .neq('is_deleted', true)                  // v159: filter đơn đã soft delete
+        .neq('is_hidden', true)                    // v198.31.11: filter đơn đã ẩn
         .gte('purchase_date', effectiveFrom)
         .order('purchase_date', { ascending: false })
         .limit(500)
@@ -38745,11 +38787,11 @@ function GhtkModule({ user, allUsers, mobile }: any) {
                     disabled={selectedCodes.size === 0}
                     style={{ padding:'6px 14px', borderRadius:14, fontSize:11, fontWeight:700,
                       border:'none', 
-                      background: selectedCodes.size === 0 ? T.border : T.red, 
+                      background: selectedCodes.size === 0 ? T.border : T.blue, 
                       color:'#fff',
                       cursor: selectedCodes.size === 0 ? 'not-allowed' : 'pointer',
                       fontFamily:'inherit' }}>
-                    🗑 Xóa {selectedCodes.size > 0 ? `${selectedCodes.size} đơn ` : ''}đã chọn
+                    🙈 Ẩn {selectedCodes.size > 0 ? `${selectedCodes.size} đơn ` : ''}đã chọn
                   </button>
                 </Card>
               )}
@@ -38863,9 +38905,9 @@ function GhtkModule({ user, allUsers, mobile }: any) {
             
             {/* Header */}
             <div style={{ padding:'16px 20px', borderBottom:`1px solid ${T.border}`,
-              background:'#FEE2E2' }}>
+              background:'#FEF3C7' }}>
               <div style={{ fontSize:15, fontWeight:700, color:T.dark }}>
-                🗑 Xóa hàng loạt {selectedCodes.size} đơn
+                🙈 Ẩn hàng loạt {selectedCodes.size} đơn
               </div>
               <div style={{ fontSize:11, color:T.med, marginTop:4 }}>
                 Tab: <b style={{ color:T.dark }}>{tab}</b> · Quyền: <b style={{ color:T.dark }}>Admin only</b>
@@ -38874,14 +38916,15 @@ function GhtkModule({ user, allUsers, mobile }: any) {
             
             {/* Body */}
             <div style={{ overflowY:'auto', padding:16, background:T.bg, flex:1 }}>
-              <div style={{ padding:'10px 14px', background:'#FEF3C7',
-                borderLeft:`4px solid ${T.amber}`, borderRadius:6, fontSize:12, 
-                color:'#92400E', marginBottom:14 }}>
-                ⚠️ Tất cả đơn được chọn sẽ <b>archive</b> (soft delete) — có thể khôi phục từ DB nếu cần. 
-                Audit log sẽ ghi lại đầy đủ snapshot từng đơn + người xóa + lý do.
+              <div style={{ padding:'10px 14px', background:'#DBEAFE',
+                borderLeft:`4px solid #3B82F6`, borderRadius:6, fontSize:12, 
+                color:'#1E40AF', marginBottom:14 }}>
+                💡 Đơn được chọn sẽ <b>ẨN</b> khỏi danh sách Nhặt/Đóng/GHTK.
+                <br/>Đơn vẫn xem được ở <b>Theo dõi đơn</b> + <b>Gallery</b> + <b>Báo cáo</b> (giữ lịch sử).
+                <br/>Admin có thể bỏ ẩn từ Theo dõi đơn nếu cần.
               </div>
               
-              {/* List đơn sẽ xóa (max 8 để không quá dài) */}
+              {/* List đơn sẽ ẩn */}
               <div style={{ marginBottom:14 }}>
                 <div style={{ fontSize:11, fontWeight:700, color:T.med, marginBottom:6 }}>
                   📋 Danh sách đơn ({selectedCodes.size}):
@@ -38912,10 +38955,10 @@ function GhtkModule({ user, allUsers, mobile }: any) {
               </div>
               
               <label style={{ fontSize:12, fontWeight:700, color:T.dark, marginBottom:6, display:'block' }}>
-                📝 Lý do xóa <span style={{ color:T.red }}>*</span>
+                📝 Lý do ẩn <span style={{ color:T.red }}>*</span>
               </label>
               <textarea value={bulkDeleteReason} onChange={e => setBulkDeleteReason(e.target.value)}
-                placeholder="vd: Dọn đơn cũ đã xong, các đơn này đã ship qua bookship/ngoài hệ thống GHTK, không cần gán nữa..."
+                placeholder="vd: Đơn đã ship qua bookship/ngoài hệ thống GHTK, dọn list..."
                 rows={3}
                 style={{ width:'100%', padding:'8px 10px', borderRadius:6,
                   border:`1px solid ${bulkDeleteReason.trim().length < 5 ? T.amber : T.border}`,
@@ -38940,10 +38983,10 @@ function GhtkModule({ user, allUsers, mobile }: any) {
               <button onClick={handleBulkDelete} 
                 disabled={bulkDeleting || bulkDeleteReason.trim().length < 5}
                 style={{ padding:'7px 14px', borderRadius:6, border:'none',
-                  background: bulkDeleteReason.trim().length < 5 ? T.border : T.red, color:'#fff',
+                  background: bulkDeleteReason.trim().length < 5 ? T.border : T.blue, color:'#fff',
                   cursor: (bulkDeleting || bulkDeleteReason.trim().length < 5) ? 'not-allowed' : 'pointer',
                   fontSize:11, fontWeight:700, fontFamily:'inherit' }}>
-                {bulkDeleting ? '⏳ Đang xóa...' : `🗑 Xác nhận xóa ${selectedCodes.size} đơn`}
+                {bulkDeleting ? '⏳ Đang ẩn...' : `🙈 Xác nhận ẩn ${selectedCodes.size} đơn`}
               </button>
             </div>
           </div>
