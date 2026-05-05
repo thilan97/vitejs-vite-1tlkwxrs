@@ -117,7 +117,7 @@ const db = createClient(SUPABASE_URL, SUPABASE_KEY)
 // ⚠ TODO sau v198 (anh deploy thủ công):
 //   - Cập nhật edge function `kiotviet-sales-revenue` để auto sync luôn `kv_invoices` (anh paste code edge function cho em fix).
 //   - Setup pg_cron hoặc external cron (cron-job.org) để auto sync mỗi 1h. Hướng dẫn trong migration_62.sql.
-const APP_VERSION = '2026.05.05.v198.31.5'
+const APP_VERSION = '2026.05.05.v198.31.6'
 
 // ════════════════════════════════════════════════════════════════
 // v158: VersionBadge — Hiển thị APP_VERSION ở góc dưới phải
@@ -21083,8 +21083,41 @@ function PackingModule({ user, allUsers, mobile, products }: any) {
     const { error } = await db.from('packing_workflow').update(upd).eq('order_code', orderCode)
     if (error) { toast.error('Lỗi: ' + error.message); return false }
     setOrders(prev => prev.map((o: any) => o.order_code === orderCode ? {...o, ...upd} : o))
+
+    // v198.31.6: Sync status children đã link vào đơn này
+    // Khi parent done, các child đang ở picking/packing tự động chuyển done
+    // (đã đóng cùng parent — chung thùng, chung mã ship). Skip child đã done/auto_done/cancelled.
+    const suppList = Array.isArray(ord.supplementary_orders) ? ord.supplementary_orders : []
+    const childCodesToSync: string[] = []
+    for (const supp of suppList) {
+      const childOrd = orders.find((o: any) => o.order_code === supp.order_code)
+      if (!childOrd) continue
+      if (childOrd.status === 'picking' || childOrd.status === 'packing') {
+        childCodesToSync.push(childOrd.order_code)
+      }
+    }
+    if (childCodesToSync.length > 0) {
+      const childUpd = {
+        status: 'done',
+        packed_by: finalPackedBy,
+        packed_by_ids: finalPackerIds,
+        active_packers: [],
+        packed_at: upd.packed_at,
+        updated_at: upd.updated_at,
+      }
+      const { error: childErr } = await db.from('packing_workflow').update(childUpd)
+        .in('order_code', childCodesToSync)
+      if (childErr) {
+        toast.error(`⚠️ Parent done OK nhưng sync children lỗi: ${childErr.message}`)
+      } else {
+        // Cập nhật state local
+        setOrders(prev => prev.map((o: any) =>
+          childCodesToSync.includes(o.order_code) ? { ...o, ...childUpd } : o))
+      }
+    }
+
     setSelectedCode(null)
-    alert(`✅ Đã hoàn tất đóng hàng${finalPackerIds.length>1?` (${finalPackerIds.length} người cùng đóng)`:''}`)
+    alert(`✅ Đã hoàn tất đóng hàng${finalPackerIds.length>1?` (${finalPackerIds.length} người cùng đóng)`:''}${childCodesToSync.length>0?` + ${childCodesToSync.length} đơn bổ sung`:''}`)
 
     // Trigger AI check async — KHÔNG await, không chặn flow
     // Edge function sẽ tự update DB khi xong, NV không cần đợi
@@ -21164,14 +21197,54 @@ function PackingModule({ user, allUsers, mobile, products }: any) {
     }).eq('order_code', parentCode)
     if (e2) { toast.error('Lỗi link đơn gốc: ' + e2.message); return }
 
+    // v198.31.6: Nếu parent đã done/auto_done, chuyển child sang trạng thái tương ứng
+    // → Tránh stuck child ở packing mãi mãi (parent đã đóng xong từ trước)
+    let childStatusUpdate: any = null
+    if (parent.status === 'done') {
+      childStatusUpdate = {
+        status: 'done',
+        packed_by: parent.packed_by || null,
+        packed_by_ids: Array.isArray(parent.packed_by_ids) ? parent.packed_by_ids : (parent.packed_by ? [parent.packed_by] : []),
+        packed_at: parent.packed_at || nowIso,
+        active_packers: [],
+        change_log: [...(child.change_log || []), {
+          at: nowIso,
+          summary: `🔗 Link vào ${parentCode} (đã done) → tự động chuyển done theo parent`,
+          triggered_by: 'link_supplementary_sync_v198_31_6',
+          parent_status: 'done',
+        }],
+        updated_at: nowIso,
+      }
+    } else if (parent.status === 'auto_done') {
+      childStatusUpdate = {
+        status: 'auto_done',
+        change_log: [...(child.change_log || []), {
+          at: nowIso,
+          summary: `🔗 Link vào ${parentCode} (auto_done) → tự động chuyển auto_done theo parent`,
+          triggered_by: 'link_supplementary_sync_v198_31_6',
+          parent_status: 'auto_done',
+        }],
+        updated_at: nowIso,
+      }
+    }
+    if (childStatusUpdate) {
+      const { error: e3 } = await db.from('packing_workflow').update(childStatusUpdate)
+        .eq('order_code', childCode)
+      if (e3) toast.error(`⚠️ Link OK nhưng sync status child lỗi: ${e3.message}`)
+    }
+
     // Update state
     setOrders(prev => prev.map((o: any) => {
-      if (o.order_code === childCode) return { ...o, linked_to_order_code: parentCode, is_supplementary: true }
+      if (o.order_code === childCode) {
+        const baseUpd = { ...o, linked_to_order_code: parentCode, is_supplementary: true }
+        return childStatusUpdate ? { ...baseUpd, ...childStatusUpdate } : baseUpd
+      }
       if (o.order_code === parentCode) return { ...o, supplementary_orders: newParentSupps }
       return o
     }))
     setLinkSuppOrder(null)
-    toast.success(`Đã link ${childCode} → ${parentCode}. NV sẽ thấy 2 đơn gộp khi đóng.`)
+    const syncMsg = childStatusUpdate ? ` Đơn con tự chuyển ${childStatusUpdate.status}.` : ''
+    toast.success(`Đã link ${childCode} → ${parentCode}.${syncMsg} NV sẽ thấy 2 đơn gộp khi đóng.`)
   }
 
   const unlinkSupplementary = async (childCode: string) => {
@@ -21182,11 +21255,30 @@ function PackingModule({ user, allUsers, mobile, products }: any) {
     const parent = orders.find((o: any) => o.order_code === parentCode)
 
     const nowIso = new Date().toISOString()
-    const { error: e1 } = await db.from('packing_workflow').update({
+    // v198.31.6: Reset child về packing để xử lý đóng riêng (option A)
+    // - Reset packed_at/by/ids/active_packers (chưa đóng riêng)
+    // - photos_packed = [] (ảnh thùng cũ thuộc về parent, không phải đơn con này)
+    // - GIỮ photos_picked (NV có thể đã chụp riêng SP của đơn con)
+    // - Ghi change_log để audit trail
+    const childUpd: any = {
       linked_to_order_code: null,
       is_supplementary: false,
+      status: 'packing',
+      packed_at: null,
+      packed_by: null,
+      packed_by_ids: [],
+      active_packers: [],
+      photos_packed: [],
+      change_log: [...(child.change_log || []), {
+        at: nowIso,
+        summary: `🔓 UNLINK khỏi ${parentCode}. Reset về 'packing' để đóng riêng. Ảnh thùng đã xóa (ảnh đó thuộc về parent).`,
+        triggered_by: 'unlink_supplementary_reset_v198_31_6',
+        previous_status: child.status,
+        previous_parent: parentCode,
+      }],
       updated_at: nowIso,
-    }).eq('order_code', childCode)
+    }
+    const { error: e1 } = await db.from('packing_workflow').update(childUpd).eq('order_code', childCode)
     if (e1) { toast.error('Lỗi bỏ link: ' + e1.message); return }
 
     if (parent) {
@@ -21197,14 +21289,15 @@ function PackingModule({ user, allUsers, mobile, products }: any) {
         updated_at: nowIso,
       }).eq('order_code', parentCode)
       setOrders(prev => prev.map((o: any) => {
-        if (o.order_code === childCode) return { ...o, linked_to_order_code: null, is_supplementary: false }
+        if (o.order_code === childCode) return { ...o, ...childUpd }
         if (o.order_code === parentCode) return { ...o, supplementary_orders: newParentSupps }
         return o
       }))
     } else {
       setOrders(prev => prev.map((o: any) => o.order_code === childCode
-        ? { ...o, linked_to_order_code: null, is_supplementary: false } : o))
+        ? { ...o, ...childUpd } : o))
     }
+    toast.success(`Đã bỏ link ${childCode}. Đơn quay lại list "Chờ đóng" để xử lý riêng.`)
   }
 
   // QM review AI flag: 'qm_ok' = AI đúng, 'qm_wrong' = AI sai
