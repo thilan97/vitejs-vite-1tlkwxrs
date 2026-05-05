@@ -117,7 +117,7 @@ const db = createClient(SUPABASE_URL, SUPABASE_KEY)
 // ⚠ TODO sau v198 (anh deploy thủ công):
 //   - Cập nhật edge function `kiotviet-sales-revenue` để auto sync luôn `kv_invoices` (anh paste code edge function cho em fix).
 //   - Setup pg_cron hoặc external cron (cron-job.org) để auto sync mỗi 1h. Hướng dẫn trong migration_62.sql.
-const APP_VERSION = '2026.05.05.v198.31.12'
+const APP_VERSION = '2026.05.05.v198.31.13'
 
 // ════════════════════════════════════════════════════════════════
 // v158: VersionBadge — Hiển thị APP_VERSION ở góc dưới phải
@@ -36791,14 +36791,18 @@ function GalleryModule({ user, allUsers, mobile }: any) {
   }
 
   // ── Fetch orders with photos ──
-  // Logic:
-  //  - Không search → pagination 20 đơn/lần (infinite scroll)
-  //  - Có search (customer HOẶC product) → fetch toàn bộ đơn trong date range (limit 5000), tắt pagination
-  // v198.31.12: FIX 2 bugs:
-  //  - Timezone: thêm +07:00 vào date range để postgres so sánh đúng giờ VN
-  //    (trước đây không có TZ → postgres assume UTC → đơn đóng sáng VN bị miss
-  //    vì packed_at UTC thuộc ngày hôm trước)
-  //  - Pagination: nếu range ≤ 1 ngày, fetch all (không pagination) để hiện đủ đơn
+  // Logic v198.31.13:
+  //  - Range ≤ 30 ngày → fetch all với limit dynamic (dayCount × 300, max 5000)
+  //                      → đảm bảo load hết đơn của mọi ngày trong range
+  //  - Range > 30 ngày → pagination 50 đơn/lần (giữ nguyên để không nặng)
+  //  - Có search → fetch all (limit 5000)
+  //
+  // Bug cũ: Default preset 'week' (7 ngày) load 20 đơn mới nhất → chỉ thấy 20 đơn
+  //          mới nhất → các ngày trong tuần chỉ hiện vài đơn (số 20 phân bổ ko đều)
+  //          User phải scroll 4-5 lần mới load đủ → UX confused.
+  //
+  // Đồng thời v198.31.12 đã fix:
+  //  - Timezone +07:00 (postgres parse đúng giờ VN)
   const fetchOrders = async (reset = false) => {
     if (!reset && loadingMore) return
     if (!reset && !hasMore) return
@@ -36810,13 +36814,21 @@ function GalleryModule({ user, allUsers, mobile }: any) {
 
     try {
       const range = computeDateRange()
-      // v198.31.12: Range ≤ 1 ngày (today / custom 1 day) → fetch all không pagination
-      const isSingleDay = range.from === range.to
-      const fetchAll = hasSearch || isSingleDay
+      // Tính số ngày trong range
+      const fromTs = new Date(range.from + 'T00:00:00+07:00').getTime()
+      const toTs   = new Date(range.to   + 'T23:59:59+07:00').getTime()
+      const dayCount = Math.max(1, Math.ceil((toTs - fromTs) / 86400000))
+      // Range ≤ 30 ngày → fetchAll, limit = dayCount × 300 (đủ cho mọi ngày)
+      // Range > 30 ngày → pagination
+      const fetchAll = hasSearch || dayCount <= 30
+      const dynamicLimit = fetchAll
+        ? Math.min(Math.max(dayCount * 300, 200), 5000)
+        : 50
+
       let q = db.from('packing_workflow')
         .select('*')
         .order('packed_at', { ascending: false, nullsFirst: false })
-        .limit(fetchAll ? 5000 : 20)
+        .limit(dynamicLimit)
 
       // v198.31.12: Date range filter với explicit timezone +07:00 (giờ VN)
       // → postgres parse correctly: "2026-05-04T00:00:00+07:00" = đầu ngày 4/5 giờ VN
@@ -36850,10 +36862,11 @@ function GalleryModule({ user, allUsers, mobile }: any) {
 
       // Update cursor + hasMore
       if (fetchAll) {
-        // FetchAll mode (search OR single day): không pagination, đã load all
+        // FetchAll mode: không pagination, đã load all
         setHasMore(false)
         setCursor(null)
-      } else if (list.length < 20) {
+      } else if (list.length < dynamicLimit) {
+        // Range > 30 ngày, mỗi page = dynamicLimit (50). Nếu trả về < limit → hết.
         setHasMore(false)
       } else {
         const last = list[list.length - 1]
