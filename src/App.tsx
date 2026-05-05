@@ -117,7 +117,7 @@ const db = createClient(SUPABASE_URL, SUPABASE_KEY)
 // ⚠ TODO sau v198 (anh deploy thủ công):
 //   - Cập nhật edge function `kiotviet-sales-revenue` để auto sync luôn `kv_invoices` (anh paste code edge function cho em fix).
 //   - Setup pg_cron hoặc external cron (cron-job.org) để auto sync mỗi 1h. Hướng dẫn trong migration_62.sql.
-const APP_VERSION = '2026.05.05.v198.31.11'
+const APP_VERSION = '2026.05.05.v198.31.12'
 
 // ════════════════════════════════════════════════════════════════
 // v158: VersionBadge — Hiển thị APP_VERSION ở góc dưới phải
@@ -33549,10 +33549,13 @@ function WarehouseScheduleModule({ user, allUsers, leaveRequests, attendance, mo
   const [showCopyPrev, setShowCopyPrev] = useState(false)
 
   // Fetch roles + schedules của tháng
+  // v198.31.12: FIX timezone bug — dùng `daysInMonth` thay vì `toISOString()`
+  // (toISOString convert sang UTC → trừ 7h → ngày 31 thành 30 → miss record ngày cuối tháng)
   const fetchAll = async () => {
     setLoading(true)
+    const lastDay = new Date(year, month+1, 0).getDate()
     const fromDate = `${year}-${String(month+1).padStart(2,'0')}-01`
-    const toDate = new Date(year, month+1, 0).toISOString().split('T')[0]
+    const toDate   = `${year}-${String(month+1).padStart(2,'0')}-${String(lastDay).padStart(2,'0')}`
 
     const [rolesRes, schedRes] = await Promise.all([
       db.from('warehouse_schedule_roles').select('*').eq('active', true).order('sort_order'),
@@ -33886,8 +33889,10 @@ function WarehouseScheduleModule({ user, allUsers, leaveRequests, attendance, mo
           year={year} month={month}
           daysInCurrent={daysInMonth}
           onApply={async (prevMonth: number, prevYear: number) => {
+            // v198.31.12: FIX timezone bug — dùng date string trực tiếp
+            const lastDayPrev = new Date(prevYear, prevMonth+1, 0).getDate()
             const fromDate = `${prevYear}-${String(prevMonth+1).padStart(2,'0')}-01`
-            const toDate = new Date(prevYear, prevMonth+1, 0).toISOString().split('T')[0]
+            const toDate   = `${prevYear}-${String(prevMonth+1).padStart(2,'0')}-${String(lastDayPrev).padStart(2,'0')}`
             const { data } = await db.from('warehouse_schedule').select('*')
               .gte('date', fromDate).lte('date', toDate)
             if (!data || data.length === 0) {
@@ -36789,6 +36794,11 @@ function GalleryModule({ user, allUsers, mobile }: any) {
   // Logic:
   //  - Không search → pagination 20 đơn/lần (infinite scroll)
   //  - Có search (customer HOẶC product) → fetch toàn bộ đơn trong date range (limit 5000), tắt pagination
+  // v198.31.12: FIX 2 bugs:
+  //  - Timezone: thêm +07:00 vào date range để postgres so sánh đúng giờ VN
+  //    (trước đây không có TZ → postgres assume UTC → đơn đóng sáng VN bị miss
+  //    vì packed_at UTC thuộc ngày hôm trước)
+  //  - Pagination: nếu range ≤ 1 ngày, fetch all (không pagination) để hiện đủ đơn
   const fetchOrders = async (reset = false) => {
     if (!reset && loadingMore) return
     if (!reset && !hasMore) return
@@ -36800,17 +36810,21 @@ function GalleryModule({ user, allUsers, mobile }: any) {
 
     try {
       const range = computeDateRange()
+      // v198.31.12: Range ≤ 1 ngày (today / custom 1 day) → fetch all không pagination
+      const isSingleDay = range.from === range.to
+      const fetchAll = hasSearch || isSingleDay
       let q = db.from('packing_workflow')
         .select('*')
         .order('packed_at', { ascending: false, nullsFirst: false })
-        .limit(hasSearch ? 5000 : 20)
+        .limit(fetchAll ? 5000 : 20)
 
-      // Date range filter (by packed_at, falling back to updated_at)
-      if (range.from) q = q.gte('packed_at', range.from + 'T00:00:00')
-      if (range.to)   q = q.lte('packed_at', range.to + 'T23:59:59')
+      // v198.31.12: Date range filter với explicit timezone +07:00 (giờ VN)
+      // → postgres parse correctly: "2026-05-04T00:00:00+07:00" = đầu ngày 4/5 giờ VN
+      if (range.from) q = q.gte('packed_at', range.from + 'T00:00:00+07:00')
+      if (range.to)   q = q.lte('packed_at', range.to + 'T23:59:59+07:00')
 
-      // Cursor-based pagination — chỉ khi KHÔNG search
-      if (!hasSearch && !reset && cursor) q = q.lt('packed_at', cursor)
+      // Cursor-based pagination — chỉ khi không fetchAll
+      if (!fetchAll && !reset && cursor) q = q.lt('packed_at', cursor)
 
       // Status filter
       if (statusFilter === 'done') q = q.eq('status', 'done')
@@ -36830,13 +36844,13 @@ function GalleryModule({ user, allUsers, mobile }: any) {
         return true
       })
 
-      // Khi có search → luôn reset, không append
-      if (reset || hasSearch) setOrders(filtered)
+      // Khi fetchAll → luôn reset, không append
+      if (reset || fetchAll) setOrders(filtered)
       else setOrders(prev => [...prev, ...filtered])
 
       // Update cursor + hasMore
-      if (hasSearch) {
-        // Search mode: không pagination, đã load all trong range
+      if (fetchAll) {
+        // FetchAll mode (search OR single day): không pagination, đã load all
         setHasMore(false)
         setCursor(null)
       } else if (list.length < 20) {
