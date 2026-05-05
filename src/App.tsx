@@ -117,7 +117,7 @@ const db = createClient(SUPABASE_URL, SUPABASE_KEY)
 // ⚠ TODO sau v198 (anh deploy thủ công):
 //   - Cập nhật edge function `kiotviet-sales-revenue` để auto sync luôn `kv_invoices` (anh paste code edge function cho em fix).
 //   - Setup pg_cron hoặc external cron (cron-job.org) để auto sync mỗi 1h. Hướng dẫn trong migration_62.sql.
-const APP_VERSION = '2026.05.05.v198.31.4'
+const APP_VERSION = '2026.05.05.v198.31.5'
 
 // ════════════════════════════════════════════════════════════════
 // v158: VersionBadge — Hiển thị APP_VERSION ở góc dưới phải
@@ -31293,9 +31293,25 @@ function OrderLookupTab({ user, allUsers, mobile }: any) {
 
       const customerMap = new Map<string, any>()
       const productMap  = new Map<string, any>()
+      const orderCodeMap = new Map<string, any>()
 
       for (const o of (allOrders || [])) {
         if (!o) continue
+        // Order code (gồm cả mã đơn này + mã đơn gốc nếu là đơn BS)
+        const ocode = (o.order_code || '').trim()
+        if (ocode) {
+          const hay = norm(ocode)
+          if (tokens.every(t => hay.includes(t))) {
+            const ex = orderCodeMap.get(ocode)
+            if (ex) ex.count = (ex.count || 0) + 1
+            else orderCodeMap.set(ocode, {
+              type: 'order_code', label: ocode, count: 1,
+              customer: o.customer_name || '',
+              isSupp: !!o.is_supplementary,
+              parent: o.linked_to_order_code || ''
+            })
+          }
+        }
         // Customer
         const cname = (o.customer_name || '').trim()
         if (cname) {
@@ -31323,9 +31339,10 @@ function OrderLookupTab({ user, allUsers, mobile }: any) {
         }
       }
 
+      const codeArr = Array.from(orderCodeMap.values()).slice(0, 5)
       const custArr = Array.from(customerMap.values()).sort((a, b) => (b.count || 0) - (a.count || 0)).slice(0, 5)
       const prodArr = Array.from(productMap.values()).sort((a, b) => (b.count || 0) - (a.count || 0)).slice(0, 7)
-      return [...custArr, ...prodArr]
+      return [...codeArr, ...custArr, ...prodArr]
     } catch (e) {
       console.error('[OrderLookup] suggestions error:', e)
       return []
@@ -31342,10 +31359,13 @@ function OrderLookupTab({ user, allUsers, mobile }: any) {
       return (allOrders || []).filter((o: any) => {
         if (!o) return false
         if (statusFilter !== 'all' && o.status !== statusFilter) return false
-        // Match: customer name OR item code/name
+        // Match: order code, parent code (cho đơn BS), customer name, item code/name
+        const codeHay = norm(o.order_code || '')
+        if (tokens.every(t => codeHay.includes(t))) return true
+        const parentHay = norm(o.linked_to_order_code || '')
+        if (parentHay && tokens.every(t => parentHay.includes(t))) return true
         const custHay = norm(o.customer_name || '')
-        const custMatch = tokens.every(t => custHay.includes(t))
-        if (custMatch) return true
+        if (tokens.every(t => custHay.includes(t))) return true
         const items = Array.isArray(o.items) ? o.items : []
         return items.some((it: any) => {
           if (!it) return false
@@ -31400,7 +31420,7 @@ function OrderLookupTab({ user, allUsers, mobile }: any) {
             onFocus={() => setShowSuggestions(true)}
             onBlur={() => { setTimeout(() => setShowSuggestions(false), 200) }}
             onKeyDown={handleKeyDown}
-            placeholder="🔍 Tên khách hàng, tên SP hoặc mã SP..."
+            placeholder="🔍 Tên KH, mã đơn (DH00xxx), tên SP hoặc mã SP..."
             style={{ width:'100%', padding:'10px 13px', border:`1px solid ${T.border}`, borderRadius:8,
               fontSize:13, fontFamily:'inherit', color:T.dark, background:'#fff', outline:'none',
               boxSizing:'border-box' as any }}/>
@@ -31426,16 +31446,33 @@ function OrderLookupTab({ user, allUsers, mobile }: any) {
                     display:'flex', justifyContent:'space-between', alignItems:'center', gap:8 }}>
                   <div style={{ display:'flex', alignItems:'center', gap:8, minWidth:0, flex:1 }}>
                     <span style={{ fontSize:14 }}>
-                      {s.type === 'customer' ? '👤' : '📦'}
+                      {s.type === 'customer' ? '👤' : s.type === 'order_code' ? '📋' : '📦'}
                     </span>
-                    <span style={{ fontSize:12, color:T.dark, fontWeight:600,
-                      overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap' }}>
-                      {s.label}
-                    </span>
+                    <div style={{ minWidth:0, flex:1, display:'flex', flexDirection:'column' }}>
+                      <span style={{ fontSize:12, color:T.dark, fontWeight:600,
+                        overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap' }}>
+                        {s.label}
+                        {s.type === 'order_code' && s.isSupp && (
+                          <span style={{ marginLeft:6, padding:'1px 5px', borderRadius:4,
+                            background:T.blueBg, color:T.blue, fontSize:9, fontWeight:700 }}>
+                            🔗 BS
+                          </span>
+                        )}
+                      </span>
+                      {s.type === 'order_code' && s.customer && (
+                        <span style={{ fontSize:9, color:T.light,
+                          overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap' }}>
+                          {s.customer}
+                          {s.parent && <> • Bổ sung cho {s.parent}</>}
+                        </span>
+                      )}
+                    </div>
                   </div>
-                  <span style={{ fontSize:10, color:T.light, flexShrink:0 }}>
-                    {s.count} đơn
-                  </span>
+                  {s.type !== 'order_code' && (
+                    <span style={{ fontSize:10, color:T.light, flexShrink:0 }}>
+                      {s.count} đơn
+                    </span>
+                  )}
                 </div>
               ))}
             </div>
@@ -31558,11 +31595,44 @@ function OrderLookupTab({ user, allUsers, mobile }: any) {
                             👤 match KH
                           </span>
                         )}
+                        {o.is_supplementary && (
+                          <span style={{ marginLeft:6, padding:'2px 6px', borderRadius:4,
+                            background:T.blueBg, color:T.blue, fontSize:9, fontWeight:700,
+                            border:`1px solid ${T.blue}` }}
+                            title={`Đơn bổ sung của ${o.linked_to_order_code || ''} — ảnh nhặt và đóng nằm ở đơn gốc`}>
+                            🔗 BS của {o.linked_to_order_code || '?'}
+                          </span>
+                        )}
+                        {Array.isArray(o.supplementary_orders) && o.supplementary_orders.length > 0 && (
+                          <span style={{ marginLeft:6, padding:'2px 6px', borderRadius:4,
+                            background:T.blueBg, color:T.blue, fontSize:9, fontWeight:700,
+                            border:`1px solid ${T.blue}` }}
+                            title="Đơn này có đơn bổ sung kèm theo — ảnh và thùng gộp chung tại đây">
+                            🔗 +{o.supplementary_orders.length} BS
+                          </span>
+                        )}
                       </div>
                       <div style={{ fontSize:10, color:T.light, marginTop:3 }}>
                         Sale: {o.sold_by_name||'—'} • {new Date(o.purchase_date).toLocaleDateString('vi-VN')}
                         {o.packed_by && <> • Đóng: {getName(o.packed_by)}</>}
                       </div>
+                      {o.is_supplementary && o.linked_to_order_code && (
+                        <div style={{ marginTop:5, padding:'6px 9px', borderRadius:6,
+                          background:T.blueBg, border:`1px solid ${T.blue}`,
+                          fontSize:11, color:T.blue, lineHeight:1.4 }}>
+                          🔗 <b>Đây là đơn bổ sung</b> đã link vào đơn gốc <b>{o.linked_to_order_code}</b>.
+                          Ảnh nhặt hàng và ảnh thùng được lưu ở đơn gốc — tra cứu mã đó để xem.
+                        </div>
+                      )}
+                      {Array.isArray(o.supplementary_orders) && o.supplementary_orders.length > 0 && (
+                        <div style={{ marginTop:5, padding:'6px 9px', borderRadius:6,
+                          background:T.blueBg, border:`1px solid ${T.blue}`,
+                          fontSize:11, color:T.blue, lineHeight:1.4 }}>
+                          🔗 <b>Đơn này có {o.supplementary_orders.length} đơn bổ sung kèm theo:</b>{' '}
+                          {o.supplementary_orders.map((s: any) => s.order_code).join(', ')}.
+                          Ảnh và thùng gộp chung tại đây.
+                        </div>
+                      )}
                       {matchingItems.length > 0 && (
                         <div style={{ marginTop:5, fontSize:11, color:T.dark }}>
                           📦 Match SP: {matchingItems.map((it: any) => `${it.qty}× ${it.name}`).join(', ')}
