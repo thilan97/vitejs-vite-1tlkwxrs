@@ -117,7 +117,7 @@ const db = createClient(SUPABASE_URL, SUPABASE_KEY)
 // ⚠ TODO sau v198 (anh deploy thủ công):
 //   - Cập nhật edge function `kiotviet-sales-revenue` để auto sync luôn `kv_invoices` (anh paste code edge function cho em fix).
 //   - Setup pg_cron hoặc external cron (cron-job.org) để auto sync mỗi 1h. Hướng dẫn trong migration_62.sql.
-const APP_VERSION = '2026.05.05.v198.31.8'
+const APP_VERSION = '2026.05.05.v198.31.9'
 
 // ════════════════════════════════════════════════════════════════
 // v158: VersionBadge — Hiển thị APP_VERSION ở góc dưới phải
@@ -21100,7 +21100,10 @@ function PackingModule({ user, allUsers, mobile, products }: any) {
   const todayStart = new Date()
   todayStart.setHours(0,0,0,0)
   // Ẩn đơn con (đã link vào đơn gốc) khỏi list chính — chúng sẽ hiện dưới dạng section trong đơn gốc
-  const visibleOrders = orders.filter((o: any) => !o.is_supplementary)
+  // v198.31.9: Khi đang search, KHÔNG ẩn đơn bổ sung — để NV tìm được đơn con qua tên KH/mã đơn.
+  // Mặc định (search rỗng) vẫn ẩn đơn con khỏi list để NV nhìn flow chính (đơn con đã gộp vào parent).
+  const isSearching = !!(searchQ || '').trim()
+  const visibleOrders = isSearching ? orders : orders.filter((o: any) => !o.is_supplementary)
   const pendingOrds = filterByQ(visibleOrders.filter((o: any) => o.status === 'packing'))
   const doneTodayOrds = filterByQ(visibleOrders.filter((o: any) =>
     o.status === 'done' && o.packed_at && new Date(o.packed_at) >= todayStart
@@ -21672,6 +21675,24 @@ function PackingModule({ user, allUsers, mobile, products }: any) {
                       {Number(o.total_amount)>0 && (
                         <span style={{ color:T.goldText, fontWeight:700, marginLeft:6 }}>
                           • {Number(o.total_amount).toLocaleString('vi-VN')}đ
+                        </span>
+                      )}
+                      {/* v198.31.9: badge cho đơn bổ sung (chỉ hiện khi search) */}
+                      {o.is_supplementary && o.linked_to_order_code && (
+                        <span style={{ marginLeft:6, padding:'1px 6px', borderRadius:4,
+                          background:T.blueBg, color:T.blue, fontSize:9, fontWeight:700,
+                          border:`1px solid ${T.blue}`, verticalAlign:'middle' }}
+                          title={`Đơn bổ sung của ${o.linked_to_order_code} — click để xem ảnh ở đơn gốc`}>
+                          🔗 BS của {o.linked_to_order_code}
+                        </span>
+                      )}
+                      {/* Đơn gốc có đơn con */}
+                      {Array.isArray(o.supplementary_orders) && o.supplementary_orders.length > 0 && (
+                        <span style={{ marginLeft:6, padding:'1px 6px', borderRadius:4,
+                          background:T.blueBg, color:T.blue, fontSize:9, fontWeight:700,
+                          border:`1px solid ${T.blue}`, verticalAlign:'middle' }}
+                          title="Đơn này có đơn bổ sung kèm theo">
+                          🔗 +{o.supplementary_orders.length} BS
                         </span>
                       )}
                       {/* v150: Admin xóa đơn */}
