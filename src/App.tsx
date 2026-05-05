@@ -117,7 +117,7 @@ const db = createClient(SUPABASE_URL, SUPABASE_KEY)
 // ⚠ TODO sau v198 (anh deploy thủ công):
 //   - Cập nhật edge function `kiotviet-sales-revenue` để auto sync luôn `kv_invoices` (anh paste code edge function cho em fix).
 //   - Setup pg_cron hoặc external cron (cron-job.org) để auto sync mỗi 1h. Hướng dẫn trong migration_62.sql.
-const APP_VERSION = '2026.05.05.v198.30.9'
+const APP_VERSION = '2026.05.05.v198.31'
 
 // ════════════════════════════════════════════════════════════════
 // v158: VersionBadge — Hiển thị APP_VERSION ở góc dưới phải
@@ -25996,7 +25996,7 @@ function PayrollModule({ user, allUsers, mobile }: any) {
 
   // Render
   return (
-    <PageContainer mobile={mobile}>
+    <PageContainer mobile={mobile} width="full">
       <Topbar mobile={mobile} title="💵 Tính lương tự động" subtitle={`Tháng ${month}/${year} • ${usersWithSalary.length} NV`}/>
 
       {error && (
@@ -26005,38 +26005,79 @@ function PayrollModule({ user, allUsers, mobile }: any) {
         </div>
       )}
 
-      {/* v191: Tab switcher (chỉ Admin) */}
-      {isAdmin && (
-        <div style={{ display:'flex', gap:4, marginBottom:14, borderBottom:`2px solid ${T.border}`,
-          flexWrap:'wrap', overflowX:'auto' }}>
-          {([
-            { id:'overview',         label:'📊 Tổng quan' },
-            { id:'attendance',       label:'🕐 Chấm công' },
-            { id:'sales_revenue',    label:'💰 DS Sale' },
-            { id:'kpi_debt',         label:'📊 KPI Công nợ' },
-            { id:'shortage_loss',    label:'💸 Mất hàng' },
-            { id:'return_loss',      label:'🔄 Hoàn hàng' },
-            { id:'mbo_bonus',        label:'🎯 MBO/Hiệu suất' },
-            { id:'inspection_bonus', label:'✅ Kiểm hàng' },
-            { id:'allowance',        label:'💝 Trợ cấp' },
-            { id:'bhxh',             label:'🛡 BHXH' },
-            { id:'base_salary',      label:'💼 LCB vị trí' },
-            { id:'schedule',         label:'⏰ Giờ làm' },
-          ] as Array<{ id: any, label: string }>).map(t => (
-            <button key={t.id} onClick={() => setAdminTab(t.id)}
-              style={{
-                padding:'10px 16px', border:'none',
-                borderBottom: adminTab === t.id ? `3px solid ${T.gold}` : '3px solid transparent',
-                background:'transparent', cursor:'pointer', fontFamily:'inherit', fontSize:13,
-                fontWeight: adminTab === t.id ? 700 : 500,
-                color: adminTab === t.id ? T.gold : T.med,
-                marginBottom:-2, whiteSpace:'nowrap',
-              }}>
-              {t.label}
-            </button>
-          ))}
-        </div>
-      )}
+      {/* v198.31: Tab nav 2 levels — 5 nhóm chính */}
+      {isAdmin && (() => {
+        const TAB_GROUPS: Array<{ id: string, label: string, tabs: Array<{ id: any, label: string }> }> = [
+          { id: 'g_overview',    label: '📊 Tổng quan',    tabs: [{ id: 'overview', label: '📊 Tổng quan' }] },
+          { id: 'g_attendance',  label: '⏰ Chấm công',    tabs: [
+            { id: 'attendance', label: '🕐 Chấm công' },
+            { id: 'schedule',   label: '📅 Giờ làm + Lịch lễ' },
+          ]},
+          { id: 'g_performance', label: '💰 Hiệu suất KPI', tabs: [
+            { id: 'sales_revenue',    label: '💰 DS Sale' },
+            { id: 'kpi_debt',         label: '📊 KPI Công nợ' },
+            { id: 'mbo_bonus',        label: '🎯 MBO/Hiệu suất' },
+            { id: 'inspection_bonus', label: '✅ Kiểm hàng' },
+          ]},
+          { id: 'g_loss', label: '📦 Tổn thất', tabs: [
+            { id: 'shortage_loss', label: '💸 Mất hàng' },
+            { id: 'return_loss',   label: '🔄 Hoàn hàng' },
+          ]},
+          { id: 'g_config', label: '⚙️ Cấu hình', tabs: [
+            { id: 'base_salary', label: '💼 LCB vị trí' },
+            { id: 'allowance',   label: '💝 Trợ cấp' },
+            { id: 'bhxh',        label: '🛡 BHXH' },
+          ]},
+        ]
+        const activeGroup = TAB_GROUPS.find(g => g.tabs.some(t => t.id === adminTab)) || TAB_GROUPS[0]
+        return (
+          <div style={{ marginBottom: 14 }}>
+            {/* Level 1: Group nav */}
+            <div style={{ display:'flex', gap:6, borderBottom:`2px solid ${T.border}`,
+              flexWrap:'wrap', overflowX:'auto', marginBottom: activeGroup.tabs.length > 1 ? 0 : 0 }}>
+              {TAB_GROUPS.map(g => {
+                const isActive = activeGroup.id === g.id
+                return (
+                  <button key={g.id} onClick={() => setAdminTab(g.tabs[0].id)}
+                    style={{
+                      padding:'12px 18px', border:'none',
+                      borderBottom: isActive ? `3px solid ${T.gold}` : '3px solid transparent',
+                      background: isActive ? `${T.gold}15` : 'transparent', cursor:'pointer',
+                      fontFamily:'inherit', fontSize:14, color: isActive ? T.gold : T.dark,
+                      fontWeight: isActive ? 700 : 600,
+                      marginBottom:-2, whiteSpace:'nowrap', borderRadius: '6px 6px 0 0',
+                    }}>
+                    {g.label}
+                  </button>
+                )
+              })}
+            </div>
+            {/* Level 2: Sub-tabs (nếu group có >1 tab) */}
+            {activeGroup.tabs.length > 1 && (
+              <div style={{ display:'flex', gap:4, padding:'8px 4px',
+                background: `${T.gold}08`, borderBottom:`1px solid ${T.border}`,
+                flexWrap:'wrap', overflowX:'auto' }}>
+                {activeGroup.tabs.map(t => {
+                  const isActive = adminTab === t.id
+                  return (
+                    <button key={t.id} onClick={() => setAdminTab(t.id)}
+                      style={{
+                        padding:'6px 14px', border:'none',
+                        background: isActive ? T.gold : 'transparent',
+                        color: isActive ? '#fff' : T.med, cursor:'pointer',
+                        fontFamily:'inherit', fontSize:12,
+                        fontWeight: isActive ? 700 : 500,
+                        whiteSpace:'nowrap', borderRadius: 6,
+                      }}>
+                      {t.label}
+                    </button>
+                  )
+                })}
+              </div>
+            )}
+          </div>
+        )
+      })()}
 
       {/* v191: Render theo tab */}
       {adminTab !== 'overview' && isAdmin ? (
@@ -29650,6 +29691,8 @@ function PayrollDetailModal({ user: nv, payroll, salaryConfig, otherIncomes, sho
   
   // v192: Modal sửa chấm công
   const [showAttendanceEdit, setShowAttendanceEdit] = useState(false)
+  // v198.31: Collapse bảng chấm công default để giảm scroll
+  const [showAttendanceTable, setShowAttendanceTable] = useState(false)
 
   return (
     <div style={{
@@ -29658,7 +29701,7 @@ function PayrollDetailModal({ user: nv, payroll, salaryConfig, otherIncomes, sho
       display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 20,
     }} onClick={onClose}>
       <div onClick={(e: any) => e.stopPropagation()} style={{
-        background: '#FFF', borderRadius: RD.lg, maxWidth: 680, width: '100%',
+        background: '#FFF', borderRadius: RD.lg, maxWidth: 1280, width: '100%',
         maxHeight: '90vh', overflow: 'auto', padding: 24,
       }}>
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16 }}>
@@ -29682,8 +29725,12 @@ function PayrollDetailModal({ user: nv, payroll, salaryConfig, otherIncomes, sho
           })()}
         </div>
 
+        {/* v198.31: Breakdown sections — Layout 3 cột (responsive: 1 cột mobile) */}
+        <div style={{ display: 'grid',
+          gridTemplateColumns: 'repeat(auto-fit, minmax(320px, 1fr))',
+          gap: 10, marginBottom: 10 }}>
         {/* Breakdown sections */}
-        <div style={{ background: T.bg, padding: 12, borderRadius: RD.md, marginBottom: 10 }}>
+        <div style={{ background: T.bg, padding: 12, borderRadius: RD.md, marginBottom: 0 }}>
           <div style={{ fontWeight: 700, marginBottom: 8, color: T.dark }}>📊 Giờ công</div>
           <div style={{ display: 'grid', gridTemplateColumns: '2fr 1fr', gap: 6, fontSize: FS.sm }}>
             <span>Giờ BT (làm thực):</span> <span style={{ textAlign: 'right' }}>{(payroll.work_hours_regular || 0).toFixed(2)}h / {totalWorkingDays * stdHoursPerDay}h chuẩn</span>
@@ -29816,17 +29863,24 @@ function PayrollDetailModal({ user: nv, payroll, salaryConfig, otherIncomes, sho
           </div>
         )}
 
-        {/* v192: Bảng chấm công full tháng */}
+        </div>
+        {/* v198.31: End grid wrapper */}
+
+        {/* v192: Bảng chấm công full tháng — v198.31: collapse default */}
         {Array.isArray(attendanceMonth) && (
           <div style={{ background:'#FFF', border:`1px solid ${T.border}`, borderRadius: RD.md,
             marginBottom:10, overflow:'hidden' }}>
             <div style={{ padding:'10px 14px', background:T.bg,
               display:'flex', justifyContent:'space-between', alignItems:'center',
-              borderBottom:`1px solid ${T.border}` }}>
-              <div style={{ fontWeight:700, color:T.dark, fontSize:13 }}>
-                📅 Bảng chấm công tháng {month}/{year}
+              borderBottom:showAttendanceTable ? `1px solid ${T.border}` : 'none' }}>
+              <div onClick={() => setShowAttendanceTable(s => !s)}
+                style={{ fontWeight:700, color:T.dark, fontSize:13, cursor:'pointer', flex:1 }}>
+                {showAttendanceTable ? '▼' : '▶'} 📅 Bảng chấm công tháng {month}/{year}
+                <span style={{ fontWeight:500, color:T.med, fontSize:11, marginLeft:8 }}>
+                  {showAttendanceTable ? '(click để ẩn)' : '(click để xem chi tiết 30 ngày)'}
+                </span>
               </div>
-              {isAdmin && (
+              {isAdmin && showAttendanceTable && (
                 <button onClick={() => setShowAttendanceEdit(true)}
                   style={{ padding:'5px 12px', borderRadius:6, border:`1px solid ${T.gold}`,
                     background:'#fff', color:T.gold, cursor:'pointer',
@@ -29835,6 +29889,7 @@ function PayrollDetailModal({ user: nv, payroll, salaryConfig, otherIncomes, sho
                 </button>
               )}
             </div>
+            {showAttendanceTable && (
             <div style={{ overflowX:'auto', maxHeight:400, overflowY:'auto' }}>
               <table style={{ width:'100%', borderCollapse:'collapse', fontSize:11 }}>
                 <thead style={{ background:'#f0f4f8', position:'sticky', top:0 }}>
@@ -29943,6 +29998,7 @@ function PayrollDetailModal({ user: nv, payroll, salaryConfig, otherIncomes, sho
                 </tbody>
               </table>
             </div>
+            )}
           </div>
         )}
 
