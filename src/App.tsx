@@ -117,7 +117,7 @@ const db = createClient(SUPABASE_URL, SUPABASE_KEY)
 // ⚠ TODO sau v198 (anh deploy thủ công):
 //   - Cập nhật edge function `kiotviet-sales-revenue` để auto sync luôn `kv_invoices` (anh paste code edge function cho em fix).
 //   - Setup pg_cron hoặc external cron (cron-job.org) để auto sync mỗi 1h. Hướng dẫn trong migration_62.sql.
-const APP_VERSION = '2026.05.05.v198.31'
+const APP_VERSION = '2026.05.05.v198.31.2'
 
 // ════════════════════════════════════════════════════════════════
 // v158: VersionBadge — Hiển thị APP_VERSION ở góc dưới phải
@@ -25065,8 +25065,12 @@ function computeMonthlyPayroll(opts: {
     otRegisteredHours += hours
   }
 
-  // 2. Tính số ngày làm việc chuẩn tháng (v193: trừ thêm ngày special có immunity)
-  const totalWorkingDaysInMonth = countWorkingDaysInMonth(month, year, paidLeaveDates, specialImmunityDates)
+  // 2. Tính số ngày làm việc chuẩn tháng
+  // v198.31.2 FIX: KHÔNG trừ specialImmunityDates khỏi mẫu số
+  // Lý do: Theo Excel chuẩn, dailyPay & standardMonthHours phải dùng base days (chỉ trừ CN + paidLeave)
+  // Nếu trừ thêm immunity → mẫu số giảm → dailyPay tăng → bonus ngày lễ bị "double count"
+  // → NV nhận lương cao hơn LCB (sai triết lý: NV nghỉ paid lễ → workAmount giảm + bonus bù = full LCB)
+  const totalWorkingDaysInMonth = countWorkingDaysInMonth(month, year, paidLeaveDates)
 
   // v191: LCB có thể bị override per-NV
   const effectiveBaseSalary = getOverride('base_salary', sc.base_salary)
@@ -29347,10 +29351,10 @@ function PayrollTabAttendance({
         ws
       )
       
+      // v198.31.2 FIX: Bỏ user_name (column không tồn tại trong schema attendance)
       const payload: any = {
         date: dateStr,
         user_id: selectedUserId,
-        user_name: selectedUser?.name,
         check_in_final: newIn || null,
         check_out_final: newOut || null,
         check_in_machine: att?.check_in_machine || null,
@@ -29501,18 +29505,17 @@ function PayrollTabAttendance({
               <table style={{ width:'100%', borderCollapse:'collapse', fontSize:12 }}>
                 <thead style={{ background:'#1976D2', color:'#fff', position:'sticky', top:0 }}>
                   <tr>
-                    <th style={_payrollAttThStyle}>Tên NV</th>
-                    <th style={{..._payrollAttThStyle, textAlign:'center', width:60 }}>Tháng</th>
-                    <th style={{..._payrollAttThStyle, textAlign:'center', width:70 }}>Năm</th>
+                    <th style={{ ..._payrollAttThStyle, width:120 }}>Tên NV</th>
                     <th style={{..._payrollAttThStyle, textAlign:'center', width:100 }}>Ngày</th>
-                    <th style={{..._payrollAttThStyle, textAlign:'center', width:60 }}>Thứ</th>
-                    <th style={{..._payrollAttThStyle, textAlign:'center', width:90 }}>Giờ vào</th>
-                    <th style={{..._payrollAttThStyle, textAlign:'center', width:90 }}>Giờ ra</th>
-                    <th style={{..._payrollAttThStyle, textAlign:'right', width:90 }}>Chấm công</th>
-                    <th style={{..._payrollAttThStyle, textAlign:'right', width:90 }}>OT duyệt</th>
-                    <th style={{..._payrollAttThStyle, textAlign:'right', width:80, background:'#0D47A1' }}>Tổng</th>
-                    <th style={{..._payrollAttThStyle, textAlign:'right', width:80, background:'#2E7D32' }}>Cơ bản</th>
-                    <th style={{..._payrollAttThStyle, textAlign:'right', width:80, background:'#F57C00' }}>Tăng ca</th>
+                    <th style={{..._payrollAttThStyle, textAlign:'center', width:50 }}>Thứ</th>
+                    <th style={{..._payrollAttThStyle, textAlign:'center', width:80 }}>Vào</th>
+                    <th style={{..._payrollAttThStyle, textAlign:'center', width:80 }}>Ra</th>
+                    <th style={{..._payrollAttThStyle, textAlign:'right', width:80, background:'#2E7D32' }}>Giờ BT</th>
+                    <th style={{..._payrollAttThStyle, textAlign:'right', width:80, background:'#F57C00' }}>OT 150%</th>
+                    <th style={{..._payrollAttThStyle, textAlign:'right', width:80, background:'#C62828' }}>OT 200%</th>
+                    <th style={{..._payrollAttThStyle, textAlign:'right', width:90 }}>OT đăng ký</th>
+                    <th style={{..._payrollAttThStyle, textAlign:'center', width:100 }}>Trạng thái</th>
+                    <th style={{..._payrollAttThStyle, textAlign:'center', width:70 }}>Ăn trưa</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -29527,8 +29530,6 @@ function PayrollTabAttendance({
                     return (
                       <tr key={d.date} style={{ background:rowBg, borderBottom:`1px solid ${T.border}` }}>
                         <td style={_payrollAttTdStyle}>{selectedUser.name}</td>
-                        <td style={{ ..._payrollAttTdStyle, textAlign:'center' }}>{month}</td>
-                        <td style={{ ..._payrollAttTdStyle, textAlign:'center' }}>{year}</td>
                         <td style={{ ..._payrollAttTdStyle, textAlign:'center' }}>{ddmm}</td>
                         <td style={{ ..._payrollAttTdStyle, textAlign:'center', color: d.isWeekend ? T.green : T.dark, fontWeight:600 }}>{d.dow}</td>
                         {/* Giờ vào — click to edit */}
@@ -29573,20 +29574,29 @@ function PayrollTabAttendance({
                             </div>
                           )}
                         </td>
-                        <td style={{ ..._payrollAttTdStyle, textAlign:'right', fontVariantNumeric:'tabular-nums', color:T.dark }}>
-                          {c.punchHours > 0 ? fmtHours(c.punchHours) : '—'}
-                        </td>
-                        <td style={{ ..._payrollAttTdStyle, textAlign:'right', fontVariantNumeric:'tabular-nums', color: c.otRegistered > 0 ? T.purple : T.light, fontWeight: c.otRegistered > 0 ? 600 : 400 }}>
-                          {c.otRegistered > 0 ? `+${fmtHours(c.otRegistered)}` : '—'}
-                        </td>
-                        <td style={{ ..._payrollAttTdStyle, textAlign:'right', fontVariantNumeric:'tabular-nums', fontWeight:700, background: c.totalHours > 0 ? '#E3F2FD' : 'transparent', color:T.dark }}>
-                          {c.totalHours > 0 ? fmtHours(c.totalHours) : '—'}
-                        </td>
+                        {/* v198.31.2: Giờ BT từ classified record */}
                         <td style={{ ..._payrollAttTdStyle, textAlign:'right', fontVariantNumeric:'tabular-nums', fontWeight:700, background: c.baseHours > 0 ? '#E8F5E9' : 'transparent', color: c.baseHours > 0 ? '#2E7D32' : T.light }}>
                           {c.baseHours > 0 ? fmtHours(c.baseHours) : '—'}
                         </td>
+                        {/* OT 150% */}
                         <td style={{ ..._payrollAttTdStyle, textAlign:'right', fontVariantNumeric:'tabular-nums', fontWeight:700, background: c.overtimeHours > 0 ? '#FFF3E0' : 'transparent', color: c.overtimeHours > 0 ? '#F57C00' : T.light }}>
                           {c.overtimeHours > 0 ? fmtHours(c.overtimeHours) : '—'}
+                        </td>
+                        {/* OT 200% — đọc từ classified record (CN-OT200%) */}
+                        <td style={{ ..._payrollAttTdStyle, textAlign:'right', fontVariantNumeric:'tabular-nums', fontWeight:700, background: Number(att?.ot_200_hours||0) > 0 ? '#FFEBEE' : 'transparent', color: Number(att?.ot_200_hours||0) > 0 ? '#C62828' : T.light }}>
+                          {Number(att?.ot_200_hours||0) > 0 ? fmtHours(Number(att.ot_200_hours)) : '—'}
+                        </td>
+                        {/* OT đăng ký */}
+                        <td style={{ ..._payrollAttTdStyle, textAlign:'right', fontVariantNumeric:'tabular-nums', color: c.otRegistered > 0 ? T.purple : T.light, fontWeight: c.otRegistered > 0 ? 600 : 400 }}>
+                          {c.otRegistered > 0 ? `+${fmtHours(c.otRegistered)}` : '—'}
+                        </td>
+                        {/* Trạng thái */}
+                        <td style={{ ..._payrollAttTdStyle, textAlign:'center', fontWeight:600, color: att?.sunday_type === 'CN-OT200%' ? '#C62828' : att?.sunday_type === 'CN-Bù' ? T.purple : att?.status === 'Đi làm' ? T.green : att?.status === 'Nghỉ' ? T.amber : att?.status === 'NKP' || att?.status === 'Nghỉ không phép' ? T.red : T.light }}>
+                          {att?.sunday_type || att?.status || (d.isWeekend ? 'CN' : '—')}
+                        </td>
+                        {/* Ăn trưa */}
+                        <td style={{ ..._payrollAttTdStyle, textAlign:'center', color: att?.lunch_eligible ? T.green : T.light }}>
+                          {att?.lunch_eligible ? '✓' : '—'}
                         </td>
                       </tr>
                     )
@@ -29594,12 +29604,17 @@ function PayrollTabAttendance({
                 </tbody>
                 <tfoot>
                   <tr style={{ background:'#FFF3E0', borderTop:`3px solid ${T.gold}`, fontWeight:700 }}>
-                    <td colSpan={7} style={{ ..._payrollAttTdStyle, fontWeight:700, color:T.dark }}>TỔNG THÁNG</td>
-                    <td style={{ ..._payrollAttTdStyle, textAlign:'right', fontVariantNumeric:'tabular-nums', fontWeight:700 }}>{fmtHours(stats.totalPunch)}h</td>
-                    <td style={{ ..._payrollAttTdStyle, textAlign:'right', fontVariantNumeric:'tabular-nums', fontWeight:700, color:T.purple }}>{fmtHours(stats.totalOTReg)}h</td>
-                    <td style={{ ..._payrollAttTdStyle, textAlign:'right', fontVariantNumeric:'tabular-nums', fontWeight:700, background:'#E3F2FD' }}>{fmtHours(stats.totalPunch + stats.totalOTReg)}h</td>
+                    <td colSpan={5} style={{ ..._payrollAttTdStyle, fontWeight:700, color:T.dark }}>TỔNG THÁNG</td>
                     <td style={{ ..._payrollAttTdStyle, textAlign:'right', fontVariantNumeric:'tabular-nums', fontWeight:700, background:'#E8F5E9', color:'#2E7D32' }}>{fmtHours(stats.totalBase)}h</td>
                     <td style={{ ..._payrollAttTdStyle, textAlign:'right', fontVariantNumeric:'tabular-nums', fontWeight:700, background:'#FFF3E0', color:'#F57C00' }}>{fmtHours(stats.totalOT)}h</td>
+                    <td style={{ ..._payrollAttTdStyle, textAlign:'right', fontVariantNumeric:'tabular-nums', fontWeight:700, background:'#FFEBEE', color:'#C62828' }}>
+                      {(() => {
+                        const totalOT200 = (attendanceMonth || []).filter((a:any) => a.user_id === selectedUserId).reduce((s:number, a:any) => s + Number(a.ot_200_hours || 0), 0)
+                        return totalOT200 > 0 ? `${fmtHours(totalOT200)}h` : '0h'
+                      })()}
+                    </td>
+                    <td style={{ ..._payrollAttTdStyle, textAlign:'right', fontVariantNumeric:'tabular-nums', fontWeight:700, color:T.purple }}>{fmtHours(stats.totalOTReg)}h</td>
+                    <td colSpan={2}></td>
                   </tr>
                 </tfoot>
               </table>
@@ -29928,9 +29943,15 @@ function PayrollDetailModal({ user: nv, payroll, salaryConfig, otherIncomes, sho
                     // v198.5: stdHoursPerDay theo vị trí
                     const isKhoForOt = ['Kho', 'Quản lý kho', 'Thử việc'].includes(salaryConfig?.position_type)
                     const stdHoursForOt = isKhoForOt ? 8 : 7.5
+                    // v198.31.1: Apply classifyAttendanceWithSundayPay → CN-Bù vs CN-OT200% chuẩn xác
+                    const classifiedMonth = classifyAttendanceWithSundayPay(
+                      attendanceMonth || [], paidLeaveDates || [], salaryConfig?.position_type || ''
+                    )
+                    const classifiedByDate = new Map<string, any>()
+                    for (const a of classifiedMonth) classifiedByDate.set(a.date, a)
                     for (let d = 1; d <= daysInMonth; d++) {
                       const dateStr = `${year}-${String(month).padStart(2,'0')}-${String(d).padStart(2,'0')}`
-                      const att = attendanceMonth.find((a: any) => a.date === dateStr)
+                      const att = classifiedByDate.get(dateStr) || attendanceMonth.find((a: any) => a.date === dateStr)
                       const dayOfWeek = new Date(year, month-1, d).getDay()
                       const isWeekend = dayOfWeek === 0
                       const cIn  = att?.check_in_final  || att?.check_in_machine  || ''
@@ -29939,7 +29960,7 @@ function PayrollDetailModal({ user: nv, payroll, salaryConfig, otherIncomes, sho
                       const punchHours = Number(att?.work_hours_regular || 0) + Number(att?.ot_150_hours || 0)
                       const otReg = otByDate.get(dateStr) || 0
                       const totalDay = punchHours + otReg
-                      // Nếu có OT đăng ký → recompute, ngược lại giữ giá trị attendance gốc
+                      // Nếu có OT đăng ký → recompute, ngược lại giữ giá trị attendance gốc (đã classify)
                       const bt    = otReg > 0 ? Math.min(totalDay, stdHoursForOt) : Number(att?.work_hours_regular || 0)
                       const ot150 = otReg > 0 ? Math.max(0, totalDay - stdHoursForOt) : Number(att?.ot_150_hours || 0)
                       const ot200 = Number(att?.ot_200_hours || 0)
