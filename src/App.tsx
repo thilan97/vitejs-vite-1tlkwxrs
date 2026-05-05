@@ -11973,19 +11973,43 @@ function WrongOrders({ user, allUsers, wrongOrders, setWrongOrders, mobile }: an
   })
   const [searchQ, setSearchQ] = useState('')
   const [expandedSlip, setExpandedSlip] = useState<any>(null)
+  // v198.31.5: inline edit ngày tạo
+  const [editingCreatedAtId, setEditingCreatedAtId] = useState<string|null>(null)
+  const [editingCreatedAtVal, setEditingCreatedAtVal] = useState<string>('')
   const p = mobile ? '16px' : '24px'
   const perm = getPerm(user)
   const isKho   = user.dept_id === 'kho'
   const isSale  = user.dept_id === 'sale'
   const canAdd  = isKho || perm.viewAllDashboard
   const canResolve = perm.resolveWrongOrder
+  const canEditCreatedAt = canAdd || perm.viewAllDashboard
+
+  const updateCreatedAt = async (id: string, newDateInput: string) => {
+    if (!newDateInput) { setEditingCreatedAtId(null); return }
+    const old = wrongOrders.find((r: any) => r.id === id)
+    if (!old) { setEditingCreatedAtId(null); return }
+    // Giữ giờ:phút:giây từ created_at cũ để không thay đổi sort order
+    const oldDate = old.created_at ? new Date(old.created_at) : new Date()
+    const [y, m, d] = newDateInput.split('-').map(Number)
+    const newDt = new Date(y, m - 1, d, oldDate.getHours(), oldDate.getMinutes(), oldDate.getSeconds())
+    const newISO = newDt.toISOString()
+    setWrongOrders((prev: any) => prev.map((r: any) => r.id === id ? { ...r, created_at: newISO } : r))
+    const { error } = await db.from('wrong_orders').update({ created_at: newISO }).eq('id', id)
+    if (error) {
+      // Rollback nếu DB lỗi
+      setWrongOrders((prev: any) => prev.map((r: any) => r.id === id ? { ...r, created_at: old.created_at } : r))
+      alert('❌ Không sửa được ngày tạo: ' + error.message)
+    }
+    setEditingCreatedAtId(null)
+    setEditingCreatedAtVal('')
+  }
 
   const norm = (s: string) => (s||'').toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g,'').replace(/đ/g,'d')
   const fuzzy = (r: any, q: string) => !q.trim() || norm(q).split(/\s+/).every((t: string) =>
     norm([r.order_code,r.customer_name,r.detail,r.sale_name,r.violator_name].join(' ')).includes(t)
   )
 
-  const emptyForm = { date:'', order_code:'', customer_name:'', sale_id:'', violator_id:'', detail:'' }
+  const emptyForm = { date:'', created_at_input:'', order_code:'', customer_name:'', sale_id:'', violator_id:'', detail:'' }
   const [form, setForm] = useState<any>(emptyForm)
 
   const [fy, fm] = monthFilter.split('-').map(Number)
@@ -12022,11 +12046,21 @@ function WrongOrders({ user, allUsers, wrongOrders, setWrongOrders, mobile }: an
   }
 
   const submit = async () => {
-    if (!form.order_code || !form.date) return
-    const now = new Date().toISOString()
-    const newItem = { id:'wo'+Date.now(), ...form, status:'pending',
+    if (!form.order_code || !form.created_at_input) return
+    const now = new Date()
+    const nowISO = now.toISOString()
+    // v198.31.5: created_at từ form (ngày phát hiện sai). Mặc định today nếu trống.
+    // Giữ giờ hiện tại trong ngày đó để giữ thứ tự sort khi cùng ngày.
+    let createdAtISO = nowISO
+    if (form.created_at_input) {
+      const [y, m, d] = form.created_at_input.split('-').map(Number)
+      const dt = new Date(y, m - 1, d, now.getHours(), now.getMinutes(), now.getSeconds())
+      createdAtISO = dt.toISOString()
+    }
+    const { created_at_input: _omit, ...formClean } = form
+    const newItem = { id:'wo'+Date.now(), ...formClean, status:'pending',
       resolution_note:'', resolved_by:'', resolved_at:'',
-      sale_filled_at:'', created_by:user.id, created_at:now }
+      sale_filled_at:'', created_by:user.id, created_at:createdAtISO }
     setWrongOrders((prev: any) => [newItem, ...prev])
     const { error } = await db.from('wrong_orders').insert(newItem)
     if (error) { setWrongOrders((prev: any) => prev.filter((i: any) => i.id!==newItem.id)); alert('❌ '+error.message); return }
@@ -12037,7 +12071,7 @@ function WrongOrders({ user, allUsers, wrongOrders, setWrongOrders, mobile }: an
       await db.from('announcements').insert({
         id:'ann_wo_'+Date.now(), title:`⚠️ Đơn sai mới: ${form.order_code}`,
         content:`Đơn ${form.order_code} - KH: ${form.customer_name||'?'} có sai sót. Sale ${saleUser.name} cần vào điền thông tin xử lý.`,
-        dept_id:'sale', created_by:user.id, created_at:now, priority:'high'
+        dept_id:'sale', created_by:user.id, created_at:nowISO, priority:'high'
       })
     }
   }
@@ -12076,7 +12110,7 @@ function WrongOrders({ user, allUsers, wrongOrders, setWrongOrders, mobile }: an
               <span style={{ fontSize:12, fontWeight:700, color:T.red, background:T.redBg,
                 padding:'4px 10px', borderRadius:20 }}>⚠️ {pendingMine} chờ xử lý</span>
             )}
-            {canAdd && <GoldBtn small onClick={() => { setForm({...emptyForm, date:new Date().toISOString().split('T')[0]}); setShowAdd(true) }}>+ Tạo đơn sai</GoldBtn>}
+            {canAdd && <GoldBtn small onClick={() => { const today = new Date().toISOString().split('T')[0]; setForm({...emptyForm, date:today, created_at_input:today}); setShowAdd(true) }}>+ Tạo đơn sai</GoldBtn>}
           </div>
         }/>
 
@@ -12262,10 +12296,45 @@ function WrongOrders({ user, allUsers, wrongOrders, setWrongOrders, mobile }: an
                       padding:'9px 12px', gap:8, alignItems:'start' }}
                       onClick={() => detailLong && setExpandedSlip((prev: any) => prev===r.id?null:r.id)}>
 
-                      {/* Ngày tạo */}
-                      <span style={{ fontSize:11, color:T.light }}>
-                        {r.created_at?new Date(r.created_at).toLocaleDateString('vi-VN',{day:'2-digit',month:'2-digit'}):'—'}
-                      </span>
+                      {/* Ngày tạo — click để sửa */}
+                      {editingCreatedAtId === r.id ? (
+                        <input
+                          type="date"
+                          value={editingCreatedAtVal}
+                          autoFocus
+                          onClick={(e) => e.stopPropagation()}
+                          onChange={(e) => setEditingCreatedAtVal(e.target.value)}
+                          onBlur={() => updateCreatedAt(r.id, editingCreatedAtVal)}
+                          onKeyDown={(e) => {
+                            if (e.key === 'Enter') updateCreatedAt(r.id, editingCreatedAtVal)
+                            if (e.key === 'Escape') { setEditingCreatedAtId(null); setEditingCreatedAtVal('') }
+                          }}
+                          style={{ padding:'2px 4px', border:`1px solid ${T.gold}`, borderRadius:4,
+                            fontSize:11, fontFamily:'inherit', color:T.dark, background:'#fff',
+                            outline:'none', width:'100%', boxSizing:'border-box' as any }}
+                        />
+                      ) : (
+                        <span
+                          onClick={(e) => {
+                            if (!canEditCreatedAt) return
+                            e.stopPropagation()
+                            const cur = r.created_at ? new Date(r.created_at).toISOString().split('T')[0] : ''
+                            setEditingCreatedAtVal(cur)
+                            setEditingCreatedAtId(r.id)
+                          }}
+                          title={canEditCreatedAt ? 'Click để sửa ngày tạo' : ''}
+                          style={{ fontSize:11, color:T.light,
+                            cursor: canEditCreatedAt ? 'pointer' : 'default',
+                            padding: canEditCreatedAt ? '2px 4px' : 0,
+                            borderRadius:3,
+                            border: canEditCreatedAt ? `1px dashed transparent` : 'none',
+                            transition:'border-color 0.15s' }}
+                          onMouseEnter={(e) => { if (canEditCreatedAt) (e.currentTarget as HTMLElement).style.borderColor = T.gold }}
+                          onMouseLeave={(e) => { if (canEditCreatedAt) (e.currentTarget as HTMLElement).style.borderColor = 'transparent' }}>
+                          {r.created_at?new Date(r.created_at).toLocaleDateString('vi-VN',{day:'2-digit',month:'2-digit'}):'—'}
+                          {canEditCreatedAt && <span style={{ marginLeft:3, color:T.light, fontSize:9 }}>✎</span>}
+                        </span>
+                      )}
 
                       {/* Ngày sai */}
                       <span style={{ fontSize:11, color:T.med, fontWeight:500 }}>
@@ -12356,10 +12425,17 @@ function WrongOrders({ user, allUsers, wrongOrders, setWrongOrders, mobile }: an
       {/* Modal tạo đơn sai */}
       <Modal open={showAdd} onClose={() => setShowAdd(false)} title="⚠️ Tạo đơn sai mới" wide>
         <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:12 }}>
-          <Inp label="Ngày sai *" type="date" value={form.date} onChange={(v) => setForm((f: any) => ({...f,date:v}))}/>
-          <Inp label="Mã đơn hàng *" value={form.order_code} onChange={(v) => setForm((f: any) => ({...f,order_code:v}))} placeholder="VD: DH006994"/>
+          <Inp label="Ngày tạo *" type="date" value={form.created_at_input} onChange={(v) => setForm((f: any) => ({...f,created_at_input:v}))}/>
+          <Inp label="Ngày sai" type="date" value={form.date} onChange={(v) => setForm((f: any) => ({...f,date:v}))}/>
         </div>
-        <Inp label="Tên khách hàng" value={form.customer_name} onChange={(v) => setForm((f: any) => ({...f,customer_name:v}))} placeholder="Tên KH..."/>
+        <div style={{ padding:'6px 10px', marginBottom:13, marginTop:-4, background:T.blueBg,
+          borderRadius:6, border:`1px solid ${T.blue}`, fontSize:11, color:T.blue, lineHeight:1.4 }}>
+          💡 <b>Ngày tạo</b> = ngày phát hiện sai (dùng tính KPI tháng). <b>Ngày sai</b> = ngày đơn được đóng sai (chỉ tham khảo).
+        </div>
+        <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:12 }}>
+          <Inp label="Mã đơn hàng *" value={form.order_code} onChange={(v) => setForm((f: any) => ({...f,order_code:v}))} placeholder="VD: DH006994"/>
+          <Inp label="Tên khách hàng" value={form.customer_name} onChange={(v) => setForm((f: any) => ({...f,customer_name:v}))} placeholder="Tên KH..."/>
+        </div>
         <Sel label="Sale phụ trách" value={form.sale_id} onChange={(v) => setForm((f: any) => ({...f,sale_id:v}))}
           options={[{value:'',label:'— Chọn sale —'},...allUsers.filter((u: any)=>u.dept_id==='sale').map((u: any)=>({value:u.id,label:u.name}))]}/>
         <Sel label="Nhân viên vi phạm (Kho/Sale)" value={form.violator_id} onChange={(v) => setForm((f: any) => ({...f,violator_id:v}))}
@@ -12374,7 +12450,7 @@ function WrongOrders({ user, allUsers, wrongOrders, setWrongOrders, mobile }: an
         </div>
         <div style={{ display:'flex', justifyContent:'flex-end', gap:10 }}>
           <GoldBtn outline small onClick={() => setShowAdd(false)}>Hủy</GoldBtn>
-          <GoldBtn small onClick={submit} disabled={!form.order_code||!form.date||!form.detail}>Tạo đơn sai</GoldBtn>
+          <GoldBtn small onClick={submit} disabled={!form.order_code||!form.created_at_input||!form.detail}>Tạo đơn sai</GoldBtn>
         </div>
       </Modal>
 
@@ -29243,6 +29319,34 @@ function PayrollTabAttendance({
       : (allUsers || []).filter((u: any) => u.active !== false)
     return [...list].sort((a: any, b: any) => (a.name || '').localeCompare(b.name || '', 'vi'))
   }, [usersWithSalary, allUsers])
+
+  // v198.31.5: Group NV theo position_type cho dropdown <optgroup>
+  // Order: Quản lý → Sales → Kho → Kế toán → Phụ trách → Khác
+  const POSITION_GROUP_MAP: Record<string, { groupName: string, order: number }> = {
+    'Quản lý Sale':     { groupName: '👔 Quản lý',      order: 1 },
+    'Quản lý kho':      { groupName: '👔 Quản lý',      order: 1 },
+    'Phó kho':          { groupName: '👔 Quản lý',      order: 1 },
+    'Sales':            { groupName: '💼 Sales',        order: 2 },
+    'Kho':              { groupName: '📦 Kho',          order: 3 },
+    'Thử việc kho':     { groupName: '📦 Kho',          order: 3 },
+    'Kế toán':          { groupName: '🧾 Kế toán',      order: 4 },
+    'Kế toán thuế':     { groupName: '🧾 Kế toán',      order: 4 },
+    'Phụ trách chung':  { groupName: '⭐ Phụ trách',     order: 5 },
+  }
+  const groupedUsers = useMemo(() => {
+    const groups = new Map<string, { order: number, users: any[] }>()
+    for (const u of sortedUsers) {
+      const pt = u._salary?.position_type || ''
+      const map = POSITION_GROUP_MAP[pt]
+      const groupName = map?.groupName || '🔧 Khác'
+      const order = map?.order || 99
+      if (!groups.has(groupName)) groups.set(groupName, { order, users: [] })
+      groups.get(groupName)!.users.push(u)
+    }
+    return Array.from(groups.entries())
+      .sort(([, a], [, b]) => a.order - b.order)
+      .map(([groupName, { users }]) => ({ groupName, users }))
+  }, [sortedUsers])
   
   // Default chọn NV đầu tiên
   useEffect(() => {
@@ -29497,10 +29601,16 @@ function PayrollTabAttendance({
               <select value={selectedUserId} onChange={e => setSelectedUserId(e.target.value)}
                 style={{ padding:'8px 12px', borderRadius:6, border:`1px solid ${T.border}`,
                   background:'#fff', color:T.dark, fontFamily:'inherit', fontSize:13, minWidth:240 }}>
-                {sortedUsers.map((u: any) => (
-                  <option key={u.id} value={u.id}>
-                    {u.name} {u._salary?.position_type ? `· ${u._salary.position_type}` : ''}
-                  </option>
+                {groupedUsers.map(({ groupName, users }) => (
+                  <optgroup key={groupName} label={groupName}
+                    style={{ background:'#fff', color:T.dark, fontFamily:'inherit', fontWeight:700 }}>
+                    {users.map((u: any) => (
+                      <option key={u.id} value={u.id}
+                        style={{ background:'#fff', color:T.dark, fontFamily:'inherit', fontWeight:400 }}>
+                        {u.name} {u._salary?.position_type ? `· ${u._salary.position_type}` : ''}
+                      </option>
+                    ))}
+                  </optgroup>
                 ))}
               </select>
               {selectedUser && (
